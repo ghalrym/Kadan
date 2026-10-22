@@ -16,6 +16,7 @@ app = typer.Typer(no_args_is_help=True)
 INFERENCE_WORKER_UNIT_TARGETS = [
     "inference-request-tests",
     "text-prefix-tests",
+    "text-state-tests",
     "bf16-projection-tests",
     "media-session-tests",
     "media-residency-tests",

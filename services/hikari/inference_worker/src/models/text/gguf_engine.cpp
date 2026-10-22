@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <array>
+#include <type_traits>
+#include <variant>
 
 #include "../../weights/metadata_json.hpp"
 #include "gguf_model.hpp"
@@ -33,13 +35,63 @@ std::unique_ptr<GgufWeights> load(const char* root, const std::atomic_bool* canc
     return weights;
 }
 
+// The live state and one conversation checkpoint, each with its tokens.
 std::size_t host_bytes(const std::string& name, std::size_t context) {
     need(
         context && context <= serving::max_resident_capacity, "gguf_text_context_bound"
     );
-    return fixed_bytes + architecture(name).state(context) + context * sizeof(unsigned);
+    return fixed_bytes
+           + 2 * (architecture(name).state(context) + context * sizeof(unsigned));
 }
 }  // namespace
+
+// Copies the leading `positions` of every context-sized buffer (KV and
+// indexer keys); pooled keys, recurrent state and n-gram history are copied whole. An
+// empty target takes a whole copy, which sizes it for later partial copies.
+void copy_state(
+    const ModelState& from, ModelState& to, std::size_t positions, std::size_t context
+) {
+    if (to.layers.empty()) {
+        to = from;
+        return;
+    }
+    need(to.layers.size() == from.layers.size(), "gguf_text_checkpoint_layers");
+    const auto leading = [&](const Vec& source, Vec& target) {
+        need(source.size() == target.size(), "gguf_text_checkpoint_shape");
+        const auto count = std::min(
+            source.size(), (source.size() * positions + context - 1) / context
+        );
+        std::copy_n(source.begin(), count, target.begin());
+    };
+    for (std::size_t i = 0; i < from.layers.size(); ++i) {
+        need(
+            from.layers[i].index() == to.layers[i].index(),
+            "gguf_text_checkpoint_layers"
+        );
+        std::visit(
+            [&](const auto& source) {
+                using T = std::decay_t<decltype(source)>;
+                auto& target = std::get<T>(to.layers[i]);
+                if constexpr (std::is_same_v<T, AttentionState>) {
+                    leading(source.keys, target.keys);
+                    leading(source.values, target.values);
+                } else if constexpr (std::is_same_v<T, RecurrentState>)
+                    target = source;
+                else {
+                    leading(source.attention.keys, target.attention.keys);
+                    leading(source.attention.values, target.attention.values);
+                    leading(source.raw_keys, target.raw_keys);
+                    // Pooled keys have floor(context / pool) rows, so their
+                    // prefix cannot be scaled by the unpooled context length.
+                    target.pooled = source.pooled;
+                }
+            },
+            from.layers[i]
+        );
+    }
+    to.ple = from.ple;
+    to.recent = from.recent;
+}
 
 std::string validate_metadata(const checkpoint::GgufMetadata& m) {
     const auto name = m.string("general.architecture");
@@ -86,8 +138,40 @@ struct Engine::Impl {
     std::unique_ptr<Model> model;
     Prefix prefix;
     Footprint retained_state;
-    std::size_t tokens = 0;
+    std::size_t tokens = 0, boundary = 0;
     bool active = false, poisoned = false;
+
+    // Host state after a conversation's leading prompt tokens.
+    struct Checkpoint {
+        ModelState state;
+        std::vector<unsigned> tokens;
+        std::string conversation;
+    } checkpoint;
+
+    void save_checkpoint() {
+        auto state = model->take_state();
+        copy_state(state, checkpoint.state, tokens, p.context);
+        model->restore_state(std::move(state));
+        const auto committed = prefix.committed();
+        checkpoint.tokens.assign(committed.begin(), committed.end());
+        checkpoint.conversation = prefix.conversation();
+    }
+
+    bool
+    resumes(std::span<const unsigned> prompt, std::string_view conversation) const {
+        const auto& c = checkpoint.tokens;
+        return !c.empty() && !conversation.empty()
+               && conversation == checkpoint.conversation && c.size() < prompt.size()
+               && std::equal(c.begin(), c.end(), prompt.begin());
+    }
+
+    void restore_checkpoint() {
+        auto state = model->take_state();
+        copy_state(checkpoint.state, state, checkpoint.tokens.size(), p.context);
+        model->restore_state(std::move(state));
+        tokens = checkpoint.tokens.size();
+        prefix.resume(checkpoint.tokens);
+    }
 
     Impl(
         const char* root,
@@ -180,6 +264,7 @@ serving::Info Engine::info() const {
 void Engine::reset() {
     impl_->execution.idle();
     impl_->model->reset();
+    impl_->checkpoint = {};
     impl_->tokens = 0;
     impl_->poisoned = false;
     impl_->prefix.clear();
@@ -203,9 +288,22 @@ std::size_t Engine::begin_request(
         m.tokens = 0;
         m.poisoned = false;
         m.retained_state.clear();
+        // Released mirrors re-upload the restored keys on first attention.
+        if (reuse_prefix && m.resumes(prompt, conversation))
+            try {
+                m.restore_checkpoint();
+            } catch (...) {
+                m.poisoned = true;
+                m.prefix.clear();
+                throw;
+            }
     }
     m.active = true;
-    return reused;
+    return m.tokens;
+}
+
+void Engine::checkpoint_at(std::size_t tokens) {
+    impl_->boundary = tokens;
 }
 
 void Engine::end_request() {
@@ -213,6 +311,7 @@ void Engine::end_request() {
     need(m.active && !m.poisoned, "gguf_text_request_state");
     m.retained_state = m.execution.idle({}, m.prefix.retaining());
     m.prefix.complete();
+    m.boundary = 0;
     m.active = false;
 }
 
@@ -340,7 +439,10 @@ serving::Token Engine::prefill(
         };
         Vec logits;
         for (std::size_t done = 0; done < prompt.size();) {
-            const auto count = std::min(chunk_rows, prompt.size() - done);
+            auto count = std::min(chunk_rows, prompt.size() - done);
+            // A chunk ends at the checkpoint so the state is saved exactly there.
+            if (m.boundary > m.tokens && m.boundary < m.tokens + count)
+                count = m.boundary - m.tokens;
             const bool last = done + count == prompt.size();
             logits = m.model->forward(
                 prompt.subspan(done, count), m.tokens, last, layer_progress
@@ -349,6 +451,8 @@ serving::Token Engine::prefill(
             m.tokens += count;
             m.prefix.commit(prompt.subspan(done, count));
             done += count;
+            if (!last && m.tokens == m.boundary && m.prefix.retaining())
+                m.save_checkpoint();
             if (progress) {
                 progress("prefill_chunk", done);
                 for (std::size_t row = done - count; row < done; ++row)

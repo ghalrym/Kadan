@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+#include <span>
 #include <stdexcept>
 #include <string>
 
@@ -12,14 +14,11 @@ inline std::string trim_chat_text(std::string text) {
     return text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
 }
 
-// Text-only form of the Qwen checkpoint template used by the API. Tools and
-// multimodal messages are not part of this endpoint's supported request model.
+// Whole messages in the Qwen checkpoint template's text-only form, without
+// the reply prompt. A prompt's leading messages render to its leading text.
 inline std::string
-chat_prompt(const std::vector<ChatMessage>& messages, std::size_t byte_limit) {
-    if (messages.empty() || messages.size() > byte_limit)
-        throw std::invalid_argument("chat_messages");
+chat_messages(std::span<const ChatMessage> messages, std::size_t byte_limit) {
     std::string result;
-    bool user_seen = false;
     for (std::size_t index = 0; index < messages.size(); ++index) {
         const auto& message = messages[index];
         const auto role = message.role;
@@ -27,7 +26,6 @@ chat_prompt(const std::vector<ChatMessage>& messages, std::size_t byte_limit) {
             throw std::invalid_argument("chat_role");
         if (role == "system" && index != 0)
             throw std::invalid_argument("chat_system_position");
-        user_seen = user_seen || role == "user";
         auto text = trim_chat_text(message.text);
         if (role == "assistant") {
             std::string reasoning;
@@ -46,7 +44,19 @@ chat_prompt(const std::vector<ChatMessage>& messages, std::size_t byte_limit) {
         if (result.size() > byte_limit)
             throw std::invalid_argument("chat_prompt_bytes");
     }
-    if (!user_seen)
+    return result;
+}
+
+// Text-only form of the Qwen checkpoint template used by the API. Tools and
+// multimodal messages are not part of this endpoint's supported request model.
+inline std::string
+chat_prompt(const std::vector<ChatMessage>& messages, std::size_t byte_limit) {
+    if (messages.empty() || messages.size() > byte_limit)
+        throw std::invalid_argument("chat_messages");
+    auto result = chat_messages(messages, byte_limit);
+    if (std::none_of(messages.begin(), messages.end(), [](const auto& message) {
+            return message.role == "user";
+        }))
         throw std::invalid_argument("chat_user_required");
     result += "<|im_start|>assistant\n<think>\n\n</think>\n\n";
     return result;

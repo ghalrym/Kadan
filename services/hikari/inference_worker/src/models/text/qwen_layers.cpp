@@ -62,8 +62,8 @@ RecurrentState DeltaNetLayer::take_state(DenseCompute& compute) {
 
 void DeltaNetLayer::restore_state(RecurrentState state) {
     need(
-        state.convolution.size() == conv_.size()
-            && state.recurrent.size() == state_.size(),
+        state.convolution.size() == (spec_.conv - 1) * spec_.channels()
+            && state.recurrent.size() == spec_.value_heads * spec_.dim * spec_.dim,
         "gguf_text_recurrent_snapshot_shape"
     );
     conv_.swap(state.convolution);

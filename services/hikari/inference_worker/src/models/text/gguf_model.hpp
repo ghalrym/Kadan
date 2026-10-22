@@ -264,6 +264,11 @@ void delta_rule(
     std::span<float> out
 );
 
+// Copies a checkpoint's valid prefix into reusable host state storage.
+void copy_state(
+    const ModelState&, ModelState&, std::size_t positions, std::size_t context
+);
+
 // One architecture's forward pass over whole token rows; KV and recurrent
 // state live in the model and are sized for its context at construction.
 class Model {

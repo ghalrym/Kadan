@@ -42,6 +42,8 @@ across VRAM, RAM and disk (the Strata/FreeToken approach).
 - **Preferred:** every expert in VRAM, plus a RAM cache of the whole model.
 - **Context:** sized from a queued load's explicit context first, then the
   saved limit, then the model's supported maximum.
+- **Scratch:** each GPU keeps a 1 GiB scratch envelope for projections and
+  grouped attention; the rest of the grant goes to the weight bank.
 - **Several GPUs:** the budget may span GPUs. Each GPU it uses needs its own
   2.4 GiB floor.
 - **Budget limits:** the GPU weight bank sizes itself from the smaller of free

@@ -77,8 +77,9 @@ public:
     }
 
     void restore_state(AttentionState state) {
+        const auto size = context_ * spec_.kv_heads * spec_.dim;
         need(
-            state.keys.size() == keys_.size() && state.values.size() == values_.size(),
+            state.keys.size() == size && state.values.size() == size,
             "gguf_text_attention_snapshot_shape"
         );
         keys_.swap(state.keys);
