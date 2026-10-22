@@ -9,7 +9,8 @@ Saved work can continue after the browser closes. A queued message does not prom
 | [Agent conversations](agent-conversations.md) | Hatch agents, send messages and return to saved history within bounded response context. |
 | [Saving chat notes](saving-chat-notes.md) | Save text without requesting a reply, including when inference is unavailable. |
 | [Stopping chat work](stopping-chat-work.md) | Cancel response work and image jobs with separate controls. |
-| [Personas](personas.md) | Save and select instructions for an agent's responses. |
+| [Agent memory](memories.md) | Intended agent-managed memory, with current browsing and recall limits described separately. |
+| [Personas](personas.md) | Intended agent-curated personas, with current manual editing and selection described separately. |
 | [Shared agent instructions](agent-instructions.md) | Change operator-maintained instructions for subsequent agent work. |
 | [Agent actions](agent-actions.md) | Ask agents to browse, change files and run commands, with explicit limits on recovery. |
 | [Computer](computer.md) | Watch or control the shared computer without pausing the agent. |
