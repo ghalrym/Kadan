@@ -5,6 +5,7 @@ import Composer, { readiness } from "./Composer";
 import Pet, { useMood } from "./Pet";
 import AgentCard from "./AgentCard";
 import ComputerViewer from "./ComputerViewer";
+import { useVoiceCall } from "./VoiceCallControl";
 import { activeLabel } from "./presence";
 import { useAgentPet } from "./PetContext";
 import { agentPath, api } from "./api";
@@ -123,6 +124,11 @@ export default function Chat({
   callbacks.current = { onChange, refreshStatus };
   const end = useRef<HTMLDivElement>(null);
   const ready = readiness(status);
+  const [dictating, setDictating] = useState(false);
+  const voiceCall = useVoiceCall(
+    `You are ${agentName}. Have a spoken conversation. Keep replies short. You have no tools.\n${personas.find((item) => item.id === persona)?.markdown.slice(0, 6000) ?? ""}`,
+    !ready.chat || sending || blocked || dictating,
+  );
   // Hikari loads the model on demand; the first reply waits for it without a deadline.
   const modelLoading = generating && status?.hikari.model_state === "loading";
   // The agent has read the message once Hikari is working on it, and types until the reply lands.
@@ -336,6 +342,12 @@ export default function Chat({
       mood={mood}
       presence={working ? perchStatus : activeLabel(saved)}
       onClose={closeCard}
+      callDisabled={!ready.chat || sending || blocked || dictating || voiceCall.active}
+      callTitle={voiceCall.active ? "Already in a call" : voiceCall.unavailable ?? (!ready.chat ? "Calls need a chat model" : "Start a voice call")}
+      onCall={() => {
+        setCard(false);
+        voiceCall.start();
+      }}
       onOpenComputer={() => {
         setCard(false);
         setComputer(true);
@@ -500,6 +512,8 @@ export default function Chat({
         onPersona={setPersona}
         pet={null}
         autoFocus
+        voiceCall={voiceCall}
+        onDictating={setDictating}
       />
     </section>
     {computer && <ComputerViewer agentName={agentName} onClose={() => setComputer(false)} />}

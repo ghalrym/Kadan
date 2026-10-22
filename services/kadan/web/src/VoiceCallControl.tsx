@@ -2,38 +2,49 @@ import { useEffect, useRef, useState } from "react";
 import { Mic, MicOff, Phone, PhoneOff } from "lucide-react";
 import { callUnavailable, VoiceCallSession, type CallState } from "./voiceCall";
 
-export default function VoiceCallControl({ instruction, disabled, onActive }: {
-  instruction: string;
-  disabled: boolean;
-  onActive: (active: boolean) => void;
-}) {
+export type VoiceCall = ReturnType<typeof useVoiceCall>;
+
+/** Owns the call session so it outlives the agent card that starts it. */
+export function useVoiceCall(instruction: string, disabled: boolean) {
   const session = useRef<VoiceCallSession | null>(null);
   const [call, setCall] = useState<CallState | null>(null);
+  const [active, setActive] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => () => session.current?.end(), []);
   useEffect(() => { if (disabled) session.current?.end(); }, [disabled]);
-  const unavailable = callUnavailable();
 
   function start() {
+    if (disabled || session.current) return;
     setError("");
     const next = new VoiceCallSession(setCall, (message) => {
-      session.current = null; setCall(null); onActive(false); setError(message ?? "");
+      session.current = null; setCall(null); setActive(false); setError(message ?? "");
     });
     session.current = next;
-    onActive(true);
+    setActive(true);
     void next.start(instruction);
   }
 
+  return {
+    call,
+    active,
+    error,
+    unavailable: callUnavailable(),
+    start,
+    end: () => session.current?.end(),
+    setMuted: (muted: boolean) => session.current?.setMuted(muted),
+  };
+}
+
+export default function VoiceCallControl({ voiceCall }: { voiceCall: VoiceCall }) {
+  const { call, error } = voiceCall;
   return <>
     {error && <p role="alert">{error}</p>}
-    <div className="call-controls">
-      {call ? <>
-        <span role="status"><Phone size={14} />{call.status}</span>
-        <button type="button" className="chip" aria-label={call.muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={call.muted} onClick={() => session.current?.setMuted(!call.muted)}>
-          {call.muted ? <MicOff size={14} /> : <Mic size={14} />}{call.muted ? "Unmute" : "Mute"}
-        </button>
-        <button type="button" className="chip end-call" onClick={() => session.current?.end()}><PhoneOff size={14} />End call</button>
-      </> : <button type="button" className="chip" disabled={disabled || !!unavailable} title={unavailable ?? "Start a voice call"} onClick={start}><Phone size={14} />Start call</button>}
-    </div>
+    {call && <div className="call-controls">
+      <span role="status"><Phone size={14} />{call.status}</span>
+      <button type="button" className="chip" aria-label={call.muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={call.muted} onClick={() => voiceCall.setMuted(!call.muted)}>
+        {call.muted ? <MicOff size={14} /> : <Mic size={14} />}{call.muted ? "Unmute" : "Mute"}
+      </button>
+      <button type="button" className="chip end-call" onClick={voiceCall.end}><PhoneOff size={14} />End call</button>
+    </div>}
   </>;
 }

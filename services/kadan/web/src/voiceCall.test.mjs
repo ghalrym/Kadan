@@ -199,7 +199,15 @@ test("upstream errors release audio and mic and ignore late messages", async () 
   assert.equal(errors.length, 1);
 });
 
-test("untrusted HTTP origins and denied permissions return useful errors", async () => {
+test("browser-trusted HTTP origins can start calls over an unencrypted WebSocket", async () => {
+  window.location.href = "http://kadan.local/";
+  assert.equal(callUnavailable(), null);
+  const call = await connected();
+  assert.equal(socket.url, "ws://kadan.local/api/calls");
+  call.end();
+});
+
+test("untrusted origins and denied permissions return useful errors", async () => {
   window.isSecureContext = false;
   assert.match(callUnavailable(), /HTTPS or localhost/);
   window.isSecureContext = true;
