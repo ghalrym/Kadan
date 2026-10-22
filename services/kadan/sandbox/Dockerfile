@@ -21,3 +21,9 @@ RUN for python in /usr/bin/python3 /opt/python3.11/bin/python /opt/python3.12/bi
       PIP_BREAK_SYSTEM_PACKAGES=1 "$python" -m pip install --no-cache-dir --upgrade "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70" \
       && PIP_BREAK_SYSTEM_PACKAGES=1 "$python" -m pip install --no-cache-dir --upgrade certifi==2026.10.19 || exit; \
     done
+
+# Keep existing Node 20 entry points usable on supported Node 22.
+RUN rm /opt/nodejs/20 \
+    && ln -s /opt/nodejs/22 /opt/nodejs/20 \
+    && ln -sfn /opt/nodejs/22/bin/node /usr/local/bin/node20 \
+    && rm -rf /opt/fnm/node-versions/v20.20.2
