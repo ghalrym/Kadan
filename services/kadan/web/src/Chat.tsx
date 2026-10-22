@@ -502,7 +502,7 @@ export default function Chat({
           <div>
             <strong>Earlier unsent message</strong>
             <p>{unassigned.content}</p>
-            <p>Its original conversation is unknown, so it cannot be safely retried. Check saved history to avoid a duplicate. Copying adds the text to your draft; it sends as a new message only when you submit it.</p>
+            <p>Its original conversation wasn't saved. Check your history before copying it to the draft. It will send as a new message.</p>
           </div>
           <button disabled={blocked || sending || dictating || voiceCall.active} onClick={() => {
             try { setDraft(copyPendingToDraft(draft, unassigned)); }
