@@ -21,7 +21,7 @@ inline bool gguf_batch_supported(
         if (!job.identity || !job.source || !job.in || !job.out
             || job.in > std::size_t(INT_MAX) || job.out > std::size_t(INT_MAX)
             || job.input.empty() || job.input.size() % job.in
-            || job.input.size() / job.in > DenseCompute::gguf_batch_rows
+            || job.input.size() / job.in > DenseCompute::gguf_batch_max_rows
             || job.output.size() != (job.input.size() / job.in) * job.out
             || (job.encoding
                 && (!gguf::supported(*job.encoding)

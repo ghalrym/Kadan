@@ -9,7 +9,9 @@
 namespace kadan::text {
 namespace {
 // Checkpoint metadata, cached parameters and bounded chunk activations.
-constexpr std::size_t fixed_bytes = 768ULL << 20, chunk_rows = 64;
+// Prefill reads nearly every routed expert once per chunk, so long chunks
+// spread that pass over more tokens, as llama.cpp's 512-token micro-batches do.
+constexpr std::size_t fixed_bytes = 1024ULL << 20, chunk_rows = 512;
 
 struct Architecture {
     void (*bind)(GgufWeights&);

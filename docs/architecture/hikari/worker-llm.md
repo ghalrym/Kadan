@@ -29,6 +29,10 @@ across VRAM, RAM and disk (the Strata/FreeToken approach).
   move between VRAM, RAM and disk.
 - Routed experts held in RAM run on the CPU alongside the GPU batch. They are
   not streamed over PCIe by default.
+- Prefill runs in 512-token chunks because each chunk touches nearly every
+  routed expert. Experts stay on the batched path at any row count: the GPU
+  repeats its packed pass for each group of 8 rows against weights it reads
+  once, and the CPU split prices host work by bytes times rows.
 
 ## Memory
 
