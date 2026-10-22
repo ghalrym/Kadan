@@ -1,6 +1,6 @@
 # Agent conversations
 
-Kadan lets users hatch an agent and return to one continuous chat with it. Creating an agent saves its records in Tsuchi without downloading or running a model. The current interface does not rename or delete agents.
+Kadan lets users hatch an agent and return to one continuous chat with it. Creating an agent saves its records in Tsuchi without downloading or running a model. Users can [rename agents](renaming-agents.md); deleting agents is not available.
 
 Hatching requires a name and a unique permanent key. Invalid or duplicate keys produce an error without replacing an existing agent. After an uncertain creation, refresh the agent list before trying again. Agents created in Tsuchi appear in Kadan after refreshing; both applications use the same [namespaces](../tsuchi/namespaces.md).
 

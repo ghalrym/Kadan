@@ -7,6 +7,7 @@ import {
   MessageCircle,
   Plus,
   Palette,
+  Pencil,
   RefreshCw,
   X,
 } from "lucide-react";
@@ -19,6 +20,7 @@ import Hatch from "./Hatch";
 import Pet, { agentPet, useMood } from "./Pet";
 import { agentHue } from "./pet";
 import PetEditor from "./PetEditor";
+import RenameAgent from "./RenameAgent";
 import { PetContext, useAgentPet } from "./PetContext";
 
 /** Animate a view change, letting the agent's pet glide between layouts. */
@@ -64,6 +66,7 @@ export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [pets, setPets] = useState<Record<string, PetJob | null>>({});
   const [editingPet, setEditingPet] = useState(false);
+  const [renamingAgent, setRenamingAgent] = useState("");
   const petSelectionRevision = useRef<Record<string, number>>({});
   const pendingPetSelection = useRef<Record<string, number>>({});
   const [key, setKey] = useState(localStorage.getItem("kadan.agent") || "");
@@ -200,6 +203,7 @@ export default function App() {
   }, [agents, refreshPetSelection]);
   useEffect(() => {
     setEditingPet(false);
+    setRenamingAgent("");
     localStorage.setItem("kadan.agent", key);
     setChain(null);
     setPersonas([]);
@@ -357,6 +361,10 @@ export default function App() {
             </button>
           </header>
           <nav className="panel-nav" aria-label="Agent views">
+            <button disabled={!selectedAgent || disabled} onClick={() => { setMenu(false); setRenamingAgent(key); }}>
+              <Pencil size={17} />
+              Rename agent
+            </button>
             <button disabled={!key} onClick={() => { setMenu(false); setEditingPet(true); }}>
               <Palette size={17} />
               Edit pet
@@ -485,6 +493,19 @@ export default function App() {
           </div>
         )}
       </main>
+      {renamingAgent === key && selectedAgent && <RenameAgent
+        key={key}
+        agent={selectedAgent}
+        onUpdated={(saved) => {
+          if (activeAgent.current !== saved.key) return;
+          setAgents((rows) => rows.map((agent) => agent.key === saved.key
+            ? { ...agent, name: saved.name } : agent));
+        }}
+        onClose={() => {
+          setRenamingAgent("");
+          if (mobile && !menu) openNavigation.current?.focus();
+        }}
+      />}
       {editingPet && selectedAgent && <PetEditor
         key={key}
         agentKey={key}
