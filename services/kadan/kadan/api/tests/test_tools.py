@@ -66,7 +66,7 @@ def required(schema: dict, root: dict) -> dict:
 
 
 def test_every_tool_has_a_unique_name_and_a_description():
-    assert len(TOOLS_BY_NAME) == len(ALL_TOOLS) == 15
+    assert len(TOOLS_BY_NAME) == len(ALL_TOOLS) == 17
     assert len(CONVERSATION_TOOLS) == 3
     assert all(tool.description for tool in ALL_TOOLS)
 
@@ -156,3 +156,28 @@ def test_display_actions_and_mcp_calls_send_their_own_body():
 def test_invalid_arguments_are_rejected_by_the_tool_schema(tool, arguments):
     with pytest.raises(ValidationError):
         tool.args_schema.model_validate(arguments)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"title": "   "},
+        {"markdown": "   "},
+        {"markdown": "x" * 16001},
+        {"expected_version": 0},
+        {"expected_version": True},
+        {"agent_key": "other"},
+    ],
+)
+def test_persona_tool_rejects_invalid_content_and_scope_override(changes):
+    from kadan.runner.tools.persona import UpdatePersonaArguments
+
+    with pytest.raises(ValidationError):
+        UpdatePersonaArguments.model_validate(
+            {
+                "title": "Persona",
+                "markdown": "Be concise.",
+                "expected_version": None,
+                **changes,
+            }
+        )

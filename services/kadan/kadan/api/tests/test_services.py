@@ -382,3 +382,36 @@ def test_ready_status_reports_the_selected_models_context_window(limits, expecte
         Boundary(settings=settings), lambda service: service.inference_status()
     )
     assert status.context_limit == expected
+
+
+@pytest.mark.parametrize("present", [True, False])
+def test_agent_persona_read_is_scoped_and_allows_absent_persona(present):
+    persona = resource("persona", markdown="Be precise.")
+
+    def response(request):
+        assert request.method == "GET"
+        assert request.url.path == "/api/agents/test/persona"
+        return httpx.Response(
+            200,
+            content=json.dumps(persona.model_dump(mode="json") if present else None),
+        )
+
+    result = run(response, lambda service: service.agent_persona("test"))
+    assert result == (persona if present else None)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"agent_key": "other"},
+        {"kind": "memory"},
+        {"deleted_at": NOW},
+    ],
+)
+def test_agent_persona_rejects_wrong_owner_kind_or_trashed_resource(changes):
+    persona = resource(**{"kind": "persona", **changes})
+    with pytest.raises(ServiceError):
+        run(
+            lambda request: httpx.Response(200, json=persona.model_dump(mode="json")),
+            lambda service: service.agent_persona("test"),
+        )

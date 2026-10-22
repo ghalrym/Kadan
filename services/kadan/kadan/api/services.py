@@ -80,6 +80,16 @@ class LocalServices:
         )
         return parse_resource(value)
 
+    async def agent_persona(self, key: str) -> Resource | None:
+        value = await self.json_request("Tsuchi", "GET", f"/api/agents/{key}/persona")
+        if value is None:
+            return None
+        persona = parse_resource(value)
+        require_active(persona, ResourceKind.PERSONA)
+        if persona.agent_key != key:
+            raise ServiceError("Tsuchi returned a persona for another agent.", 502)
+        return persona
+
     async def chain(self, key: str) -> Resource:
         # Tsuchi assigns resource IDs, so serialize first use to create one chain.
         async with self.chain_locks.setdefault(key, asyncio.Lock()):
