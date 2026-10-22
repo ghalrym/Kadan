@@ -340,8 +340,15 @@ class PetManifest(Model):
         return self
 
 
+class PetScaleCorrection(Model):
+    outcome: Literal["corrected", "consistent", "skipped"]
+    scale: float = Field(default=1, ge=0.67, le=1.5)
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class PetStep(Model):
-    method: Literal["generated", "canonical"] = "generated"
+    method: Literal["generated", "canonical", "normalized"] = "generated"
+    normalization: PetScaleCorrection | None = None
     name: str = Field(min_length=1, max_length=100)
     source_asset_id: UUID | None = None
     output_asset_id: UUID
@@ -374,6 +381,7 @@ class PetPendingFrame(Model):
 
 
 class PetState(Model):
+    doctor: bool = False
     origin: Literal["generated", "imported"] = "generated"
     status: PetStatus = "queued"
     stage: str = Field(default="queued", min_length=1, max_length=500)
@@ -420,6 +428,16 @@ class PetState(Model):
 
     @model_validator(mode="after")
     def valid_progress(self) -> Self:
+        if self.doctor and (
+            self.origin != "generated"
+            or self.parent_pet_id is None
+            or not self.steps
+            or any(step.normalization is None for step in self.steps[1:])
+            or self.pending_step_name is not None
+        ):
+            raise ValueError(
+                "Doctor jobs require a generated source and checked frames"
+            )
         if self.completed_steps != len(self.steps):
             raise ValueError("Completed steps must match persisted step outputs")
         names = [step.name for step in self.steps]

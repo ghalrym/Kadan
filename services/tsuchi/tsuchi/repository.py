@@ -1014,6 +1014,53 @@ class Repository:
             self._save_pet(db, revision)
             return revision
 
+    def doctor_pet(
+        self, key: str, pet_id: UUID, revision_id: UUID, expected_version: int
+    ) -> PetJob:
+        with self.connect(write=True) as db:
+            self._agent(db, key)
+            source = self._pet(db, key, pet_id)
+            self._check_version(source, expected_version)
+            if source.status != "ready" or source.origin != "generated":
+                raise StorageError("Doctor needs a completed generated pet", 409)
+            existing = db.execute(
+                "SELECT data FROM pet_jobs WHERE id = ?", (str(revision_id),)
+            ).fetchone()
+            if existing is not None:
+                current = PetJob.model_validate_json(existing[0])
+                if (
+                    current.agent_key == key
+                    and current.parent_pet_id == pet_id
+                    and current.doctor
+                ):
+                    return current
+                raise StorageError("This pet job ID is already in use", 409)
+            now = utc_now()
+            revision = PetJob(
+                id=revision_id,
+                trace_parent=carrier().get("traceparent"),
+                agent_key=key,
+                prompt=source.prompt,
+                parent_pet_id=source.id,
+                doctor=True,
+                stage="Doctor queued",
+                steps=[source.steps[0]],
+                completed_steps=1,
+                rejections=[
+                    *source.rejections,
+                    *(
+                        PetRejection(step=step, reason="Doctor source frame")
+                        for step in source.steps[1:]
+                    ),
+                ],
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            self._validate_pet_assets(db, key, revision)
+            self._save_pet(db, revision)
+            return revision
+
     def get_pet(self, key: str, pet_id: UUID) -> PetJob:
         with self.connect() as db:
             self._agent(db, key)
@@ -1094,6 +1141,7 @@ class Repository:
                 raise StorageError("Completed pet steps are immutable", 409)
             if (
                 value.origin != current.origin
+                or value.doctor != current.doctor
                 or value.parent_pet_id != current.parent_pet_id
                 or value.rejections != current.rejections
             ):

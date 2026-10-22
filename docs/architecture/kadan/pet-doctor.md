@@ -1,0 +1,9 @@
+# Pet Doctor
+
+Kadan prepares scale corrections; Tsuchi owns the candidate and immutable artwork. `POST /api/agents/{key}/pets/{pet_id}/doctor` accepts a caller UUID and expected source version. Tsuchi creates a queued child of a ready generated pet, retaining its base and recording the source frames in revision history. Repeating the UUID returns the same Doctor job. The original candidate and selection remain unchanged. Imported atlases have no canonical reference and are rejected.
+
+Doctor uses the existing worker leases, cancellation and explicit resume flow. Each checked frame becomes an immutable completed step with a normalization result. Corrected steps retain their original raw artwork and record the prior prepared frame as their source, with separate correction provenance. Unchanged frames reuse their assets. Resume skips completed checks; assembly follows the normal atlas validation. No Hikari calls are needed.
+
+OpenCV SIFT matches interior visual features from the reference's central upper region against each transparent frame. Mutual descriptor matches and a robust similarity fit must have sufficient distinct spatial support and agree with local feature sizes. This estimates a shared scale without measuring the full silhouette; it does not identify anatomical landmarks. Rotation, insufficient matches, inconsistent measurements and excessive scale differences cause a skip. Corrections above a three-percent tolerance use uniform scaling about the matched body's horizontal position and the frame's existing bottom edge, preserving support or airborne height. Corrections that would clip are skipped. This preserves existing positioning rather than repairing the floor alignment. Textureless characters and changed viewpoints can remain uncorrected.
+
+See [user expectations](../../user-expectations/kadan/pet-doctor.md) for the preview and selection behavior.

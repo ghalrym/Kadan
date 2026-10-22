@@ -17,6 +17,7 @@ from tsuchi.models import (
     PetAnimation,
     PetJob,
     PetManifest,
+    PetScaleCorrection,
     PetState,
     PetStep,
     utc_now,
@@ -128,6 +129,100 @@ def ready_pet(repository):
         ),
         pet.version,
         pet.owner_id,
+    )
+
+
+def test_doctor_preserves_source_and_selection_and_retries_same_job(repository):
+    original = ready_pet(repository)
+    repository.select_pet("alpha", original.id)
+    request_id = uuid4()
+    doctor = repository.doctor_pet("alpha", original.id, request_id, original.version)
+    assert doctor.doctor
+    assert doctor.status == "queued"
+    assert doctor.parent_pet_id == original.id
+    assert doctor.steps == original.steps[:1]
+    assert [entry.step for entry in doctor.rejections] == original.steps[1:]
+    assert repository.get_pet("alpha", original.id) == original
+    assert repository.selected_pet("alpha").id == original.id
+    assert (
+        repository.doctor_pet("alpha", original.id, request_id, original.version)
+        == doctor
+    )
+    resumed = claim(repository, doctor)
+    assert resumed.doctor
+    assert (
+        repository.doctor_pet("alpha", original.id, request_id, original.version)
+        == resumed
+    )
+
+
+def test_doctor_rejects_unfinished_source_and_stale_version(repository):
+    unfinished = repository.create_pet("alpha", uuid4(), "Fox")
+    with pytest.raises(StorageError, match="completed generated"):
+        repository.doctor_pet("alpha", unfinished.id, uuid4(), unfinished.version)
+    original = ready_pet(repository)
+    with pytest.raises(StorageError):
+        repository.doctor_pet("alpha", original.id, uuid4(), original.version - 1)
+
+
+def test_doctor_cannot_be_switched_to_generation_during_resume(repository):
+    original = ready_pet(repository)
+    doctor = repository.doctor_pet("alpha", original.id, uuid4(), original.version)
+    running = claim(repository, doctor)
+    with pytest.raises(StorageError, match="history is immutable"):
+        repository.update_pet(
+            "alpha",
+            running.id,
+            state(running, doctor=False),
+            running.version,
+            running.owner_id,
+        )
+
+
+def test_doctor_retains_checked_frames_after_cancellation_and_resume(repository):
+    original = ready_pet(repository)
+    doctor = claim(
+        repository,
+        repository.doctor_pet("alpha", original.id, uuid4(), original.version),
+    )
+    checked = original.steps[1].model_copy(
+        update={
+            "normalization": PetScaleCorrection(
+                outcome="skipped", reason="Uncertain match"
+            )
+        }
+    )
+    doctor = repository.update_pet(
+        "alpha",
+        doctor.id,
+        state(doctor, steps=[*doctor.steps, checked], completed_steps=2),
+        doctor.version,
+        doctor.owner_id,
+    )
+    stopped = repository.update_pet(
+        "alpha",
+        doctor.id,
+        state(
+            doctor,
+            status="cancelled",
+            cancel_requested=True,
+            owner_id=None,
+            lease_expires_at=None,
+        ),
+        doctor.version,
+        doctor.owner_id,
+    )
+    resumed = repository.update_pet(
+        "alpha",
+        stopped.id,
+        state(stopped, status="queued", cancel_requested=False),
+        stopped.version,
+    )
+    assert resumed.doctor
+    assert resumed.steps == [original.steps[0], checked]
+    assert (
+        original.asset_references() - {original.manifest.atlas_asset_id}
+        <= resumed.asset_references()
     )
 
 

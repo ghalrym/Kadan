@@ -88,7 +88,8 @@ export interface PetManifest {
 }
 export interface PetStep {
   name: string;
-  method: "generated" | "canonical";
+  method: "generated" | "canonical" | "normalized";
+  normalization: { outcome: "corrected" | "consistent" | "skipped"; scale: number; reason: string } | null;
   source_asset_id: string | null;
   output_asset_id: string;
   raw_asset_id: string;
@@ -101,6 +102,7 @@ export interface PetStep {
   meta: string;
 }
 export interface PetJob {
+  doctor: boolean;
   id: string;
   agent_key: string;
   prompt: string;

@@ -24,6 +24,21 @@ class SelectPet(BaseModel):
     pet_id: UUID | None
 
 
+class DoctorPet(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: UUID
+    expected_version: int = Field(ge=1)
+
+
+@router.post("/api/agents/{key}/pets/{pet_id}/doctor", status_code=202)
+async def doctor_pet(
+    key: AgentKey, pet_id: UUID, value: DoctorPet, request: Request
+) -> PetJob:
+    return await request.app.state.services.pets.doctor(
+        key, pet_id, value.id, value.expected_version
+    )
+
+
 class RevisePet(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: UUID

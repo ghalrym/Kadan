@@ -10,4 +10,6 @@ Under **New pet**, describe the character and art style, then choose **Create pe
 
 For generated candidates, **Repair a frame** creates a revised candidate while keeping the other saved frames and the previous candidate. Describe the problem, regenerate, then preview before selecting the revision. Imported pets do not support frame repair. Successful generation does not guarantee consistent appearance or motion; users judge the preview.
 
+**Doctor**, beside **Use pet** or **In use**, checks a generated pet for inconsistent character size and saves a separate candidate. See [Pet Doctor](pet-doctor.md) for what it can correct and when it leaves frames unchanged.
+
 Trashing artwork used by the selected pet clears its selection. Restoring that artwork does not automatically select the pet again.
