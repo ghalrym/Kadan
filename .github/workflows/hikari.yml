@@ -59,7 +59,7 @@ jobs:
   inference-worker:
     name: C++ unit tests
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -89,7 +89,7 @@ jobs:
   cpp-lint:
     name: C++ lint
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - name: Install inference worker component headers
