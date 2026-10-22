@@ -8,6 +8,8 @@ Each agent has its own saved conversation. Drafts are kept separately in the cur
 
 Sending saves the message and queues work. Users can keep typing and send more messages while earlier work waits. Replies can be delayed by other work or model loading. The agent can finish work without sending a visible reply; errors and stopped work must remain visible.
 
+While response work is pending, Kadan shows whether it is queued or waiting for a response. When Hikari reports a language-model download or load, Kadan shows that state. These indicators refresh periodically and can lag changes. A loaded model does not prove that this prompt is being processed: Kadan does not currently receive that stage, so it shows no prompt-processing claim or estimated percentage. Downloads remain explicit actions in Hikari Settings; a progress label does not start or retry work.
+
 Saved history survives navigation and service recovery. **Show earlier messages** reveals older messages, but only a limited recent portion is available to each response. Image generation can deliver a result later in the same chat.
 
 Each response has a limit of 24 commands and a bounded context for instructions, recent messages and action results. Reaching either limit fails that response visibly rather than continuing indefinitely. Saved history and messages already delivered remain. Sending a new message starts new work and does not guarantee completion of the earlier task. A saved message can also wait for [runner availability](runner-availability.md).

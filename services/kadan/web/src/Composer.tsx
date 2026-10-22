@@ -20,7 +20,9 @@ function attention(status: Status | null) {
       hikari.state === "tier_required"
         ? "Choose a tier · notes only"
         : hikari.state === "model_required"
-          ? "Download a model · notes only"
+          ? hikari.download_state === "downloading"
+            ? "Downloading model · notes only"
+            : "Download a model · notes only"
           : "Hikari offline · notes only",
     detail: hikari.message,
     href: hikari.settings_url,

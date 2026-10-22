@@ -157,6 +157,7 @@ class LocalServices:
                     state="model_required",
                     tier=tier,
                     model_id=model.id,
+                    download_state=status,
                     context_limit=model.context_limit
                     or model.architecture_context_limit,
                     settings_url=settings_url,
@@ -167,6 +168,7 @@ class LocalServices:
                     state="unavailable",
                     tier=tier,
                     model_id=model.id,
+                    download_state=status,
                     context_limit=model.context_limit
                     or model.architecture_context_limit,
                     settings_url=settings_url,
@@ -176,6 +178,7 @@ class LocalServices:
                 state="ready",
                 tier=tier,
                 model_id=model.id,
+                download_state=status,
                 context_limit=model.context_limit or model.architecture_context_limit,
                 settings_url=settings_url,
                 message="The selected language model is downloaded. Hikari loads it when chat starts.",

@@ -48,6 +48,7 @@ export interface Status {
     message: string;
     tier: string | null;
     model_id: string | null;
+    download_state?: "not_downloaded" | "downloading" | "cancelling" | "cancelled" | "failed" | "complete" | null;
     /** Whether the selected language model is resident in Hikari; null when unknown. */
     model_state?: "unloaded" | "loading" | "ready" | "offloaded" | "unloading" | "error" | null;
     settings_url: string | null;
