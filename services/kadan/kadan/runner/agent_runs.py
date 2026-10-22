@@ -33,6 +33,7 @@ from ..api.pydantic_models.agent_runs import (
 )
 from ..api.pydantic_models.resources import Message, ResourceKind
 from ..api.run_client import RunClient
+from ..api.services import parse_resource
 from .agent_inference import (
     AgentInference,
     ToolCommand,
@@ -41,6 +42,7 @@ from .agent_inference import (
 )
 from .tools import ALL_TOOLS, CONVERSATION_TOOLS, TOOLS_BY_NAME
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
+from .tools.workspace import CreateWorkspaceDocumentArguments
 
 if TYPE_CHECKING:
     from ..api.services import LocalServices
@@ -117,12 +119,13 @@ def validate(command: ToolCommand, tools: list[StructuredTool]) -> None:
 class RunConversation:
     """The conversation tools' view of one run, at the step being executed."""
 
-    def __init__(self, runs: AgentRuns, run: AgentRun):
+    def __init__(self, runs: AgentRuns, run: AgentRun, replayed: bool = False):
         self.runs = runs
         self.run = run
         self.action_id = uuid5(run.id, f"command:{len(run.transcript)}")
         self.end_run = False
         self.finished = False
+        self.replayed = replayed
 
     async def send_message(self, args: SendMessageArguments) -> dict:
         message = Message(id=self.action_id, role="assistant", content=args.content)
@@ -171,6 +174,42 @@ class RunConversation:
 
     async def finish(self) -> None:
         self.finished = True
+
+    async def create_workspace_document(
+        self, args: CreateWorkspaceDocumentArguments
+    ) -> dict:
+        result = {"tool": "create_workspace_document"}
+        # Resource creation has no idempotency key. A saved command without a
+        # result may already have created its document before a runner restart.
+        if self.replayed:
+            return {
+                **result,
+                "error": "The runner restarted before document creation reported "
+                "a result. It may have been saved; check Workspace before retrying.",
+            }
+        async with self.runs.lock:
+            await self.runs.owned(self.run)
+            try:
+                document = parse_resource(
+                    await self.runs.services.json_request(
+                        "Tsuchi",
+                        "POST",
+                        f"/api/agents/{self.run.agent_key}/resources",
+                        json={"kind": "space", **args.model_dump(mode="json")},
+                    )
+                )
+            except ServiceError as error:
+                message = str(error)
+                if error.status >= 500:
+                    message += " The document may have been saved; check Workspace before retrying."
+                return {**result, "error": message}
+        return {
+            **result,
+            "document_id": str(document.id),
+            "title": document.title,
+            "parent_id": str(document.parent_id) if document.parent_id else None,
+            "version": document.version,
+        }
 
 
 class RunState(BaseModel):
@@ -472,7 +511,7 @@ class AgentRuns(RunClient):
         assert command is not None
         run = state.run
         tool = TOOLS_BY_NAME.get(command.tool)
-        conversation = RunConversation(self, run)
+        conversation = RunConversation(self, run, state.replayed)
         if tool is None:
             result = {"tool": command.tool, "error": "This tool no longer exists."}
         elif tool in CONVERSATION_TOOLS:

@@ -15,11 +15,12 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from kadan.api.config import ServiceError
 from kadan.api.pydantic_models.agent_runs import AgentRun, ImageJob, RunMessage
-from kadan.api.pydantic_models.resources import Message, Resource
+from kadan.api.pydantic_models.resources import Message, Resource, ResourceKind
 from kadan.runner.agent_inference import ToolCommand, tool_characters
 from kadan.runner.agent_runs import (
     MAX_CONTEXT,
     AgentRuns,
+    RunState,
     context_characters,
     transcript_messages,
 )
@@ -740,6 +741,149 @@ def test_computer_errors_become_tool_results(boundary):
     asyncio.run(boundary.controller.process(boundary.current))
     assert tool_result(boundary, -2)["error"] == "The computer is unavailable"
     assert boundary.current.status == "completed"
+
+
+@pytest.mark.parametrize("parent_id", [None, uuid4()])
+def test_workspace_creation_uses_the_run_agent_without_a_computer(boundary, parent_id):
+    document_id = uuid4()
+    saved = boundary.conversation.model_copy(
+        update={
+            "id": document_id,
+            "kind": ResourceKind.SPACE,
+            "title": "Notes",
+            "markdown": "# Plan",
+            "messages": [],
+            "parent_id": parent_id,
+        }
+    )
+    original_request = boundary.json_request
+
+    async def request(service, method, path, **kwargs):
+        if method == "POST":
+            assert (service, path, kwargs) == (
+                "Tsuchi",
+                "/api/agents/test/resources",
+                {
+                    "json": {
+                        "kind": "space",
+                        "title": "Notes",
+                        "markdown": "# Plan",
+                        "parent_id": str(parent_id) if parent_id else None,
+                    }
+                },
+            )
+            return saved.model_dump(mode="json")
+        return await original_request(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    run = boundary.start_owned()
+    asyncio.run(
+        boundary.controller.invoke_tool(
+            RunState(
+                run=run,
+                command=command(
+                    "create_workspace_document",
+                    title=" Notes ",
+                    markdown="# Plan",
+                    parent_id=parent_id,
+                ),
+            )
+        )
+    )
+    assert tool_result(boundary) == {
+        "tool": "create_workspace_document",
+        "document_id": str(document_id),
+        "title": "Notes",
+        "parent_id": str(parent_id) if parent_id else None,
+        "version": 1,
+    }
+    assert boundary.current.status == "running"
+    assert boundary.deliveries == []
+
+
+@pytest.mark.parametrize("status", [400, 404, 409, 503])
+def test_workspace_write_failure_is_reported_without_success_or_retry(boundary, status):
+    original_request = boundary.json_request
+    writes = []
+
+    async def request(service, method, path, **kwargs):
+        if method == "POST":
+            writes.append(path)
+            raise ServiceError(
+                "Parent unavailable" if status < 500 else "Timed out", status
+            )
+        return await original_request(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    asyncio.run(
+        boundary.controller.invoke_tool(
+            RunState(
+                run=boundary.start_owned(),
+                command=command(
+                    "create_workspace_document", title="Notes", parent_id=uuid4()
+                ),
+            )
+        )
+    )
+    result = tool_result(boundary)
+    assert "document_id" not in result
+    assert ("may have been saved" in result["error"]) is (status >= 500)
+    assert len(writes) == 1
+
+
+def test_restart_does_not_repeat_an_unconfirmed_workspace_write(boundary):
+    original_request = boundary.json_request
+
+    async def request(service, method, path, **kwargs):
+        assert method != "POST"
+        return await original_request(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    asyncio.run(
+        boundary.controller.invoke_tool(
+            RunState(
+                run=boundary.start_owned(),
+                command=command("create_workspace_document", title="Notes"),
+                replayed=True,
+            )
+        )
+    )
+    assert "check Workspace before retrying" in tool_result(boundary)["error"]
+    assert "document_id" not in tool_result(boundary)
+
+
+def test_cancelled_run_cannot_create_a_workspace_document(boundary):
+    run = boundary.start_owned()
+    boundary.cancel()
+    with pytest.raises(ServiceError, match="no longer owned"):
+        asyncio.run(
+            boundary.controller.invoke_tool(
+                RunState(
+                    run=run, command=command("create_workspace_document", title="Notes")
+                )
+            )
+        )
+
+
+def test_invalid_workspace_response_is_an_uncertain_write(boundary):
+    original_request = boundary.json_request
+
+    async def request(service, method, path, **kwargs):
+        if method == "POST":
+            return {"id": str(uuid4())}
+        return await original_request(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    asyncio.run(
+        boundary.controller.invoke_tool(
+            RunState(
+                run=boundary.start_owned(),
+                command=command("create_workspace_document", title="Notes"),
+            )
+        )
+    )
+    assert "may have been saved" in tool_result(boundary)["error"]
+    assert "document_id" not in tool_result(boundary)
 
 
 @pytest.mark.parametrize(
