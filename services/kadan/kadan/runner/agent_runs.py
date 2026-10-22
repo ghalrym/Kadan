@@ -48,10 +48,13 @@ from .tools.workspace import (
     CreateWorkspaceDocumentArguments,
     ListWorkspaceDocumentsArguments,
     ReadWorkspaceDocumentArguments,
+    ReadWorkspaceFileArguments,
+    SaveWorkspaceFileArguments,
     UpdateProjectArguments,
     UpdateWorkspaceDocumentArguments,
 )
 from .workspace import AgentWorkspace, ProjectStatus, document_content
+from .workspace_files import WorkspaceFiles
 
 if TYPE_CHECKING:
     from ..api.services import LocalServices
@@ -183,6 +186,41 @@ class RunConversation:
 
     async def finish(self) -> None:
         self.finished = True
+
+    async def save_workspace_file(self, args: SaveWorkspaceFileArguments) -> dict:
+        result = {"tool": "save_workspace_file", "file_id": str(self.action_id)}
+        files = WorkspaceFiles(self.runs.services, self.run.agent_key)
+        try:
+            saved = await files.save(
+                self.action_id,
+                args.path,
+                args.title,
+                lambda: self.runs.owned(self.run),
+                replayed=self.replayed,
+            )
+        except ServiceError as error:
+            return {**result, "error": str(error)}
+        except OSError as error:
+            return {
+                **result,
+                "error": "The file transfer could not be confirmed. Check this file_id "
+                "with read_workspace_file before retrying. " + str(error),
+            }
+        return {**result, **saved}
+
+    async def read_workspace_file(self, args: ReadWorkspaceFileArguments) -> dict:
+        await self.runs.owned(self.run)
+        try:
+            saved = await WorkspaceFiles(self.runs.services, self.run.agent_key).read(
+                args.file_id
+            )
+        except ServiceError as error:
+            return {
+                "tool": "read_workspace_file",
+                "file_id": str(args.file_id),
+                "error": str(error),
+            }
+        return {"tool": "read_workspace_file", **saved}
 
     async def workspace_operation(
         self,

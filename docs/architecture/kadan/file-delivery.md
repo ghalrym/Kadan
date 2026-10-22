@@ -1,0 +1,11 @@
+# Workspace file delivery
+
+`save_workspace_file` is a conversation tool because the run owns its destination and durable action identity. `RunConversation` derives the asset ID from the persisted command position, supplies the current agent namespace, and checks ownership before downloading and immediately before uploading. Transfers do not hold the runner mutation lock, allowing lease renewal while bytes move. Cancellation after the upload starts cannot revoke a committed file.
+
+`SandboxClient.download_file` streams the pinned sandbox's `/v1/file/download` response into a caller-owned temporary file with `change_policy=abort`. It bounds chunks, total time and bytes, hashes the complete download, and rejects failed, partial or length-mismatched responses. The limit is 100 MiB. The pinned sandbox contract promises raw bytes and source-change abortion but does not promise a length header; midstream change detection ultimately depends on that service. Temporary files and HTTP responses are closed on errors and cancellation.
+
+`WorkspaceFiles` posts the seekable file as multipart data through Tsuchi's existing asset upload. Tsuchi independently limits, hashes and classifies the bytes. Kadan checks the returned namespace, ID, filename, size, hash and active state before confirming the save. The source basename becomes display metadata; it is not a storage path. No schema or storage endpoint changes are needed.
+
+After a restart, the same command reads its deterministic asset ID. It can confirm an existing active record without rereading the source. Missing, trashed or unavailable records produce uncertainty rather than another upload. `read_workspace_file` lets the agent check an uncertain outcome later and returns metadata plus the existing Kadan asset-download URL; it does not expose file contents to the text model. A new command has a new action ID and therefore creates a separate copy.
+
+The pinned API contract is documented in the [sandbox 1.11.0 OpenAPI](https://github.com/agent-infra/sandbox/blob/v1.11.0/website/docs/public/v1/openapi.json). Existing sandbox authorization is reused. The shared computer remains shared; the agent namespace scopes the stored destination, not its source filesystem. See [File delivery expectations](../../user-expectations/kadan/file-delivery.md).

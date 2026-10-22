@@ -18,6 +18,7 @@ Saved work can continue after the browser closes. A queued message does not prom
 | [Pets](pets.md) | Create, import, preview, repair and explicitly select animated pets. |
 | [Voice input](voice-input.md) | Transcribe an utterance into an editable message draft. |
 | [Voice calls](voice-calls.md) | Have a separate spoken conversation with interruption and playback controls. |
+| [File delivery](file-delivery.md) | Ask an agent to save a computer file into Workspace and share its download link. |
 | [Workspace](workspace.md) | Browse memories, Spaces and files without automatically adding them to chat context. |
 | [Service status](service-status.md) | Distinguish storage access, inference readiness and model setup needs. |
 | [Runner availability](runner-availability.md) | Understand assignment capacity, queued work and recovery after a runner stops. |
