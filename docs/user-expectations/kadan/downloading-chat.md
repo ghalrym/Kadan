@@ -1,6 +1,6 @@
 # Downloading chat
 
-Kadan's **Download saved chat as Markdown** button downloads a readable snapshot of the open conversation. It includes all saved messages loaded in Kadan, including older messages behind **Show earlier messages**, with their roles, saved timestamps and Markdown text. The file identifies the agent, conversation and saved snapshot.
+Kadan's **Download saved chat as Markdown** button downloads a readable snapshot of the open conversation. It includes all saved messages loaded in Kadan, including older messages behind **Show earlier messages**, with their roles, saved timestamps and Markdown text. Each message's text appears in a quote block beneath its role and timestamp. The file identifies the agent, conversation and saved snapshot.
 
 Drafts, unsent or still-sending messages, live work indicators and retired tool logs are excluded. The button is disabled when there are no saved messages. Downloading requires no model or inference. If updates are unavailable, the snapshot can be older than the latest saved conversation; reload successfully before downloading when freshness matters. Later messages require another download.
 

@@ -26,7 +26,9 @@ export function conversationMarkdown(chain: Resource, agentName: string, origin:
     "This snapshot contains saved messages loaded in Kadan. Later messages and unsent drafts are not included. File links require access to the original Kadan installation; file contents are not included.",
   ];
   for (const message of chain.messages.filter((item): item is Message & { role: keyof typeof roles } => item.role !== "tool")) {
-    lines.push("", "---", "", `## ${roles[message.role]} · ${label(message.created_at)}`, "", message.content);
+    // A quote container keeps unfinished Markdown fences inside this message.
+    const body = message.content.split(/\r\n?|\n/).map((line) => `> ${line}`).join("\n");
+    lines.push("", "---", "", `## ${roles[message.role]} · ${label(message.created_at)}`, "", body);
     for (const id of message.attachment_ids) {
       const path = `/api/agents/${encodeURIComponent(chain.agent_key)}/assets/${encodeURIComponent(id)}/content?download=true`;
       lines.push("", `Attachment: [${label(id)}](<${new URL(path, origin).href}>)`);

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import ReactMarkdown from "react-markdown";
 import { conversationMarkdown } from "./chatExport.ts";
 
 const message = (role, content, extra = {}) => ({
@@ -12,7 +15,7 @@ const chain = (messages) => ({
   markdown: "Hidden resource text", attachment_ids: ["not-a-message-attachment"],
 });
 
-test("exports all saved visible messages in order, with exact Markdown and saved timestamps", () => {
+test("exports all saved visible messages in order, with quoted Markdown and saved timestamps", () => {
   const messages = Array.from({ length: 205 }, (_, index) => message(index % 2 ? "assistant" : "user", `Message ${index}`));
   messages[1].content = "```js\nconst greeting = 'こんにちは';\n```\n\n**Saved text**";
   messages.push(message("system", "Visible system message"));
@@ -20,11 +23,11 @@ test("exports all saved visible messages in order, with exact Markdown and saved
   assert.match(result, /^# Chat with Haru\n/);
   assert.match(result, /Conversation: A saved chat \(conversation-id\)/);
   assert.match(result, /Saved snapshot: 2026-10-23T11:00:00Z · version 7/);
-  assert.match(result, /## User · 2026-10-23T10:11:12Z\n\nMessage 0/);
+  assert.match(result, /## User · 2026-10-23T10:11:12Z\n\n> Message 0/);
   assert.match(result, /## Assistant · 2026-10-23T10:11:12Z/);
-  assert.ok(result.includes(messages[1].content));
+  assert.ok(result.includes("> ```js\n> const greeting = 'こんにちは';\n> ```\n> \n> **Saved text**"));
   assert.ok(result.indexOf("Message 0") < result.indexOf("Message 204"));
-  assert.match(result, /## System · 2026-10-23T10:11:12Z\n\nVisible system message/);
+  assert.match(result, /## System · 2026-10-23T10:11:12Z\n\n> Visible system message/);
   assert.equal(result.match(/^## /gm).length, 206);
 });
 
@@ -64,3 +67,20 @@ test("keeps supported source links, escapes labels and omits unsupported link pa
   assert.ok(!result.includes("PRIVATE_BYTES"));
   assert.ok(!result.includes("file:///private/file"));
 });
+
+for (const fence of ["```", "~~~"]) {
+  test(`an unclosed ${fence} fence stays inside its message when the snapshot renders`, () => {
+    const result = conversationMarkdown(chain([
+      message("user", `Before code\n\n${fence}js\nunfinished()\n\nstillCode()`, { attachment_ids: ["first-file"] }),
+      message("assistant", "**Next reply**", { attachment_ids: ["next-file"] }),
+    ]), "Haru", "https://kadan.example");
+    const html = renderToStaticMarkup(createElement(ReactMarkdown, { children: result }));
+    assert.match(html, /<h2>User · 2026-10-23T10:11:12Z<\/h2>/);
+    assert.match(html, /<h2>Assistant · 2026-10-23T10:11:12Z<\/h2>/);
+    assert.match(html, /<strong>Next reply<\/strong>/);
+    assert.match(html, /<code class="language-js">unfinished\(\)\n\nstillCode\(\)\n<\/code>/);
+    for (const id of ["first-file", "next-file"]) {
+      assert.ok(html.includes(`<a href="https://kadan.example/api/agents/haru/assets/${id}/content?download=true">${id}</a>`));
+    }
+  });
+}
