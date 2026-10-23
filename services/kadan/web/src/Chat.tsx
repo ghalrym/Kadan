@@ -11,7 +11,7 @@ import { useAgentPet } from "./PetContext";
 import { agentPath, api } from "./api";
 import type { PetState } from "./pet";
 import type { AgentRun, Asset, ImageJob, Message, Resource, RunSnapshot, Status } from "./types";
-import { activeRun, cancellableImage, imageStatus, isImageAsset, latestConversation } from "./agentRuns";
+import { activeRun, cancellableImage, imageStatus, isImageAsset, latestConversation, responseProgress } from "./agentRuns";
 import { randomUuid } from "./uuid";
 import { confirmSend, queueSend, readPending, type PendingMessage } from "./outbox";
 
@@ -130,8 +130,8 @@ export default function Chat({
     !ready.chat || sending || blocked || dictating,
   );
   // Hikari loads the model on demand; the first reply waits for it without a deadline.
-  const modelLoading = generating && status?.hikari.model_state === "loading";
-  // The agent has read the message once Hikari is working on it, and types until the reply lands.
+  const modelLoading = generating && status?.hikari.state === "ready" && status.hikari.model_state === "loading";
+  const progress = responseProgress(runs, status?.hikari);
   const typing = runs.some((run) => run.status === "running") && !modelLoading;
   const [mood, react] = useMood(
     !status
@@ -451,16 +451,15 @@ export default function Chat({
             );
           })}
           {typing && (
-            <div className="typing" role="status">
-              <span className="sr-only">{agentName} is typing</span>
+            <div className="typing" aria-hidden="true">
               <i />
               <i />
               <i />
             </div>
           )}
-          {modelLoading && (
+          {progress && (
             <p className="notice" role="status">
-              {agentName} is waking up. Loading the model can take a few minutes.
+              {progress}
             </p>
           )}
           {notice && !sending && (

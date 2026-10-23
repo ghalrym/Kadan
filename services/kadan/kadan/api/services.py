@@ -80,6 +80,55 @@ class LocalServices:
         )
         return parse_resource(value)
 
+    async def list_resource_kinds(
+        self,
+        key: str,
+        kinds: tuple[ResourceKind, ...],
+        *,
+        q: str = "",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Resource]:
+        values = await self.json_request(
+            "Tsuchi",
+            "GET",
+            f"/api/agents/{key}/resources",
+            params={
+                "kinds": [kind.value for kind in kinds],
+                "q": q,
+                "limit": limit,
+                "offset": offset,
+                "trash": "false",
+            },
+        )
+        if not isinstance(values, list):
+            raise ServiceError(
+                "Tsuchi returned an invalid collection.", 502, "invalid_response"
+            )
+        resources = [parse_resource(value) for value in values]
+        if any(
+            resource.agent_key != key
+            or resource.kind not in kinds
+            or resource.deleted_at is not None
+            for resource in resources
+        ):
+            raise ServiceError(
+                "Tsuchi returned an invalid collection.", 502, "invalid_response"
+            )
+        return resources
+
+    async def resource_of_kinds(
+        self, key: str, resource_id: UUID, kinds: tuple[ResourceKind, ...]
+    ) -> Resource:
+        resource = await self.resource(key, resource_id)
+        if resource.agent_key != key or resource.id != resource_id:
+            raise ServiceError(
+                "Tsuchi returned an invalid resource.", 502, "invalid_response"
+            )
+        if resource.kind not in kinds or resource.deleted_at is not None:
+            raise ServiceError("Record not found in this collection.", 404, "not_found")
+        return resource
+
     async def chain(self, key: str) -> Resource:
         # Tsuchi assigns resource IDs, so serialize first use to create one chain.
         async with self.chain_locks.setdefault(key, asyncio.Lock()):
@@ -157,6 +206,7 @@ class LocalServices:
                     state="model_required",
                     tier=tier,
                     model_id=model.id,
+                    download_state=status,
                     context_limit=model.context_limit
                     or model.architecture_context_limit,
                     settings_url=settings_url,
@@ -167,6 +217,7 @@ class LocalServices:
                     state="unavailable",
                     tier=tier,
                     model_id=model.id,
+                    download_state=status,
                     context_limit=model.context_limit
                     or model.architecture_context_limit,
                     settings_url=settings_url,
@@ -176,6 +227,7 @@ class LocalServices:
                 state="ready",
                 tier=tier,
                 model_id=model.id,
+                download_state=status,
                 context_limit=model.context_limit or model.architecture_context_limit,
                 settings_url=settings_url,
                 message="The selected language model is downloaded. Hikari loads it when chat starts.",

@@ -24,6 +24,7 @@ from .models import (
     Model,
     PetJob,
     PetManifest,
+    PetReferenceMode,
     PetState,
     Resource,
     ResourceInput,
@@ -42,6 +43,7 @@ from .services import FileStorage, inline_media, safe_filename
 class PetCreate(Model):
     id: UUID
     prompt: str = Field(min_length=1, max_length=10000)
+    reference_mode: PetReferenceMode = "single_image"
 
     @field_validator("prompt")
     @classmethod
@@ -266,7 +268,7 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
 
     @router.post("/agents/{key}/pets", response_model=PetJob, status_code=201)
     def create_pet(key: AgentKey, value: PetCreate):
-        return repository.create_pet(key, value.id, value.prompt)
+        return repository.create_pet(key, value.id, value.prompt, value.reference_mode)
 
     @router.post("/agents/{key}/pets/imports", response_model=PetJob, status_code=201)
     def import_pet(key: AgentKey, value: PetImport):
@@ -322,8 +324,11 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         trash: bool = False,
         limit: Annotated[int, Query(ge=1, le=200)] = 100,
         offset: Annotated[int, Query(ge=0)] = 0,
+        kinds: Annotated[list[ResourceKind] | None, Query()] = None,
     ):
-        return repository.list_resources(key, kind, q, trash, limit, offset)
+        return repository.list_resources(
+            key, kind, q, trash, limit, offset, kinds=kinds
+        )
 
     @router.post("/agents/{key}/resources", response_model=Resource, status_code=201)
     def create_resource(key: AgentKey, value: ResourceInput):

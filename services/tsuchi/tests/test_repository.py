@@ -14,6 +14,7 @@ from tsuchi.models import (
     ExportManifest,
     MarkdownContent,
     Message,
+    ResourceKind,
     ResourceRecord,
     Slide,
     resource_input_adapter,
@@ -346,3 +347,59 @@ def test_stats_count_retained_bytes_and_separate_trash(repository):
     assert stats.trashed_resources == stats.trashed_assets == 1
     assert stats.storage_bytes == 3
     assert stats.revisions == 2
+
+
+def test_document_kinds_filter_before_pagination_and_keep_namespace(repository):
+    root = repository.create_resource(
+        "alpha", MarkdownContent(kind="space", title="Match root")
+    )
+    child = repository.create_resource(
+        "alpha", MarkdownContent(kind="space", title="Match child", parent_id=root.id)
+    )
+    deck = repository.create_resource(
+        "alpha", DeckContent(kind="deck", title="Match deck", deck=Deck())
+    )
+    memory = repository.create_resource(
+        "alpha", MarkdownContent(kind="memory", title="Match memory", parent_id=root.id)
+    )
+    repository.create_resource(
+        "alpha", MarkdownContent(kind="persona", title="Match persona")
+    )
+    repository.create_resource(
+        "beta", MarkdownContent(kind="space", title="Match other agent")
+    )
+    trashed = repository.create_resource(
+        "alpha", MarkdownContent(kind="space", title="Match trashed")
+    )
+    repository.trash_resource("alpha", trashed.id, trashed.version)
+    kinds = [ResourceKind.SPACE, ResourceKind.DECK]
+    documents = repository.list_resources("alpha", query="Match", kinds=kinds)
+    assert {item.id for item in documents} == {root.id, child.id, deck.id}
+    pages = [
+        repository.list_resources(
+            "alpha", query="Match", kinds=kinds, limit=1, offset=offset
+        )[0]
+        for offset in range(3)
+    ]
+    assert pages == documents
+    assert repository.list_resources("alpha", query="memory", kinds=kinds) == []
+    assert repository.list_resources("alpha", offset=3, kinds=kinds) == []
+    assert repository.get_resource("alpha", memory.id) == memory
+    assert repository.versions("alpha", memory.id)[0].snapshot == memory
+    assert repository.get_resource("alpha", child.id).parent_id == root.id
+
+
+def test_kind_filters_intersect_and_empty_kind_selection_is_empty(repository):
+    saved = repository.create_resource(
+        "alpha", MarkdownContent(kind="memory", title="Remember")
+    )
+    assert repository.list_resources("alpha", kinds=[]) == []
+    assert (
+        repository.list_resources(
+            "alpha", kind=ResourceKind.MEMORY, kinds=[ResourceKind.SPACE]
+        )
+        == []
+    )
+    assert repository.list_resources(
+        "alpha", kind=ResourceKind.MEMORY, kinds=[ResourceKind.MEMORY]
+    ) == [saved]

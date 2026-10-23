@@ -24,7 +24,7 @@ from kadan.runner.agent_runs import (
     context_characters,
     transcript_messages,
 )
-from kadan.runner.tools import ALL_TOOLS, CONVERSATION_TOOLS
+from kadan.runner.tools import ALL_TOOLS, CONVERSATION_TOOLS, MEMORY_TOOLS
 
 
 class Boundary:
@@ -695,7 +695,7 @@ def test_every_conversation_and_computer_tool_is_bound(boundary):
     boundary.controller.inference = Commands(finish())
     asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.controller.inference.tools == [
-        [tool.name for tool in CONVERSATION_TOOLS]
+        [tool.name for tool in [*CONVERSATION_TOOLS, *MEMORY_TOOLS]]
     ]
 
     boundary.sandbox = Computer()
@@ -950,7 +950,7 @@ def test_transcript_budget_leaves_room_for_the_bound_tools(boundary):
     status = SimpleNamespace(context_limit=65536)
     assert boundary.controller.transcript_limit(status) == context_characters(
         65536
-    ) - tool_characters(CONVERSATION_TOOLS)
+    ) - tool_characters([*CONVERSATION_TOOLS, *MEMORY_TOOLS])
     boundary.controller.services.sandbox.configured = True
     assert boundary.controller.transcript_limit(status) == context_characters(
         65536

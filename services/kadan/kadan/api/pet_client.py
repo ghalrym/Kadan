@@ -12,7 +12,13 @@ from pydantic import TypeAdapter, ValidationError
 
 from .config import ServiceError
 from .pet_artwork import ROWS
-from .pydantic_models.pets import PetAsset, PetJob, PetManifest, PetState
+from .pydantic_models.pets import (
+    PetAsset,
+    PetJob,
+    PetManifest,
+    PetReferenceMode,
+    PetState,
+)
 from .pydantic_models.resources import AgentKey
 
 if TYPE_CHECKING:
@@ -58,9 +64,22 @@ class PetClient:
         values = await self.services.json_request("Tsuchi", "GET", self.path(key))
         return [self.checked(value, key) for value in values]
 
-    async def create(self, key: str, pet_id: UUID, prompt: str) -> PetJob:
+    async def create(
+        self,
+        key: str,
+        pet_id: UUID,
+        prompt: str,
+        reference_mode: PetReferenceMode = "single_image",
+    ) -> PetJob:
         value = await self.services.json_request(
-            "Tsuchi", "POST", self.path(key), json={"id": str(pet_id), "prompt": prompt}
+            "Tsuchi",
+            "POST",
+            self.path(key),
+            json={
+                "id": str(pet_id),
+                "prompt": prompt,
+                "reference_mode": reference_mode,
+            },
         )
         job = self.checked(value, key, pet_id)
         return job
