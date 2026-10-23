@@ -117,7 +117,8 @@ class InferenceService:
                 raise InferenceFailure(
                     "A download is already queued for this model.", 409
                 )
-        self.downloads[model_id] = DownloadObservation()
+        observation = DownloadObservation()
+        self.downloads[model_id] = observation
         try:
             _, completion = await self._submit(
                 DownloadTask(
@@ -131,7 +132,18 @@ class InferenceService:
                 status="failed", error="Download was not queued"
             )
             raise
-        completion.add_done_callback(self._background_finished)
+
+        def finished(task):
+            error = None if task.cancelled() else task.exception()
+            # Keep a late failure attached to this download, not a newer retry.
+            if error is not None and observation.status in (
+                "downloading",
+                "cancelling",
+            ):
+                observation.status, observation.error = "failed", str(error)
+            self._background_finished(task)
+
+        completion.add_done_callback(finished)
         return self.models_status()
 
     async def cancel_download(self, model_id: str):
