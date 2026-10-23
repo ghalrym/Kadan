@@ -10,6 +10,7 @@ from tsuchi.models import (
     Asset,
     ConversationContent,
     ImageJobState,
+    MarkdownContent,
     Message,
     RunMessage,
     utc_now,
@@ -188,6 +189,59 @@ def test_enqueue_conflict_does_not_append_or_create_run(repository):
         repository.create_run("alpha", resource.id, message(), resource.version)
     assert len(repository.get_resource("alpha", resource.id).messages) == 1
     assert repository.active_runs() == []
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "cancelled"])
+def test_trashed_conversation_runs_leave_dispatch_until_restored(repository, status):
+    older = enqueue(repository)
+    if status == "running":
+        older = claim(repository, older)
+        older = repository.update_run(
+            "alpha",
+            older.id,
+            run_state(
+                older,
+                transcript=[RunMessage(role="assistant", content="Saved command")],
+            ),
+            older.version,
+            older.owner_id,
+        )
+    elif status == "cancelled":
+        older = repository.cancel_run("alpha", older.id)
+    resource = repository.get_resource("alpha", older.conversation_id)
+    trashed = repository.trash_resource("alpha", resource.id, resource.version)
+    newer = enqueue(repository)
+
+    assert repository.active_runs() == [newer]
+    assert repository.get_run("alpha", older.id) == older
+    repository.restore_resource("alpha", resource.id, trashed.version)
+    assert repository.active_runs() == (
+        [newer] if status == "cancelled" else [older, newer]
+    )
+    assert repository.get_run("alpha", older.id) == older
+
+
+@pytest.mark.parametrize("parent", ["other_agent", "memory"])
+def test_dispatch_requires_an_active_conversation_in_the_run_namespace(
+    repository, parent
+):
+    run = enqueue(repository)
+    invalid_parent = (
+        conversation(repository, "beta")
+        if parent == "other_agent"
+        else repository.create_resource(
+            "alpha", MarkdownContent(kind="memory", title="Not a conversation")
+        )
+    )
+    invalid = run.model_copy(update={"conversation_id": invalid_parent.id})
+    # Represent an invalid stored reference; normal enqueue rejects these parents.
+    with repository.connect(write=True) as db:
+        db.execute(
+            "UPDATE agent_runs SET conversation_id = ?, data = ? WHERE id = ?",
+            (str(invalid_parent.id), invalid.model_dump_json(), str(run.id)),
+        )
+    assert repository.active_runs() == []
+    assert repository.get_run("alpha", run.id) == invalid
 
 
 def test_run_id_cannot_be_reused_with_different_input(repository):

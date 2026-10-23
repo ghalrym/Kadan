@@ -470,7 +470,10 @@ class Repository:
                 (
                     AgentRun.model_validate_json(row[0])
                     for row in db.execute(
-                        "SELECT data FROM agent_runs WHERE status IN ('queued', 'running')"
+                        "SELECT r.data FROM agent_runs r JOIN resources c "
+                        "ON c.id = r.conversation_id AND c.agent_key = r.agent_key "
+                        "WHERE r.status IN ('queued', 'running') "
+                        "AND c.kind = 'conversation' AND c.deleted = 0"
                     )
                 ),
                 key=lambda run: (run.created_at, run.id),
