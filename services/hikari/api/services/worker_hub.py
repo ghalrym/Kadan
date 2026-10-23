@@ -584,7 +584,13 @@ class WorkerHub:
             if worker is not None:
                 try:
                     await worker.send({"id": job_id, "command": "cancel"})
-                except (InferenceFailure, RuntimeError, OSError, TimeoutError) as error:
+                except (
+                    InferenceFailure,
+                    RuntimeError,
+                    OSError,
+                    TimeoutError,
+                    WebSocketDisconnect,
+                ) as error:
                     send_error = send_error or error
         if send_error is not None:
             raise send_error
@@ -600,7 +606,13 @@ class WorkerHub:
         if not job.result.done():
             try:
                 await self.cancel(job.request.id)
-            except (InferenceFailure, RuntimeError, OSError, TimeoutError):
+            except (
+                InferenceFailure,
+                RuntimeError,
+                OSError,
+                TimeoutError,
+                WebSocketDisconnect,
+            ):
                 # A failed send does not confirm cleanup; wait for an end or disconnect.
                 pass
         with suppress(Exception):

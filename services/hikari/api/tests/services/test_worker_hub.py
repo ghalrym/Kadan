@@ -1348,6 +1348,30 @@ class CancellationHandoffTests(CancellationTestCase):
             self.event(worker, job, "cancelled")
         self.assert_cancelled(job)
 
+    async def test_send_disconnect_cancels_remaining_store_workers_and_joins(self):
+        self.add_worker("first")
+        self.add_worker("second", "image")
+        job = await self.add_job(request=self.store_request())
+        first, second = [self.hub.workers[worker_id] for worker_id in job.machines]
+        with patch.object(first, "send", side_effect=WebSocketDisconnect(1006)):
+            cancellation = asyncio.create_task(self.hub.cancel_and_join(job))
+            try:
+                for _ in range(20):
+                    await asyncio.sleep(0)
+                self.assertEqual(len(second.websocket.commands("cancel")), 1)
+                self.assertFalse(cancellation.done() or job.result.done())
+                self.assertEqual(job.machines, {first.id, second.id})
+                await self.hub._disconnected(first)
+                self.assertFalse(cancellation.done() or job.result.done())
+                self.assertEqual(job.machines, {second.id})
+                self.event(second, job, "cancelled")
+                await cancellation
+                self.assert_cancelled(job)
+            finally:
+                for worker_id in tuple(job.machines):
+                    self.event(self.hub.workers[worker_id], job, "cancelled")
+                await asyncio.gather(cancellation, return_exceptions=True)
+
 
 class SubmissionOwnershipTests(CancellationTestCase):
     def register_job(self, request=None):
