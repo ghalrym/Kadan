@@ -11,6 +11,7 @@ from . import (
     file,
     jupyter,
     mcp,
+    memory,
     nodejs,
     proxy,
     sandbox,
@@ -20,6 +21,7 @@ from . import (
 )
 
 CONVERSATION_TOOLS: list[StructuredTool] = conversation.TOOLS
+MEMORY_TOOLS: list[StructuredTool] = memory.TOOLS
 COMPUTER_TOOLS: list[StructuredTool] = [
     *browser.TOOLS,
     *shell.TOOLS,
@@ -35,5 +37,5 @@ COMPUTER_TOOLS: list[StructuredTool] = [
     *display.TOOLS,
     *util.TOOLS,
 ]
-ALL_TOOLS = [*CONVERSATION_TOOLS, *COMPUTER_TOOLS]
+ALL_TOOLS = [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *COMPUTER_TOOLS]
 TOOLS_BY_NAME = {tool.name: tool for tool in ALL_TOOLS}
