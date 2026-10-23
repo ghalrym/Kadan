@@ -886,6 +886,21 @@ class Repository:
             ),
         )
 
+    @staticmethod
+    def _require_no_other_active_pet(
+        db: sqlite3.Connection, key: str, pet_id: UUID
+    ) -> None:
+        if db.execute(
+            "SELECT 1 FROM pet_jobs WHERE agent_key = ? AND id != ? "
+            "AND status IN ('queued', 'running', 'cancelling') LIMIT 1",
+            (key, str(pet_id)),
+        ).fetchone():
+            raise StorageError(
+                "Another pet creation or repair is active for this agent. "
+                "Wait for it to finish or cancel it first.",
+                409,
+            )
+
     def create_pet(
         self,
         key: str,
@@ -920,6 +935,7 @@ class Repository:
                 ):
                     return current
                 raise StorageError("This pet job ID is already in use", 409)
+            self._require_no_other_active_pet(db, key, pet_id)
             self._save_pet(db, pet)
         return pet
 
@@ -1009,6 +1025,7 @@ class Repository:
                 ):
                     return current
                 raise StorageError("This pet job ID is already in use", 409)
+            self._require_no_other_active_pet(db, key, revision_id)
             now = utc_now()
             steps = [step for step in source.steps if step.name not in rejected_names]
             revision = PetJob(
@@ -1105,6 +1122,8 @@ class Repository:
             }
             if value.status not in transitions[current.status]:
                 raise StorageError("Invalid pet job state transition", 409)
+            if value.status == "queued":
+                self._require_no_other_active_pet(db, key, pet_id)
             updated_steps = {step.name: step for step in value.steps}
             if any(updated_steps.get(step.name) != step for step in current.steps):
                 raise StorageError("Completed pet steps are immutable", 409)
