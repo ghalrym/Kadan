@@ -53,6 +53,8 @@ class Workspace(Protocol):
 
     async def open_workspace_file(self, args: OpenWorkspaceFileArguments) -> dict: ...
 
+    async def list_workspace_files(self, args: ListWorkspaceFilesArguments) -> dict: ...
+
 
 class ListWorkspaceDocumentsArguments(Arguments):
     query: str = Field(default="", max_length=500)
@@ -190,6 +192,17 @@ class ReadWorkspaceFileArguments(Arguments):
     file_id: UUID
 
 
+class ListWorkspaceFilesArguments(Arguments):
+    query: str = Field(default="", max_length=500)
+    limit: int = Field(default=20, ge=1, le=50)
+    offset: int = Field(default=0, ge=0)
+
+    @field_validator("query")
+    @classmethod
+    def strip_query(cls, value: str) -> str:
+        return value.strip()
+
+
 class OpenWorkspaceFileArguments(Arguments):
     file_id: UUID
 
@@ -221,6 +234,22 @@ async def read_workspace_file(
 
 
 @conversation_tool
+async def list_workspace_files(
+    args: ListWorkspaceFilesArguments, conversation: Workspace
+) -> dict:
+    """List or search this agent's active file metadata, newest update first, then ID.
+
+    Optional query requires all whitespace-separated tokens to match
+    case-insensitive substrings in title, filename, tags or source labels/URLs.
+    Never searches contents or meaning; empty files means no metadata matches.
+    Names can repeat; choose by file_id, then read_workspace_file or
+    open_workspace_file. Continue with next_offset and the same query/limit;
+    null ends paging. Concurrent edits can shift pages. No file bytes.
+    """
+    return await conversation.list_workspace_files(args)
+
+
+@conversation_tool
 async def open_workspace_file(
     args: OpenWorkspaceFileArguments, conversation: Workspace
 ) -> dict:
@@ -244,5 +273,6 @@ TOOLS = [
     update_project,
     save_workspace_file,
     read_workspace_file,
+    list_workspace_files,
     open_workspace_file,
 ]
