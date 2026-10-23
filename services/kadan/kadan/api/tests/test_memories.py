@@ -84,6 +84,51 @@ def test_list_searches_only_active_agent_memories_before_pagination():
     }
 
 
+def test_empty_memory_list_is_a_successful_search_without_matches():
+    result = call(
+        lambda request: httpx.Response(200, json=[]),
+        lambda memories: memories.list("missing", 2, 4),
+    )
+    assert result == {"memories": [], "limit": 2, "offset": 4}
+
+
+@pytest.mark.parametrize("rows", [None, {}, {"memories": []}, "", "unavailable"])
+def test_memory_list_rejects_invalid_collection_shapes(rows):
+    with pytest.raises(ServiceError) as error:
+        call(
+            lambda request: httpx.Response(200, content=json.dumps(rows)),
+            lambda memories: memories.list("concise", 2, 4),
+        )
+    assert error.value.status == 502
+    assert error.value.code == "invalid_response"
+    assert str(error.value) == "Tsuchi returned an invalid collection."
+
+
+@pytest.mark.parametrize(
+    "rows, expected",
+    [
+        ([], {"memories": [], "limit": 20, "offset": 0}),
+        (None, {"error": "Tsuchi returned an invalid collection."}),
+        ({}, {"error": "Tsuchi returned an invalid collection."}),
+        ("", {"error": "Tsuchi returned an invalid collection."}),
+    ],
+)
+def test_runner_memory_list_returns_invalid_collection_errors_without_false_matches(
+    rows, expected
+):
+    controller = object.__new__(AgentRuns)
+    controller.services = SimpleNamespace(json_request=AsyncMock(return_value=rows))
+    tool = next(tool for tool in MEMORY_TOOLS if tool.name == "list_memories")
+    command = ToolCommand(tool=tool.name, arguments={})
+
+    result = asyncio.run(
+        controller.use_memory(tool, command, SimpleNamespace(agent_key="alpha"), False)
+    )
+
+    assert result == expected
+    controller.services.json_request.assert_awaited_once()
+
+
 def test_read_returns_content_and_version_for_updates():
     def storage(request):
         assert request.url.path == f"/api/agents/alpha/resources/{MEMORY_ID}"
