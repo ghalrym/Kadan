@@ -93,6 +93,7 @@ class InferenceJob:
         self.tracing = None
         self.request = request
         self.sent = False
+        self.cancel_requested = False
         self.state = JobState.QUEUED
         self.accepted = asyncio.get_running_loop().create_future()
         self.result = asyncio.get_running_loop().create_future()

@@ -413,6 +413,13 @@ class WorkerHub:
             if job is None:
                 continue
             job.machines.discard(worker.id)
+            if job.cancel_requested:
+                job.failure = job.failure or InferenceFailure(
+                    "Inference cancelled.", 499
+                )
+                if not job.machines:
+                    self._settle(job)
+                continue
             if job.worker is not None and job.state in REQUEUEABLE:
                 try:
                     await self._send_job(job)
@@ -463,6 +470,10 @@ class WorkerHub:
         return targets
 
     async def _send_job(self, job: InferenceJob):
+        if job.cancel_requested:
+            if not job.machines:
+                self._fail(job, InferenceFailure("Inference cancelled.", 499))
+            return
         message = job.request.model_dump(mode="json")
         if job.tracing is not None:
             message.update(job.tracing.parent)
@@ -472,6 +483,8 @@ class WorkerHub:
             else [self._route(job.worker)]
         )
         for worker in targets:
+            if job.cancel_requested:
+                break
             job.machines.add(worker.id)
             worker.jobs.add(job.request.id)
             if job.worker is not None:
@@ -527,14 +540,25 @@ class WorkerHub:
 
     async def cancel(self, job_id: str):
         job = self.jobs.get(job_id)
-        if job is None:
+        if job is None or job.result.done():
             return
+        job.cancel_requested = True
+        if not any(worker_id in self.workers for worker_id in job.machines):
+            self._fail(job, InferenceFailure("Inference cancelled.", 499))
+            return
+        send_error = None
         for worker_id in tuple(job.machines):
             worker = self.workers.get(worker_id)
             if worker is not None:
-                await worker.send({"id": job_id, "command": "cancel"})
+                try:
+                    await worker.send({"id": job_id, "command": "cancel"})
+                except (InferenceFailure, RuntimeError, OSError, TimeoutError) as error:
+                    send_error = send_error or error
+        if send_error is not None:
+            raise send_error
 
     async def cancel_and_join(self, job: InferenceJob):
+        job.cancel_requested = True
         # A job whose workers are all gone has no one left to report its end.
         if not job.result.done() and not any(
             worker_id in self.workers for worker_id in job.machines
@@ -544,8 +568,8 @@ class WorkerHub:
             try:
                 await self.cancel(job.request.id)
             except (InferenceFailure, RuntimeError, OSError, TimeoutError):
-                # The worker is unreachable; it no longer runs this job.
-                self._fail(job, InferenceFailure("Inference cancelled.", 499))
+                # A failed send does not confirm cleanup; wait for an end or disconnect.
+                pass
         with suppress(Exception):
             await asyncio.shield(job.result)
 
