@@ -1,6 +1,6 @@
 # Pet generation references
 
-Kadan coordinates pet creation, Hikari runs image inference, and Tsuchi owns candidates, immutable artwork and provenance, leases and progress. See [Pets](../../user-expectations/kadan/pets.md) for the user-facing behavior.
+Kadan coordinates pet creation, Hikari runs image inference, and Tsuchi owns candidates, immutable artwork and provenance, leases and progress. See [Pets](https://chatgpt.com/space/page_692fa47af2b88191af7644a10c5da203) for the user-facing behavior.
 
 Creation accepts `reference_mode: single_image | character_sheet`, defaulting to `single_image` when omitted, including in saved historical jobs. The mode is part of the creation UUID's idempotency contract and cannot change during updates. Revisions inherit it. Existing imports and generated pets retain their current manifests and selection behavior; no database migration is needed because Tsuchi stores job state as JSON.
 

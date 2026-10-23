@@ -60,7 +60,7 @@ API clients can supply `X-Kadan-Request-Id` as a UUID and use `POST /v1/images/r
 
 The playground aborts its browser request on cancellation or navigation and ignores late results. The image-history route returns an empty list; gallery bytes and form state live only in page memory. Kadan separately stores delivered images through Tsuchi. Keeping output ownership explicit prevents a browser gallery from being mistaken for durable storage.
 
-See [Image generation](../../user-expectations/hikari/image-generation.md) and [Image editing](../../user-expectations/hikari/image-editing.md) for user expectations. The [ATen execution notes](#aten-image-execution) below retain build, placement and validation details.
+See [Image generation](https://chatgpt.com/space/page_3137d6ca5a0c8191b50041fcbcf218d2) and [Image editing](https://chatgpt.com/space/page_cf1b790834cc81919c63e3ea44335db8) for user expectations. The [ATen execution notes](#aten-image-execution) below retain build, placement and validation details.
 
 ## ATen image execution
 

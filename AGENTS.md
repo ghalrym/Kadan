@@ -5,10 +5,12 @@
 Use documentation sparingly. Do not narrate code paths or document routine coding patterns.
 
 - `README.md` gives a brief summary of Kadan with a screenshot and a subsection describing its services and their roles.
-- `docs/user-expectations/{service}/{feature}.md` describes what users can do and what behavior they can expect. Give each feature its own page.
+- [Kadan private Space](https://chatgpt.com/space/page_6adbdd8c6a3081918a0759eabf13f750) holds user expectations. Use the [current expectation index](https://chatgpt.com/space/page_203c8bed92388191a3da4145bfcf78be) to find each feature's Page. Give each feature its own Page.
 - `docs/architecture/{service}/{topic}.md` explains how a service is designed and why. Place service-specific architecture documents inside that service's folder, including worker documents.
 
 ### User expectations
+
+Before starting work, read the relevant current expectation Pages through Pages tools. Record each consulted Page's canonical URL and observed version or sequence, when available, in the task or PR evidence. If a relevant Page cannot be read, stop and report the missing access instead of inventing expectations. Proposals and unpublished reconciliations are context, not authoritative current expectations. Keep product expectations in the Space; do not mirror them in the repository.
 
 Write for someone using the feature without knowing its implementation. Describe observable behavior, guarantees, limitations, and what happens when an operation waits, fails, or is cancelled. Name the service responsible for the feature.
 
@@ -29,7 +31,7 @@ When a topic needs both kinds of documentation, keep the user-visible behavior i
 - The project is intentionally bare bones and provides only basic API-key authentication where needed, with the default key `insecure-api-key`. It provides no built-in security guarantees. Users are responsible for adding and maintaining any security they require on their machines or in deployments at scale.
 - Prioritize development speed while the project is still being fleshed out. Built-in security is the lowest priority during this phase.
 - Keep security limited to simple API-key checks with the default `insecure-api-key`. Do not add host or origin allowlists, network isolation, container hardening, accounts, or other security layers unless explicitly requested. Users secure their own environments independently.
-- Preserve the expectations in [Security and operator responsibility](docs/user-expectations/security.md).
+- Preserve the expectations in [Security and operator responsibility](https://chatgpt.com/space/page_e8ad94225ee08191a1934448333efbe9).
 
 ## API
 

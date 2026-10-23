@@ -7,9 +7,9 @@ Their management interfaces are for inspecting and operating those services.
 
 | Service | Responsibility | Local interface |
 | --- | --- | --- |
-| [Kadan](docs/user-expectations/kadan/overview.md) | Agent conversations and actions | <http://127.0.0.1:8630> |
-| [Tsuchi](docs/user-expectations/tsuchi/overview.md) | Durable per-agent storage, search and history | <http://127.0.0.1:8620> |
-| [Hikari](docs/user-expectations/hikari/overview.md) | Chat, decisions, images, video, speech and transcription | <http://127.0.0.1:8088> |
+| [Kadan](https://chatgpt.com/space/page_54e07708a908819196abf3c093777013) | Agent conversations and actions | <http://127.0.0.1:8630> |
+| [Tsuchi](https://chatgpt.com/space/page_9e4aed78af1081919cf26871bea466cb) | Durable per-agent storage, search and history | <http://127.0.0.1:8620> |
+| [Hikari](https://chatgpt.com/space/page_c4f7f290115c8191b9c6bc0f0e39e8d0) | Chat, decisions, images, video, speech and transcription | <http://127.0.0.1:8088> |
 
 [Start all services with Docker](#docker-compose). Kadan owns agent decisions;
 Tsuchi owns storage and retrieval; Hikari owns inference. Kadan and Tsuchi run
@@ -76,7 +76,7 @@ to generate a response. Startup does not generate content or load a model.
 
 All published ports bind to `0.0.0.0`. This is a single-owner prototype;
 namespace keys are storage selectors, not credentials. Operators are responsible
-for securing access to their deployment. See [security expectations](docs/user-expectations/security.md). Within Compose, Kadan uses `http://tsuchi-api:8000` for
+for securing access to their deployment. See [security expectations](https://chatgpt.com/space/page_e8ad94225ee08191a1934448333efbe9). Within Compose, Kadan uses `http://tsuchi-api:8000` for
 storage and `http://hikari-api:8000` for inference. Browser links use the loopback
 URLs above. Each frontend container runs Vite and proxies its API paths, including streaming
 responses, through the same browser origin. Only the frontends and Hikari's API publish ports.

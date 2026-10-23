@@ -52,7 +52,7 @@ Formatting defaults on unless its saved setting changes. An omitted or null `for
 
 The browser keeps audio and results locally. Cancel ignores late results while server cleanup finishes; navigation also stops recording, releases microphone access and aborts pending requests. Clipboard failure does not change the transcription result.
 
-See [Speech to text and formatting](../../user-expectations/hikari/transcription.md) for user expectations.
+See [Speech to text and formatting](https://chatgpt.com/space/page_27e77208c37c81918b7251a46243b61a) for user expectations.
 
 ## Pinned Whisper assets
 

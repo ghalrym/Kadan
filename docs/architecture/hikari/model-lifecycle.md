@@ -1,6 +1,6 @@
 # Language-model lifecycle and context
 
-Hikari separates a model's saved settings from its current loaded state. This lets clients save a context preference without loading the model, or choose a different context for one load without replacing that preference. The user-facing expectations are in [Language-model loading and context](../../user-expectations/hikari/model-lifecycle.md).
+Hikari separates a model's saved settings from its current loaded state. This lets clients save a context preference without loading the model, or choose a different context for one load without replacing that preference. The user-facing expectations are in [Language-model loading and context](https://chatgpt.com/space/page_12b11e3532388191afdd99c85458f443).
 
 ## Loading and status
 

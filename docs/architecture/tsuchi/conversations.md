@@ -1,6 +1,6 @@
 # Conversation storage
 
-Tsuchi stores conversation records without owning agent execution. Kadan queues agent runs through a separate atomic append-and-enqueue operation; storage edits must not replay work. See [Stored conversations](../../user-expectations/tsuchi/conversation-records.md).
+Tsuchi stores conversation records without owning agent execution. Kadan queues agent runs through a separate atomic append-and-enqueue operation; storage edits must not replay work. See [Stored conversations](https://chatgpt.com/space/page_857c4ef0591c8191b8deef5cd023789e).
 
 `POST /api/agents/{key}/resources/{id}/messages` accepts `expected_version` and a message containing a stable UUID, UTC timestamp, role and content. The editor defaults to `user`; the schema also supports `system`, `assistant` and `tool`, with attachment, resource and source references. The conversation must already exist, and resource and asset references must belong to its namespace.
 
