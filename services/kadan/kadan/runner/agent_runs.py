@@ -481,7 +481,7 @@ class AgentRuns(RunClient):
         if tool is None:
             result = {"tool": command.tool, "error": "This tool no longer exists."}
         elif tool in MEMORY_TOOLS:
-            result = await self.use_memory(tool, command, run.agent_key, state.replayed)
+            result = await self.use_memory(tool, command, run, state.replayed)
         elif tool in CONVERSATION_TOOLS:
             result = await tool.ainvoke(
                 command.arguments,
@@ -503,20 +503,23 @@ class AgentRuns(RunClient):
         return {"run": run, "command": None, "replayed": False}
 
     async def use_memory(
-        self, tool: StructuredTool, command: ToolCommand, agent_key: str, replayed: bool
+        self, tool: StructuredTool, command: ToolCommand, run: AgentRun, replayed: bool
     ) -> dict:
         if replayed and tool.metadata["method"] != "GET":
             return {
                 "error": "The runner restarted before this memory write reported "
                 "a result. It may or may not have saved; read or search your memories "
-                "before retrying."
+                "before retrying. For forget_memory, use read_memory with "
+                "include_trashed to check its trash state."
             }
         try:
             return await tool.ainvoke(
                 command.arguments,
                 config={
                     "configurable": {
-                        "memories": AgentMemories(self.services, agent_key)
+                        "memories": AgentMemories(
+                            self.services, run.agent_key, lambda: self.owned(run)
+                        )
                     }
                 },
             )

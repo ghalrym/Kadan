@@ -19,6 +19,7 @@ from kadan.runner.memories import AgentMemories
 from kadan.runner.tools import MEMORY_TOOLS
 from kadan.runner.tools.memory import (
     CreateMemoryArguments,
+    ForgetMemoryArguments,
     ListMemoriesArguments,
     ReadMemoryArguments,
     UpdateMemoryArguments,
@@ -45,11 +46,13 @@ def memory(**changes):
     }
 
 
-def call(handler, action):
+def call(handler, action, check_ownership=None):
     async def execute():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             service = LocalServices(client, Settings(_env_file=None))
-            return await action(AgentMemories(service, "alpha"))
+            return await action(
+                AgentMemories(service, "alpha", check_ownership or AsyncMock())
+            )
 
     return asyncio.run(execute())
 
@@ -102,7 +105,7 @@ def test_read_returns_content_and_version_for_updates():
         {"deleted_at": NOW},
     ],
 )
-@pytest.mark.parametrize("operation", ["read", "update"])
+@pytest.mark.parametrize("operation", ["read", "update", "forget"])
 def test_read_and_update_reject_documents_other_agents_and_trash(changes, operation):
     calls = []
 
@@ -116,6 +119,8 @@ def test_read_and_update_reject_documents_other_agents_and_trash(changes, operat
             lambda memories: (
                 memories.read(MEMORY_ID)
                 if operation == "read"
+                else memories.forget(MEMORY_ID, 3)
+                if operation == "forget"
                 else memories.update(MEMORY_ID, 3, "Changed", "New text", None)
             ),
         )
@@ -299,6 +304,234 @@ def test_runner_returns_storage_errors_as_tool_results():
     command = ToolCommand(
         tool=tool.name, arguments={"title": "Title", "markdown": "Text"}
     )
-    result = asyncio.run(controller.use_memory(tool, command, "alpha", False))
+    controller.owned = AsyncMock()
+    run = SimpleNamespace(agent_key="alpha")
+    result = asyncio.run(controller.use_memory(tool, command, run, False))
     assert result == {"error": "Storage unavailable"}
     controller.services.json_request.assert_awaited_once()
+
+
+def test_forget_trashes_the_read_version_and_returns_confirmation_without_content():
+    calls = []
+
+    def storage(request):
+        calls.append(request.method)
+        assert request.url.path == f"/api/agents/alpha/resources/{MEMORY_ID}"
+        if request.method == "GET":
+            return httpx.Response(200, json=memory())
+        assert request.method == "DELETE"
+        assert dict(request.url.params) == {"expected_version": "3"}
+        assert request.content == b""
+        return httpx.Response(200, json=memory(version=4, deleted_at=NOW))
+
+    result = call(storage, lambda memories: memories.forget(MEMORY_ID, 3))
+
+    assert calls == ["GET", "DELETE"]
+    assert result == {
+        "id": str(MEMORY_ID),
+        "title": "Preferences",
+        "version": 4,
+        "deleted_at": NOW.replace("+00:00", "Z"),
+    }
+
+
+def test_stale_forget_does_not_write_or_refresh_the_expected_version():
+    calls = []
+    ownership = AsyncMock()
+
+    def storage(request):
+        calls.append(request.method)
+        return httpx.Response(200, json=memory())
+
+    with pytest.raises(ServiceError) as error:
+        call(storage, lambda memories: memories.forget(MEMORY_ID, 2), ownership)
+
+    assert error.value.code == "version_conflict"
+    assert calls == ["GET"]
+    ownership.assert_not_awaited()
+
+
+@pytest.mark.parametrize("failure", ["conflict", "timeout"])
+def test_failed_forget_is_not_retried(failure):
+    calls = []
+
+    def storage(request):
+        calls.append(request.method)
+        if request.method == "GET":
+            return httpx.Response(200, json=memory())
+        if failure == "timeout":
+            raise httpx.ReadTimeout("No response", request=request)
+        return httpx.Response(409, json={"detail": "Memory changed"})
+
+    with pytest.raises(ServiceError):
+        call(storage, lambda memories: memories.forget(MEMORY_ID, 3))
+
+    assert calls == ["GET", "DELETE"]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"id": str(uuid4())},
+        {"agent_key": "beta"},
+        {"kind": "persona"},
+        {"deleted_at": None},
+        {"version": 3},
+        {"version": 5},
+    ],
+)
+def test_forget_does_not_confirm_an_invalid_storage_result(changes):
+    def storage(request):
+        result = (
+            memory()
+            if request.method == "GET"
+            else memory(**{"version": 4, "deleted_at": NOW, **changes})
+        )
+        return httpx.Response(200, json=result)
+
+    with pytest.raises(ServiceError):
+        call(storage, lambda memories: memories.forget(MEMORY_ID, 3))
+
+
+@pytest.mark.parametrize("operation", ["read", "forget"])
+def test_memory_id_mismatch_is_rejected_before_any_mutation(operation):
+    calls = []
+
+    def storage(request):
+        calls.append(request.method)
+        return httpx.Response(200, json=memory(id=str(uuid4())))
+
+    with pytest.raises(ServiceError, match="wrong memory"):
+        call(
+            storage,
+            lambda memories: (
+                memories.read(MEMORY_ID)
+                if operation == "read"
+                else memories.forget(MEMORY_ID, 3)
+            ),
+        )
+
+    assert calls == ["GET"]
+
+
+@pytest.mark.parametrize("deleted", [False, True])
+def test_explicit_trash_read_reconciles_state_without_recalling_forgotten_content(
+    deleted,
+):
+    def storage(request):
+        assert request.method == "GET"
+        return httpx.Response(200, json=memory(deleted_at=NOW if deleted else None))
+
+    result = call(
+        storage, lambda memories: memories.read(MEMORY_ID, include_trashed=True)
+    )
+
+    assert bool(result["deleted_at"]) == deleted
+    assert result["version"] == 3
+    assert ("markdown" in result) is not deleted
+    assert ("tags" in result) is not deleted
+
+
+@pytest.mark.parametrize("changes", [{"agent_key": "beta"}, {"kind": "space"}])
+def test_trash_read_still_checks_namespace_and_kind(changes):
+    def storage(request):
+        return httpx.Response(200, json=memory(deleted_at=NOW, **changes))
+
+    with pytest.raises(ServiceError):
+        call(storage, lambda memories: memories.read(MEMORY_ID, include_trashed=True))
+
+
+@pytest.mark.parametrize("operation", ["create", "update", "forget"])
+def test_memory_writes_check_ownership_immediately_before_mutation(operation):
+    events = []
+
+    async def check():
+        events.append("ownership")
+
+    def storage(request):
+        events.append(request.method)
+        return httpx.Response(
+            200,
+            json=memory(
+                version=4 if request.method != "GET" else 3,
+                deleted_at=NOW if request.method == "DELETE" else None,
+            ),
+        )
+
+    actions = {
+        "create": lambda memories: memories.create("Title", "Text", []),
+        "update": lambda memories: memories.update(MEMORY_ID, 3, "Title", "Text", None),
+        "forget": lambda memories: memories.forget(MEMORY_ID, 3),
+    }
+    call(storage, actions[operation], check)
+
+    assert (
+        events
+        == {
+            "create": ["ownership", "POST"],
+            "update": ["GET", "ownership", "PUT"],
+            "forget": ["GET", "ownership", "DELETE"],
+        }[operation]
+    )
+
+
+@pytest.mark.parametrize("operation", ["create", "update", "forget"])
+def test_lost_run_ownership_prevents_memory_mutation(operation):
+    calls = []
+
+    def storage(request):
+        calls.append(request.method)
+        return httpx.Response(200, json=memory())
+
+    actions = {
+        "create": lambda memories: memories.create("Title", "Text", []),
+        "update": lambda memories: memories.update(MEMORY_ID, 3, "Title", "Text", None),
+        "forget": lambda memories: memories.forget(MEMORY_ID, 3),
+    }
+    ownership = AsyncMock(
+        side_effect=ServiceError("Run was cancelled", 409, "lease_lost")
+    )
+    with pytest.raises(ServiceError, match="Run was cancelled"):
+        call(storage, actions[operation], ownership)
+
+    assert calls == ([] if operation == "create" else ["GET"])
+
+
+def test_runner_supplies_current_run_to_memory_ownership_check():
+    controller = object.__new__(AgentRuns)
+    controller.services = SimpleNamespace(
+        json_request=AsyncMock(
+            side_effect=[memory(), memory(version=4, deleted_at=NOW)]
+        )
+    )
+    controller.owned = AsyncMock()
+    run = SimpleNamespace(agent_key="alpha")
+    tool = next(tool for tool in MEMORY_TOOLS if tool.name == "forget_memory")
+    command = ToolCommand(
+        tool=tool.name, arguments={"memory_id": str(MEMORY_ID), "expected_version": 3}
+    )
+
+    result = asyncio.run(controller.use_memory(tool, command, run, False))
+
+    assert result["deleted_at"]
+    controller.owned.assert_awaited_once_with(run)
+    assert controller.services.json_request.call_args.args[1] == "DELETE"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"memory_id": str(MEMORY_ID)},
+        {"memory_id": str(MEMORY_ID), "expected_version": True},
+        {"memory_id": str(MEMORY_ID), "expected_version": 0},
+        {"memory_id": str(MEMORY_ID), "expected_version": 3, "agent_key": "beta"},
+    ],
+)
+def test_forget_schema_rejects_invalid_versions_and_scope_override(arguments):
+    with pytest.raises(ValidationError):
+        ForgetMemoryArguments.model_validate(arguments)
+
+
+def test_trash_read_option_requires_a_boolean():
+    with pytest.raises(ValidationError):
+        ReadMemoryArguments(memory_id=MEMORY_ID, include_trashed="true")
