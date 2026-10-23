@@ -47,6 +47,7 @@ from .tools.workspace import (
     CreateProjectArguments,
     CreateWorkspaceDocumentArguments,
     ListWorkspaceDocumentsArguments,
+    ListWorkspaceFilesArguments,
     OpenWorkspaceFileArguments,
     ReadWorkspaceDocumentArguments,
     ReadWorkspaceFileArguments,
@@ -235,6 +236,17 @@ class RunConversation:
                 "error": str(error),
             }
         return {"tool": "read_workspace_file", **saved}
+
+    async def list_workspace_files(self, args: ListWorkspaceFilesArguments) -> dict:
+        result = {"tool": "list_workspace_files"}
+        await self.runs.owned(self.run)
+        try:
+            found = await WorkspaceFiles(self.runs.services, self.run.agent_key).list(
+                query=args.query, limit=args.limit, offset=args.offset
+            )
+        except ServiceError as error:
+            return {**result, "error": str(error)}
+        return {**result, **found}
 
     async def workspace_operation(
         self,

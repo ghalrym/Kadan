@@ -962,7 +962,7 @@ def test_transcript_budget_leaves_room_for_the_bound_tools(boundary):
 def test_smaller_model_window_drops_history_before_inference(boundary):
     async def inference_status():
         return SimpleNamespace(
-            state="ready", model_id="selected-model", context_limit=4096
+            state="ready", model_id="selected-model", context_limit=6144
         )
 
     boundary.inference_status = inference_status
@@ -996,7 +996,7 @@ def test_smaller_model_window_rejects_an_oversized_saved_transcript(boundary):
     assert boundary.controller.inference.calls == []
 
 
-@pytest.mark.parametrize("context_limit", [1, 1024, 1025])
+@pytest.mark.parametrize("context_limit", [1, 1024, 1025, 4096])
 @pytest.mark.parametrize("saved_transcript", [False, True])
 def test_window_without_room_for_tools_fails_before_inference(
     boundary, context_limit, saved_transcript
