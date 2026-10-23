@@ -733,6 +733,60 @@ def test_computer_result_returns_to_the_agent_and_the_run_continues(boundary):
     assert replay[-2].tool_call_id == replay[-3].tool_calls[0]["id"]
 
 
+@pytest.mark.parametrize("loss", ["cancelled", "another_owner", "expired"])
+def test_ownership_lost_after_command_saved_prevents_computer_dispatch(boundary, loss):
+    boundary.sandbox = Computer()
+    boundary.controller.inference = Commands(command("bash_exec", command="echo hi"))
+
+    async def check():
+        state = await boundary.controller.infer_command(
+            RunState(
+                run=boundary.start_owned(
+                    transcript=[RunMessage(role="user", content="Run a command")]
+                )
+            )
+        )
+        assert (
+            boundary.current.transcript[-1].content
+            == state["command"].model_dump_json()
+        )
+        if loss == "cancelled":
+            boundary.cancel()
+        else:
+            changes = (
+                {"owner_id": uuid4()}
+                if loss == "another_owner"
+                else {"lease_expires_at": datetime.now(UTC) - timedelta(seconds=1)}
+            )
+            boundary.current = boundary.current.model_copy(update=changes)
+        with pytest.raises(ServiceError, match="no longer owned"):
+            await boundary.controller.invoke_tool(RunState(**state))
+
+    asyncio.run(check())
+    assert boundary.sandbox.calls == []
+    assert boundary.current.transcript[-1].role == "assistant"
+
+
+def test_saved_command_dispatches_while_run_remains_owned(boundary):
+    boundary.sandbox = Computer()
+    boundary.controller.inference = Commands(command("bash_exec", command="echo hi"))
+
+    async def check():
+        state = await boundary.controller.infer_command(
+            RunState(
+                run=boundary.start_owned(
+                    transcript=[RunMessage(role="user", content="Run a command")]
+                )
+            )
+        )
+        await boundary.controller.invoke_tool(RunState(**state))
+
+    asyncio.run(check())
+    assert len(boundary.sandbox.calls) == 1
+    assert tool_result(boundary)["tool"] == "bash_exec"
+    assert boundary.current.status == "running"
+
+
 def test_computer_errors_become_tool_results(boundary):
     boundary.sandbox = Computer(ServiceError("The computer is unavailable"))
     boundary.controller.inference = Commands(
