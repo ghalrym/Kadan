@@ -69,6 +69,9 @@ class Storage:
                 "sha256": hashlib.sha256(raw).hexdigest(),
             }
             self.assets[data["asset_id"]] = asset
+            self.job = self.job.model_copy(
+                update={"upload_status": "completed", "version": self.job.version + 1}
+            )
             return asset
         if method == "PUT":
             body = kwargs["json"]
@@ -241,6 +244,45 @@ def test_ambiguous_upload_recovers_deterministic_saved_image():
         await images.process(job)
         assert services.job.status == "completed"
         assert services.job.asset_id == uuid5(job.id, "image")
+        services.client.post.assert_awaited_once()
+
+    asyncio.run(run())
+
+
+def test_late_upload_stays_recoverable_until_storage_confirms_completion():
+    async def run():
+        services, images, job = setup()
+        original = services.json_request
+
+        async def pending_upload(service, method, path, **kwargs):
+            if method == "POST" and path.endswith("/assets"):
+                raise ServiceError("Upload timed out")
+            if path.endswith("/upload/resolve"):
+                return services.job.model_dump(mode="json")
+            return await original(service, method, path, **kwargs)
+
+        services.json_request = pending_upload
+        await images.process(job)
+        assert services.job.status == "running"
+        assert services.job.upload_status == "pending"
+        assert not services.runs.wakeup.is_set()
+
+        asset_id = uuid5(job.id, "image")
+        services.assets[str(asset_id)] = {
+            "id": str(asset_id),
+            "agent_key": job.agent_key,
+            "media_type": "image/png",
+            "sha256": hashlib.sha256(png()).hexdigest(),
+        }
+        services.job = services.job.model_copy(
+            update={"upload_status": "completed", "version": services.job.version + 1}
+        )
+        restarted = ImageJobs(services)
+        services.job = services.job.model_copy(update={"owner_id": restarted.owner})
+        await restarted.process(services.job, recovering=True)
+        assert services.job.status == "completed"
+        assert services.job.asset_id == asset_id
+        assert services.runs.wakeup.is_set()
         services.client.post.assert_awaited_once()
 
     asyncio.run(run())
@@ -421,6 +463,118 @@ def test_cancellation_finishes_without_reading_unusable_saved_output():
         await images.process(services.job, recovering=True)
         assert services.job.status == "cancelled"
         assert services.job.error is None
+        services.client.get.assert_not_awaited()
+        services.client.post.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("outcome", ["completed", "failed"])
+def test_stop_during_uncertain_upload_waits_for_outcome_and_never_delivers(outcome):
+    async def run():
+        services, images, job = setup()
+        original = services.json_request
+
+        async def stop_during_upload(service, method, path, **kwargs):
+            if method == "POST" and path.endswith("/assets"):
+                services.job = services.job.model_copy(
+                    update={"status": "cancelling", "version": services.job.version + 1}
+                )
+                raise ServiceError("Upload timed out")
+            if path.endswith("/upload/resolve"):
+                return services.job.model_dump(mode="json")
+            return await original(service, method, path, **kwargs)
+
+        services.json_request = stop_during_upload
+        await images.process(job)
+        assert services.job.status == "cancelling"
+        assert services.job.upload_status == "pending"
+        assert not services.runs.wakeup.is_set()
+        services.job = services.job.model_copy(
+            update={"upload_status": outcome, "version": services.job.version + 1}
+        )
+        services.client.get.side_effect = AssertionError("Stopped artwork is not read")
+        await images.process(services.job, recovering=True)
+        assert services.job.status == "cancelled"
+        assert services.job.asset_id is None
+        assert services.runs.wakeup.is_set()
+        services.client.get.assert_not_awaited()
+        services.client.post.assert_awaited_once()
+
+    asyncio.run(run())
+
+
+def test_stop_after_upload_commit_before_job_completion_suppresses_delivery():
+    async def run():
+        services, images, job = setup()
+        original = services.json_request
+
+        async def stop_before_completion(service, method, path, **kwargs):
+            result = await original(service, method, path, **kwargs)
+            if method == "POST" and path.endswith("/assets"):
+                services.job = services.job.model_copy(
+                    update={"status": "cancelling", "version": services.job.version + 1}
+                )
+            return result
+
+        services.json_request = stop_before_completion
+        await images.process(job)
+        assert services.job.status == "cancelled"
+        assert services.job.asset_id is None
+        assert str(uuid5(job.id, "image")) in services.assets
+        services.client.get.assert_not_awaited()
+        services.client.post.assert_awaited_once()
+
+    asyncio.run(run())
+
+
+def test_storage_confirmed_failure_finishes_without_resubmission():
+    async def run():
+        services, images, job = setup()
+        services.job = job.model_copy(update={"upload_status": "pending"})
+        original = services.json_request
+
+        async def closed_upload(service, method, path, **kwargs):
+            if path.endswith("/upload/resolve"):
+                services.job = services.job.model_copy(
+                    update={
+                        "upload_status": "failed",
+                        "version": services.job.version + 1,
+                    }
+                )
+                return services.job.model_dump(mode="json")
+            return await original(service, method, path, **kwargs)
+
+        services.json_request = closed_upload
+        await images.process(services.job, recovering=True)
+        assert services.job.status == "failed"
+        assert services.job.upload_status == "failed"
+        assert services.runs.wakeup.is_set()
+        services.client.get.assert_not_awaited()
+        services.client.post.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_unavailable_settlement_remains_pending_across_runner_restart():
+    async def run():
+        services, images, job = setup()
+        services.job = job.model_copy(update={"upload_status": "pending"})
+        original = services.json_request
+
+        async def unavailable(service, method, path, **kwargs):
+            if path.endswith("/upload/resolve"):
+                raise ServiceError("Storage unavailable", 503)
+            return await original(service, method, path, **kwargs)
+
+        services.json_request = unavailable
+        for _ in range(2):
+            images = ImageJobs(services)
+            services.job = services.job.model_copy(update={"owner_id": images.owner})
+            await images.process(services.job, recovering=True)
+            assert services.job.status == "running"
+            assert services.job.upload_status == "pending"
+            assert not services.runs.wakeup.is_set()
         services.client.get.assert_not_awaited()
         services.client.post.assert_not_awaited()
 

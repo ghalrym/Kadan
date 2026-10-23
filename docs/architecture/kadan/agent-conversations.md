@@ -33,6 +33,8 @@ These receipts do not make every external effect repeatable. The [agent computer
 
 Image generation is a separate durable job. Submission ends its initiating run instead of holding an agent turn open while Hikari works. A terminal image event queues another run in the same conversation, allowing ordinary messages to continue and the agent to deliver the eventual result. Idle conversations do not require model polling.
 
+Before uploading generated artwork, Kadan persists the job's pending upload outcome. Recovery fences the original Hikari request without resubmitting generation, then asks Tsuchi to resolve a pending upload. An unresolved outcome keeps the job active for later recovery, including cancellation. Lease expiry permits a new Kadan owner; it does not prove storage has stopped writing. After storage confirms success, Kadan verifies the deterministic asset's identity, PNG bytes and checksum before completing the job. Cancellation suppresses completion and delivery while retaining any saved artwork. Terminal events and image delivery continue to use the existing transactional event and delivery receipts. See [Image upload settlement](../tsuchi/image-uploads.md).
+
 Hikari's scheduling, model lifecycle and memory constraints are described in [Inference architecture](../hikari/inference.md); conversation ownership must remain independent of those execution policies.
 
 ## Shared instruction file
