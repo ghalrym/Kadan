@@ -323,9 +323,10 @@ export default function Chat({
     } catch (e) { setError((e as Error).message); }
     finally { setStopping(false); mutation.current++; }
   }
+  const conversationRuns = runs.filter((run) => run.conversation_id === chain.id);
   const outcomes = [
-    runs.filter((run) => run.status === "failed").at(-1),
-    runs.filter((run) => run.status === "cancelled").at(-1),
+    conversationRuns.filter((run) => run.status === "failed").at(-1),
+    conversationRuns.filter((run) => run.status === "cancelled").at(-1),
   ].filter((run): run is AgentRun => !!run);
   const perchStatus = modelLoading
     ? "Loading model…"
@@ -463,7 +464,7 @@ export default function Chat({
             </p>
           )}
           {outcomes.map((run) => {
-            const response = sending || run.id !== runs.at(-1)?.id ? "Earlier response" : "Response";
+            const response = sending || run.id !== conversationRuns.at(-1)?.id ? "Earlier response" : "Response";
             return <p className="notice" role="status" key={run.id}>
               {run.status === "failed" ? `${response} failed: ${run.error || "Please try again."}` : `${response} stopped`}
             </p>;

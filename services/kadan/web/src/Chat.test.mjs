@@ -20,7 +20,8 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 async function chat(initialRuns) {
   const slots = [], effects = [], timers = [], requests = [];
   const storage = new Map();
-  let cursor = 0, tree, snapshotRuns = initialRuns, sendResponse;
+  let cursor = 0, tree, snapshotRuns = initialRuns, sendResponse, replacementResponse;
+  let selectedChain = chain;
   const react = {
     Fragment: "Fragment",
     useState(initial) {
@@ -37,9 +38,13 @@ async function chat(initialRuns) {
     useCallback: callback => callback,
     useEffect(effect, dependencies) {
       const index = cursor++;
-      if (!slots[index] || dependencies.some((value, i) => value !== slots[index][i])) {
-        slots[index] = dependencies;
-        effects.push(effect);
+      const previous = slots[index];
+      if (!previous || dependencies.some((value, i) => value !== previous.dependencies[i])) {
+        const slot = slots[index] = { dependencies };
+        effects.push(() => {
+          previous?.cleanup?.();
+          slot.cleanup = effect();
+        });
       }
     },
     useLayoutEffect() {},
@@ -64,9 +69,10 @@ async function chat(initialRuns) {
       agentPath: key => `/agents/${key}`,
       async api(path, body) {
         requests.push({ path, body });
-        if (path === "/agents/guide/conversations/conversation/runs") {
+        if (path === `/agents/guide/conversations/${selectedChain.id}/runs`) {
           if (body) return sendResponse;
-          return { runs: snapshotRuns, images: [], conversation: chain };
+          if (replacementResponse) return replacementResponse;
+          return { runs: snapshotRuns, images: [], conversation: selectedChain };
         }
         if (path.endsWith("/cancel")) {
           const id = path.split("/").at(-2);
@@ -91,7 +97,7 @@ async function chat(initialRuns) {
   function render() {
     cursor = 0;
     tree = exports.default({
-      agentKey: "guide", agentName: "Guide", chain, personas: [], status: null,
+      agentKey: "guide", agentName: "Guide", chain: selectedChain, personas: [], status: null,
       entrance: "idle", onChange() {}, onBusy() {}, onEditPet() {}, blocked: false,
       refreshStatus: async () => {},
     });
@@ -107,6 +113,7 @@ async function chat(initialRuns) {
   return {
     render, requests,
     notices: () => elements().filter(node => node.props?.className === "notice").map(node => node.props.children),
+    alerts: () => elements().filter(node => node.props?.role === "alert").map(node => node.props.children[0]),
     composer: () => elements().find(node => node.type === "Composer").props,
     async poll(runs) {
       snapshotRuns = runs;
@@ -118,6 +125,13 @@ async function chat(initialRuns) {
       let resolve;
       sendResponse = new Promise(done => { resolve = done; });
       return resolve;
+    },
+    replaceConversation(value) {
+      let reject;
+      replacementResponse = new Promise((_, fail) => { reject = fail; });
+      selectedChain = value;
+      render();
+      return reject;
     },
   };
 }
@@ -189,4 +203,17 @@ test("active and successful histories show no failure or stopped outcome", async
   assert.deepEqual(view.notices(), ["Response queued…"]);
   await view.poll([run("done", "completed")]);
   assert.deepEqual(view.notices(), []);
+});
+
+test("replacing the conversation hides its old outcomes while the new poll waits or fails", async () => {
+  const view = await chat([run("failed", "failed", "Old error"), run("stopped", "cancelled")]);
+  assert.equal(view.notices().length, 2);
+  const failPoll = view.replaceConversation({ ...chain, id: "replacement" });
+  assert.equal(view.requests.at(-1).path, "/agents/guide/conversations/replacement/runs");
+  assert.deepEqual(view.notices(), []);
+  failPoll(new Error("Storage offline"));
+  await settle();
+  view.render();
+  assert.deepEqual(view.notices(), []);
+  assert.deepEqual(view.alerts(), ["Updates unavailable: Storage offline"]);
 });
