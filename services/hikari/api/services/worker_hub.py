@@ -470,6 +470,8 @@ class WorkerHub:
         return targets
 
     async def _send_job(self, job: InferenceJob):
+        if job.result.done():
+            return
         if job.cancel_requested:
             if not job.machines:
                 self._fail(job, InferenceFailure("Inference cancelled.", 499))
@@ -482,16 +484,31 @@ class WorkerHub:
             if job.worker is None
             else [self._route(job.worker)]
         )
-        for worker in targets:
-            if job.cancel_requested:
-                break
-            job.machines.add(worker.id)
-            worker.jobs.add(job.request.id)
-            if job.worker is not None:
-                worker.slot.pending += 1
-            await worker.send(message)
-        job.sent = True
-        self.wake.set()
+        # A terminal event can arrive during send, including an overlapping requeue.
+        job.submissions += 1
+        try:
+            for worker in targets:
+                if job.cancel_requested:
+                    break
+                if worker.id not in self.workers:
+                    continue
+                job.machines.add(worker.id)
+                worker.jobs.add(job.request.id)
+                if job.worker is not None:
+                    worker.slot.pending += 1
+                job.sent = True
+                await worker.send(message)
+        except BaseException:
+            job.cancel_requested = True
+            raise
+        finally:
+            job.submissions -= 1
+            if job.cancel_requested and not job.machines:
+                job.failure = job.failure or InferenceFailure(
+                    "Inference cancelled.", 499
+                )
+            self._settle(job)
+            self.wake.set()
 
     async def _wait_for_worker(self, request: InferenceTask):
         """Gives worker containers that are still starting time to connect."""
@@ -544,6 +561,7 @@ class WorkerHub:
             return
         job.cancel_requested = True
         if not any(worker_id in self.workers for worker_id in job.machines):
+            job.machines.clear()
             self._fail(job, InferenceFailure("Inference cancelled.", 499))
             return
         send_error = None
@@ -563,6 +581,7 @@ class WorkerHub:
         if not job.result.done() and not any(
             worker_id in self.workers for worker_id in job.machines
         ):
+            job.machines.clear()
             self._fail(job, InferenceFailure("Inference cancelled.", 499))
         if not job.result.done():
             try:
@@ -587,6 +606,9 @@ class WorkerHub:
         self.wake.set()
 
     def _fail(self, job: InferenceJob, failure: InferenceFailure):
+        if job.submissions:
+            job.failure = job.failure or failure
+            return
         if job.tracing is not None:
             job.tracing.end(failed=True)
         job.identified.set()
@@ -598,6 +620,8 @@ class WorkerHub:
         job.machines.clear()
 
     def _settle(self, job: InferenceJob):
+        if job.submissions or job.machines or job.result.done():
+            return
         if job.tracing is not None:
             job.tracing.end(failed=job.failure is not None)
         job.identified.set()
@@ -606,8 +630,6 @@ class WorkerHub:
                 job.accepted.set_exception(job.failure)
             else:
                 job.accepted.set_result(None)
-        if job.result.done():
-            return
         if job.failure is not None:
             job.result.set_exception(job.failure)
         else:

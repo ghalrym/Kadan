@@ -822,7 +822,7 @@ class DisconnectTests(HubTestCase):
             await control
 
 
-class CancellationHandoffTests(unittest.IsolatedAsyncioTestCase):
+class CancellationTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.hub = WorkerHub()
 
@@ -872,6 +872,8 @@ class CancellationHandoffTests(unittest.IsolatedAsyncioTestCase):
             operation="configure", input={"feature": "tier_selection", "tier": "go"}
         )
 
+
+class CancellationHandoffTests(CancellationTestCase):
     async def test_cancelled_waiting_job_is_not_submitted_to_replacement(self):
         for state in (JobState.QUEUED, JobState.PREPARING, JobState.WAITING):
             with self.subTest(state=state):
@@ -1078,6 +1080,286 @@ class CancellationHandoffTests(unittest.IsolatedAsyncioTestCase):
         for worker in workers:
             self.event(worker, job, "cancelled")
         self.assert_cancelled(job)
+
+
+class SubmissionOwnershipTests(CancellationTestCase):
+    def register_job(self, request=None):
+        job = InferenceJob(request or self.store_request(), False)
+        job.worker = "llm" if request is not None else None
+        self.hub.jobs[job.request.id] = job
+        return job
+
+    async def test_early_terminal_does_not_complete_remaining_fanout(self):
+        first = self.add_worker("first")
+        second = self.add_worker("second", "image")
+        job = self.register_job()
+
+        async def send(message):
+            self.event(first, job, "succeeded", result={"first": True})
+
+        with patch.object(first, "send", side_effect=send):
+            await self.hub._send_job(job)
+        self.assertFalse(job.result.done())
+        self.assertEqual(job.machines, {second.id})
+        self.event(second, job, "failed", error="bad settings", status_code=422)
+        with self.assertRaises(InferenceFailure) as raised:
+            await job.result
+        self.assertEqual(raised.exception.status_code, 422)
+
+    async def test_all_early_terminals_wait_for_submission_to_close(self):
+        workers = [self.add_worker("first"), self.add_worker("second", "image")]
+        job = self.register_job()
+        completed_during_send = []
+
+        async def first_send(message):
+            self.event(workers[0], job, "succeeded", result={"worker": workers[0].name})
+            completed_during_send.append(job.result.done())
+
+        async def second_send(message):
+            self.event(workers[1], job, "succeeded", result={"worker": workers[1].name})
+            completed_during_send.append(job.result.done())
+
+        with (
+            patch.object(workers[0], "send", side_effect=first_send),
+            patch.object(workers[1], "send", side_effect=second_send),
+        ):
+            await self.hub._send_job(job)
+        self.assertEqual(completed_during_send, [False, False])
+        self.assertEqual(await job.result, {"worker": workers[0].name})
+        self.assertEqual(job.machines, set())
+
+    async def test_cancel_after_early_terminal_stops_unsent_targets(self):
+        first = self.add_worker("first")
+        second = self.add_worker("second", "image")
+        third = self.add_worker("third", "video")
+        job = self.register_job()
+        entered, release = asyncio.Event(), asyncio.Event()
+        send_text = second.websocket.send_text
+
+        async def first_send(message):
+            self.event(first, job, "succeeded", result={})
+
+        async def second_send(text):
+            if json.loads(text)["command"] == "submit":
+                entered.set()
+                await release.wait()
+            await send_text(text)
+
+        with (
+            patch.object(first, "send", side_effect=first_send),
+            patch.object(second.websocket, "send_text", side_effect=second_send),
+        ):
+            submission = asyncio.create_task(self.hub._send_job(job))
+            await entered.wait()
+            cancellation = asyncio.create_task(self.hub.cancel(job.request.id))
+            await asyncio.sleep(0)
+            intent_recorded = job.cancel_requested
+            completed_before_release = job.result.done()
+            ownership = set(job.machines)
+            release.set()
+            await submission
+            await self.hub.cancel(job.request.id)
+            completed_before_terminal = job.result.done()
+            self.event(second, job, "cancelled")
+            await asyncio.wait_for(cancellation, 1)
+            await self.hub.cancel_and_join(job)
+        self.assertTrue(intent_recorded)
+        self.assertFalse(completed_before_release or completed_before_terminal)
+        self.assertEqual(ownership, {second.id})
+        self.assertEqual(third.websocket.sent, [])
+        self.assertEqual(first.websocket.commands("cancel"), [])
+        self.assertEqual(
+            [message["command"] for message in second.websocket.sent],
+            ["submit", "cancel", "cancel"],
+        )
+        self.assert_cancelled(job)
+
+    async def test_cancel_with_no_recipients_waits_for_open_send(self):
+        worker = self.add_worker("first")
+        job = self.register_job()
+        completed_during_send = []
+
+        async def send(message):
+            self.event(worker, job, "succeeded", result={})
+            await self.hub.cancel(job.request.id)
+            completed_during_send.append(job.result.done())
+
+        with patch.object(worker, "send", side_effect=send):
+            await self.hub._send_job(job)
+        self.assertEqual(completed_during_send, [False])
+        self.assertTrue(job.cancel_requested)
+        self.assert_cancelled(job)
+
+    async def test_cancelled_disconnect_during_send_waits_for_send_to_close(self):
+        worker = self.add_worker("first")
+        job = self.register_job(chat())
+        completed_during_send = []
+
+        async def send(message):
+            if message.get("command") == "cancel":
+                return
+            await self.hub.cancel(job.request.id)
+            await self.hub._disconnected(worker)
+            completed_during_send.append(job.result.done())
+
+        with patch.object(worker, "send", side_effect=send):
+            await self.hub._send_job(job)
+        self.assertEqual(completed_during_send, [False])
+        self.assert_cancelled(job)
+        self.assertEqual(job.machines, set())
+
+    async def test_overlapping_requeue_waits_for_original_send_to_close(self):
+        first = self.add_worker("first")
+        second = self.add_worker("second")
+        job = self.register_job(chat())
+        completed_during_send = []
+
+        async def first_send(message):
+            await self.hub._disconnected(first)
+            completed_during_send.append(job.result.done())
+
+        async def second_send(message):
+            self.event(second, job, "succeeded", result={"replacement": True})
+            completed_during_send.append(job.result.done())
+
+        with (
+            patch.object(first, "send", side_effect=first_send),
+            patch.object(second, "send", side_effect=second_send),
+            patch.object(self.hub, "_route", side_effect=[first, second]),
+        ):
+            await self.hub._send_job(job)
+        self.assertEqual(completed_during_send, [False, False])
+        self.assertEqual(await job.result, {"replacement": True})
+        self.assertEqual(second.slot.pending, 0)
+        self.assertEqual(job.machines, set())
+
+    async def test_cancel_during_overlapping_requeue_waits_for_both_sends(self):
+        first = self.add_worker("first")
+        second = self.add_worker("second")
+        job = self.register_job(chat())
+        completed_during_send = []
+
+        async def first_send(message):
+            await self.hub._disconnected(first)
+            completed_during_send.append(job.result.done())
+
+        async def second_send(message):
+            if message.get("command") == "cancel":
+                return
+            await self.hub.cancel(job.request.id)
+            self.event(second, job, "cancelled")
+            completed_during_send.append(job.result.done())
+
+        with (
+            patch.object(first, "send", side_effect=first_send),
+            patch.object(second, "send", side_effect=second_send),
+            patch.object(self.hub, "_route", side_effect=[first, second]),
+        ):
+            await self.hub._send_job(job)
+        self.assertEqual(completed_during_send, [False, False])
+        self.assert_cancelled(job)
+        self.assertEqual(second.slot.pending, 0)
+
+    async def test_disconnect_without_replacement_defers_failure_until_send_closes(
+        self,
+    ):
+        worker = self.add_worker("first")
+        job = self.register_job(chat())
+        completed_during_send = []
+
+        async def send(message):
+            await self.hub._disconnected(worker)
+            completed_during_send.append(job.result.done())
+
+        with patch.object(worker, "send", side_effect=send):
+            await self.hub._send_job(job)
+        self.assertEqual(completed_during_send, [False])
+        with self.assertRaises(InferenceFailure) as raised:
+            await job.result
+        self.assertEqual(raised.exception.status_code, 503)
+
+    async def test_partial_send_failure_keeps_submission_until_all_cleanup(self):
+        first = self.add_worker("first")
+        second = self.add_worker("second", "image")
+        third = self.add_worker("third", "video")
+        send = second.send
+        registered = []
+        first_send_messages = []
+
+        async def first_send(message):
+            first_send_messages.append(message)
+            if message.get("command") == "submit":
+                registered.append(self.hub.jobs[message["id"]])
+
+        async def second_send(message):
+            if message.get("command") == "submit":
+                raise OSError("partial send")
+            await send(message)
+
+        with (
+            patch.object(first, "send", side_effect=first_send),
+            patch.object(second, "send", side_effect=second_send),
+        ):
+            submission = asyncio.create_task(self.hub.submit(self.store_request()))
+            for _ in range(10):
+                await asyncio.sleep(0)
+            job = registered[0]
+            registered_during_cleanup = job.request.id in self.hub.jobs
+            completed_before_terminal = job.result.done() or submission.done()
+            self.event(first, job, "cancelled")
+            completed_after_first = job.result.done() or submission.done()
+            self.event(second, job, "cancelled")
+            with self.assertRaisesRegex(OSError, "partial send"):
+                await asyncio.wait_for(submission, 1)
+        self.assertTrue(registered_during_cleanup)
+        self.assertFalse(completed_before_terminal or completed_after_first)
+        self.assertEqual(
+            [message["command"] for message in first_send_messages],
+            ["submit", "cancel"],
+        )
+        self.assertEqual(len(second.websocket.commands("cancel")), 1)
+        self.assertEqual(third.websocket.sent, [])
+        self.assertNotIn(job.request.id, self.hub.jobs)
+        job.accepted.exception()
+
+    async def test_caller_cancel_during_send_waits_for_recipient_cleanup(self):
+        worker = self.add_worker("first")
+        entered = asyncio.Event()
+        send = worker.send
+
+        async def sending(message):
+            if message.get("command") == "submit":
+                entered.set()
+                await asyncio.Event().wait()
+            await send(message)
+
+        with patch.object(worker, "send", side_effect=sending):
+            submission = asyncio.create_task(self.hub.submit(chat()))
+            await entered.wait()
+            job = self.hub.jobs[next(iter(self.hub.jobs))]
+            submission.cancel()
+            for _ in range(10):
+                await asyncio.sleep(0)
+            retained = job.request.id in self.hub.jobs
+            completed_before_terminal = job.result.done() or submission.done()
+            self.event(worker, job, "cancelled")
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(submission, 1)
+        self.assertTrue(retained)
+        self.assertFalse(completed_before_terminal)
+        self.assertEqual(len(worker.websocket.commands("cancel")), 1)
+        self.assertEqual(worker.slot.pending, 0)
+        self.assertNotIn(job.request.id, self.hub.jobs)
+        job.accepted.exception()
+
+    async def test_no_worker_failure_does_not_fabricate_success(self):
+        job = self.register_job(chat())
+        with self.assertRaises(InferenceFailure):
+            await self.hub._send_job(job)
+        self.assertFalse(job.result.done())
+        await asyncio.wait_for(self.hub.cancel_and_join(job), 1)
+        self.assert_cancelled(job)
+        self.assertEqual(job.machines, set())
 
 
 class ModelIdleSettingsTests(unittest.TestCase):
