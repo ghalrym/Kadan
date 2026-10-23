@@ -72,6 +72,7 @@ class InferenceService:
         self.context = {}
         self.progress: InferenceProgress | None = None
         self.downloads: dict[str, DownloadObservation] = {}
+        self._download_admissions: set[str] = set()
 
     async def start(self):
         await self.worker.start()
@@ -140,17 +141,16 @@ class InferenceService:
         return snapshot
 
     async def download(self, model_id: str, license_acknowledged: bool):
-        for job in self.worker.jobs.values():
-            if (
-                job.request.feature == "models"
-                and job.request.input.model_id == model_id
-                and not job.result.done()
-            ):
-                raise InferenceFailure(
-                    "A download is already queued for this model.", 409
-                )
+        if model_id in self._download_admissions or any(
+            job.request.feature == "models"
+            and job.request.input.model_id == model_id
+            and not job.result.done()
+            for job in self.worker.jobs.values()
+        ):
+            raise InferenceFailure("A download is already queued for this model.", 409)
         observation = DownloadObservation()
         self.downloads[model_id] = observation
+        self._download_admissions.add(model_id)
         try:
             _, completion = await self._submit(
                 DownloadTask(
@@ -164,6 +164,8 @@ class InferenceService:
                 status="failed", error="Download was not queued"
             )
             raise
+        finally:
+            self._download_admissions.discard(model_id)
 
         def finished(task):
             error = None if task.cancelled() else task.exception()
