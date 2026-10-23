@@ -817,9 +817,6 @@ main:focus {
   font-weight: 500;
   animation: fade 200ms;
 }
-.receipt.read {
-  color: var(--muted);
-}
 .tag {
   display: inline-flex;
   align-items: center;

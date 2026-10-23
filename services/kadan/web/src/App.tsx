@@ -320,7 +320,7 @@ export default function App() {
             >
               <span className={`dot ${status?.tsuchi.state === "ready" ? "ready" : status ? "down" : ""}`} />
               <span className="sr-only">
-                Tsuchi {status?.tsuchi.state === "ready" ? "connected" : "unavailable"}
+                Tsuchi {!status ? "checking" : status.tsuchi.state === "ready" ? "connected" : "unavailable"}
               </span>
             </a>
             <a
@@ -334,7 +334,7 @@ export default function App() {
                 className={`dot ${status?.hikari.state === "ready" ? "ready" : status?.hikari.state === "unavailable" ? "down" : status ? "warn" : ""}`}
               />
               <span className="sr-only">
-                Hikari {status?.hikari.state === "ready" ? "ready" : "needs attention"}
+                Hikari {!status ? "checking" : status.hikari.state === "ready" ? "ready" : "needs attention"}
               </span>
             </a>
           </div>

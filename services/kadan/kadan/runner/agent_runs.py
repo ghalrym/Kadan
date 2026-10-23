@@ -514,7 +514,7 @@ class AgentRuns(RunClient):
     async def invoke_tool(self, state: RunState) -> dict:
         command = state.command
         assert command is not None
-        run = state.run
+        run = await self.owned(state.run)
         tool = TOOLS_BY_NAME.get(command.tool)
         conversation = RunConversation(self, run, state.replayed)
         if tool is None:

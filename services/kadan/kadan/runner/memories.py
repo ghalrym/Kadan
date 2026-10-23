@@ -70,6 +70,10 @@ class AgentMemories:
                 "offset": offset,
             },
         )
+        if not isinstance(rows, list):
+            raise ServiceError(
+                "Tsuchi returned an invalid collection.", 502, "invalid_response"
+            )
         return {
             "memories": [
                 self.checked(row).model_dump(
