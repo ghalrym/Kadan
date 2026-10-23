@@ -213,7 +213,9 @@ class LifecycleResidencyTests(HubTestCase):
         self.service.worker = self.hub
         self.hub.on_event = self.service._observe
 
-    def language_request(self, worker, *, operation="load", effective=8192):
+    def language_request(
+        self, worker, *, operation="load", effective=8192, terminal="succeeded"
+    ):
         job = InferenceJob(
             InferenceTask(operation=operation, input={"feature": "llm"}), False
         )
@@ -236,7 +238,116 @@ class LifecycleResidencyTests(HubTestCase):
                 },
             ),
         )
-        self.hub._job_event(worker, WorkerEvent(id=job.request.id, state="succeeded"))
+        self.hub._job_event(
+            worker,
+            WorkerEvent(
+                id=job.request.id,
+                state=terminal,
+                error="Failed request" if terminal == "failed" else "",
+            ),
+        )
+
+    async def failure_then_surviving_copy(self):
+        _, first = await self.connect("llm", instance="first")
+        self.language_request(first, effective=4096)
+        self.language_request(first, effective=4096, terminal="failed")
+        self.assertFalse(first.residency_known)
+        socket, second = await self.connect("llm", instance="second")
+        self.language_request(second, effective=8192)
+        status = self.service.status()
+        self.assertEqual(status["state"], "ready")
+        self.assertEqual(status["effective_context_limit"], 8192)
+        return first, socket, second
+
+    async def test_failed_copy_cannot_resurrect_after_survivor_disconnects(self):
+        _, socket, _ = await self.failure_then_surviving_copy()
+        await socket.close()
+        await self.settle()
+        status = self.service.status()
+        self.assertEqual(status["state"], "error")
+        self.assertIn("unconfirmed", status["error"])
+        self.assertIsNone(status["effective_context_limit"])
+        self.assertEqual(status["model_id"], "m")
+        self.assertEqual(status["configured_context_limit"], 65536)
+
+    async def test_failed_copy_cannot_resurrect_after_survivor_releases(self):
+        _, _, second = await self.failure_then_surviving_copy()
+        await self.hub._dispatch(
+            second,
+            {
+                "state": "worker",
+                "worker": "llm",
+                "event": "offloaded",
+                "model": None,
+                "loaded": False,
+                "budget": [0, 0],
+            },
+        )
+        status = self.service.status()
+        self.assertEqual(status["state"], "error")
+        self.assertIsNone(status["effective_context_limit"])
+
+    async def test_cancelled_preparation_is_unknown_instead_of_confirmed_unload(self):
+        _, worker = await self.connect("llm")
+        self.language_request(worker, effective=4096)
+        worker.slot.budget = [GIB, GIB]
+        self.language_request(worker, terminal="cancelled")
+        self.assertFalse(worker.residency_known)
+        self.assertTrue(worker.slot.loaded)
+        self.assertEqual(worker.slot.budget, [GIB, GIB])
+        self.assertEqual(self.service.status()["state"], "error")
+        self.assertIsNone(self.service.status()["effective_context_limit"])
+        self.assertEqual(self.service.status()["configured_context_limit"], 65536)
+
+    async def test_snapshot_without_model_does_not_resolve_unknown_residency(self):
+        _, worker = await self.connect("llm")
+        self.language_request(worker)
+        self.language_request(worker, terminal="cancelled")
+        await self.hub._dispatch(
+            worker,
+            {
+                "state": "worker",
+                "worker": "llm",
+                "loaded": True,
+                "budget": [GIB, GIB],
+            },
+        )
+        self.assertFalse(worker.residency_known)
+        self.assertIsNone(self.service.status()["effective_context_limit"])
+
+    async def test_resynchronization_resolves_unknown_without_old_effective_context(
+        self,
+    ):
+        first, socket, _ = await self.failure_then_surviving_copy()
+        await socket.close()
+        await self.settle()
+        first.slot.releasing = True
+        first.control = AsyncMock(
+            return_value={
+                "workers": [
+                    {
+                        "worker": "llm",
+                        "model": "m",
+                        "loaded": True,
+                        "budget": [GIB, GIB],
+                    }
+                ]
+            }
+        )
+        await self.hub._resynchronize(first.computer)
+        self.assertTrue(first.residency_known)
+        self.assertEqual(self.service.status()["state"], "ready")
+        self.assertIsNone(self.service.status()["effective_context_limit"])
+        first.slot.releasing = True
+        first.control.return_value = {
+            "workers": [
+                {"worker": "llm", "model": None, "loaded": False, "budget": [0, 0]}
+            ]
+        }
+        await self.hub._resynchronize(first.computer)
+        self.assertTrue(first.residency_known)
+        self.assertEqual(self.service.status()["state"], "unloaded")
+        self.assertIsNone(self.service.status()["effective_context_limit"])
 
     async def test_confirmed_idle_release_clears_residency_but_keeps_context_setting(
         self,

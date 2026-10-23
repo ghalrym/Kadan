@@ -20,6 +20,8 @@ Status reports `unloaded`, `loading`, `ready`, `offloaded`, `unloading`, or `err
 
 Readiness follows the connected workers' observed resident models. A budget grant alone does not establish residency: resizing can close an engine while leaving its worker permitted to load again. Confirmed release or loss of the last matching worker reports `unloaded` and no effective loaded context, while preserving the configured context observation. Another resident copy can still establish readiness using its own effective context. A settled or disconnected load cannot leave status stuck at `loading`. Starting another inference type does not itself establish that the language model was offloaded. This reporting does not change memory scheduling or retained conversation state.
 
+A failed or cancelled language request makes that worker's residency observation unknown: preparation cancellation may retain an engine, while execution failure may destroy it. Unknown observations cannot establish readiness or an effective context. When no confirmed resident copy remains, reporting uses the existing error state. A successful request or an authoritative worker snapshot resolves the residency uncertainty. A snapshot can confirm a resident model without recovering its effective context; that limit remains absent until observed again.
+
 ## Saved context and load overrides
 
 Each language checkpoint defaults to 65,536 context tokens. `PUT /v1/models/{model_id}/context` saves its `context_limit`. A positive integer sets the token limit; `null` selects the checkpoint's maximum supported context on load. Boolean values are rejected.

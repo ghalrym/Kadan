@@ -86,7 +86,8 @@ class InferenceService:
     def status(self):
         memory = self.worker.memory
         state, model_id = self.state, self.model_id
-        context = self.context
+        error = self.error
+        context = {} if state == "error" else self.context
         loading = any(
             job.request.feature == "llm"
             and job.model == model_id
@@ -101,6 +102,7 @@ class InferenceService:
                     worker
                     for worker in self.worker.workers.values()
                     if worker.kind == "llm"
+                    and worker.residency_known
                     and worker.resident_model == model_id
                     and model_id is not None
                 ),
@@ -109,10 +111,16 @@ class InferenceService:
             state = "ready" if resident is not None else "unloaded"
             model_id = resident.resident_model if resident is not None else None
             context = resident.resident_context if resident is not None else {}
+            if resident is None and any(
+                worker.kind == "llm" and not worker.residency_known
+                for worker in self.worker.workers.values()
+            ):
+                state, model_id = "error", self.model_id
+                error = "Language-model residency is unconfirmed after a failed or cancelled request."
         return {
             "state": state,
             "model_id": model_id,
-            "error": self.error,
+            "error": error,
             "memory": memory.model_dump() if memory is not None else None,
             "max_output_tokens": 256,
             "configured_context_limit": self.context.get("configured"),
