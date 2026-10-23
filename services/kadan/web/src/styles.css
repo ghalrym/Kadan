@@ -677,6 +677,30 @@ main:focus {
   background: var(--accent);
   animation: blink 0.9s ease-in-out infinite alternate;
 }
+.chat-export {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 3;
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  max-width: min(260px, 70%);
+}
+.chat-export .icon {
+  width: 44px;
+  height: 44px;
+  background: var(--surface);
+  border-color: var(--line-strong);
+}
+.chat-export p {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--error);
+}
 .messages {
   flex: 1;
   min-height: 0;
