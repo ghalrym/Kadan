@@ -1,6 +1,7 @@
 const MAX_BYTES = 20 * 1024 * 1024
 const MAX_SIDE = 3072
 const MAX_PIXELS = 4608 * 1024
+const MASK_TILE_SIDE = 512
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
 type Dimensions = { width: number; height: number }
@@ -46,17 +47,33 @@ export async function prepareImageUpload(file: File, source?: ImageUpload): Prom
       throw new Error(`The mask must match the original image: ${source.originalWidth} × ${source.originalHeight} pixels.`)
     const { width, height } = source ?? imageUploadDimensions(originalWidth, originalHeight)
     const canvas = document.createElement('canvas')
-    canvas.width = width
-    canvas.height = height
+    canvas.width = source ? Math.min(MASK_TILE_SIDE, originalWidth) : width
+    canvas.height = source ? Math.min(MASK_TILE_SIDE, originalHeight) : height
     const context = canvas.getContext('2d')
     if (!context) throw new Error('Image preparation is unavailable in this browser.')
+    if (source) {
+      // Resampling can round original transparency to opaque, so inspect native pixels first.
+      for (let y = 0; y < originalHeight; y += MASK_TILE_SIDE) {
+        for (let x = 0; x < originalWidth; x += MASK_TILE_SIDE) {
+          const tileWidth = Math.min(MASK_TILE_SIDE, originalWidth - x)
+          const tileHeight = Math.min(MASK_TILE_SIDE, originalHeight - y)
+          context.clearRect(0, 0, tileWidth, tileHeight)
+          context.drawImage(image, x, y, tileWidth, tileHeight, 0, 0, tileWidth, tileHeight)
+          const pixels = context.getImageData(0, 0, tileWidth, tileHeight)
+          for (let index = 3; index < pixels.data.length; index += 4) {
+            if (pixels.data[index] < 255)
+              throw new Error('Use an opaque mask: black preserves the image, white edits it. Transparent masks are not supported.')
+          }
+        }
+      }
+      canvas.width = width
+      canvas.height = height
+    }
     // Source and mask use the same resize to the worker's 32-pixel grid.
     context.drawImage(image, 0, 0, width, height)
     if (source) {
       const pixels = context.getImageData(0, 0, width, height)
       for (let index = 0; index < pixels.data.length; index += 4) {
-        if (pixels.data[index + 3] < 255)
-          throw new Error('Use an opaque mask: black preserves the image, white edits it. Transparent masks are not supported.')
         const value = Math.round(0.2126 * pixels.data[index] + 0.7152 * pixels.data[index + 1] + 0.0722 * pixels.data[index + 2])
         pixels.data[index] = value
         pixels.data[index + 1] = value
