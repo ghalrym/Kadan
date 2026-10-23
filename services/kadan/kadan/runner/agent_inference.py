@@ -66,7 +66,7 @@ PARAMETER = re.compile(r"<parameter=([^>\s]+)>\n?(.*?)\n?</parameter>", re.DOTAL
 class ToolCommand(BaseModel):
     """One tool call, persisted in the run transcript before it executes."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     tool: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_]+$")
     arguments: dict[str, JsonValue] = Field(default_factory=dict)
 
