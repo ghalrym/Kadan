@@ -1,16 +1,22 @@
 """The agent's tools, called against a recording sandbox client, never a computer."""
 
 import asyncio
+from unittest.mock import Mock
 
 import pytest
 from pydantic import ValidationError
 
+from kadan.api.config import ServiceError
+from kadan.runner.agent_inference import ToolCommand
+from kadan.runner.agent_runs import validate
 from kadan.runner.tools import (
     ALL_TOOLS,
     COMPUTER_TOOLS,
     CONVERSATION_TOOLS,
     TOOLS_BY_NAME,
 )
+from kadan.runner.tools.base import body
+from kadan.runner.tools.bash import bash_exec
 from kadan.runner.tools.browser import (
     browser_click,
     browser_close_tab,
@@ -164,3 +170,51 @@ def test_display_actions_and_mcp_calls_send_their_own_body():
 def test_invalid_arguments_are_rejected_by_the_tool_schema(tool, arguments):
     with pytest.raises(ValidationError):
         tool.args_schema.model_validate(arguments)
+
+
+@pytest.mark.parametrize(
+    "timeout",
+    [float("nan"), float("inf"), float("-inf"), "NaN", "Infinity", "-Infinity"],
+)
+def test_bash_schema_rejects_nonfinite_timeouts(timeout):
+    with pytest.raises(ValidationError):
+        bash_exec.args_schema.model_validate({"command": "inert", "timeout": timeout})
+
+
+@pytest.mark.parametrize(
+    "timeout",
+    [float("nan"), float("inf"), float("-inf"), "NaN", "Infinity", "-Infinity"],
+)
+def test_bash_validation_maps_nonfinite_timeouts_to_invalid_command(timeout):
+    # Isolate typed tool validation from ToolCommand's JSON boundary.
+    command = Mock(
+        spec=ToolCommand,
+        tool="bash_exec",
+        arguments={"command": "inert", "timeout": timeout},
+    )
+    with pytest.raises(ServiceError) as error:
+        validate(command, [bash_exec])
+    assert error.value.status == 502
+    assert error.value.code == "invalid_command"
+
+
+@pytest.mark.parametrize("timeout", [-1.5, 0, 2.5, "-1.5", "0", "2.5", None])
+def test_bash_finite_timeouts_and_nan_command_text_remain_valid(timeout):
+    command = ToolCommand(
+        tool="bash_exec", arguments={"command": "NaN", "timeout": timeout}
+    )
+    validate(command, [bash_exec])
+    args = bash_exec.args_schema.model_validate(command.arguments)
+    assert args.command == "NaN"
+    assert args.timeout == (None if timeout is None else float(timeout))
+    assert "timeout" in args.model_fields_set
+    assert ("timeout" in body(args)) is (timeout is not None)
+
+
+def test_bash_omitted_timeout_retains_none_and_is_left_out_of_body():
+    command = ToolCommand(tool="bash_exec", arguments={"command": "NaN"})
+    validate(command, [bash_exec])
+    args = bash_exec.args_schema.model_validate(command.arguments)
+    assert args.timeout is None
+    assert "timeout" not in args.model_fields_set
+    assert "timeout" not in body(args)

@@ -5,6 +5,7 @@ import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
+from pydantic import ValidationError
 
 from kadan.api.config import ServiceError
 from kadan.runner.agent_inference import (
@@ -261,6 +262,49 @@ def test_saved_commands_round_trip_and_accept_older_formats():
     with pytest.raises(ServiceError) as error:
         parse_command(" " * (MAX_COMMAND_CHARACTERS + 1))
     assert error.value.code == "command_too_large"
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("location", ["direct", "object", "array"])
+def test_nonfinite_command_arguments_are_rejected_before_checkpoint(value, location):
+    argument = {"direct": value, "object": {"value": value}, "array": [value]}[location]
+    arguments = {"command": "inert", "timeout": argument}
+    with pytest.raises(ValidationError):
+        ToolCommand(tool="bash_exec", arguments=arguments)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("location", ["direct", "object", "array"])
+def test_saved_nonfinite_command_maps_to_invalid_command(value, location):
+    argument = {"direct": value, "object": {"value": value}, "array": [value]}[location]
+    arguments = {"command": "inert", "timeout": argument}
+    with pytest.raises(ServiceError) as error:
+        parse_command(json.dumps({"tool": "bash_exec", "arguments": arguments}))
+    assert str(error.value) == "The agent returned an invalid tool command."
+    assert error.value.status == 502
+    assert error.value.code == "invalid_command"
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_streamed_command_is_an_invalid_command(value):
+    reply = call("shell_exec_command", command="inert", timeout=value)
+    with pytest.raises(ServiceError) as error:
+        invoke(completed(reply))
+    assert str(error.value) == "The agent returned an invalid tool command."
+    assert error.value.status == 502
+    assert error.value.code == "invalid_command"
+
+
+def test_finite_command_arguments_and_nan_text_survive_checkpoint():
+    arguments = {
+        "command": "NaN",
+        "values": [-1.5, 0, "-1.5", "NaN", None, {"value": 2.5}],
+    }
+    command = ToolCommand(tool="bash_exec", arguments=arguments)
+    assert parse_command(command.model_dump_json()).arguments == arguments
+    assert invoke(completed(call("shell_exec_command", command="NaN"))).arguments == {
+        "command": "NaN"
+    }
 
 
 @pytest.mark.parametrize(
