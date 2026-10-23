@@ -53,11 +53,10 @@ public:
     ChatEngine(
         std::shared_ptr<Resources> resources,
         Progress progress,
-        std::function<void(const std::string&)> content,
-        ModelStore& store
+        std::function<void(const std::string&)> content
     )
         : resources_(std::move(resources)), progress_(std::move(progress)),
-          content_(std::move(content)), store_(store) {
+          content_(std::move(content)) {
     }
 
     void load(
@@ -151,15 +150,8 @@ public:
 
     Json
     execute(const InferenceRequest& request, const std::atomic_bool& cancel) override {
-        if (request.operation == Operation::load) {
-            const auto& input = std::get<ChatRequest>(request.input);
-            if (input.context_supplied)
-                store_.set_context(
-                    request.model,
-                    input.context_limit ? Json(*input.context_limit) : Json(nullptr)
-                );
+        if (request.operation == Operation::load)
             return Json::object();
-        }
         const auto started = std::chrono::steady_clock::now();
         auto first = started, last = started;
         check_cancel(cancel);
@@ -294,7 +286,6 @@ private:
     std::shared_ptr<Resources> resources_;
     Progress progress_;
     std::function<void(const std::string&)> content_;
-    ModelStore& store_;
     std::unique_ptr<text::Engine> model_;
     std::unique_ptr<text::Tokenizer> tokenizer_;
     std::unique_ptr<HostAllocation> request_memory_;
@@ -306,11 +297,10 @@ private:
 std::unique_ptr<InferenceEngine> chat_engine(
     std::shared_ptr<Resources> resources,
     Progress progress,
-    std::function<void(const std::string&)> content,
-    ModelStore& store
+    std::function<void(const std::string&)> content
 ) {
     return std::make_unique<ChatEngine>(
-        std::move(resources), std::move(progress), std::move(content), store
+        std::move(resources), std::move(progress), std::move(content)
     );
 }
 }  // namespace kadan::serving
