@@ -10,7 +10,9 @@ from fastapi import WebSocketDisconnect
 from pydantic import ValidationError
 
 from api.pydantic_models.inference_task import InferenceTask
+from api.services.inference import InferenceService
 from api.services.inference_errors import InferenceFailure
+from api.services.inference_worker import InferenceJob, WorkerEvent
 from api.services.memory_scheduler import GIB, MachineLedger, Requirement, WorkerSlot
 from api.services.worker_hub import (
     RELEASE_TIMEOUT,
@@ -202,6 +204,330 @@ class HubTestCase(unittest.IsolatedAsyncioTestCase):
     async def settle(self):
         for _ in range(20):
             await asyncio.sleep(0)
+
+
+class LifecycleResidencyTests(HubTestCase):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.service = InferenceService()
+        self.service.worker = self.hub
+        self.hub.on_event = self.service._observe
+
+    def language_request(
+        self, worker, *, operation="load", effective=8192, terminal="succeeded"
+    ):
+        job = InferenceJob(
+            InferenceTask(operation=operation, input={"feature": "llm"}), False
+        )
+        job.worker = "llm"
+        job.machines.add(worker.id)
+        worker.jobs.add(job.request.id)
+        self.hub.jobs[job.request.id] = job
+        worker.slot.loaded = True
+        self.hub._job_event(
+            worker,
+            WorkerEvent(
+                id=job.request.id,
+                state="progress",
+                phase="prepared",
+                model="m",
+                context={
+                    "configured": 65536,
+                    "effective": effective,
+                    "supported": 262144,
+                },
+            ),
+        )
+        self.hub._job_event(
+            worker,
+            WorkerEvent(
+                id=job.request.id,
+                state=terminal,
+                error="Failed request" if terminal == "failed" else "",
+            ),
+        )
+
+    async def failure_then_surviving_copy(self):
+        _, first = await self.connect("llm", instance="first")
+        self.language_request(first, effective=4096)
+        self.language_request(first, effective=4096, terminal="failed")
+        self.assertFalse(first.residency_known)
+        socket, second = await self.connect("llm", instance="second")
+        self.language_request(second, effective=8192)
+        status = self.service.status()
+        self.assertEqual(status["state"], "ready")
+        self.assertEqual(status["effective_context_limit"], 8192)
+        return first, socket, second
+
+    async def test_failed_copy_cannot_resurrect_after_survivor_disconnects(self):
+        _, socket, _ = await self.failure_then_surviving_copy()
+        await socket.close()
+        await self.settle()
+        status = self.service.status()
+        self.assertEqual(status["state"], "error")
+        self.assertIn("unconfirmed", status["error"])
+        self.assertIsNone(status["effective_context_limit"])
+        self.assertEqual(status["model_id"], "m")
+        self.assertEqual(status["configured_context_limit"], 65536)
+
+    async def test_failed_copy_cannot_resurrect_after_survivor_releases(self):
+        _, _, second = await self.failure_then_surviving_copy()
+        await self.hub._dispatch(
+            second,
+            {
+                "state": "worker",
+                "worker": "llm",
+                "event": "offloaded",
+                "model": None,
+                "loaded": False,
+                "budget": [0, 0],
+            },
+        )
+        status = self.service.status()
+        self.assertEqual(status["state"], "error")
+        self.assertIsNone(status["effective_context_limit"])
+
+    async def test_cancelled_preparation_is_unknown_instead_of_confirmed_unload(self):
+        _, worker = await self.connect("llm")
+        self.language_request(worker, effective=4096)
+        worker.slot.budget = [GIB, GIB]
+        self.language_request(worker, terminal="cancelled")
+        self.assertFalse(worker.residency_known)
+        self.assertTrue(worker.slot.loaded)
+        self.assertEqual(worker.slot.budget, [GIB, GIB])
+        self.assertEqual(self.service.status()["state"], "error")
+        self.assertIsNone(self.service.status()["effective_context_limit"])
+        self.assertEqual(self.service.status()["configured_context_limit"], 65536)
+
+    async def test_snapshot_without_model_does_not_resolve_unknown_residency(self):
+        _, worker = await self.connect("llm")
+        self.language_request(worker)
+        self.language_request(worker, terminal="cancelled")
+        await self.hub._dispatch(
+            worker,
+            {
+                "state": "worker",
+                "worker": "llm",
+                "loaded": True,
+                "budget": [GIB, GIB],
+            },
+        )
+        self.assertFalse(worker.residency_known)
+        self.assertIsNone(self.service.status()["effective_context_limit"])
+
+    async def test_resynchronization_resolves_unknown_without_old_effective_context(
+        self,
+    ):
+        first, socket, _ = await self.failure_then_surviving_copy()
+        await socket.close()
+        await self.settle()
+        first.slot.releasing = True
+        first.control = AsyncMock(
+            return_value={
+                "workers": [
+                    {
+                        "worker": "llm",
+                        "model": "m",
+                        "loaded": True,
+                        "budget": [GIB, GIB],
+                    }
+                ]
+            }
+        )
+        await self.hub._resynchronize(first.computer)
+        self.assertTrue(first.residency_known)
+        self.assertEqual(self.service.status()["state"], "ready")
+        self.assertIsNone(self.service.status()["effective_context_limit"])
+        first.slot.releasing = True
+        first.control.return_value = {
+            "workers": [
+                {"worker": "llm", "model": None, "loaded": False, "budget": [0, 0]}
+            ]
+        }
+        await self.hub._resynchronize(first.computer)
+        self.assertTrue(first.residency_known)
+        self.assertEqual(self.service.status()["state"], "unloaded")
+        self.assertIsNone(self.service.status()["effective_context_limit"])
+
+    async def test_confirmed_idle_release_clears_residency_but_keeps_context_setting(
+        self,
+    ):
+        _, worker = await self.connect("llm")
+        self.language_request(worker)
+        self.assertEqual(self.service.status()["state"], "ready")
+        worker.slot.releasing = True
+        self.assertEqual(self.service.status()["state"], "ready")
+        await self.hub._dispatch(
+            worker,
+            {
+                "state": "worker",
+                "worker": "llm",
+                "event": "offloaded",
+                "model": None,
+                "loaded": False,
+                "budget": [128, 0],
+            },
+        )
+        status = self.service.status()
+        self.assertEqual(status["state"], "unloaded")
+        self.assertIsNone(status["model_id"])
+        self.assertIsNone(status["effective_context_limit"])
+        self.assertEqual(status["configured_context_limit"], 65536)
+        self.assertEqual(worker.slot.budget, [128, 0])
+
+    async def test_resize_budget_does_not_claim_an_engine_is_resident(self):
+        _, worker = await self.connect("llm")
+        self.language_request(worker)
+        await self.hub._dispatch(
+            worker,
+            {
+                "state": "worker",
+                "worker": "llm",
+                "event": "resized",
+                "model": None,
+                "loaded": True,
+                "budget": [GIB, GIB],
+            },
+        )
+        self.assertTrue(worker.slot.loaded)
+        self.assertEqual(self.service.status()["state"], "unloaded")
+        self.assertIsNone(self.service.status()["effective_context_limit"])
+
+    async def test_idle_disconnect_cannot_leave_ready_status(self):
+        socket, worker = await self.connect("llm")
+        self.language_request(worker)
+        await socket.close()
+        await self.settle()
+        self.assertNotIn(worker.id, self.hub.workers)
+        self.assertEqual(self.service.status()["state"], "unloaded")
+
+    async def test_disconnected_load_cannot_leave_loading_or_effective_context(self):
+        socket, worker = await self.connect("llm")
+        job = InferenceJob(
+            InferenceTask(operation="load", input={"feature": "llm"}), False
+        )
+        job.worker = "llm"
+        job.machines.add(worker.id)
+        worker.jobs.add(job.request.id)
+        self.hub.jobs[job.request.id] = job
+        self.hub._job_event(
+            worker,
+            WorkerEvent(
+                id=job.request.id,
+                state="loading",
+                model="m",
+                context={"configured": 65536, "effective": 8192, "supported": 262144},
+            ),
+        )
+        self.assertEqual(self.service.status()["state"], "loading")
+        await socket.close()
+        await self.settle()
+        self.assertTrue(job.result.done())
+        self.assertEqual(self.service.status()["state"], "unloaded")
+        self.assertIsNone(self.service.status()["effective_context_limit"])
+        self.assertEqual(self.service.status()["configured_context_limit"], 65536)
+
+    async def test_surviving_same_model_uses_its_own_effective_context(self):
+        _, first = await self.connect("llm", instance="first")
+        self.language_request(first, effective=4096)
+        socket, second = await self.connect("llm", instance="second")
+        self.language_request(second, effective=8192)
+        await socket.close()
+        await self.settle()
+        self.assertNotIn(second.id, self.hub.workers)
+        status = self.service.status()
+        self.assertEqual((status["state"], status["model_id"]), ("ready", "m"))
+        self.assertEqual(status["effective_context_limit"], 4096)
+
+    async def test_other_workload_loading_does_not_offload_resident_language_model(
+        self,
+    ):
+        _, worker = await self.connect("llm")
+        self.language_request(worker)
+        job = InferenceJob(image(), False)
+        self.service._observe(
+            job, WorkerEvent(state="loading", context={"effective": 1})
+        )
+        status = self.service.status()
+        self.assertEqual(status["state"], "ready")
+        self.assertEqual(status["effective_context_limit"], 8192)
+        self.assertEqual(status["configured_context_limit"], 65536)
+
+    async def test_explicit_unload_success_clears_residency(self):
+        _, worker = await self.connect(
+            "llm", store=models(checkpoints=[checkpoint("m", context_limit=65536)])
+        )
+        self.language_request(worker)
+        self.language_request(worker, operation="unload")
+        self.assertIsNone(worker.resident_model)
+        self.assertEqual(self.service.status()["state"], "unloaded")
+        self.assertIsNone(self.service.status()["effective_context_limit"])
+        self.assertEqual(self.service.models_status().models[0].context_limit, 65536)
+
+    async def test_confirmed_status_resynchronization_updates_residency(self):
+        _, worker = await self.connect("llm")
+        self.language_request(worker)
+        worker.slot.releasing = True
+        worker.control = AsyncMock(
+            return_value={
+                "workers": [
+                    {"worker": "llm", "model": None, "loaded": False, "budget": [0, 0]}
+                ]
+            }
+        )
+        await self.hub._resynchronize(worker.computer)
+        self.assertEqual(self.service.status()["state"], "unloaded")
+
+    async def test_cache_release_does_not_hide_a_resident_engine(self):
+        _, worker = await self.connect("llm")
+        self.language_request(worker)
+        await self.hub._dispatch(
+            worker,
+            {
+                "state": "worker",
+                "worker": "llm",
+                "event": "cache_released",
+                "model": "m",
+                "loaded": True,
+                "budget": [GIB, GIB],
+            },
+        )
+        self.assertEqual(self.service.status()["state"], "ready")
+        self.assertEqual(self.service.status()["effective_context_limit"], 8192)
+
+    async def test_settings_completion_keeps_existing_engine_observation(self):
+        _, worker = await self.connect("llm")
+        self.language_request(worker)
+        job = InferenceJob(
+            InferenceTask(
+                operation="configure", input={"feature": "tier_selection", "tier": "go"}
+            ),
+            False,
+        )
+        job.machines.add(worker.id)
+        worker.jobs.add(job.request.id)
+        self.hub.jobs[job.request.id] = job
+        self.hub._job_event(worker, WorkerEvent(id=job.request.id, state="succeeded"))
+        self.assertEqual(self.service.status()["state"], "ready")
+        self.assertEqual(self.service.status()["effective_context_limit"], 8192)
+
+    async def test_unidentified_resident_snapshot_does_not_reuse_another_models_context(
+        self,
+    ):
+        _, worker = await self.connect("llm")
+        self.language_request(worker)
+        await self.hub._dispatch(
+            worker,
+            {
+                "state": "worker",
+                "worker": "llm",
+                "model": "other",
+                "loaded": True,
+                "budget": [GIB, GIB],
+            },
+        )
+        self.assertEqual(worker.resident_context, {})
+        self.assertEqual(self.service.status()["state"], "unloaded")
 
 
 class AuthorizationTests(unittest.TestCase):
