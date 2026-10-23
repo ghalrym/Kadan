@@ -199,7 +199,7 @@ export function ResourceEditor({
     if (!canCopy || pending) return;
     const copy = structuredClone(resourceInput(draft));
     copy.title = copy.title.trim()
-      ? `Copy of ${copy.title.trim()}`.slice(0, 300)
+      ? `Copy of ${copy.title.trim()}`.slice(0, 300).replace(/[\uD800-\uDBFF]$/, "")
       : "";
     setCurrent(null);
     setDraft(copy);

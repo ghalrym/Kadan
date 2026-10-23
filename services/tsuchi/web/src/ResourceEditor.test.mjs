@@ -272,6 +272,31 @@ test("copy bounds the title and leaves blank titles requiring a useful name", ()
   }
 });
 
+for (const [boundary, title, expected] of [
+  ["split emoji", `${"a".repeat(291)}😀`, `Copy of ${"a".repeat(291)}`],
+  ["intact emoji", `${"a".repeat(290)}😀`, `Copy of ${"a".repeat(290)}😀`],
+  ["emoji-rich original", "😀".repeat(150), `Copy of ${"😀".repeat(146)}`],
+]) {
+  test(`copy keeps a well-formed title within 300 UTF-16 units at the ${boundary} boundary`, async () => {
+    const view = editor(saved("memory", { title }));
+    view.click("Make a copy");
+    const copiedTitle = view.title();
+    assert.equal(copiedTitle.isWellFormed(), true);
+    assert.ok(copiedTitle.length <= 300);
+    assert.equal(copiedTitle, expected);
+    assert.equal(view.element("input").props.maxLength, 300);
+    assert.equal(view.requests.length, 0);
+    view.respond((_path, options) => saved("memory", { ...JSON.parse(options.body), id: "copy", version: 1 }));
+    view.submit();
+    await view.settle();
+    assert.equal(view.requests.length, 1);
+    const { path, method, body } = view.requests[0];
+    assert.equal(path, "/api/agents/guide/resources");
+    assert.equal(method, "POST");
+    assert.equal(JSON.parse(body).title, copiedTitle);
+  });
+}
+
 test("copy returns to content editing and preserves the dirty-close warning", () => {
   const view = editor(saved());
   view.click("Preview");
