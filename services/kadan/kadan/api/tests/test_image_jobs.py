@@ -307,3 +307,121 @@ def test_heartbeat_observes_cancellation_of_pending_generation(monkeypatch):
 
     monkeypatch.setattr("kadan.runner.image_jobs.HEARTBEAT_SECONDS", 0.001)
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("recovering", [False, True])
+@pytest.mark.parametrize(
+    "unusable", ["trashed", "missing_bytes", "invalid_png", "checksum"]
+)
+def test_unusable_saved_image_fails_visibly_without_resubmission(recovering, unusable):
+    async def run():
+        services, images, job = setup()
+        asset_id = uuid5(job.id, "image")
+        services.assets[str(asset_id)] = {
+            "id": str(asset_id),
+            "agent_key": job.agent_key,
+            "media_type": "image/png",
+            "sha256": hashlib.sha256(png()).hexdigest(),
+        }
+        if unusable == "trashed":
+            services.assets[str(asset_id)]["deleted_at"] = datetime.now(UTC).isoformat()
+        elif unusable == "checksum":
+            services.assets[str(asset_id)]["sha256"] = "0" * 64
+        else:
+            services.client.get.return_value = httpx.Response(
+                404 if unusable == "missing_bytes" else 200,
+                content=b"not a PNG",
+                request=httpx.Request("GET", "http://tsuchi"),
+            )
+        services.client.post.side_effect = httpx.ReadError("Interrupted generation")
+        await images.process(job, recovering=recovering)
+        assert services.job.status == "failed"
+        assert {
+            "trashed": "trash",
+            "missing_bytes": "missing",
+            "invalid_png": "verified",
+            "checksum": "checksum",
+        }[unusable] in services.job.error
+        assert services.job.asset_id is None
+        assert services.job.owner_id is None
+        assert services.job.lease_expires_at is None
+        assert services.runs.wakeup.is_set()
+        assert services.fences
+        assert services.client.post.await_count == (0 if recovering else 1)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "metadata",
+        "content",
+        "network",
+        "cleanup",
+        "ownership",
+        "lease",
+        "persistence",
+        "identity",
+        "metadata_schema",
+    ],
+)
+def test_uncertain_recovery_remains_active_without_resubmission(failure):
+    async def run():
+        services, images, job = setup()
+        asset_id = uuid5(job.id, "image")
+        services.assets[str(asset_id)] = {
+            "id": str(asset_id),
+            "agent_key": job.agent_key,
+            "media_type": "image/png",
+            "sha256": hashlib.sha256(png()).hexdigest(),
+        }
+        original = services.json_request
+
+        async def request(service, method, path, **kwargs):
+            if failure == "metadata" and method == "GET" and "/assets/" in path:
+                raise ServiceError("Storage unavailable", 503)
+            if failure == "persistence" and method == "PUT":
+                raise ServiceError("Save unavailable", 503)
+            if failure == "lease" and method == "PUT":
+                raise ServiceError("Lease expired", 409, "image_lease_lost")
+            return await original(service, method, path, **kwargs)
+
+        services.json_request = request
+        if failure == "content":
+            services.client.get.return_value = httpx.Response(
+                503, request=httpx.Request("GET", "http://tsuchi")
+            )
+        elif failure == "network":
+            services.client.get.side_effect = httpx.ReadTimeout("Storage unavailable")
+        elif failure == "cleanup":
+            services.fail_fence = True
+        elif failure == "ownership":
+            services.job = job.model_copy(update={"owner_id": uuid4()})
+        elif failure == "identity":
+            services.assets[str(asset_id)]["id"] = str(uuid4())
+        elif failure == "metadata_schema":
+            services.assets[str(asset_id)]["sha256"] = "invalid"
+        before = services.job
+        await images.process(job, recovering=True)
+        assert services.job == before
+        assert not services.runs.wakeup.is_set()
+        services.client.post.assert_not_awaited()
+        if failure in {"cleanup", "ownership"}:
+            services.client.get.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_cancellation_finishes_without_reading_unusable_saved_output():
+    async def run():
+        services, images, job = setup()
+        services.job = job.model_copy(update={"status": "cancelling"})
+        services.client.get.side_effect = AssertionError("Cancelled output is not read")
+        await images.process(services.job, recovering=True)
+        assert services.job.status == "cancelled"
+        assert services.job.error is None
+        services.client.get.assert_not_awaited()
+        services.client.post.assert_not_awaited()
+
+    asyncio.run(run())
