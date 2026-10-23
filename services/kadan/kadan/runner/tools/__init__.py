@@ -18,9 +18,10 @@ from . import (
     shell,
     skills,
     util,
+    workspace,
 )
 
-CONVERSATION_TOOLS: list[StructuredTool] = conversation.TOOLS
+CONVERSATION_TOOLS: list[StructuredTool] = [*conversation.TOOLS, *workspace.TOOLS]
 MEMORY_TOOLS: list[StructuredTool] = memory.TOOLS
 COMPUTER_TOOLS: list[StructuredTool] = [
     *browser.TOOLS,
