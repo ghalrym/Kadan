@@ -157,6 +157,98 @@ class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
         state = self.service.models_status().models[0]
         self.assertEqual((state.status, state.error), ("failed", "Integrity failure"))
 
+    async def test_lost_download_completion_allows_incomplete_tier_to_resume(self):
+        for active in ("downloading", "cancelling"):
+            with self.subTest(status=active):
+                await self.service.download("small", True)
+                job = next(iter(self.service.worker.jobs.values()))
+                self.service.downloads["small"].status = active
+                job.result.set_exception(InferenceFailure("Worker disconnected.", 503))
+                with self.assertRaisesRegex(InferenceFailure, "Worker disconnected"):
+                    await asyncio.gather(*self.service.tasks.values())
+                self.assertFalse(self.service.worker.jobs)
+
+                # A replacement worker reports the retained, incomplete store.
+                self.service.worker.models = snapshot()
+                self.service.worker.models.tiers = [
+                    HardwareTier(
+                        id="go",
+                        name="Go",
+                        vram_gb=8,
+                        ram_gb=32,
+                        video_defaults={"duration": 5, "resolution": "480p"},
+                        models={"llm": "small"},
+                    )
+                ]
+                state = self.service.models_status().models[0]
+                self.assertEqual(
+                    (state.status, state.error), ("failed", "Worker disconnected.")
+                )
+                await self.service.download_tier("go", True)
+                retry = next(iter(self.service.worker.jobs.values()))
+                self.assertNotEqual(retry.request.id, job.request.id)
+                self.assertEqual(
+                    self.service.models_status().models[0].status, "downloading"
+                )
+                self.service.worker.models.models[0].status = "complete"
+                self.service._observe(retry, WorkerEvent(state="succeeded"))
+                retry.result.set_result({})
+                await asyncio.gather(*self.service.tasks.values())
+                self.assertEqual(
+                    self.service.models_status().models[0].status, "complete"
+                )
+
+    async def test_completion_failure_preserves_observed_terminal_download_outcomes(
+        self,
+    ):
+        for terminal in ("failed", "cancelled", "succeeded"):
+            with self.subTest(status=terminal):
+                await self.service.download("small", True)
+                job = next(iter(self.service.worker.jobs.values()))
+                observed_error = "" if terminal == "succeeded" else "Observed outcome"
+                self.service._observe(
+                    job, WorkerEvent(state=terminal, error=observed_error)
+                )
+                job.result.set_exception(InferenceFailure("Worker disconnected.", 503))
+                with self.assertRaises(InferenceFailure):
+                    await asyncio.gather(*self.service.tasks.values())
+                state = self.service.models_status().models[0]
+                self.assertEqual(
+                    (state.status, state.error),
+                    (
+                        "complete" if terminal == "succeeded" else terminal,
+                        observed_error or None,
+                    ),
+                )
+
+    async def test_completed_worker_snapshot_survives_download_completion_failure(self):
+        await self.service.download("small", True)
+        job = next(iter(self.service.worker.jobs.values()))
+        self.service.worker.models.models[0].status = "complete"
+        job.result.set_exception(InferenceFailure("Worker disconnected.", 503))
+        with self.assertRaises(InferenceFailure):
+            await asyncio.gather(*self.service.tasks.values())
+        state = self.service.models_status().models[0]
+        self.assertEqual((state.status, state.error), ("complete", None))
+
+    async def test_late_download_failure_does_not_mark_a_new_retry_failed(self):
+        await self.service.download("small", True)
+        prior = next(iter(self.service.worker.jobs.values()))
+        completion = self.service.tasks[prior.request.id]
+        prior.result.set_exception(InferenceFailure("Worker disconnected.", 503))
+        await self.service.download("small", True)
+        retry = next(
+            job for job in self.service.worker.jobs.values() if job is not prior
+        )
+        with self.assertRaises(InferenceFailure):
+            await completion
+        state = self.service.models_status().models[0]
+        self.assertEqual((state.status, state.error), ("downloading", None))
+        self.service.worker.models.models[0].status = "complete"
+        self.service._observe(retry, WorkerEvent(state="succeeded"))
+        retry.result.set_result({})
+        await asyncio.gather(*self.service.tasks.values())
+
 
 class SettingsTaskTests(unittest.TestCase):
     def test_all_settings_tasks_round_trip(self):
