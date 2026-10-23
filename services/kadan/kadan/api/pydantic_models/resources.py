@@ -64,3 +64,11 @@ class Resource(BaseModel):
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None = None
+
+
+class WorkspaceDocument(Resource):
+    kind: Literal[ResourceKind.SPACE, ResourceKind.DECK]
+
+
+class Memory(Resource):
+    kind: Literal[ResourceKind.MEMORY]

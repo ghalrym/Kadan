@@ -1285,6 +1285,8 @@ class Repository:
         trash: bool = False,
         limit: int = 100,
         offset: int = 0,
+        *,
+        kinds: list[ResourceKind] | None = None,
     ) -> list[Resource]:
         with self.connect() as db:
             self._agent(db, key)
@@ -1292,6 +1294,12 @@ class Repository:
             if kind:
                 clauses.append("r.kind = ?")
                 params.append(kind.value)
+            if kinds is not None:
+                if not kinds:
+                    return []
+                placeholders = ", ".join("?" for _ in kinds)
+                clauses.append(f"r.kind IN ({placeholders})")
+                params.extend(kind.value for kind in kinds)
             expression = search_expression(query)
             if query.strip() and not expression:
                 return []

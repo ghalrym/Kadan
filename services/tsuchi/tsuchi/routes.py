@@ -324,8 +324,11 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         trash: bool = False,
         limit: Annotated[int, Query(ge=1, le=200)] = 100,
         offset: Annotated[int, Query(ge=0)] = 0,
+        kinds: Annotated[list[ResourceKind] | None, Query()] = None,
     ):
-        return repository.list_resources(key, kind, q, trash, limit, offset)
+        return repository.list_resources(
+            key, kind, q, trash, limit, offset, kinds=kinds
+        )
 
     @router.post("/agents/{key}/resources", response_model=Resource, status_code=201)
     def create_resource(key: AgentKey, value: ResourceInput):
