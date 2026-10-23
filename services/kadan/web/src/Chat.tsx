@@ -32,6 +32,7 @@ interface Props {
 const BREAK_MS = 4 * 60 * 60 * 1000;
 /** Older messages render on request so a long chain opens quickly. */
 const PAGE = 200;
+const NEAR_LATEST = 80;
 const ROLE = { user: "You", assistant: "Assistant", system: "System", tool: "Tool" } as const;
 
 function breakLabel(value: string) {
@@ -117,6 +118,10 @@ export default function Chat({
   const find = findState.scope === scope ? findState : closedFind;
   const findButton = useRef<HTMLButtonElement>(null);
   const messageElements = useRef(new Map<string, HTMLElement>());
+  const messages = useRef<HTMLDivElement>(null);
+  const followLatest = useRef(true);
+  const jumpRequested = useRef(false);
+  const [away, setAway] = useState(false);
   const [card, setCard] = useState(false);
   const [computer, setComputer] = useState(false);
   const closeCard = useCallback(() => setCard(false), []);
@@ -128,7 +133,6 @@ export default function Chat({
   const sendLock = useRef(false);
   const callbacks = useRef({ onChange, refreshStatus });
   callbacks.current = { onChange, refreshStatus };
-  const end = useRef<HTMLDivElement>(null);
   const ready = readiness(status);
   const [dictating, setDictating] = useState(false);
   const voiceCall = useVoiceCall(
@@ -153,12 +157,15 @@ export default function Chat({
               : "idle",
   );
   const items = outgoing ? [...saved, outgoing] : saved;
+  const previousItems = useRef({ scope, count: items.length });
   const query = find.open ? find.query.trim().toLowerCase() : "";
+  const addedItems = previousItems.current.scope === scope ? Math.max(0, items.length - previousItems.current.count) : 0;
+  const shownCount = shown + ((!followLatest.current || query) ? addedItems : 0);
   const matches = query ? saved.filter((message) => message.content.toLowerCase().includes(query)) : [];
   const match = matches.find((message) => message.id === find.messageId) ?? matches[0];
   const matchIndex = match ? matches.indexOf(match) : -1;
   const matchShown = match ? items.length - items.findIndex((message) => message.id === match.id) : 0;
-  const visible = items.slice(-shown);
+  const visible = items.slice(-shownCount);
   const hidden = items.length - visible.length;
   let lastUser = visible.length - 1;
   while (lastUser >= 0 && visible[lastUser].role !== "user") lastUser--;
@@ -170,24 +177,39 @@ export default function Chat({
         : "Delivered";
 
   useLayoutEffect(() => {
-    // Open at the newest message without animating through the history.
-    end.current?.scrollIntoView({ block: "end" });
-  }, []);
-  useEffect(() => {
-    // A query owns the scroll position until the user clears or closes it.
-    if (!query) end.current?.scrollIntoView({ block: "end", behavior: "smooth" });
-  }, [items.length, typing]);
-  useEffect(() => {
+    followLatest.current = true;
+    setAway(false);
     setFind({ scope, open: false, query: "", messageId: "" });
     setShown(PAGE);
+    previousItems.current = { scope, count: items.length };
+    scrollToLatest();
   }, [scope]);
   useLayoutEffect(() => {
-    if (matchShown > shown) setShown(matchShown);
-  }, [matchShown, shown]);
-  const matchVisible = matchShown > 0 && matchShown <= shown;
+    const added = items.length - previousItems.current.count;
+    if (previousItems.current.scope === scope && added > 0 && (!followLatest.current || query)) {
+      // Keep the message being read inside the presentation window as replies arrive.
+      setShown((count) => count + added);
+    }
+    previousItems.current = { scope, count: items.length };
+    if (!query && followLatest.current) scrollToLatest();
+  }, [scope, items.length, typing]);
   useLayoutEffect(() => {
-    if (match && matchVisible) messageElements.current.get(match.id)?.scrollIntoView({ block: "center" });
+    if (matchShown > shownCount) setShown((count) => Math.max(count, matchShown));
+  }, [matchShown, shownCount]);
+  const matchVisible = matchShown > 0 && matchShown <= shownCount;
+  useLayoutEffect(() => {
+    if (match && matchVisible) {
+      followLatest.current = false;
+      setAway(true);
+      messageElements.current.get(match.id)?.scrollIntoView({ block: "center" });
+    }
   }, [match?.id, query, matchVisible]);
+  useLayoutEffect(() => {
+    if (!jumpRequested.current) return;
+    jumpRequested.current = false;
+    scrollToLatest();
+    messages.current?.focus({ preventScroll: true });
+  });
   useEffect(() => {
     if (match && match.id !== find.messageId) setFind({ ...find, messageId: match.id });
   }, [match?.id, find.messageId]);
@@ -256,6 +278,10 @@ export default function Chat({
     });
     const messageId = message.id;
     const personaId = message.persona;
+    if (!query) {
+      followLatest.current = true;
+      setAway(false);
+    }
     savePending(message);
     sendLock.current = true;
     mutation.current++;
@@ -386,10 +412,20 @@ export default function Chat({
     setFind(closedFind);
     findButton.current?.focus();
   }
+  function scrollToLatest() {
+    const element = messages.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }
   function moveMatch(direction: number) {
     if (!matches.length) return;
     const index = (matchIndex + direction + matches.length) % matches.length;
     setFind({ ...find, messageId: matches[index].id });
+  }
+  function jumpToLatest() {
+    setFind(closedFind);
+    followLatest.current = true;
+    setAway(false);
+    jumpRequested.current = true;
   }
   return (
     <div className={`chat-split ${computer ? "with-computer" : ""}`}>
@@ -437,7 +473,13 @@ export default function Chat({
           </form>
         )}
       </div>
-      <div className="messages">
+      <div className="messages" ref={messages} role="region" aria-label="Conversation messages" tabIndex={-1}
+        onScroll={(event) => {
+          const element = event.currentTarget;
+          const near = element.scrollHeight - element.clientHeight - element.scrollTop <= NEAR_LATEST;
+          followLatest.current = near;
+          setAway(!near);
+        }}>
         <div className={`messages-inner ${empty ? "is-empty" : ""}`}>
           {empty ? (
             <div className="home-stage">
@@ -542,9 +584,11 @@ export default function Chat({
               {cancellableImage(job) && <button disabled={stopping} onClick={() => void cancelImage(job)}>Stop image</button>}
             </div>
           ))}
-          <div ref={end} />
         </div>
       </div>
+      {(away || query) && <button type="button" className="jump-latest" onClick={jumpToLatest}>
+        <ArrowDown size={14} />{find.open ? "Close find and jump to latest" : "Jump to latest"}
+      </button>}
       {(error || pollError) && (
         <div className="banner inline" role="alert">
           {error || pollError}
