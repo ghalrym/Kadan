@@ -1,6 +1,6 @@
 # Persona instructions
 
-Personas are versioned Tsuchi resources scoped to an agent. Kadan's normal navigation does not expose the standalone persona editor. The resource APIs and editor source remain available, and updates to the name and Markdown instructions preserve other resource metadata. See [Personas](../../user-expectations/kadan/personas.md) for user expectations.
+Personas are versioned Tsuchi resources scoped to an agent. Kadan's normal navigation does not expose the standalone persona editor. The resource APIs and editor source remain available, and updates to the name and Markdown instructions preserve other resource metadata. See the privately provided expectations for personas.
 
 A queued message stores `persona_id`, not a copy of its instructions. Context preparation reads the current saved persona, verifies its kind and active state, and appends its Markdown to the agent's base instructions. Missing or trashed personas fail explicitly. The prepared instruction snapshot is persisted with the run, so recovery does not substitute later edits into work already started.
 

@@ -1,6 +1,6 @@
 # Memory tools
 
-The runner supplies the agent namespace to `AgentMemories`; tool arguments cannot change it. List and ordinary read operations expose active memory resources only. `read_memory` accepts `include_trashed` for checking uncertain writes; a trashed result includes identity, title, version and deletion time without Markdown or tags. Writes reject other resource kinds, other namespaces and mismatched resource IDs. See [Forgetting memories](../../user-expectations/kadan/forgetting-memories.md) for user expectations.
+The runner supplies the agent namespace to `AgentMemories`; tool arguments cannot change it. List and ordinary read operations expose active memory resources only. `read_memory` accepts `include_trashed` for checking uncertain writes; a trashed result includes identity, title, version and deletion time without Markdown or tags. Writes reject other resource kinds, other namespaces and mismatched resource IDs. See the privately provided expectations for forgetting memories.
 
 `forget_memory` reads the active record and checks the supplied version before calling Tsuchi's existing resource DELETE with `expected_version` in the query. Tsuchi checks the version again in its write transaction and preserves the record and revision history. A successful tool result requires a matching memory with a deletion time and the next version. No storage schema or API changes are required.
 

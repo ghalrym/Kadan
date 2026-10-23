@@ -17,7 +17,7 @@ The runner includes at most 97 recent user and assistant messages, subject to th
 
 Browser selection is local, and per-agent drafts use the tab's session storage. The outbox retains the original message identity, mode and persona for reconciliation and retry. Browser state is not a durable work queue.
 
-See [Agent conversations](../../user-expectations/kadan/agent-conversations.md) for the product behavior and [Persona instructions](personas.md) for instruction snapshots.
+The privately provided expectations for agent conversations describe the product behavior. See [Persona instructions](personas.md) for instruction snapshots.
 
 ## Model decisions and delivery
 
@@ -43,4 +43,4 @@ The human-maintained `services/kadan/AGENT.md` supplies base instructions. Conte
 
 The image includes `/app/AGENT.md`. Operators can bind-mount an edited file read-only there, or set `KADAN_AGENT_INSTRUCTION_FILE` to another readable file. Supply the same intended file to every runner. It is separate from memories and persona records, and changing it does not alter tool schemas, run limits, ownership or cancellation rules.
 
-See [Shared agent instructions](../../user-expectations/kadan/agent-instructions.md) for user expectations.
+See the privately provided expectations for shared agent instructions.

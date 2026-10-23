@@ -52,7 +52,7 @@ Formatting defaults on unless its saved setting changes. An omitted or null `for
 
 The browser keeps audio and results locally. Cancel ignores late results while server cleanup finishes; navigation also stops recording, releases microphone access and aborts pending requests. Clipboard failure does not change the transcription result.
 
-See [Speech to text and formatting](../../user-expectations/hikari/transcription.md) for user expectations.
+See the privately provided expectations for speech to text and formatting.
 
 ## Pinned Whisper assets
 
