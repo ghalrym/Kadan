@@ -1077,6 +1077,66 @@ def test_zero_context_budget_does_not_fall_back_to_default(boundary):
         asyncio.run(boundary.controller.context(boundary.current, limit=0))
 
 
+@pytest.mark.parametrize("loss", ["message_limit", "budget", "removed", "role_changed"])
+def test_quoted_trigger_id_does_not_admit_an_absent_user_message(boundary, loss):
+    target = boundary.conversation.messages[0]
+    quote = Message(role="user", content=f"The earlier message ID was {target.id}")
+    if loss == "message_limit":
+        messages = [
+            target,
+            *[Message(role="user", content="Later") for _ in range(96)],
+            quote,
+        ]
+    elif loss == "budget":
+        messages = [target, Message(role="assistant", content="x" * MAX_CONTEXT), quote]
+    elif loss == "removed":
+        messages = [quote]
+    else:
+        messages = [target.model_copy(update={"role": "assistant"}), quote]
+    boundary.conversation = boundary.conversation.model_copy(
+        update={"messages": messages}
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert (
+        boundary.current.error
+        == "The triggering message is outside the agent context window."
+    )
+    assert boundary.current.owner_id is None
+    assert boundary.current.lease_expires_at is None
+    assert boundary.controller.inference.calls == []
+    assert boundary.deliveries == []
+
+
+def test_actual_user_trigger_is_admitted_at_the_existing_history_limit(boundary):
+    target = boundary.conversation.messages[0]
+    messages = [
+        Message(role="assistant", content="Older excluded history"),
+        target,
+        *[Message(role="user", content=f"Later {index}") for index in range(96)],
+    ]
+    boundary.conversation = boundary.conversation.model_copy(
+        update={"messages": messages}
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert len(boundary.controller.inference.calls) == 1
+    admitted = boundary.controller.inference.calls[0][1:-1]
+    assert [item.content for item in admitted] == [
+        f"[message {message.id}] {message.content}" for message in messages[-97:]
+    ]
+
+
+def test_context_without_a_user_trigger_keeps_its_existing_admission(boundary):
+    boundary.current = boundary.current.model_copy(update={"trigger_message_id": None})
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert len(boundary.controller.inference.calls) == 1
+
+
 def test_runs_keep_history_and_tool_results_up_to_the_models_window(boundary):
     async def inference_status():
         return SimpleNamespace(

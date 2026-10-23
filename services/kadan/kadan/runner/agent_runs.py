@@ -390,6 +390,7 @@ class AgentRuns(RunClient):
                 "Agent instructions and event exceed the context limit.", 422
             )
         history = []
+        trigger_in_history = False
         for message in reversed(conversation.messages):
             if message.role not in {"user", "assistant"}:
                 continue
@@ -403,10 +404,10 @@ class AgentRuns(RunClient):
             if len(text) > budget or len(history) >= 97:
                 break
             history.append(RunMessage(role=message.role, content=text))
+            if message.id == run.trigger_message_id and message.role == "user":
+                trigger_in_history = True
             budget -= len(text)
-        if run.trigger_message_id and not any(
-            str(run.trigger_message_id) in item.content for item in history
-        ):
+        if run.trigger_message_id and not trigger_in_history:
             raise ServiceError(
                 "The triggering message is outside the agent context window.", 422
             )
