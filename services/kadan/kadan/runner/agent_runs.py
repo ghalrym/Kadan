@@ -325,9 +325,14 @@ class AgentRuns(RunClient):
     async def context(
         self, run: AgentRun, limit: int | None = None
     ) -> list[RunMessage]:
-        instructions = await asyncio.to_thread(
-            Path(self.services.settings.agent_instruction_file).read_text
-        )
+        instruction_file = Path(self.services.settings.agent_instruction_file)
+        try:
+            instructions = await asyncio.to_thread(instruction_file.read_text)
+        except UnicodeError as error:
+            raise ServiceError(
+                f"The shared agent instructions file {instruction_file} could not "
+                "be decoded. Check its text encoding."
+            ) from error
         conversation = await self.services.resource(run.agent_key, run.conversation_id)
         if conversation.kind != ResourceKind.CONVERSATION or conversation.deleted_at:
             raise ServiceError("The conversation is no longer available.", 409)
