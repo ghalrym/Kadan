@@ -6,7 +6,7 @@ Transcription currently supports English clips up to 30 seconds. Recording does 
 
 The page uses the saved transcription model and formatting preference. Optional formatting cleans up the recognized text. If formatting fails, the raw transcript remains available with a visible error. **Raw transcription** lets users compare it with a formatted result. Both versions need review for meaning and accuracy.
 
-**Discard** clears the clip and transcript. **Copy transcript** can fail independently of recognition. Clips, results and form state disappear on navigation or reload.
+**Discard** clears the clip and transcript. **Copy transcript** can fail independently of recognition. Retrying Copy clears the previous clipboard feedback while preserving the transcript and any recognition or formatting errors. Copy feedback applies only to the current attempt and result; choosing or discarding a clip or starting a new transcription clears it. Clips, results and form state disappear on navigation or reload.
 
 **Cancel** ignores late results while cleanup finishes. Leaving the page also aborts pending work and releases microphone access.
 
