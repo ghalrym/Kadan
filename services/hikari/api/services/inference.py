@@ -376,6 +376,7 @@ class InferenceService:
 
     @traced("kadan.inference.wait_and_deliver")
     async def _complete(self, job):
+        failure = None
         try:
             result = await asyncio.shield(job.result)
             with span("kadan.result.delivery"):
@@ -391,6 +392,9 @@ class InferenceService:
                 if job.request.operation in ("load", "unload"):
                     return self.status()
                 return result
+        except (Exception, asyncio.CancelledError) as error:
+            failure = error
+            raise
         finally:
             try:
                 if not job.result.done():
@@ -401,6 +405,19 @@ class InferenceService:
                 if self.progress and self.progress.job_id == job.request.id:
                     self.progress = None
                 self.worker.jobs.pop(job.request.id, None)
+                if failure is not None and job.result.done():
+                    self._finish_video_error(job, failure)
+
+    @staticmethod
+    def _finish_video_error(job, error):
+        if job.request.feature != "video":
+            return
+        cancelled = isinstance(error, asyncio.CancelledError) or (
+            isinstance(error, InferenceFailure) and error.status_code == 499
+        )
+        video_jobs.finish_error(
+            job.request.id, cancelled=cancelled, error=None if cancelled else str(error)
+        )
 
     async def cancel(self, job_id):
         if job_id not in self.worker.jobs:
@@ -420,6 +437,9 @@ class InferenceService:
                     )
             finally:
                 self.worker.jobs.pop(job_id, None)
+                if job.result.done():
+                    error = None if job.result.cancelled() else job.result.exception()
+                    self._finish_video_error(job, error or asyncio.CancelledError())
 
     def tier(self, tier: TierId) -> HardwareTier:
         for candidate in self.models_status().tiers:

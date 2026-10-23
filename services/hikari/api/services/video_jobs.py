@@ -47,6 +47,17 @@ class VideoJobs:
         with self._lock:
             self._jobs[job_id] = self._jobs[job_id].model_copy(update=values)
 
+    def finish_error(self, job_id, *, cancelled: bool, error: str | None = None):
+        """Settle unsuccessful delivery without replacing a confirmed outcome."""
+        with self._lock:
+            job = self._jobs[job_id]
+            if job.status in ("Done", "Failed", "Cancelled"):
+                return
+            status = "Cancelled" if cancelled else "Failed"
+            self._jobs[job_id] = job.model_copy(
+                update={"status": status, "progress_text": status, "error": error}
+            )
+
     def list(self):
         with self._lock:
             return [
