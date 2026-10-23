@@ -97,6 +97,20 @@ function chat(chain, storageValues = {}) {
     } while (dirty);
   }
   const named = name => all(node => node.props?.["aria-label"] === name)[0];
+  function keyDown(target, event) {
+    function path(node) {
+      if (!node || typeof node !== "object") return null;
+      if (node === target) return [node];
+      for (const child of [node.props?.children].flat(Infinity)) {
+        const found = path(child);
+        if (found) return [...found, node];
+      }
+      return null;
+    }
+    const lineage = path(tree);
+    assert.ok(lineage, "keydown target belongs to the current tree");
+    lineage.forEach(node => node.props?.onKeyDown?.(event));
+  }
   const field = () => all(node => node.type === "input")[0];
   const status = () => all(node => node.props?.className === "find-count")[0].props.children;
   function search(query) {
@@ -105,7 +119,7 @@ function chat(chain, storageValues = {}) {
     render();
   }
   render();
-  return { all, render, named, field, status, search, scrolls, focuses, storage, props };
+  return { all, render, named, keyDown, field, status, search, scrolls, focuses, storage, props };
 }
 
 const selected = view => view.all(node => node.type === "article" && node.props.className.includes("find-match"));
@@ -165,7 +179,7 @@ test("Escape closes find, restores its trigger focus and preserves the draft and
   });
   view.search("needle");
   assert.equal(view.status(), "No matching messages");
-  view.all(node => node.type === "form")[0].props.onKeyDown({ key: "Escape", preventDefault() {} });
+  view.keyDown(view.field(), { key: "Escape", preventDefault() {} });
   view.render();
   assert.equal(view.field(), undefined);
   assert.equal(view.focuses.length, 1);
@@ -174,6 +188,19 @@ test("Escape closes find, restores its trigger focus and preserves the draft and
   assert.equal(view.all(node => node.type === "Composer")[0].props.value, "Draft needle");
   view.search("");
   assert.equal(view.status(), "Saved text only");
+});
+
+test("Escape from Close find clears search and restores the trigger focus", () => {
+  const view = chat(conversation([message("saved", "needle")]));
+  view.search("needle");
+  let prevented = 0;
+  view.keyDown(view.named("Close find"), { key: "Escape", preventDefault() { prevented++; } });
+  view.render();
+  assert.equal(prevented, 1);
+  assert.equal(view.field(), undefined);
+  assert.equal(selected(view).length, 0);
+  assert.equal(view.focuses.length, 1);
+  assert.equal(view.named("Find in conversation").props["aria-expanded"], false);
 });
 
 test("updates keep the selected message and do not pull a search to the newest reply", () => {

@@ -409,7 +409,9 @@ export default function Chat({
           {agentCard}
         </div>
       )}
-      <div className={`conversation-find ${find.open ? "is-open" : ""}`}>
+      <div className={`conversation-find ${find.open ? "is-open" : ""}`} onKeyDown={(event) => {
+        if (find.open && event.key === "Escape") { event.preventDefault(); closeFind(); }
+      }}>
         <button ref={findButton} type="button" disabled={!saved.length && !find.open} aria-expanded={find.open}
           aria-label={find.open ? "Close find" : "Find in conversation"} title={find.open ? "Close find" : "Find in conversation"}
           onClick={() => find.open ? closeFind() : setFind({ ...closedFind, open: true })}>
@@ -419,8 +421,6 @@ export default function Chat({
           <form role="search" aria-label="Find in conversation" onSubmit={(event) => {
             event.preventDefault();
             moveMatch(1);
-          }} onKeyDown={(event) => {
-            if (event.key === "Escape") { event.preventDefault(); closeFind(); }
           }}>
             <label className="search-field">
               <span className="sr-only">Find in saved text</span>

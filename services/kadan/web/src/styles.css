@@ -2050,6 +2050,7 @@ dialog::backdrop {
   z-index: 3;
 }
 .conversation-find button {
+  flex: 0 0 44px;
   min-width: 44px;
   min-height: 44px;
   padding: 10px;
@@ -2066,18 +2067,23 @@ dialog::backdrop {
 .conversation-find form {
   flex: 1;
   min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 44px 44px;
+  display: flex;
+  flex-wrap: wrap;
   gap: 4px;
 }
 .conversation-find .search-field {
-  grid-column: 1 / -1;
+  flex: 1 0 100%;
+  min-width: 0;
 }
 .conversation-find input {
   min-height: 44px;
   width: 100%;
 }
 .find-count {
+  /* Wrap navigation below the count when the pane cannot fit both. */
+  flex: 1 1 120px;
+  min-width: 0;
+  overflow-wrap: anywhere;
   align-self: center;
   color: var(--muted);
   font-size: 12px;
