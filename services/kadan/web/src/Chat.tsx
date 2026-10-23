@@ -323,10 +323,10 @@ export default function Chat({
     } catch (e) { setError((e as Error).message); }
     finally { setStopping(false); mutation.current++; }
   }
-  const lastRun = runs.at(-1);
-  const notice = lastRun?.status === "failed"
-    ? `Response failed: ${lastRun.error || "Please try again."}`
-    : lastRun?.status === "cancelled" ? "Response stopped" : "";
+  const outcomes = [
+    runs.filter((run) => run.status === "failed").at(-1),
+    runs.filter((run) => run.status === "cancelled").at(-1),
+  ].filter((run): run is AgentRun => !!run);
   const perchStatus = modelLoading
     ? "Loading model…"
     : typing ? "Typing…"
@@ -462,11 +462,12 @@ export default function Chat({
               {progress}
             </p>
           )}
-          {notice && !sending && (
-            <p className="notice" role="status">
-              {notice}
-            </p>
-          )}
+          {outcomes.map((run) => {
+            const response = sending || run.id !== runs.at(-1)?.id ? "Earlier response" : "Response";
+            return <p className="notice" role="status" key={run.id}>
+              {run.status === "failed" ? `${response} failed: ${run.error || "Please try again."}` : `${response} stopped`}
+            </p>;
+          })}
           {images.filter((job) => imageStatus(job)).map((job) => (
             <div className="image-job notice" key={job.id} role="status">
               <span>{imageStatus(job)}</span>
