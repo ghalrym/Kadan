@@ -796,7 +796,16 @@ class Repository:
                     raise StorageError(
                         "Image job lease must expire within five minutes", 409
                     )
+            if value.upload_status != current.upload_status and not (
+                current.upload_status == "not_started"
+                and value.upload_status == "pending"
+                and current.status == value.status == "running"
+                and not claiming
+            ):
+                raise StorageError("Only storage can settle an image upload", 409)
             if value.status == "completed":
+                if value.asset_id != uuid5(job_id, "image"):
+                    raise StorageError("Image artwork identity cannot change", 409)
                 asset = self._asset(db, key, value.asset_id)
                 if asset.deleted_at or not asset.is_image:
                     raise StorageError(
@@ -813,6 +822,23 @@ class Repository:
             self._save_image_job(db, updated)
             if updated.status in terminal:
                 self._image_event(db, updated)
+            return updated
+
+    def fail_image_upload(self, key: str, job_id: UUID) -> ImageJob:
+        # FileStorage holds the upload's file lock: no old request may register
+        # artwork after this transaction closes its persisted upload gate.
+        with self.connect(write=True) as db:
+            job = self._image_job(db, key, job_id)
+            if job.upload_status != "pending":
+                return job
+            updated = job.model_copy(
+                update={
+                    "upload_status": "failed",
+                    "version": job.version + 1,
+                    "updated_at": utc_now(),
+                }
+            )
+            self._save_image_job(db, updated)
             return updated
 
     def cancel_image_job(self, key: str, job_id: UUID) -> ImageJob:
@@ -1645,9 +1671,18 @@ class Repository:
             ),
         )
 
-    def create_asset(self, asset: Asset) -> Asset:
+    def create_asset(self, asset: Asset, image_job_id: UUID | None = None) -> Asset:
         with self.connect(write=True) as db:
             self._agent(db, asset.agent_key)
+            job = None
+            if image_job_id is not None:
+                job = self._image_job(db, asset.agent_key, image_job_id)
+                if job.upload_status not in {"pending", "completed"}:
+                    raise StorageError("This image upload is closed", 409)
+                if asset.id != uuid5(job.id, "image") or not asset.is_image:
+                    raise StorageError(
+                        "Image uploads require their reserved artwork", 409
+                    )
             row = db.execute(
                 "SELECT data FROM assets WHERE id = ?", (str(asset.id),)
             ).fetchone()
@@ -1668,12 +1703,29 @@ class Repository:
                     getattr(current, field) == getattr(asset, field)
                     for field in replay_fields
                 ):
-                    return current
-                raise StorageError("This asset ID is already in use", 409)
-            self._save_asset(db, asset)
-            self._activity(
-                db, asset.agent_key, "uploaded", "asset", str(asset.id), asset.title
-            )
+                    asset = current
+                else:
+                    raise StorageError("This asset ID is already in use", 409)
+            else:
+                if job is not None and job.upload_status == "completed":
+                    raise StorageError(
+                        "Completed image artwork cannot be recreated", 409
+                    )
+                self._save_asset(db, asset)
+                self._activity(
+                    db, asset.agent_key, "uploaded", "asset", str(asset.id), asset.title
+                )
+            if job is not None and job.upload_status == "pending":
+                self._save_image_job(
+                    db,
+                    job.model_copy(
+                        update={
+                            "upload_status": "completed",
+                            "version": job.version + 1,
+                            "updated_at": utc_now(),
+                        }
+                    ),
+                )
         return asset
 
     def update_asset(
