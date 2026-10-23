@@ -130,6 +130,7 @@ export class VoiceCallSession {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
       if (this.closed) { stream.getTracks().forEach((track) => track.stop()); return; }
       this.stream = stream;
+      stream.getAudioTracks().forEach((track) => { track.enabled = !this.muted; });
       stream.getAudioTracks()[0].onended = () => this.end("The microphone disconnected. Start a new call.");
       this.activity = new CallActivity(this.context.sampleRate);
       this.player = new CallPlayback(this.context);
