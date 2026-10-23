@@ -276,6 +276,7 @@ def test_runner_dispatches_memory_tools_without_computer_and_fences_replayed_wri
     controller.services = SimpleNamespace(json_request=AsyncMock(return_value=memory()))
     controller.save_result = AsyncMock()
     run = SimpleNamespace(id=uuid4(), transcript=[], agent_key="alpha")
+    controller.owned = AsyncMock(return_value=run)
     state = SimpleNamespace(
         run=run, command=ToolCommand(tool=tool.name, arguments={}), replayed=True
     )
@@ -284,6 +285,7 @@ def test_runner_dispatches_memory_tools_without_computer_and_fences_replayed_wri
     if tool.name == "read_memory":
         state.command.arguments = {"memory_id": str(MEMORY_ID)}
     asyncio.run(controller.invoke_tool(state))
+    controller.owned.assert_awaited_once_with(run)
     result = controller.save_result.call_args.args[2]
     if tool.metadata["method"] == "GET":
         assert "error" not in result
