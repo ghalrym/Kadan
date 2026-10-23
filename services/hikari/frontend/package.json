@@ -13,7 +13,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test:unit": "node --experimental-vm-modules tests/images.test.mjs && node tests/requestStatus.test.mjs && node tests/imageProgress.test.mjs && node --experimental-vm-modules tests/video.test.mjs && node --experimental-vm-modules tests/transcription.test.mjs && node --experimental-vm-modules tests/settings.test.mjs && node --experimental-vm-modules tests/textToSpeechPage.test.mjs"
+    "test:unit": "node --experimental-vm-modules tests/images.test.mjs && node tests/requestStatus.test.mjs && node tests/imageProgress.test.mjs && node --experimental-vm-modules tests/video.test.mjs && node --experimental-vm-modules tests/transcription.test.mjs && node --experimental-vm-modules tests/settings.test.mjs && node --experimental-vm-modules tests/settingsPage.test.mjs && node --experimental-vm-modules tests/textToSpeechPage.test.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",
