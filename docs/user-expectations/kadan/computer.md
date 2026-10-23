@@ -4,6 +4,8 @@ Kadan lets users open the computer from an agent's card when it is ready. The ca
 
 **Take control** enables mouse and keyboard input. **Stop controlling** returns to watching. Control does not pause the agent or exclude other viewers. Closing the view leaves the computer and agent work running, and a new view starts in Watching mode.
 
+While connected, stopping control or closing the view releases keys held by that view. An interrupted connection cannot guarantee delivery of those releases.
+
 The current deployment shares one computer across all agents. Switching agents does not create a separate desktop, browser or filesystem. Kadan reports an unconfigured or unavailable computer rather than showing it as ready.
 
 Agents can use the same computer for [browser, file and command actions](agent-actions.md). Watching or taking control does not enable a separate copy of their environment. Files on that computer are separate from Tsuchi's stored files unless explicitly uploaded.
