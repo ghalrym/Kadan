@@ -151,15 +151,12 @@ export default function Chat({
   const hidden = items.length - visible.length;
   let lastUser = visible.length - 1;
   while (lastUser >= 0 && visible[lastUser].role !== "user") lastUser--;
-  const answered = visible.slice(lastUser + 1).some((message) => message.role === "assistant");
   const receipt =
     lastUser < 0
       ? null
       : visible[lastUser] === outgoing
         ? "Sending…"
-        : answered
-          ? "Read"
-          : "Delivered";
+        : "Delivered";
 
   useLayoutEffect(() => {
     // Open at the newest message without animating through the history.
@@ -444,7 +441,7 @@ export default function Chat({
                   )}
                 </article>
                 {index === lastUser && receipt && (
-                  <p className={`receipt ${receipt === "Read" ? "read" : ""}`} aria-live="polite">
+                  <p className="receipt" aria-live="polite">
                     {receipt}
                   </p>
                 )}

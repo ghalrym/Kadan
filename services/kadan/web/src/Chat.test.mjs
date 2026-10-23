@@ -11,17 +11,20 @@ const source = ts.transpileModule(
   { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } },
 ).outputText;
 const chain = { id: "conversation", version: 1, messages: [] };
+const message = (id, role, content) => ({
+  id, role, content, created_at: "2026-10-23T10:00:00Z", resource_ids: [], attachment_ids: [], sources: [],
+});
 const run = (id, status, error = null) => ({
   id, status, error, conversation_id: chain.id, created_at: "2026-10-23T10:00:00Z",
 });
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
 // Exercise Chat's poll, send and Stop handlers with in-memory hooks and API boundaries.
-async function chat(initialRuns) {
+async function chat(initialRuns, initialConversation = chain) {
   const slots = [], effects = [], timers = [], requests = [];
   const storage = new Map();
   let cursor = 0, tree, snapshotRuns = initialRuns, sendResponse, replacementResponse;
-  let selectedChain = chain;
+  let selectedChain = initialConversation;
   const react = {
     Fragment: "Fragment",
     useState(initial) {
@@ -74,6 +77,7 @@ async function chat(initialRuns) {
           if (replacementResponse) return replacementResponse;
           return { runs: snapshotRuns, images: [], conversation: selectedChain };
         }
+        if (path === `/agents/guide/conversations/${selectedChain.id}/notes`) return sendResponse;
         if (path.endsWith("/cancel")) {
           const id = path.split("/").at(-2);
           return { ...snapshotRuns.find(item => item.id === id), status: "cancelled" };
@@ -98,7 +102,7 @@ async function chat(initialRuns) {
     cursor = 0;
     tree = exports.default({
       agentKey: "guide", agentName: "Guide", chain: selectedChain, personas: [], status: null,
-      entrance: "idle", onChange() {}, onBusy() {}, onEditPet() {}, blocked: false,
+      entrance: "idle", onChange(value) { selectedChain = value; }, onBusy() {}, onEditPet() {}, blocked: false,
       refreshStatus: async () => {},
     });
     effects.splice(0).forEach(effect => effect());
@@ -114,9 +118,11 @@ async function chat(initialRuns) {
     render, requests,
     notices: () => elements().filter(node => node.props?.className === "notice").map(node => node.props.children),
     alerts: () => elements().filter(node => node.props?.role === "alert").map(node => node.props.children[0]),
+    receipts: () => elements().filter(node => node.props?.className === "receipt").map(node => node.props.children),
     composer: () => elements().find(node => node.type === "Composer").props,
-    async poll(runs) {
+    async poll(runs, conversation = selectedChain) {
       snapshotRuns = runs;
+      selectedChain = conversation;
       assert.ok(timers.length, "poll schedules its next snapshot");
       await timers.shift()();
       render();
@@ -163,7 +169,7 @@ for (const status of ["failed", "cancelled"]) {
     assert.ok(view.notices().includes(notice));
     finishSend({
       run: run("newer", "queued"),
-      conversation: { ...chain, version: 2, messages: [{ id: "sent-message", role: "user" }] },
+      conversation: { ...chain, version: 2, messages: [message("sent-message", "user", "Try another question")] },
     });
     await settle();
     view.render();
@@ -216,4 +222,45 @@ test("replacing the conversation hides its old outcomes while the new poll waits
   view.render();
   assert.deepEqual(view.notices(), []);
   assert.deepEqual(view.alerts(), ["Updates unavailable: Storage offline"]);
+});
+
+for (const generate of [true, false]) {
+  test(`${generate ? "queued message B" : "saved note"} stays Delivered when an older response A arrives later`, async () => {
+    const first = message("first", "user", "Question A");
+    const view = await chat([run("A", "running")], { ...chain, messages: [first] });
+    const finishSend = view.holdSend();
+    const content = generate ? "Question B" : "A note for later";
+    view.composer().onChange(content);
+    view.render();
+    view.composer().onSend(generate);
+    view.render();
+    assert.deepEqual(view.receipts(), ["Sending…"]);
+    assert.equal(view.requests.at(-1).path, `/agents/guide/conversations/conversation/${generate ? "runs" : "notes"}`);
+    const saved = { ...chain, version: 2, messages: [first, message("sent-message", "user", content)] };
+    const queued = run("B", "queued");
+    finishSend(generate ? { run: queued, conversation: saved } : saved);
+    await settle();
+    view.render();
+    assert.deepEqual(view.receipts(), ["Delivered"]);
+    await view.poll(generate ? [run("A", "completed"), queued] : [run("A", "completed")], {
+      ...saved, version: 3, messages: [...saved.messages, message("reply-A", "assistant", "Reply to question A")],
+    });
+    assert.deepEqual(view.receipts(), ["Delivered"]);
+    assert.equal(view.composer().sending, false);
+  });
+}
+
+test("confirmed messages are Delivered before and after a normal reply", async () => {
+  const question = message("question", "user", "A saved question");
+  const view = await chat([run("answer", "queued")], { ...chain, messages: [question] });
+  assert.deepEqual(view.receipts(), ["Delivered"]);
+  await view.poll([run("answer", "completed")], {
+    ...chain, version: 2, messages: [question, message("reply", "assistant", "An answer")],
+  });
+  assert.deepEqual(view.receipts(), ["Delivered"]);
+});
+
+test("assistant-only history has no user delivery receipt", async () => {
+  const view = await chat([], { ...chain, messages: [message("reply", "assistant", "Hello")] });
+  assert.deepEqual(view.receipts(), []);
 });
