@@ -24,12 +24,15 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
   const [refresh, setRefresh] = useState(0);
   const [children, setChildren] = useState<Resource[]>([]);
   const [childrenLoading, setChildrenLoading] = useState(false);
+  const [childrenError, setChildrenError] = useState("");
+  const [childrenRefresh, setChildrenRefresh] = useState(0);
+  useEffect(() => {
+    setSelected(null);
+  }, [agentKey, tab, query]);
   useEffect(() => {
     let current = true;
     setLoading(true);
     setError("");
-    setSelected(null);
-    setChildren([]);
     const timer = setTimeout(() => {
       const request =
         tab === "files"
@@ -57,6 +60,7 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
   useEffect(() => {
     let current = true;
     setChildren([]);
+    setChildrenError("");
     if (!selected || !("kind" in selected) || selected.kind !== "space") {
       setChildrenLoading(false);
       return;
@@ -68,7 +72,7 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
           setChildren(rows.filter((row) => row.parent_id === selected.id));
       })
       .catch((e) => {
-        if (current) setError(e.message);
+        if (current) setChildrenError(e.message);
       })
       .finally(() => {
         if (current) setChildrenLoading(false);
@@ -76,7 +80,7 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
     return () => {
       current = false;
     };
-  }, [selected, agentKey]);
+  }, [selected, agentKey, childrenRefresh]);
   const rows = tab === "files" ? assets : resources;
   return (
     <section
@@ -142,7 +146,7 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
               <p className="quiet" role="status">
                 Searching workspace…
               </p>
-            ) : rows.length === 0 ? (
+            ) : error ? null : rows.length === 0 ? (
               <p className="quiet">
                 {query
                   ? "No matching records."
@@ -180,7 +184,7 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
             )}
           </div>
           <div className="list-count">
-            {!loading &&
+            {!loading && !error &&
               `${rows.length} ${rows.length === 1 ? "record" : "records"}`}
           </div>
         </div>
@@ -239,6 +243,13 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
                     <div className="space-children">
                       {childrenLoading ? (
                         <p className="quiet">Loading Space contents…</p>
+                      ) : childrenError ? (
+                        <div role="alert" className="error feedback">
+                          {childrenError}
+                          <button onClick={() => setChildrenRefresh((n) => n + 1)}>
+                            Retry
+                          </button>
+                        </div>
                       ) : children.length ? (
                         children.map((child) => (
                           <button

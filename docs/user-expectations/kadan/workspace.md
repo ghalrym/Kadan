@@ -2,6 +2,8 @@
 
 Kadan's Workspace shows the selected agent's Memories, Spaces and Files stored in Tsuchi. Search filters the current collection, and changing agents opens that agent's records. A loading error must be distinguishable from an empty collection.
 
+**Retry** repeats the failed read without changing the search or closing the selected record. If a Space's contents fail to load, its text stays open and Retry reloads its contents. Changing the search, collection or agent dismisses the old selection; results from earlier reads must not replace the current view.
+
 Users can read memories and Spaces, open a Space's children, and download files. Files show their name, type and size; the view does not preview arbitrary file contents.
 
 Workspace is read-only. **Open Tsuchi** opens the storage editor in another tab. Changes made there may require another search or reopening Workspace to appear.
