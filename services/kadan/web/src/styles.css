@@ -2039,6 +2039,64 @@ dialog::backdrop {
 .chat-split > .chat {
   min-width: 0;
 }
+/* Find opens in the pet's space so results stay readable in a narrow chat pane. */
+.conversation-find {
+  position: absolute;
+  top: 8px;
+  left: 16px;
+  z-index: 3;
+}
+.conversation-find button {
+  flex: 0 0 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 10px;
+}
+.conversation-find.is-open {
+  position: relative;
+  top: auto;
+  left: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 68px 8px 16px;
+}
+.conversation-find form {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.conversation-find .search-field {
+  flex: 1 0 100%;
+  min-width: 0;
+}
+.conversation-find input {
+  min-height: 44px;
+  width: 100%;
+}
+.find-count {
+  /* Wrap navigation below the count when the pane cannot fit both. */
+  flex: 1 1 120px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.chat.finding .messages {
+  mask-image: none;
+}
+.chat.finding .messages-inner {
+  padding-top: 16px;
+}
+.message.find-match {
+  border-radius: var(--r);
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
 .computer-panel {
   position: relative;
   width: 55%;

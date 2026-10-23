@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowUpRight, RotateCw } from "lucide-react";
+import { ArrowUp, ArrowDown, ArrowUpRight, RotateCw, Search, X } from "lucide-react";
 import Markdown from "./Markdown";
 import Composer, { readiness } from "./Composer";
 import Pet, { useMood } from "./Pet";
@@ -111,6 +111,12 @@ export default function Chat({
   const [outgoing, setOutgoing] = useState<Message | null>(null);
   const [error, setError] = useState("");
   const [shown, setShown] = useState(PAGE);
+  const scope = `${agentKey}:${chain.id}`;
+  const closedFind = { scope, open: false, query: "", messageId: "" };
+  const [findState, setFind] = useState(closedFind);
+  const find = findState.scope === scope ? findState : closedFind;
+  const findButton = useRef<HTMLButtonElement>(null);
+  const messageElements = useRef(new Map<string, HTMLElement>());
   const [card, setCard] = useState(false);
   const [computer, setComputer] = useState(false);
   const closeCard = useCallback(() => setCard(false), []);
@@ -147,6 +153,11 @@ export default function Chat({
               : "idle",
   );
   const items = outgoing ? [...saved, outgoing] : saved;
+  const query = find.open ? find.query.trim().toLowerCase() : "";
+  const matches = query ? saved.filter((message) => message.content.toLowerCase().includes(query)) : [];
+  const match = matches.find((message) => message.id === find.messageId) ?? matches[0];
+  const matchIndex = match ? matches.indexOf(match) : -1;
+  const matchShown = match ? items.length - items.findIndex((message) => message.id === match.id) : 0;
   const visible = items.slice(-shown);
   const hidden = items.length - visible.length;
   let lastUser = visible.length - 1;
@@ -163,8 +174,23 @@ export default function Chat({
     end.current?.scrollIntoView({ block: "end" });
   }, []);
   useEffect(() => {
-    end.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    // A query owns the scroll position until the user clears or closes it.
+    if (!query) end.current?.scrollIntoView({ block: "end", behavior: "smooth" });
   }, [items.length, typing]);
+  useEffect(() => {
+    setFind({ scope, open: false, query: "", messageId: "" });
+    setShown(PAGE);
+  }, [scope]);
+  useLayoutEffect(() => {
+    if (matchShown > shown) setShown(matchShown);
+  }, [matchShown, shown]);
+  const matchVisible = matchShown > 0 && matchShown <= shown;
+  useLayoutEffect(() => {
+    if (match && matchVisible) messageElements.current.get(match.id)?.scrollIntoView({ block: "center" });
+  }, [match?.id, query, matchVisible]);
+  useEffect(() => {
+    if (match && match.id !== find.messageId) setFind({ ...find, messageId: match.id });
+  }, [match?.id, find.messageId]);
   useEffect(() => react(entrance, 2), [entrance, react]);
   useEffect(() => {
     let closed = false;
@@ -356,10 +382,19 @@ export default function Chat({
     if (!card) react("waving");
     setCard(!card);
   }
+  function closeFind() {
+    setFind(closedFind);
+    findButton.current?.focus();
+  }
+  function moveMatch(direction: number) {
+    if (!matches.length) return;
+    const index = (matchIndex + direction + matches.length) % matches.length;
+    setFind({ ...find, messageId: matches[index].id });
+  }
   return (
     <div className={`chat-split ${computer ? "with-computer" : ""}`}>
-    <section className="chat" aria-label={`Messages with ${agentName}`}>
-      {!empty && (
+    <section className={`chat ${find.open ? "finding" : ""}`} aria-label={`Messages with ${agentName}`}>
+      {!empty && !find.open && (
         <div className={`lookout ${(generating || imagePending) ? "working" : ""}`}>
           <button type="button" className="lookout-pet" aria-label={`Open ${agentName}’s card`}
             title={agentName} aria-expanded={card} aria-haspopup="dialog" onClick={toggleCard}>
@@ -372,6 +407,36 @@ export default function Chat({
           {agentCard}
         </div>
       )}
+      <div className={`conversation-find ${find.open ? "is-open" : ""}`} onKeyDown={(event) => {
+        if (find.open && event.key === "Escape") { event.preventDefault(); closeFind(); }
+      }}>
+        <button ref={findButton} type="button" disabled={!saved.length && !find.open} aria-expanded={find.open}
+          aria-label={find.open ? "Close find" : "Find in conversation"} title={find.open ? "Close find" : "Find in conversation"}
+          onClick={() => find.open ? closeFind() : setFind({ ...closedFind, open: true })}>
+          {find.open ? <X size={16} /> : <Search size={16} />}
+        </button>
+        {find.open && (
+          <form role="search" aria-label="Find in conversation" onSubmit={(event) => {
+            event.preventDefault();
+            moveMatch(1);
+          }}>
+            <label className="search-field">
+              <span className="sr-only">Find in saved text</span>
+              <input type="search" autoFocus placeholder="Find in saved text" value={find.query}
+                onChange={(event) => setFind({ ...find, query: event.target.value, messageId: "" })}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && event.shiftKey) { event.preventDefault(); moveMatch(-1); }
+                }} />
+            </label>
+            <span className="find-count" role="status" aria-live="polite">
+              {query ? matches.length ? `${matchIndex + 1} of ${matches.length} messages` : "No matching messages" : "Saved text only"}
+            </span>
+            <button type="button" disabled={!matches.length} aria-label="Previous matching message" title="Previous (Shift+Enter)"
+              onClick={() => moveMatch(-1)}><ArrowUp size={16} /></button>
+            <button type="submit" disabled={!matches.length} aria-label="Next matching message" title="Next (Enter)"><ArrowDown size={16} /></button>
+          </form>
+        )}
+      </div>
       <div className="messages">
         <div className={`messages-inner ${empty ? "is-empty" : ""}`}>
           {empty ? (
@@ -411,7 +476,12 @@ export default function Chat({
                   </div>
                 )}
                 <article
-                  className={`message ${message.role} ${first ? "first" : ""} ${last ? "last" : ""} ${message === outgoing ? "sending" : ""}`}
+                  ref={(element) => {
+                    if (element) messageElements.current.set(message.id, element);
+                    else messageElements.current.delete(message.id);
+                  }}
+                  className={`message ${message.role} ${first ? "first" : ""} ${last ? "last" : ""} ${message === outgoing ? "sending" : ""} ${message.id === match?.id ? "find-match" : ""}`}
+                  aria-label={message.id === match?.id ? `Matching message ${matchIndex + 1} of ${matches.length}` : undefined}
                   title={stamp(message.created_at)}
                 >
                   <h3 className={message.role === "user" || message.role === "assistant" ? "sr-only" : "role"}>
