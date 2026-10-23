@@ -30,6 +30,7 @@ export default function SpeechToTextPage() {
   const [copied, setCopied] = useState(false)
   const [copyError, setCopyError] = useState('')
   const copyGeneration = useRef(0)
+  const copyTimer = useRef<number | undefined>(undefined)
   const recorder = useRef<MediaRecorder | null>(null)
   const stream = useRef<MediaStream | null>(null)
   const controller = useRef<AbortController | null>(null)
@@ -41,6 +42,7 @@ export default function SpeechToTextPage() {
     mounted.current = true
     return () => {
       mounted.current = false
+      window.clearTimeout(copyTimer.current)
       controller.current?.abort()
       if (recorder.current?.state === 'recording') recorder.current.stop()
       stream.current?.getTracks().forEach((track) => track.stop())
@@ -66,6 +68,8 @@ export default function SpeechToTextPage() {
 
   function clearCopyFeedback() {
     copyGeneration.current++
+    window.clearTimeout(copyTimer.current)
+    copyTimer.current = undefined
     setCopied(false)
     setCopyError('')
   }
@@ -171,9 +175,11 @@ export default function SpeechToTextPage() {
       await navigator.clipboard.writeText(text.text)
       if (!mounted.current || generation !== copyGeneration.current) return
       setCopied(true)
-      window.setTimeout(() => {
-        if (mounted.current && generation === copyGeneration.current)
+      copyTimer.current = window.setTimeout(() => {
+        if (mounted.current && generation === copyGeneration.current) {
+          copyTimer.current = undefined
           setCopied(false)
+        }
       }, 1500)
     } catch {
       if (mounted.current && generation === copyGeneration.current)

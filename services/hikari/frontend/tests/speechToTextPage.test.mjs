@@ -87,7 +87,7 @@ async function page() {
         return timer
       },
       clearTimeout(timer) {
-        timer.active = false
+        if (timer) timer.active = false
       },
     },
   })
@@ -408,6 +408,7 @@ test('old expiry cannot clear a newer copy success or restore discarded feedback
   await view.advance(1000)
   await view.click('Copied')
   assert.ok(button(view.tree, 'Copy'))
+  assert.equal(view.timers[0].active, false)
   view.writes[1].resolve()
   await view.flush()
   oldExpiry()
@@ -454,6 +455,7 @@ test('unmount ignores the current success expiry', async () => {
   await view.flush()
   const expiry = view.timers[0].callback
   view.unmount()
+  assert.equal(view.timers[0].active, false)
   expiry()
   await view.flush()
   assert.equal(view.updatesAfterUnmount, 0)
