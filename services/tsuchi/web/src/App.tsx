@@ -56,8 +56,13 @@ export function App() {
     () => request<Agent[]>("/api/agents"),
     [agentsVersion],
   );
+  const switchAgent = (key: string) => {
+    setAgentKey(key);
+    localStorage.setItem("tsuchi-namespace", key);
+    window.history.replaceState(null, "", "/");
+  };
   const onCreated = (agent: Agent) => {
-    setAgentKey(agent.key);
+    switchAgent(agent.key);
     setAgentsVersion((value) => value + 1);
     setNewAgent(false);
   };
@@ -96,11 +101,7 @@ export function App() {
           agent={activeAgent}
           agents={agents.data}
           onNewAgent={() => setNewAgent(true)}
-          onSwitch={(key) => {
-            setAgentKey(key);
-            localStorage.setItem("tsuchi-namespace", key);
-            window.history.replaceState(null, "", "/");
-          }}
+          onSwitch={switchAgent}
         />
       )}
       {newAgent && (
