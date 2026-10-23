@@ -145,6 +145,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importName, setImportName] = useState("");
   const [dragging, setDragging] = useState(false);
+  const importSelection = useRef<{ url: string | null; ready: boolean } | null>(null);
   const pendingImport = useRef<{ id: string; signature: string } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
@@ -217,7 +218,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
     };
   }, [refresh, refreshSelection]);
 
-  useEffect(() => () => { if (importPreview) URL.revokeObjectURL(importPreview.url); }, [importPreview]);
+  useEffect(() => () => releaseImportSelection(), []);
   useEffect(() => {
     folderInput.current?.setAttribute("webkitdirectory", "");
   }, [view, newTab]);
@@ -257,33 +258,52 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
     }
   }
 
-  async function choosePackage(picked: PickedFile[]) {
-    setError("");
-    setImportPreview(null);
-    if (!picked.length) return;
-    const result = await resolvePetPackage(picked, (file) => file.text());
-    if (!alive.current) return;
-    setImportPackage(result);
-    if (result.kind === "error") return;
-    const fallback = result.kind === "files" ? result.sheet.name.replace(/\.(webp|png)$/i, "") : result.zip.name.replace(/\.zip$/i, "");
-    setImportName(result.kind === "files" && result.info?.displayName
-      ? result.info.displayName
-      : /^spritesheet$/i.test(fallback) ? "" : fallback);
-    if (result.kind !== "files") return;
-    const url = URL.createObjectURL(result.sheet);
-    const probe = new Image();
-    probe.onload = () => {
-      if (!alive.current) return URL.revokeObjectURL(url);
-      setImportPreview({ url, version: atlasVersion(probe.naturalWidth, probe.naturalHeight), size: `${probe.naturalWidth}x${probe.naturalHeight}` });
-    };
-    probe.onerror = () => {
-      URL.revokeObjectURL(url);
-      if (alive.current) setImportPackage({ kind: "error", message: "The spritesheet could not be read as an image." });
-    };
-    probe.src = url;
+  function releaseImportSelection() {
+    if (importSelection.current?.url) URL.revokeObjectURL(importSelection.current.url);
+    importSelection.current = null;
+  }
+
+  async function choosePackage(picked: PickedFile[] | Promise<PickedFile[]>) {
+    clearImport();
+    const selection = { url: null as string | null, ready: false };
+    importSelection.current = selection;
+    const current = () => alive.current && importSelection.current === selection;
+    try {
+      const files = await picked;
+      if (!current() || !files.length) return;
+      const result = await resolvePetPackage(files, (file) => file.text());
+      if (!current()) return;
+      setImportPackage(result);
+      if (result.kind === "error") return;
+      const fallback = result.kind === "files" ? result.sheet.name.replace(/\.(webp|png)$/i, "") : result.zip.name.replace(/\.zip$/i, "");
+      setImportName(result.kind === "files" && result.info?.displayName
+        ? result.info.displayName
+        : /^spritesheet$/i.test(fallback) ? "" : fallback);
+      if (result.kind === "zip") { selection.ready = true; return; }
+      const url = selection.url = URL.createObjectURL(result.sheet);
+      const probe = new Image();
+      probe.onload = () => {
+        if (!current()) return;
+        const version = atlasVersion(probe.naturalWidth, probe.naturalHeight);
+        selection.ready = version !== null;
+        setImportPreview({ url, version, size: `${probe.naturalWidth}x${probe.naturalHeight}` });
+      };
+      probe.onerror = () => {
+        if (!current()) return;
+        releaseImportSelection();
+        setImportPreview(null);
+        setImportPackage({ kind: "error", message: "The spritesheet could not be read as an image." });
+      };
+      probe.src = url;
+    } catch (e) {
+      if (!current()) return;
+      releaseImportSelection();
+      setImportPackage({ kind: "error", message: (e as Error).message || "Those files could not be read." });
+    }
   }
 
   function clearImport() {
+    releaseImportSelection();
     setImportPackage(null);
     setImportPreview(null);
     setImportName("");
@@ -294,8 +314,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
 
   async function importPet(event: React.FormEvent) {
     event.preventDefault();
-    if (busy || !importPackage || importPackage.kind === "error") return;
-    if (importPackage.kind === "files" && importPreview?.version === null) return;
+    if (busy || !importSelection.current?.ready || !importPackage || importPackage.kind === "error") return;
     // Reuse the id when retrying the same upload so an unconfirmed import is not duplicated.
     const signature = JSON.stringify([importName.trim(), importPackage.files.map((file) => [file.name, file.size, file.lastModified])]);
     if (pendingImport.current?.signature !== signature) pendingImport.current = { id: randomUuid(), signature };
@@ -439,8 +458,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
           onDrop={(event) => {
             event.preventDefault();
             setDragging(false);
-            const files = droppedFiles(event.dataTransfer);
-            void files.then(choosePackage, () => setError("Those files could not be read."));
+            void choosePackage(droppedFiles(event.dataTransfer));
           }}>
           <Upload size={22} aria-hidden="true" />
           <p>Drop a pet folder, zip or spritesheet here</p>

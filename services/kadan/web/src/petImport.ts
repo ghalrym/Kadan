@@ -79,11 +79,13 @@ export async function resolvePetPackage<F>(
   if (manifest && !info) return { kind: "error", message: "pet.json could not be read." };
   let sheet = images.length === 1 ? images[0] : undefined;
   if (manifest) {
-    const wanted = normalizePath(`${dirname(manifest.path)}/${info?.spritesheetPath ?? "spritesheet.webp"}`);
+    const declared = info?.spritesheetPath ?? "spritesheet.webp";
+    const wanted = normalizePath(`${dirname(manifest.path)}/${declared}`);
+    const loose = items.every((item) => !item.path.includes("/"));
     sheet = images.find((item) => item.path === wanted)
-      // Loose files lose their folder, so fall back to the file name alone.
-      ?? images.find((item) => wanted && basename(item.path) === basename(wanted))
-      ?? sheet;
+      // Only loose files have lost the directory context needed for an exact match.
+      ?? (loose ? images.find((item) => wanted && item.path === basename(wanted)) : undefined);
+    if (!sheet) return { kind: "error", message: `The selection is missing the spritesheet ${declared} named in pet.json.` };
   }
   if (!sheet) {
     return {
