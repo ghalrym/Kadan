@@ -79,8 +79,16 @@ def claim(repository, pet):
     )
 
 
-def ready_pet(repository):
-    pet = claim(repository, repository.create_pet("alpha", uuid4(), "Watercolor fox"))
+def ready_pet(repository, reference_mode="single_image"):
+    pet = claim(
+        repository,
+        repository.create_pet("alpha", uuid4(), "Watercolor fox", reference_mode),
+    )
+    names = (
+        ("character-sheet", *PET_STEP_NAMES)
+        if reference_mode == "character_sheet"
+        else PET_STEP_NAMES
+    )
     steps = [
         PetStep(
             name=name,
@@ -95,7 +103,7 @@ def ready_pet(repository):
             model_id="local-edit",
             seed=42,
         )
-        for name in PET_STEP_NAMES
+        for name in names
     ]
     for completed in range(1, len(steps) + 1):
         pet = repository.update_pet(
@@ -107,7 +115,9 @@ def ready_pet(repository):
         )
     manifest = PetManifest(
         atlas_asset_id=artwork(repository).id,
-        base_asset_id=steps[0].output_asset_id,
+        base_asset_id=next(
+            step.output_asset_id for step in steps if step.name == "base"
+        ),
         animations=[
             PetAnimation(name=name, row=row, durations=[100] * 8)
             for row, name in enumerate(PET_ANIMATIONS)
@@ -121,7 +131,7 @@ def ready_pet(repository):
             status="ready",
             stage="ready",
             steps=steps,
-            completed_steps=len(PET_STEP_NAMES),
+            completed_steps=len(steps),
             manifest=manifest,
             owner_id=None,
             lease_expires_at=None,
@@ -158,8 +168,11 @@ def test_creation_idempotent_and_scoped(repository):
     assert repository.selected_pet("alpha") is None
 
 
-def test_ready_pet_persists_and_exports_without_auto_activation(repository):
-    pet = ready_pet(repository)
+@pytest.mark.parametrize("reference_mode", ["single_image", "character_sheet"])
+def test_ready_pet_persists_and_exports_without_auto_activation(
+    repository, reference_mode
+):
+    pet = ready_pet(repository, reference_mode)
     assert repository.selected_pet("alpha") is None
     reloaded = Repository(repository.data_dir)
     assert reloaded.get_pet("alpha", pet.id) == pet
@@ -169,6 +182,88 @@ def test_ready_pet_persists_and_exports_without_auto_activation(repository):
     assert pet.asset_references() <= {asset.id for asset in exported.assets}
     assert reloaded.select_pet("alpha", pet.id) == pet
     assert reloaded.get_agent("alpha").selected_pet_id == pet.id
+
+
+def test_reference_mode_is_immutable_and_part_of_creation_identity(repository):
+    pet = repository.create_pet("alpha", uuid4(), "Fox", "character_sheet")
+    assert pet.total_steps == 75
+    assert repository.create_pet("alpha", pet.id, "Fox", "character_sheet") == pet
+    with pytest.raises(StorageError, match="already in use"):
+        repository.create_pet("alpha", pet.id, "Fox")
+    pet = claim(repository, pet)
+    with pytest.raises(StorageError, match="immutable"):
+        repository.update_pet(
+            "alpha",
+            pet.id,
+            state(pet, reference_mode="single_image", total_steps=74),
+            pet.version,
+            pet.owner_id,
+        )
+
+
+def test_old_saved_pet_state_keeps_single_image_semantics(repository):
+    pet = ready_pet(repository)
+    legacy = pet.model_dump()
+    del legacy["reference_mode"]
+    restored = PetJob.model_validate(legacy)
+    assert restored.reference_mode == "single_image"
+    assert restored.total_steps == 74
+    assert restored.steps == pet.steps and restored.manifest == pet.manifest
+
+
+def test_sheet_progress_requires_its_own_order_and_separate_neutral_base(repository):
+    sheet = generation_step(repository, "character-sheet")
+    base = generation_step(repository, "base")
+    neutral = generation_step(repository, "idle/0").model_copy(
+        update={
+            "method": "canonical",
+            "source_asset_id": base.output_asset_id,
+        }
+    )
+    valid = PetState(
+        reference_mode="character_sheet",
+        total_steps=75,
+        steps=[sheet, base, neutral],
+        completed_steps=3,
+    )
+    assert {sheet.output_asset_id, base.output_asset_id} <= valid.asset_references()
+    for steps in [
+        [base],
+        [sheet, neutral],
+        [
+            sheet,
+            base,
+            neutral.model_copy(update={"source_asset_id": sheet.output_asset_id}),
+        ],
+    ]:
+        with pytest.raises(ValidationError):
+            PetState(
+                reference_mode="character_sheet",
+                total_steps=75,
+                steps=steps,
+                completed_steps=len(steps),
+            )
+    with pytest.raises(ValidationError):
+        PetState(steps=[sheet], completed_steps=1)
+    with pytest.raises(ValidationError):
+        PetState(reference_mode="character_sheet")
+    with pytest.raises(ValidationError, match="cohort"):
+        PetState(
+            reference_mode="character_sheet",
+            total_steps=75,
+            pending_step_name="character-sheet",
+            pending_request_id=uuid4(),
+            additional_pending_frames=[{"name": "base", "request_id": uuid4()}],
+        )
+
+
+def test_sheet_and_base_cannot_be_replaced_by_frame_repair(repository):
+    pet = ready_pet(repository, "character_sheet")
+    for name in ["character-sheet", "base"]:
+        with pytest.raises(StorageError, match="references"):
+            repository.revise_pet(
+                "alpha", pet.id, uuid4(), pet.version, [name], "Change it"
+            )
 
 
 def test_selection_requires_ready_same_agent_and_generation_preserves_selection(
@@ -680,8 +775,11 @@ def test_cancellation_and_expired_recovery_cannot_change_pending_seed(
     assert interrupted.pending_request_id == pet.pending_request_id
 
 
-def test_revision_keeps_other_frames_history_and_selected_original(repository):
-    original = ready_pet(repository)
+@pytest.mark.parametrize("reference_mode", ["single_image", "character_sheet"])
+def test_revision_keeps_other_frames_history_and_selected_original(
+    repository, reference_mode
+):
+    original = ready_pet(repository, reference_mode)
     repository.select_pet("alpha", original.id)
     revision_id = uuid4()
     repaired = repository.revise_pet(
@@ -693,6 +791,8 @@ def test_revision_keeps_other_frames_history_and_selected_original(repository):
         "Clipped artwork",
     )
     assert repaired.status == "queued"
+    assert repaired.reference_mode == original.reference_mode
+    assert repaired.total_steps == original.total_steps
     assert repaired.parent_pet_id == original.id
     assert repaired.manifest is None
     assert repaired.pending_request_id is None
@@ -745,8 +845,13 @@ def test_revision_keeps_other_frames_history_and_selected_original(repository):
         active.owner_id,
     )
     replacement = generation_step(repository, "idle/2")
+    order = (
+        ("character-sheet", *PET_STEP_NAMES)
+        if reference_mode == "character_sheet"
+        else PET_STEP_NAMES
+    )
     completed = sorted(
-        [*active.steps, replacement], key=lambda step: PET_STEP_NAMES.index(step.name)
+        [*active.steps, replacement], key=lambda step: order.index(step.name)
     )
     active = repository.update_pet(
         "alpha",
@@ -754,7 +859,7 @@ def test_revision_keeps_other_frames_history_and_selected_original(repository):
         state(
             active,
             steps=completed,
-            completed_steps=73,
+            completed_steps=len(completed),
             pending_step_name=None,
             pending_request_id=None,
             pending_seed=None,
@@ -762,7 +867,7 @@ def test_revision_keeps_other_frames_history_and_selected_original(repository):
         active.version,
         active.owner_id,
     )
-    assert active.steps[3] == replacement
+    assert next(step for step in active.steps if step.name == "idle/2") == replacement
     assert all(step in active.steps for step in repaired.steps)
     assert active.rejections == repaired.rejections
     with repository.connect() as db:
