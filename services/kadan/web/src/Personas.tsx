@@ -132,6 +132,8 @@ export default function Personas({
           });
       onChange([value, ...personas.filter((item) => item.id !== value.id)]);
       setSelected(value);
+      setTitle((current) => (current === title ? value.title : current));
+      setMarkdown((current) => (current === markdown ? value.markdown : current));
       setLatest(null);
       setNotice("Saved");
     } catch (e) {
