@@ -118,3 +118,7 @@ class InferenceJob:
         )
         self.progress: InferenceProgress | None = None
         self.events = asyncio.Queue(maxsize=64) if streaming else None
+
+    def request_cancel(self):
+        self.cancel_requested = True
+        self.failure = self.failure or InferenceFailure("Inference cancelled.", 499)

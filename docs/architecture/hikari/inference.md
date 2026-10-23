@@ -48,6 +48,12 @@ Requests must respect their actual input and memory requirements. Hikari must no
 
 Concurrent throughput, model quality and physical memory fit require manual validation on the target machine. Scheduling and offloading policies alone do not establish measured latency or guarantee that every combination of inference requests fits.
 
+## Submission and cancellation ownership
+
+Hikari keeps a job's submission scopes open until every in-progress send returns, including an overlapping worker handoff. It registers recipient ownership only after acquiring that connection's write lock. Cancellation while waiting for the lock can therefore retire locally without a worker reply. Once a write begins, caller cancellation preserves its completion and the lock; an error or transport deadline cannot prove that delivery failed. That recipient remains owned until a terminal event or disconnect, even if cancellation sends fail or an unknown cancellation ID produces no reply.
+
+Cancellation records an unsuccessful outcome independently of recipient retirement and stops further fanout or handoff. Earlier worker failures retain their original error. A store operation cannot report success after skipping recipients, and a terminal failure deferred by an open submission cannot restart work on another worker.
+
 ## Reusable conversation state
 
 Each resident chat engine keeps one completed conversation prefix, its exact committed token sequence and the corresponding attention and recurrent state. Both supported GGUF architectures are recurrent, so a hit requires the entire retained sequence to match the start of a longer prompt; an arbitrary common prefix cannot safely rewind recurrence. Selected output tokens not yet fed through the engine are excluded. On a hit, only the remaining prompt suffix executes, at the retained absolute position.
