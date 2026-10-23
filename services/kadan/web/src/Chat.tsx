@@ -5,6 +5,7 @@ import Composer, { readiness } from "./Composer";
 import Pet, { useMood } from "./Pet";
 import AgentCard from "./AgentCard";
 import ComputerViewer from "./ComputerViewer";
+import ChatExport from "./ChatExport";
 import { useVoiceCall } from "./VoiceCallControl";
 import { activeLabel } from "./presence";
 import { useAgentPet } from "./PetContext";
@@ -372,6 +373,7 @@ export default function Chat({
           {agentCard}
         </div>
       )}
+      <ChatExport chain={chain} agentName={agentName} />
       <div className="messages">
         <div className={`messages-inner ${empty ? "is-empty" : ""}`}>
           {empty ? (

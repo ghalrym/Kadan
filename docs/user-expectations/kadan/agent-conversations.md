@@ -14,6 +14,8 @@ While response work is pending, Kadan shows whether it is queued or waiting for 
 
 Saved history survives navigation and service recovery. **Show earlier messages** reveals older messages, but only a limited recent portion is available to each response. Image generation can deliver a result later in the same chat.
 
+Users can [download the saved chat as Markdown](downloading-chat.md), including older saved messages without revealing them first.
+
 Each response has a limit of 24 commands and a bounded context for instructions, recent messages and action results. Reaching either limit fails that response visibly rather than continuing indefinitely. Saved history and messages already delivered remain. Sending a new message starts new work and does not guarantee completion of the earlier task. A saved message can also wait for [runner availability](runner-availability.md).
 
 After a send error, **Reload** checks what was saved. **Retry** under **Unsent message** keeps the original submission and persona. Resolve or discard it before sending another message. Closing the tab does not cancel saved work; use [Stopping chat work](stopping-chat-work.md).

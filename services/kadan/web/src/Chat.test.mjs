@@ -62,6 +62,7 @@ async function chat(initialRuns, initialConversation = chain) {
     "./Pet": { default: "Pet", useMood: () => ["idle", () => {}] },
     "./AgentCard": { default: "AgentCard" },
     "./ComputerViewer": { default: "ComputerViewer" },
+    "./ChatExport": { default: "ChatExport" },
     "./VoiceCallControl": { useVoiceCall: () => ({ active: false }) },
     "./PetContext": { useAgentPet: () => null },
     "./presence": { activeLabel: () => "Not active yet" },
