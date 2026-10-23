@@ -118,6 +118,10 @@ async function editor(t) {
   }
   const find = predicate => elements().find(predicate);
   const button = label => find(node => node.type === "button" && node.props.children === label);
+  const pickerButton = label => find(node => node.type === "button" && node.props.children?.at?.(-1) === label);
+  const fileInputs = () => elements().filter(node => node.type === "input" && node.props.type === "file");
+  const clearButton = () => find(node => node.props?.["aria-label"] === "Choose different files");
+  const nameInput = () => find(node => node.props?.id === "pet-import-name");
   function unmount() {
     if (!mounted) return;
     mounted = false;
@@ -134,24 +138,45 @@ async function editor(t) {
     get lateWrites() { return lateWrites; },
     async flush() { await settle(); render(); },
     pick(files, folder = false) {
-      const inputs = elements().filter(node => node.type === "input" && node.props.type === "file");
-      inputs[folder ? 1 : 0].props.onChange({ target: { files } });
+      const input = fileInputs()[folder ? 1 : 0];
+      assert.ok(!input.props.disabled, "only enabled file inputs can be changed");
+      input.props.onChange({ target: { files } });
       render();
     },
     drop(read) {
+      let reads = 0;
       find(node => node.props?.onDrop).props.onDrop({
         ...event,
         dataTransfer: { items: [{ webkitGetAsEntry: () => ({
           isFile: true, fullPath: "/pet.json",
-          file: (resolve, reject) => { read.promise.then(resolve, reject); },
+          file: (resolve, reject) => { reads++; read.promise.then(resolve, reject); },
         }) }] },
       });
       render();
+      return reads;
     },
-    clear() { find(node => node.props?.["aria-label"] === "Choose different files").props.onClick(); render(); },
-    ready: () => !button("Import pet").props.disabled,
+    clear() {
+      assert.ok(!clearButton().props.disabled, "only an enabled clear button can be clicked");
+      clearButton().props.onClick();
+      render();
+    },
+    rename(value) {
+      assert.ok(!nameInput().props.disabled, "only an enabled name input can be changed");
+      nameInput().props.onChange({ target: { value } });
+      render();
+    },
+    importControlsDisabled: () => ({
+      clear: clearButton()?.props.disabled === true,
+      name: nameInput()?.props.disabled === true,
+      files: fileInputs()[0].props.disabled === true,
+      folder: fileInputs()[1].props.disabled === true,
+      chooseFiles: pickerButton(" Choose files").props.disabled === true,
+      chooseFolder: pickerButton(" Choose folder").props.disabled === true,
+    }),
+    newPet() { find(node => node.props?.className?.includes("pet-card new")).props.onClick(); render(); },
+    ready: () => !(button("Import pet") ?? button("Importing…")).props.disabled,
     preview: () => find(node => node.type === "PetStage")?.props.sheet.url,
-    name: () => find(node => node.props?.id === "pet-import-name")?.props.value,
+    name: () => nameInput()?.props.value,
     alerts: () => elements().filter(node => node.props?.role === "alert").map(node => node.props.children),
     onSubmit: () => find(node => node.type === "form").props.onSubmit,
     async submit() { await find(node => node.type === "form").props.onSubmit(event); render(); },
@@ -378,3 +403,55 @@ test("uncertain import retries retain their id and keep the upload error visible
   assert.equal(view.imports()[0].body.fields.get("id"), view.imports()[1].body.fields.get("id"));
   assert.deepEqual(view.selections, []);
 });
+
+for (const outcome of ["success", "failure"]) {
+  test(`package and name controls stay locked until import ${outcome}`, async t => {
+    const view = await editor(t);
+    const packageA = file("fox.zip");
+    view.pick([packageA]);
+    await view.flush();
+    view.rename("Copper Fox");
+    const unlocked = { clear: false, name: false, files: false, folder: false, chooseFiles: false, chooseFolder: false };
+    assert.deepEqual(view.importControlsDisabled(), unlocked);
+
+    const response = deferred();
+    view.respondWith(response.promise);
+    const submission = view.submit();
+    view.render();
+    assert.deepEqual(view.importControlsDisabled(), { clear: true, name: true, files: true, folder: true, chooseFiles: true, chooseFolder: true });
+    assert.equal(view.ready(), false);
+    // The drop handler needs its own guard; it is not a disabled native control.
+    const read = deferred();
+    assert.equal(view.drop(read), 0, "a busy drop must not start collecting files");
+    assert.equal(view.name(), "Copper Fox");
+    assert.equal(view.imports().length, 1);
+    assert.equal(view.imports()[0].body.fields.get("name"), "Copper Fox");
+    assert.deepEqual(view.imports()[0].body.fields.get("files"), [packageA]);
+
+    if (outcome === "success") response.resolve(imported);
+    else response.reject(new Error("Upload response lost"));
+    await submission;
+    assert.deepEqual(view.selections, [], "import completion never selects the pet");
+    if (outcome === "success") {
+      assert.equal(view.name(), undefined, "success opens the imported candidate");
+      view.newPet();
+      assert.equal(view.name(), undefined, "success clears the submitted package internally");
+      assert.equal(view.ready(), false);
+    } else {
+      assert.equal(view.name(), "Copper Fox");
+      assert.ok(view.alerts().includes("Upload response lost"));
+      assert.equal(view.ready(), true);
+      assert.deepEqual(view.importControlsDisabled(), unlocked);
+      view.clear();
+    }
+
+    const packageB = file("otter.zip", "", "otter/otter.zip");
+    view.pick([packageB], true);
+    await view.flush();
+    view.rename("River Otter");
+    assert.equal(view.name(), "River Otter");
+    assert.equal(view.ready(), true);
+    assert.deepEqual(view.importControlsDisabled(), unlocked);
+    assert.deepEqual(view.alerts(), []);
+  });
+}

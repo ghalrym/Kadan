@@ -264,6 +264,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
   }
 
   async function choosePackage(picked: PickedFile[] | Promise<PickedFile[]>) {
+    if (busy) return;
     clearImport();
     const selection = { package: null as PetPackage | null, url: null as string | null, ready: false };
     importSelection.current = selection;
@@ -455,34 +456,35 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
           Bring over a pet made for ChatGPT or Codex. Use its folder (with <code>pet.json</code> and the spritesheet), a zip of that folder, or just the spritesheet.
         </p>
         <div className={`pet-drop ${dragging ? "dragging" : ""}`} hidden={!!importPackage && importPackage.kind !== "error"}
-          onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
+          onDragOver={(event) => { event.preventDefault(); if (!busy) setDragging(true); }}
           onDragLeave={() => setDragging(false)}
           onDrop={(event) => {
             event.preventDefault();
             setDragging(false);
+            if (busy) return;
             void choosePackage(droppedFiles(event.dataTransfer));
           }}>
           <Upload size={22} aria-hidden="true" />
           <p>Drop a pet folder, zip or spritesheet here</p>
           <div className="pet-drop-actions">
-            <button type="button" onClick={() => fileInput.current?.click()}><FileArchive size={16} /> Choose files</button>
-            <button type="button" onClick={() => folderInput.current?.click()}><FolderOpen size={16} /> Choose folder</button>
+            <button type="button" disabled={busy} onClick={() => fileInput.current?.click()}><FileArchive size={16} /> Choose files</button>
+            <button type="button" disabled={busy} onClick={() => folderInput.current?.click()}><FolderOpen size={16} /> Choose folder</button>
           </div>
-          <input ref={fileInput} type="file" multiple hidden
+          <input ref={fileInput} type="file" multiple hidden disabled={busy}
             accept=".zip,.json,.webp,.png,application/zip,application/json,image/webp,image/png"
             onChange={(event) => void choosePackage(Array.from(event.target.files ?? [], (file) => ({ file, path: file.name })))} />
-          <input ref={folderInput} type="file" multiple hidden
+          <input ref={folderInput} type="file" multiple hidden disabled={busy}
             onChange={(event) => void choosePackage(Array.from(event.target.files ?? [], (file) => ({ file, path: file.webkitRelativePath || file.name })))} />
         </div>
         {importPackage?.kind === "error" && <p className="error" role="alert">{importPackage.message}</p>}
         {importPackage && importPackage.kind !== "error" && <>
           <div className="pet-import-files">
             <span>{importPackage.files.map((file) => file.name).join(" + ")}</span>
-            <button type="button" className="icon" aria-label="Choose different files" title="Choose different files" onClick={clearImport}><X size={16} /></button>
+            <button type="button" className="icon" aria-label="Choose different files" title="Choose different files" disabled={busy} onClick={clearImport}><X size={16} /></button>
           </div>
           {importPackage.kind === "files" && importPackage.info?.description && <p className="pet-description">{importPackage.info.description}</p>}
           <label htmlFor="pet-import-name">Name</label>
-          <input id="pet-import-name" value={importName} maxLength={200}
+          <input id="pet-import-name" value={importName} maxLength={200} disabled={busy}
             placeholder={importPackage.kind === "zip" ? "Uses the name in pet.json" : "Imported pet"}
             onChange={(event) => setImportName(event.target.value)} />
           {importPackage.kind === "zip"
