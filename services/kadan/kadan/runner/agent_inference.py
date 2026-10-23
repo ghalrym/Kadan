@@ -153,6 +153,12 @@ def parse_tool_calls(text: str, tools: Sequence[dict]) -> tuple[str, list[dict]]
         properties = parameters.get(name, {})
         arguments: dict[str, Any] = {}
         for key, raw in PARAMETER.findall(body):
+            if key in arguments:
+                raise ServiceError(
+                    "The agent returned an invalid tool command.",
+                    502,
+                    "invalid_command",
+                )
             if is_string(properties.get(key)):
                 schema = properties[key]
                 options = schema.get("anyOf") or schema.get("oneOf") or []

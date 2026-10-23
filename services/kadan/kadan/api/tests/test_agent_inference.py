@@ -4,6 +4,7 @@ import json
 import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from kadan.api.config import ServiceError
 from kadan.runner.agent_inference import (
@@ -18,9 +19,10 @@ from kadan.runner.agent_inference import (
     render_tool_call,
 )
 from kadan.runner.tools import CONVERSATION_TOOLS
+from kadan.runner.tools.file import file_grep_files, file_read_file
 from kadan.runner.tools.shell import shell_exec_command
 
-TOOLS = [*CONVERSATION_TOOLS, shell_exec_command]
+TOOLS = [*CONVERSATION_TOOLS, shell_exec_command, file_read_file]
 
 
 def chunk(content="", finish=None):
@@ -149,6 +151,82 @@ def test_calls_without_the_tool_call_wrapper_are_parsed():
     )
     assert text == ""
     assert calls[0]["args"] == {"content": "Hello!", "end_run": True}
+
+
+@pytest.mark.parametrize(
+    ("key", "first", "second"),
+    [
+        ("file", "/tmp/first", "/tmp/second"),
+        ("file", "/tmp/first", "/tmp/first"),
+        ("file", "", "/tmp/second"),
+        ("sudo", "false", "true"),
+        ("start_line", "null", "1"),
+    ],
+)
+def test_duplicate_parameters_are_rejected(key, first, second):
+    reply = (
+        "<tool_call>\n<function=file_read_file>\n"
+        f"<parameter={key}>\n{first}\n</parameter>\n"
+        f"<parameter={key}>\n{second}\n</parameter>\n"
+        "</function>\n</tool_call>"
+    )
+    with pytest.raises(ServiceError) as error:
+        parse_tool_calls(reply, [convert_to_openai_tool(file_read_file)])
+    assert str(error.value) == "The agent returned an invalid tool command."
+    assert error.value.status == 502
+    assert error.value.code == "invalid_command"
+
+
+def test_wrapperless_duplicate_parameters_are_rejected():
+    reply = (
+        "<function=file_read_file>\n"
+        "<parameter=file>\n/tmp/first\n</parameter>\n"
+        "<parameter=file>\n/tmp/second\n</parameter>\n"
+        "</function>"
+    )
+    with pytest.raises(ServiceError) as error:
+        parse_tool_calls(reply, [convert_to_openai_tool(file_read_file)])
+    assert error.value.code == "invalid_command"
+
+
+@pytest.mark.parametrize("prefix", ["", call("finish") + "\n"])
+def test_duplicate_parameters_reject_the_response_before_first_call_selection(prefix):
+    reply = (
+        prefix + "<tool_call>\n<function=file_read_file>\n"
+        "<parameter=file>\n/tmp/first\n</parameter>\n"
+        "<parameter=file>\n/tmp/second\n</parameter>\n"
+        "</function>\n</tool_call>"
+    )
+    with pytest.raises(ServiceError) as error:
+        invoke(completed(reply))
+    assert str(error.value) == "The agent returned an invalid tool command."
+    assert error.value.status == 502
+    assert error.value.code == "invalid_command"
+
+
+def test_parameter_names_are_scoped_to_each_call():
+    reply = call("file_read_file", file="/tmp/first") + (
+        "\n<function=file_read_file>\n"
+        "<parameter=file>\n/tmp/second\n</parameter>\n</function>"
+    )
+    text, calls = parse_tool_calls(reply, [convert_to_openai_tool(file_read_file)])
+    assert text == ""
+    assert calls == [
+        {"name": "file_read_file", "args": {"file": "/tmp/first"}, "id": "call_0"},
+        {"name": "file_read_file", "args": {"file": "/tmp/second"}, "id": "call_1"},
+    ]
+    assert invoke(completed(reply)) == ToolCommand(
+        tool="file_read_file", arguments={"file": "/tmp/first"}
+    )
+
+
+def test_structured_parameters_retain_their_json_values():
+    arguments = {"path": "/tmp", "pattern": "example", "include": ["*.py", "*.txt"]}
+    text, calls = parse_tool_calls(
+        call("file_grep_files", **arguments), [convert_to_openai_tool(file_grep_files)]
+    )
+    assert text == ""
+    assert calls[0]["args"] == arguments
 
 
 def test_only_the_first_of_several_calls_is_taken():
