@@ -20,7 +20,9 @@ Kadan's Workspace shows the selected agent's Memories, Spaces and Files stored i
 
 Users can read memories and Spaces, open a Space's children, and download files. Files show their name, type and size; the view does not preview arbitrary file contents.
 
-Workspace is read-only. **Open Tsuchi** opens the storage editor in another tab. Changes made there may require another search or reopening Workspace to appear.
+During text chat, an agent can create a Markdown document in Workspace or place a new subdocument under an active Space belonging to that agent. Saving a document does not add editing controls to the browser. Updating existing documents and persistent project planning remain separate proposed work.
+
+The Workspace browser is read-only. **Open Tsuchi** opens the storage editor in another tab. Changes made there may require another search or reopening Workspace to appear.
 
 Search matches stored text and metadata. It does not search inside uploaded PDFs, recordings or other file contents, so a missing match does not prove that a file lacks the information.
 
