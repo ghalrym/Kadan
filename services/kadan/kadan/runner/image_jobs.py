@@ -39,6 +39,10 @@ class GeneratedImage(BaseModel):
     mime_type: Literal["image/png"] | None = None
 
 
+class UnusableSavedImage(ServiceError):
+    """Saved output is conclusively unavailable or invalid."""
+
+
 def validate_png(data: bytes) -> None:
     if len(data) > MAX_IMAGE_BYTES or not data.startswith(b"\x89PNG\r\n\x1a\n"):
         raise ServiceError("Hikari returned invalid image data.", 502, "invalid_image")
@@ -212,15 +216,22 @@ class ImageJobs:
                     if current.status == "cancelling":
                         await self.finish(current, "cancelled")
                     else:
-                        asset_id = await self.saved_asset(current)
+                        failure = (
+                            str(error)[:10000]
+                            or "Image generation was interrupted before an image was saved."
+                        )
+                        try:
+                            asset_id = await self.saved_asset(current)
+                        except UnusableSavedImage as saved_error:
+                            asset_id = None
+                            failure = str(saved_error)[:10000]
                         if asset_id is not None:
                             await self.finish(current, "completed", asset_id=asset_id)
                         else:
                             await self.finish(
                                 current,
                                 "failed",
-                                error=str(error)[:10000]
-                                or "Image generation was interrupted before an image was saved.",
+                                error=failure,
                             )
             except Exception:
                 # A failed fence/lease write remains active for expiry recovery.
@@ -244,14 +255,19 @@ class ImageJobs:
             if current.status == "cancelling":
                 await self.finish(current, "cancelled")
                 return
-            asset_id = await self.saved_asset(current)
+            error = "Image generation was interrupted before an image was saved; it was not resubmitted."
+            try:
+                asset_id = await self.saved_asset(current)
+            except UnusableSavedImage as saved_error:
+                asset_id = None
+                error = str(saved_error)
             if asset_id is not None:
                 await self.finish(current, "completed", asset_id=asset_id)
             else:
                 await self.finish(
                     current,
                     "failed",
-                    error="Image generation was interrupted before an image was saved; it was not resubmitted.",
+                    error=error,
                 )
 
     @traced("kadan.image_jobs.saved_asset")
@@ -266,19 +282,28 @@ class ImageJobs:
                 return None
             raise
         asset = ImageAsset.model_validate(value)
-        if asset.id != asset_id or asset.agent_key != job.agent_key or asset.deleted_at:
+        if asset.id != asset_id or asset.agent_key != job.agent_key:
             raise ServiceError(
                 "Saved image metadata is invalid.", 502, "invalid_image_asset"
             )
+        if asset.deleted_at is not None:
+            raise UnusableSavedImage("The saved image is in Tsuchi's trash.", 409)
         response = await self.services.client.get(
             self.services.settings.tsuchi_url
             + f"/api/agents/{job.agent_key}/assets/{asset_id}/content",
             timeout=60,
         )
+        if response.status_code == 404:
+            raise UnusableSavedImage("The saved image file is missing.", 404)
         response.raise_for_status()
-        validate_png(response.content)
+        try:
+            validate_png(response.content)
+        except ServiceError as error:
+            raise UnusableSavedImage(
+                "Saved image data could not be verified.", 502, "invalid_image_asset"
+            ) from error
         if hashlib.sha256(response.content).hexdigest() != asset.sha256:
-            raise ServiceError(
+            raise UnusableSavedImage(
                 "Saved image checksum does not match.", 502, "invalid_image_asset"
             )
         return asset_id
