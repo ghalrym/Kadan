@@ -158,6 +158,34 @@ def test_fts_search_matches_structured_slide_text_and_tags(repository):
     assert repository.list_resources("alpha", query='"***()') == []
 
 
+def test_search_with_30_words_requires_every_word(repository):
+    words = [f"term{index}" for index in range(30)]
+    complete = repository.create_resource(
+        "alpha",
+        MarkdownContent(kind="memory", title="Complete", markdown=" ".join(words)),
+    )
+    repository.create_resource(
+        "alpha",
+        MarkdownContent(
+            kind="memory", title="Missing last word", markdown=" ".join(words[:-1])
+        ),
+    )
+    assert [
+        item.id for item in repository.list_resources("alpha", query=" ".join(words))
+    ] == [complete.id]
+
+
+def test_search_with_31_words_reports_an_error_instead_of_partial_matches(repository):
+    words = [f"term{index}" for index in range(30)]
+    repository.create_resource(
+        "alpha",
+        MarkdownContent(kind="memory", title="Partial", markdown=" ".join(words)),
+    )
+    with pytest.raises(StorageError, match="30 words") as error:
+        repository.list_resources("alpha", query=" ".join([*words, "absent"]))
+    assert error.value.status_code == 422
+
+
 def test_space_cycle_is_rejected(repository):
     parent = repository.create_resource(
         "alpha", MarkdownContent(kind="space", title="Parent")
