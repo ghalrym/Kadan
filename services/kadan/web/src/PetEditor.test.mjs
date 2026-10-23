@@ -130,7 +130,7 @@ async function editor(t) {
   find(node => node.props?.role === "tab" && node.props.children.at(-1) === " Import").props.onClick();
   render();
   return {
-    probes, urls, revoked, requests, selections, unmount,
+    probes, urls, revoked, requests, selections, unmount, render,
     get lateWrites() { return lateWrites; },
     async flush() { await settle(); render(); },
     pick(files, folder = false) {
@@ -153,6 +153,7 @@ async function editor(t) {
     preview: () => find(node => node.type === "PetStage")?.props.sheet.url,
     name: () => find(node => node.props?.id === "pet-import-name")?.props.value,
     alerts: () => elements().filter(node => node.props?.role === "alert").map(node => node.props.children),
+    onSubmit: () => find(node => node.type === "form").props.onSubmit,
     async submit() { await find(node => node.type === "form").props.onSubmit(event); render(); },
     imports: () => requests.filter(request => request.path.endsWith("/imports")),
     respondWith(value) { importResponse = value; },
@@ -204,6 +205,30 @@ test("a pending replacement cannot submit a previously ready ZIP", async t => {
   await view.flush();
   assert.equal(view.ready(), false, "image probing is still pending");
 });
+
+for (const replacement of ["zip", "webp"]) {
+  test(`a retained submit handler cannot import an old package after a replacement ${replacement} becomes ready before rendering`, async t => {
+    const view = await editor(t);
+    view.pick([file("old.zip")]);
+    await view.flush();
+    assert.equal(view.ready(), true);
+    const oldSubmit = view.onSubmit();
+    const next = file(`new.${replacement}`);
+    view.pick([next]);
+    await settle();
+    if (replacement === "webp") loaded(view.probes[0]);
+
+    await oldSubmit(event);
+    assert.equal(view.imports().length, 0, "the retained handler must not upload the old package");
+
+    view.render();
+    assert.equal(view.ready(), true);
+    await view.submit();
+    assert.equal(view.imports().length, 1);
+    assert.equal(view.imports()[0].body.fields.get("name"), "new");
+    assert.deepEqual(view.imports()[0].body.fields.get("files"), [next]);
+  });
+}
 
 for (const outcome of ["success", "failure"]) {
   test(`stale dropped-file collection ${outcome} cannot replace a new package`, async t => {

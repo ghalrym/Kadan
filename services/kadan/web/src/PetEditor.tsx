@@ -145,7 +145,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importName, setImportName] = useState("");
   const [dragging, setDragging] = useState(false);
-  const importSelection = useRef<{ url: string | null; ready: boolean } | null>(null);
+  const importSelection = useRef<{ package: PetPackage | null; url: string | null; ready: boolean } | null>(null);
   const pendingImport = useRef<{ id: string; signature: string } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
@@ -265,7 +265,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
 
   async function choosePackage(picked: PickedFile[] | Promise<PickedFile[]>) {
     clearImport();
-    const selection = { url: null as string | null, ready: false };
+    const selection = { package: null as PetPackage | null, url: null as string | null, ready: false };
     importSelection.current = selection;
     const current = () => alive.current && importSelection.current === selection;
     try {
@@ -273,6 +273,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
       if (!current() || !files.length) return;
       const result = await resolvePetPackage(files, (file) => file.text());
       if (!current()) return;
+      selection.package = result;
       setImportPackage(result);
       if (result.kind === "error") return;
       const fallback = result.kind === "files" ? result.sheet.name.replace(/\.(webp|png)$/i, "") : result.zip.name.replace(/\.zip$/i, "");
@@ -314,7 +315,8 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
 
   async function importPet(event: React.FormEvent) {
     event.preventDefault();
-    if (busy || !importSelection.current?.ready || !importPackage || importPackage.kind === "error") return;
+    if (busy || !importSelection.current?.ready || !importPackage || importPackage.kind === "error"
+      || importSelection.current.package !== importPackage) return;
     // Reuse the id when retrying the same upload so an unconfirmed import is not duplicated.
     const signature = JSON.stringify([importName.trim(), importPackage.files.map((file) => [file.name, file.size, file.lastModified])]);
     if (pendingImport.current?.signature !== signature) pendingImport.current = { id: randomUuid(), signature };
