@@ -23,7 +23,10 @@ export default function ApiAccessPage() {
         })
         if (!response.ok) throw new Error(`API schema returned HTTP ${response.status}`)
         const data = await response.json() as Schema
-        if (!data.info?.title || !data.paths || typeof data.paths !== 'object') {
+        if (typeof data.info?.title !== 'string' || !data.info.title
+          || typeof data.info.version !== 'string'
+          || (data.info.description !== undefined && typeof data.info.description !== 'string')
+          || !data.paths || typeof data.paths !== 'object' || Array.isArray(data.paths)) {
           throw new Error('The API returned an invalid OpenAPI schema.')
         }
         for (const operations of Object.values(data.paths)) {
@@ -31,7 +34,7 @@ export default function ApiAccessPage() {
             throw new Error('The API returned invalid path definitions.')
           }
           for (const [method, operation] of Object.entries(operations)) {
-            if (methods.has(method) && (!operation || typeof operation !== 'object'
+            if (methods.has(method) && (!operation || typeof operation !== 'object' || Array.isArray(operation)
               || (operation.summary !== undefined && typeof operation.summary !== 'string')
               || (operation.description !== undefined && typeof operation.description !== 'string'))) {
               throw new Error('The API returned an invalid operation definition.')
