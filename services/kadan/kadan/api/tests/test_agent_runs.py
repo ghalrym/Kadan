@@ -3,6 +3,7 @@
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4, uuid5
 
@@ -378,14 +379,123 @@ def test_instructions_are_reread_when_a_new_context_is_built(boundary):
     assert second[0].content.startswith("Use brief messages.")
 
 
-def test_recovery_uses_persisted_instructions_without_reloading_file(boundary):
+def test_invalid_instruction_encoding_fails_before_inference(boundary):
+    instruction_file = Path(boundary.settings.agent_instruction_file)
+    instruction_file.write_bytes(b"\xff")
+    boundary.controller.inference = Commands()
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert str(instruction_file) in boundary.current.error
+    assert "could not be decoded" in boundary.current.error
+    assert "text encoding" in boundary.current.error
+    assert boundary.current.owner_id is None
+    assert boundary.current.lease_expires_at is None
+    assert boundary.current.transcript == []
+    assert boundary.current.delivered_message_ids == []
+    assert boundary.controller.inference.calls == []
+    assert boundary.delivery_attempts == []
+    assert boundary.deliveries == []
+
+
+@pytest.mark.parametrize("failure", ["missing", "directory"])
+def test_unreadable_instructions_fail_before_inference(boundary, failure):
+    instruction_file = Path(boundary.settings.agent_instruction_file)
+    instruction_file.unlink()
+    if failure == "directory":
+        instruction_file.mkdir()
+    boundary.controller.inference = Commands()
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert str(instruction_file) in boundary.current.error
+    assert boundary.current.owner_id is None
+    assert boundary.current.lease_expires_at is None
+    assert boundary.current.transcript == []
+    assert boundary.controller.inference.calls == []
+    assert boundary.delivery_attempts == []
+    assert boundary.deliveries == []
+
+
+@pytest.mark.parametrize("failure", ["malformed", "missing"])
+def test_recovery_uses_persisted_instructions_without_reloading_file(boundary, failure):
+    transcript = [
+        RunMessage(role="system", content="Saved instructions"),
+        RunMessage(role="user", content="Existing context"),
+    ]
+    boundary.current = boundary.current.model_copy(update={"transcript": transcript})
+    instruction_file = Path(boundary.settings.agent_instruction_file)
+    if failure == "malformed":
+        instruction_file.write_bytes(b"\xff")
+    else:
+        instruction_file.unlink()
     boundary.controller.inference = Commands(finish())
-    run = boundary.start_owned(
-        transcript=[RunMessage(role="user", content="Existing context")]
-    )
-    boundary.settings.agent_instruction_file = "/does-not-exist/AGENT.md"
-    asyncio.run(boundary.controller.advance(run))
+    asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.current.status == "completed"
+    assert boundary.current.owner_id is None
+    assert boundary.current.lease_expires_at is None
+    assert boundary.current.transcript[:2] == transcript
+    assert len(boundary.controller.inference.calls) == 1
+    assert [item.content for item in boundary.controller.inference.calls[0]] == [
+        item.content for item in transcript
+    ]
+    assert boundary.deliveries == []
+
+
+def test_repaired_instructions_allow_a_new_queued_run(boundary):
+    queued = boundary.current
+    instruction_file = Path(boundary.settings.agent_instruction_file)
+    instruction_file.write_bytes(b"\xff")
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    failed = boundary.current
+    assert failed.status == "failed"
+    assert boundary.controller.inference.calls == []
+    boundary.current = queued.model_copy(update={"id": uuid4()})
+    instruction_file.write_text("Repaired instructions.")
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert boundary.current.owner_id is None
+    assert boundary.current.lease_expires_at is None
+    assert boundary.current.error is None
+    assert boundary.current.transcript[0].content == "Repaired instructions."
+    assert len(boundary.controller.inference.calls) == 1
+    assert boundary.controller.inference.calls[0][0].content == "Repaired instructions."
+    assert boundary.deliveries == []
+
+
+@pytest.mark.parametrize("loss", ["cancelled", "another_owner", "expired"])
+def test_instruction_decode_failure_respects_lease_fencing(boundary, monkeypatch, loss):
+    Path(boundary.settings.agent_instruction_file).write_bytes(b"\xff")
+    boundary.controller.inference = Commands()
+
+    async def read_after_ownership_loss(function):
+        if loss == "cancelled":
+            boundary.cancel()
+        else:
+            boundary.current = boundary.current.model_copy(
+                update={"owner_id": uuid4()}
+                if loss == "another_owner"
+                else {"lease_expires_at": datetime.now(UTC) - timedelta(seconds=1)}
+            )
+        return function()
+
+    monkeypatch.setattr(
+        "kadan.runner.agent_runs.asyncio.to_thread", read_after_ownership_loss
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == (
+        "cancelled" if loss == "cancelled" else "running"
+    )
+    assert boundary.current.error is None
+    if loss == "cancelled":
+        assert boundary.current.owner_id is None
+        assert boundary.current.lease_expires_at is None
+    elif loss == "another_owner":
+        assert boundary.current.owner_id != boundary.controller.owner
+    else:
+        assert boundary.current.lease_expires_at < datetime.now(UTC)
+    assert boundary.controller.inference.calls == []
+    assert boundary.delivery_attempts == []
+    assert boundary.deliveries == []
 
 
 def test_recovery_can_replay_the_last_allowed_command(boundary):
