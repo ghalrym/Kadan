@@ -49,4 +49,4 @@ The browser chooses the first enabled model, defaults to Ryan and uses Auto lang
 
 Speech is buffered into a complete WAV rather than incrementally played during synthesis. The history route is empty, and the playground retains clips and form edits in page memory only. Browser cancellation or navigation aborts the request and ignores late results while native cleanup finishes. Retry submits the current form as another inference.
 
-See [Text to speech](https://chatgpt.com/space/page_a5eb66cabb10819192e8cd2b4371f238) for user expectations.
+See the privately provided expectations for text to speech.

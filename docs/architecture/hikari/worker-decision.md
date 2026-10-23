@@ -47,4 +47,4 @@ Choice returns an option key and optional probabilities. Score is the expected z
 
 The playground starts with empty state and no questions. New Choice questions have one empty option; Score questions have two empty levels. Answers remain associated with the evaluated input, and later edits mark them outdated. Retry uses the current form. Cancellation ignores late responses while native cleanup finishes.
 
-See [Decisions](https://chatgpt.com/space/page_fe98878e92cc81918c3ef87b453005d4) for user expectations.
+See the privately provided expectations for decisions.

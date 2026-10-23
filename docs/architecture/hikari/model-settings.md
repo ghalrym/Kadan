@@ -1,6 +1,6 @@
 # Model settings and downloads
 
-Hikari separates saved tier selection, checkpoint acquisition and model residency. Persisting a choice must not imply that its download or load succeeded. See [Model settings and downloads](https://chatgpt.com/space/page_df86a77fea208191be1047f3853a6c2b) for user expectations and [Model lifecycle](model-lifecycle.md) for loading and context settings.
+Hikari separates saved tier selection, checkpoint acquisition and model residency. Persisting a choice must not imply that its download or load succeeded. See the privately provided expectations for model settings and downloads, and [Model lifecycle](model-lifecycle.md) for loading and context settings.
 
 `PUT /v1/settings` saves the tier and queues incomplete checkpoints. Omitted settings retain their values; a null tier does not clear the selection. Transcription formatting is an independent saved switch with a per-request override, so changing tiers alone does not toggle it. Settings and model-status reads do not run inference.
 

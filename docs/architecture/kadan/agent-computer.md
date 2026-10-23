@@ -42,4 +42,4 @@ Tool results are bounded before entering the transcript, with binary results des
 
 Certain stalled-browser reads may restart the browser and retry once, reporting the reset to the agent. This can discard tabs and page state. Other uncertain browser operations require inspection. Viewer reconnection does not invoke that recovery.
 
-See [Viewing and controlling the computer](https://chatgpt.com/space/page_bea5973327d08191afd7e289509c4874) for user expectations.
+See the privately provided expectations for viewing and controlling the computer.

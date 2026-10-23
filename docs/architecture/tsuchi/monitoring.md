@@ -1,6 +1,6 @@
 # Storage monitoring
 
-Tsuchi derives namespace statistics and recent activity from its stored records. These summaries help inspect storage without treating a bounded view as a complete event ledger. See [Storage overview](https://chatgpt.com/space/page_32b6668f71dc819184028fc2cc9da021) and [Activity](https://chatgpt.com/space/page_a628efd991e48191b83f3898651058ac).
+Tsuchi derives namespace statistics and recent activity from its stored records. These summaries help inspect storage without treating a bounded view as a complete event ledger. See the privately provided expectations for storage overview and activity.
 
 The namespace stats endpoint separates active resource and asset counts, image counts, trashed resource and asset counts, retained asset bytes, and database bytes. Images are a subset of assets. Retained bytes include trashed files; database size describes the shared database across namespaces. This distinction prevents a namespace count or trash action from implying reclaimed disk capacity.
 
