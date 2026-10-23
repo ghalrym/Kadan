@@ -90,6 +90,119 @@ class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(InferenceFailure):
             await self.service.cancel_download("small")
 
+    async def test_duplicate_download_is_rejected_while_worker_admission_waits(self):
+        service = InferenceService()
+        service.worker.models = snapshot()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def wait(request):
+            entered.set()
+            await release.wait()
+
+        async def accept(job):
+            job.accepted.set_result(None)
+
+        with (
+            patch.object(
+                service.worker, "_wait_for_worker", side_effect=wait
+            ) as waiting,
+            patch.object(service.worker, "_send_job", side_effect=accept) as sending,
+        ):
+            first = asyncio.create_task(service.download("small", True))
+            await entered.wait()
+            observation = service.downloads["small"]
+            second = asyncio.create_task(service.download("small", True))
+            try:
+                await asyncio.sleep(0)
+                self.assertTrue(second.done())
+                with self.assertRaises(InferenceFailure) as failure:
+                    await second
+                self.assertEqual(failure.exception.status_code, 409)
+                self.assertIs(service.downloads["small"], observation)
+                waiting.assert_awaited_once()
+                self.assertFalse(service.worker.jobs)
+                release.set()
+                await first
+                sending.assert_awaited_once()
+                self.assertEqual(len(service.worker.jobs), 1)
+            finally:
+                release.set()
+                await asyncio.gather(first, second, return_exceptions=True)
+                for job in tuple(service.worker.jobs.values()):
+                    service._observe(job, WorkerEvent(state="succeeded"))
+                    job.result.set_result({})
+                await asyncio.gather(*service.tasks.values())
+
+    async def test_another_model_can_queue_while_first_download_waits_for_admission(
+        self,
+    ):
+        service = InferenceService()
+        service.worker.models = snapshot()
+        service.worker.models.models.append(
+            service.worker.models.models[0].model_copy(update={"id": "other"})
+        )
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def wait(request):
+            if request.input.model_id == "small":
+                entered.set()
+                await release.wait()
+
+        async def accept(job):
+            job.accepted.set_result(None)
+
+        with (
+            patch.object(service.worker, "_wait_for_worker", side_effect=wait),
+            patch.object(service.worker, "_send_job", side_effect=accept),
+        ):
+            first = asyncio.create_task(service.download("small", True))
+            await entered.wait()
+            try:
+                await service.download("other", True)
+                self.assertFalse(first.done())
+                self.assertEqual(
+                    [
+                        job.request.input.model_id
+                        for job in service.worker.jobs.values()
+                    ],
+                    ["other"],
+                )
+                release.set()
+                await first
+                self.assertEqual(len(service.worker.jobs), 2)
+            finally:
+                release.set()
+                await asyncio.gather(first, return_exceptions=True)
+                for job in tuple(service.worker.jobs.values()):
+                    service._observe(job, WorkerEvent(state="succeeded"))
+                    job.result.set_result({})
+                await asyncio.gather(*service.tasks.values())
+
+    async def test_failed_or_cancelled_admission_allows_retry(self):
+        for error in (
+            InferenceFailure("Worker unavailable.", 503),
+            asyncio.CancelledError(),
+        ):
+            with self.subTest(error=type(error).__name__):
+                self.service.worker.submit.side_effect = error
+                with self.assertRaises(type(error)):
+                    await self.service.download("small", True)
+                self.assertEqual(
+                    self.service.models_status().models[0].status, "failed"
+                )
+
+                async def submit(request, **kwargs):
+                    job = InferenceJob(request, False)
+                    self.service.worker.jobs[request.id] = job
+                    return job
+
+                self.service.worker.submit.side_effect = submit
+                await self.service.download("small", True)
+                job = next(iter(self.service.worker.jobs.values()))
+                self.service._observe(job, WorkerEvent(state="succeeded"))
+                job.result.set_result({})
+                await asyncio.gather(*self.service.tasks.values())
+
     async def test_configuration_is_typed_and_waits_for_worker(self):
         task = asyncio.create_task(
             self.service.submit(
