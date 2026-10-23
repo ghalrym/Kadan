@@ -85,16 +85,40 @@ class InferenceService:
 
     def status(self):
         memory = self.worker.memory
-        return dict(
-            state=self.state,
-            model_id=self.model_id,
-            error=self.error,
-            memory=memory.model_dump() if memory is not None else None,
-            max_output_tokens=256,
-            configured_context_limit=self.context.get("configured"),
-            effective_context_limit=self.context.get("effective"),
-            supported_context_limit=self.context.get("supported"),
+        state, model_id = self.state, self.model_id
+        context = self.context
+        loading = any(
+            job.request.feature == "llm"
+            and job.model == model_id
+            and job.state in ("loading", "running", "waiting_for_resources")
+            and not job.result.done()
+            and any(worker_id in self.worker.workers for worker_id in job.machines)
+            for job in self.worker.jobs.values()
         )
+        if state in ("ready", "offloaded") or (state == "loading" and not loading):
+            resident = next(
+                (
+                    worker
+                    for worker in self.worker.workers.values()
+                    if worker.kind == "llm"
+                    and worker.resident_model == model_id
+                    and model_id is not None
+                ),
+                None,
+            )
+            state = "ready" if resident is not None else "unloaded"
+            model_id = resident.resident_model if resident is not None else None
+            context = resident.resident_context if resident is not None else {}
+        return {
+            "state": state,
+            "model_id": model_id,
+            "error": self.error,
+            "memory": memory.model_dump() if memory is not None else None,
+            "max_output_tokens": 256,
+            "configured_context_limit": self.context.get("configured"),
+            "effective_context_limit": context.get("effective"),
+            "supported_context_limit": self.context.get("supported"),
+        }
 
     def models_status(self) -> ModelStoreStatus:
         if self.worker.models is None:
@@ -169,7 +193,7 @@ class InferenceService:
         if job.request.operation == "configure":
             return
         feature = job.request.feature
-        if event.context is not None:
+        if feature == "llm" and event.context is not None:
             self.context = event.context
         if feature == "llm" and event.model is not None:
             self.model_id = event.model
@@ -215,15 +239,12 @@ class InferenceService:
             job.progress = None
             if self.progress and self.progress.job_id == job.request.id:
                 self.progress = None
-        if event.state == "loading":
-            if feature == "llm":
-                self.model_id, self.state, self.error = (
-                    event.model or self.model_id,
-                    "loading",
-                    None,
-                )
-            elif self.state == "ready":
-                self.state = "offloaded"
+        if event.state == "loading" and feature == "llm":
+            self.model_id, self.state, self.error = (
+                event.model or self.model_id,
+                "loading",
+                None,
+            )
         if feature == "llm":
             if event.state == "succeeded":
                 self.state = (

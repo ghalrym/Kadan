@@ -97,6 +97,7 @@ class InferenceJob:
         self.accepted = asyncio.get_running_loop().create_future()
         self.result = asyncio.get_running_loop().create_future()
         self.model = None
+        self.context: dict[str, int | None] = {}
         self.identified = asyncio.Event()
         self.stream_error = None
         # Machines still owing a terminal event; settings and downloads go to all.

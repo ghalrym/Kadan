@@ -18,6 +18,8 @@ The load endpoint returns HTTP 202, but that response does not guarantee that fu
 
 Status reports `unloaded`, `loading`, `ready`, `offloaded`, `unloading`, or `error`. It also distinguishes the configured context limit, the effective limit, and the checkpoint's supported maximum. These values are separate because a saved preference does not prove that a model has loaded with that setting.
 
+Readiness follows the connected workers' observed resident models. A budget grant alone does not establish residency: resizing can close an engine while leaving its worker permitted to load again. Confirmed release or loss of the last matching worker reports `unloaded` and no effective loaded context, while preserving the configured context observation. Another resident copy can still establish readiness using its own effective context. A settled or disconnected load cannot leave status stuck at `loading`. Starting another inference type does not itself establish that the language model was offloaded. This reporting does not change memory scheduling or retained conversation state.
+
 ## Saved context and load overrides
 
 Each language checkpoint defaults to 65,536 context tokens. `PUT /v1/models/{model_id}/context` saves its `context_limit`. A positive integer sets the token limit; `null` selects the checkpoint's maximum supported context on load. Boolean values are rejected.

@@ -177,6 +177,9 @@ class Worker:
             computer.gpu_index(device) for device in hello["machine"]["devices"]
         ]
         self.models: ModelStoreStatus | None = None
+        # A budget grant permits work; only engine observations prove residency.
+        self.resident_model: str | None = None
+        self.resident_context: dict[str, int | None] = {}
         self.ready = asyncio.Event()
         self.controls: dict[str, asyncio.Future] = {}
         self.preparing: asyncio.Task | None = None
@@ -349,6 +352,9 @@ class WorkerHub:
                 slot.loaded = message["loaded"]
                 slot.budget = worker.ledger(list(message["budget"]))
                 slot.releasing = False
+                if worker.resident_model != message.get("model"):
+                    worker.resident_context = {}
+                worker.resident_model = message.get("model")
                 log.info(
                     "%s %s; budget %s GiB",
                     worker.name,
@@ -593,6 +599,15 @@ class WorkerHub:
         if event.model is not None:
             job.model = event.model
             job.identified.set()
+        if job.request.feature == "llm" and event.context is not None:
+            job.context = event.context
+        if job.request.feature == "llm" and event.state == "succeeded":
+            worker.resident_model = (
+                None if job.request.operation == "unload" else job.model
+            )
+            worker.resident_context = (
+                job.context if worker.resident_model is not None else {}
+            )
         if event.state == "content":
             if job.events is not None and job.stream_error is None:
                 try:
@@ -828,6 +843,9 @@ class WorkerHub:
                     for budget, used in zip(status["budget"], status.get("used", []))
                 ] or list(status["budget"])
                 slot.loaded = status["loaded"]
+                if worker.resident_model != status.get("model"):
+                    worker.resident_context = {}
+                worker.resident_model = status.get("model")
                 slot.budget = worker.ledger(local)
                 slot.releasing = False
 
