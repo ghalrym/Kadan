@@ -344,6 +344,8 @@ function NamespaceApp({
             onSubmit={(event) => {
               event.preventDefault();
               if (query.trim()) {
+                if (view === "search" && query.trim() === search)
+                  setRefresh((value) => value + 1);
                 setSearch(query.trim());
                 navigate("search");
               }

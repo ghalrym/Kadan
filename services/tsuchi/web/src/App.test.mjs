@@ -5,8 +5,8 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 
 const sources = Object.fromEntries(
-  ["App", "ResourceEditor", "AssetEditor", "types"].map(name => [name,
-    ts.transpileModule(readFileSync(new URL(`./${name}.${name === "types" ? "ts" : "tsx"}`, import.meta.url), "utf8"), {
+  ["App", "ResourceEditor", "AssetEditor", "LibraryPages", "api", "types"].map(name => [name,
+    ts.transpileModule(readFileSync(new URL(`./${name}.${["api", "types"].includes(name) ? "ts" : "tsx"}`, import.meta.url), "utf8"), {
       compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
     }).outputText,
   ]),
@@ -33,8 +33,8 @@ function find(tree, predicate) {
 }
 
 // Direct component/callback units: no DOM, browser, renderer, or live service.
-function app(search = "") {
-  let scope;
+function app(search = "", selectedAgent = agent) {
+  let scope, resourcesOwner, ResourcesPage, useResourceLoad;
   const requests = [], confirmations = [];
   let discard = false;
   const react = {
@@ -79,14 +79,14 @@ function app(search = "") {
       },
     };
   }
-  const jsx = (type, props) => ({ type, props });
+  const jsx = (type, props, key) => ({ type, props, key });
   const modules = {
     react,
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "lucide-react": {},
     "./AgentForm": { AgentForm: "AgentForm" },
     "./components": Object.fromEntries([
-      "Dialog", "ErrorNotice", "Loading", "Markdown", "SelectItems", "SourceLinks", "SourcesField", "TagsField",
+      "Dialog", "Empty", "ErrorNotice", "Loading", "Markdown", "SelectItems", "SourceLinks", "SourcesField", "TagsField",
     ].map(name => [name, name])),
     "./LibraryPages": { AssetsPage: "AssetsPage", ResourcesPage: "ResourcesPage", TrashPage: "TrashPage" },
     "./OverviewPages": { OverviewPage: "OverviewPage", ActivityPage: "ActivityPage" },
@@ -102,11 +102,13 @@ function app(search = "") {
       formatBytes: String,
       formatDate: String,
       json: (method, body) => ({ method, body }),
-      useLoad: () => ({ data: scope === root ? [agent] : null, loading: false, error: "" }),
+      useLoad: (load, dependencies) => scope === resourcesOwner
+        ? useResourceLoad(load, dependencies)
+        : { data: scope === root ? [selectedAgent] : null, loading: false, error: "" },
       request: (path, options) => new Promise((resolve, reject) => requests.push({ path, options, resolve, reject })),
     },
   };
-  for (const name of ["types", "ResourceEditor", "AssetEditor", "App"]) {
+  for (const name of ["types", "api", "ResourceEditor", "AssetEditor", "LibraryPages", "App"]) {
     const exports = {};
     runInNewContext(sources[name], {
       exports,
@@ -114,14 +116,17 @@ function app(search = "") {
       Error, URLSearchParams,
       window: {
         location: { search }, setInterval: () => 0, clearInterval() {},
+        setTimeout: () => 0, clearTimeout() {},
         confirm: message => { confirmations.push(message); return discard; },
       },
-      localStorage: { getItem: () => agent.key },
+      localStorage: { getItem: () => selectedAgent.key },
     });
-    modules[`./${name}`] = exports;
+    if (name === "api") useResourceLoad = exports.useLoad;
+    else if (name === "LibraryPages") ResourcesPage = exports.ResourcesPage;
+    else modules[`./${name}`] = exports;
   }
   const root = hooks(), namespace = hooks();
-  const namespaceNode = find(root.run(modules["./App"].App), node => node.props?.agent === agent);
+  const namespaceNode = find(root.run(modules["./App"].App), node => node.props?.agent === selectedAgent);
   let tree;
   function render() {
     tree = namespace.run(namespaceNode.type, namespaceNode.props);
@@ -163,6 +168,28 @@ function app(search = "") {
   render();
   return {
     render, node, navigate, editor, editorNode, requests, confirmations,
+    resultsKey: () => find(tree, node => node.props?.children?.type === "ResourcesPage").key,
+    resources() {
+      const owner = hooks();
+      resourcesOwner = owner;
+      let output;
+      function renderResources() {
+        output = owner.run(ResourcesPage, node("ResourcesPage").props);
+      }
+      renderResources();
+      return {
+        render: renderResources,
+        error: () => find(output, node => node.type === "ErrorNotice").props.message,
+        rows: () => find(output, node => node.props?.resources).props.resources,
+        loading: () => elements(output).some(node => node.type === "Loading"),
+        next() {
+          find(output, node => node.type === "button" && [node.props.children].flat().includes("Next")).props.onClick();
+          renderResources();
+        },
+        cleanup() { owner.cleanup(); return owner.writes; },
+        writes: () => owner.writes,
+      };
+    },
     discard(value) { discard = value; },
     hasEditor: () => elements(tree).some(node => [modules["./ResourceEditor"].ResourceEditor, modules["./AssetEditor"].AssetEditor].includes(node.type)),
     error: () => node("ErrorNotice").props.message,
@@ -176,6 +203,172 @@ function app(search = "") {
     writes: () => namespace.writes,
   };
 }
+
+test("same-query resubmission retries a failed saved-content read", async () => {
+  const view = app();
+  view.search("saved memory");
+  const key = view.resultsKey();
+  const page = view.resources();
+  assert.equal(view.requests[0].path, "/api/agents/guide/resources?limit=100&offset=0&q=saved%20memory");
+  view.requests[0].reject(new Error("Saved content unavailable"));
+  await tick();
+  page.render();
+  assert.equal(page.error(), "Saved content unavailable");
+
+  view.search("  saved memory  ");
+  assert.equal(view.resultsKey(), key);
+  page.render();
+  assert.equal(view.requests.length, 2, "Resubmission must issue another saved-content read");
+  assert.equal(view.requests[1].path, view.requests[0].path);
+  page.render();
+  assert.equal(page.loading(), true);
+  assert.equal(page.error(), "");
+  view.requests[1].resolve([memory]);
+  await tick();
+  page.render();
+  assert.equal(page.error(), "");
+  assert.deepEqual(page.rows(), [memory]);
+});
+
+test("same-query resubmission refreshes latest saved data on the current page", async () => {
+  const view = app();
+  view.search("saved memory");
+  const page = view.resources();
+  view.requests[0].resolve(Array.from({ length: 100 }, (_, index) => ({ ...memory, id: `memory-${index}` })));
+  await tick();
+  page.render();
+  page.next();
+  assert.equal(view.requests[1].path, "/api/agents/guide/resources?limit=100&offset=100&q=saved%20memory");
+  view.requests[1].resolve([memory]);
+  await tick();
+  page.render();
+
+  const key = view.resultsKey();
+  view.search("saved memory");
+  assert.equal(view.resultsKey(), key);
+  page.render();
+  assert.equal(view.requests.length, 3);
+  assert.equal(view.requests[2].path, view.requests[1].path);
+  const latest = { ...memory, title: "Latest saved memory", version: 2 };
+  view.requests[2].resolve([latest]);
+  await tick();
+  page.render();
+  assert.deepEqual(page.rows(), [latest]);
+});
+
+test("changed global query remounts results at the first page without a refresh bump", async () => {
+  const view = app();
+  view.search("saved memory");
+  const page = view.resources();
+  view.requests[0].resolve(Array.from({ length: 100 }, () => memory));
+  await tick();
+  page.render();
+  page.next();
+  const key = view.resultsKey();
+  const refresh = view.node("ResourcesPage").props.refresh;
+
+  view.search("another word");
+  assert.notEqual(view.resultsKey(), key);
+  assert.equal(view.node("ResourcesPage").props.refresh, refresh);
+  page.cleanup();
+  const changed = view.resources();
+  assert.equal(view.requests.length, 3);
+  assert.equal(view.requests[2].path, "/api/agents/guide/resources?limit=100&offset=0&q=another%20word");
+  const result = { ...memory, title: "Another word" };
+  view.requests[2].resolve([result]);
+  await tick();
+  changed.render();
+  assert.deepEqual(changed.rows(), [result]);
+  view.requests[1].resolve([memory]);
+  await tick();
+  changed.render();
+  assert.deepEqual(changed.rows(), [result]);
+});
+
+test("blank global submissions leave the current failed search unchanged", async () => {
+  const view = app();
+  view.search("saved memory");
+  const page = view.resources();
+  view.requests[0].reject(new Error("Saved content unavailable"));
+  await tick();
+  page.render();
+  const key = view.resultsKey();
+  const refresh = view.node("ResourcesPage").props.refresh;
+  for (const query of ["", " \t "]) {
+    view.search(query);
+    page.render();
+    assert.equal(view.resultsKey(), key);
+    assert.equal(view.node("ResourcesPage").props.refresh, refresh);
+    assert.equal(view.node("ResourcesPage").props.search, "saved memory");
+    assert.equal(view.requests.length, 1);
+    assert.equal(page.error(), "Saved content unavailable");
+  }
+});
+
+for (const fails of [false, true]) {
+  test(`same-query resubmission fences an older result read's ${fails ? "failure" : "success"}`, async () => {
+    const view = app();
+    view.search("saved memory");
+    const page = view.resources();
+    view.search("saved memory");
+    page.render();
+    assert.equal(view.requests.length, 2);
+    const latest = { ...memory, title: "Latest saved memory" };
+    view.requests[1].resolve([latest]);
+    await tick();
+    page.render();
+    if (fails) view.requests[0].reject(new Error("Obsolete search error"));
+    else view.requests[0].resolve([memory]);
+    await tick();
+    page.render();
+    assert.equal(page.error(), "");
+    assert.deepEqual(page.rows(), [latest]);
+  });
+
+  test(`same-query resubmission preserves a dirty editor and fences a pending editor read's ${fails ? "failure" : "success"}`, async () => {
+    const view = app();
+    view.search("saved memory");
+    const open = view.node("ResourcesPage").props.onOpen(memory);
+    view.requests[0].resolve(memory);
+    await open;
+    view.render();
+    const draft = view.editor("Resource");
+    draft.edit("Unsaved draft");
+    const pending = view.node("ResourcesPage").props.onOpen({ ...memory, id: "late" });
+    view.search("saved memory");
+    if (fails) view.requests[1].reject(new Error("Obsolete editor error"));
+    else view.requests[1].resolve({ ...memory, id: "late" });
+    await pending;
+    view.render();
+    draft.render();
+    assert.equal(draft.title(), "Unsaved draft");
+    assert.equal(view.error(), "");
+    assert.equal(view.confirmations.length, 0);
+  });
+}
+
+test("search refresh stays in its namespace and disposed reads cannot publish", async () => {
+  const previous = app();
+  previous.search("saved memory");
+  const page = previous.resources();
+  previous.search("saved memory");
+  page.render();
+  const writes = page.cleanup();
+  previous.cleanup();
+
+  const current = app("", { key: "other", name: "Other" });
+  current.search("saved memory");
+  const otherPage = current.resources();
+  assert.equal(current.requests.length, 1);
+  assert.equal(current.requests[0].path, "/api/agents/other/resources?limit=100&offset=0&q=saved%20memory");
+  const otherMemory = { ...memory, agent_key: "other", title: "Other saved memory" };
+  current.requests[0].resolve([otherMemory]);
+  previous.requests.forEach(request => request.resolve([memory]));
+  await tick();
+  otherPage.render();
+  assert.equal(page.writes(), writes);
+  assert.deepEqual(otherPage.rows(), [otherMemory]);
+});
 
 test("late asset read cannot replace a newer memory editor or its draft after navigation", async () => {
   const view = app();
