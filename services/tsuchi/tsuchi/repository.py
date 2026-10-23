@@ -42,7 +42,9 @@ from .models import (
 
 def search_expression(query: str) -> str:
     """Treat punctuation and FTS operators as text, never SQL/FTS syntax."""
-    tokens = re.findall(r"\w+", query, flags=re.UNICODE)[:30]
+    tokens = re.findall(r"\w+", query, flags=re.UNICODE)
+    if len(tokens) > 30:
+        raise StorageError("Resource searches cannot exceed 30 words.", 422)
     return " AND ".join(f'"{token}"*' for token in tokens)
 
 
