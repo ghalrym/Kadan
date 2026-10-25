@@ -55,4 +55,3 @@ The human-maintained `services/kadan/AGENT.md` supplies base instructions. Conte
 The image includes `/app/AGENT.md`. Operators can bind-mount an edited file read-only there, or set `KADAN_AGENT_INSTRUCTION_FILE` to another readable file. Supply the same intended file to every runner. It is separate from memories and persona records, and changing it does not alter tool schemas, run limits, ownership or cancellation rules.
 
 See the privately provided expectations for shared agent instructions.
-
