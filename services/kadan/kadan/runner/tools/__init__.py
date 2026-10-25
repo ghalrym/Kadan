@@ -9,6 +9,7 @@ from . import (
     conversation,
     display,
     file,
+    history,
     jupyter,
     mcp,
     memory,
@@ -21,7 +22,11 @@ from . import (
     workspace,
 )
 
-CONVERSATION_TOOLS: list[StructuredTool] = [*conversation.TOOLS, *workspace.TOOLS]
+CONVERSATION_TOOLS: list[StructuredTool] = [
+    *conversation.TOOLS,
+    *workspace.TOOLS,
+    *history.TOOLS,
+]
 MEMORY_TOOLS: list[StructuredTool] = memory.TOOLS
 COMPUTER_TOOLS: list[StructuredTool] = [
     *browser.TOOLS,

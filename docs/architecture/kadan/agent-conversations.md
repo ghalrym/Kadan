@@ -15,6 +15,15 @@ Kadan opens the oldest active conversation in the agent's Tsuchi namespace. Addi
 
 The runner includes at most 97 recent user and assistant messages, subject to the selected model's context budget and bound tool definitions. Older history remains in Tsuchi. This separates durable records from the bounded input to one run.
 
+The runner can search literal text and read older delivered user/assistant messages
+through conversation tools scoped to its owned run. Results follow the existing
+tool-result transcript path, retaining source roles, identities and timestamps as
+evidence. Each page bounds eligible messages scanned and returned content; message
+anchors require the source version, so changes reject continuation rather than
+silently mixing snapshots. Coverage and content cuts are explicit. The existing
+resource read fetches the full stored snapshot before these bounds are applied;
+there is no new index, endpoint or independent history store.
+
 Browser selection is local, and per-agent drafts use the tab's session storage. The outbox retains the original message identity, mode and persona for reconciliation and retry. Browser state is not a durable work queue.
 
 The privately provided expectations for agent conversations describe the product behavior. See [Persona instructions](personas.md) for instruction snapshots.

@@ -40,6 +40,11 @@ from .agent_inference import (
     parse_command,
     tool_characters,
 )
+from .conversation_history import (
+    ReadHistoryArguments,
+    SearchHistoryArguments,
+    history_page,
+)
 from .memories import AgentMemories
 from .tools import ALL_TOOLS, CONVERSATION_TOOLS, MEMORY_TOOLS, TOOLS_BY_NAME
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
@@ -172,6 +177,31 @@ class RunConversation:
             "status": image.status,
             "delivered": image.delivered_message_id is not None,
         }
+
+    async def conversation_history(
+        self, args: ReadHistoryArguments | SearchHistoryArguments
+    ) -> dict:
+        try:
+            async with self.runs.lock:
+                current = await self.runs.owned(self.run)
+                if (current.agent_key, current.conversation_id) != (
+                    self.run.agent_key,
+                    self.run.conversation_id,
+                ):
+                    raise ValueError("Run conversation scope changed.")
+                resource = await self.runs.services.resource(
+                    self.run.agent_key, self.run.conversation_id
+                )
+                if (
+                    resource.id != self.run.conversation_id
+                    or resource.agent_key != self.run.agent_key
+                    or resource.kind != ResourceKind.CONVERSATION
+                    or resource.deleted_at is not None
+                ):
+                    raise ValueError("The run conversation is no longer available.")
+                return history_page(resource, args)
+        except (ServiceError, ValueError) as error:
+            return {"error": str(error), "history_available": False}
 
     async def finish(self) -> None:
         self.finished = True
