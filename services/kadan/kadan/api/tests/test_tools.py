@@ -14,6 +14,7 @@ from kadan.runner.tools import (
     COMPUTER_TOOLS,
     CONVERSATION_TOOLS,
     TOOLS_BY_NAME,
+    request_tools,
 )
 from kadan.runner.tools.base import body
 from kadan.runner.tools.bash import bash_exec
@@ -218,3 +219,21 @@ def test_bash_omitted_timeout_retains_none_and_is_left_out_of_body():
     assert args.timeout is None
     assert "timeout" not in args.model_fields_set
     assert "timeout" not in body(args)
+
+
+@pytest.mark.parametrize("sandbox_configured", [False, True])
+@pytest.mark.parametrize("has_references", [False, True])
+@pytest.mark.parametrize("has_workflow", [False, True])
+def test_request_tools_only_omit_unavailable_readers(
+    sandbox_configured, has_references, has_workflow
+):
+    expected = [
+        tool for tool in ALL_TOOLS if sandbox_configured or tool not in COMPUTER_TOOLS
+    ]
+    omitted = set()
+    if not has_references:
+        omitted.add("read_request_references")
+    if not has_workflow:
+        omitted.add("read_workflow")
+    tools = request_tools(sandbox_configured, has_references, has_workflow)
+    assert tools == [tool for tool in expected if tool.name not in omitted]

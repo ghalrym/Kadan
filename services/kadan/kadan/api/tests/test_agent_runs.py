@@ -15,7 +15,13 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from kadan.api.config import ServiceError
-from kadan.api.pydantic_models.agent_runs import AgentRun, ImageJob, RunMessage
+from kadan.api.pydantic_models.agent_runs import (
+    AgentRun,
+    ImageJob,
+    ReferenceSnapshot,
+    RunMessage,
+    WorkflowSnapshot,
+)
 from kadan.api.pydantic_models.resources import Message, Resource, ResourceKind
 from kadan.runner.agent_inference import ToolCommand, tool_characters
 from kadan.runner.agent_runs import (
@@ -25,7 +31,7 @@ from kadan.runner.agent_runs import (
     context_characters,
     transcript_messages,
 )
-from kadan.runner.tools import ALL_TOOLS, CONVERSATION_TOOLS, MEMORY_TOOLS
+from kadan.runner.tools import request_tools
 
 
 class Boundary:
@@ -623,7 +629,7 @@ def test_pending_job_context_cannot_exceed_run_budget(boundary, monkeypatch):
     baseline = asyncio.run(boundary.controller.context(boundary.current))
     budget = (
         sum(len(message.content) for message in baseline)
-        + tool_characters(boundary.controller.bound_tools())
+        + tool_characters(boundary.controller.bound_tools(boundary.current))
         + 10
     )
     monkeypatch.setattr("kadan.runner.agent_runs.MAX_CONTEXT", budget)
@@ -801,11 +807,11 @@ def tool_result(boundary, index=-1):
     )
 
 
-def test_every_conversation_and_computer_tool_is_bound(boundary):
+def test_request_tools_are_bound_with_and_without_a_computer(boundary):
     boundary.controller.inference = Commands(finish())
     asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.controller.inference.tools == [
-        [tool.name for tool in [*CONVERSATION_TOOLS, *MEMORY_TOOLS]]
+        [tool.name for tool in request_tools(False, False, False)]
     ]
 
     boundary.sandbox = Computer()
@@ -814,7 +820,9 @@ def test_every_conversation_and_computer_tool_is_bound(boundary):
     )
     boundary.controller.inference = Commands(finish())
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.controller.inference.tools == [[tool.name for tool in ALL_TOOLS]]
+    assert boundary.controller.inference.tools == [
+        [tool.name for tool in request_tools(True, False, False)]
+    ]
 
 
 def test_computer_result_returns_to_the_agent_and_the_run_continues(boundary):
@@ -1112,13 +1120,13 @@ def test_transcript_budget_follows_the_models_context_window(tokens, expected):
 
 def test_transcript_budget_leaves_room_for_the_bound_tools(boundary):
     status = SimpleNamespace(context_limit=65536)
-    assert boundary.controller.transcript_limit(status) == context_characters(
-        65536
-    ) - tool_characters([*CONVERSATION_TOOLS, *MEMORY_TOOLS])
+    assert boundary.controller.transcript_limit(
+        status, boundary.current
+    ) == context_characters(65536) - tool_characters(request_tools(False, False, False))
     boundary.controller.services.sandbox.configured = True
-    assert boundary.controller.transcript_limit(status) == context_characters(
-        65536
-    ) - tool_characters(ALL_TOOLS)
+    assert boundary.controller.transcript_limit(
+        status, boundary.current
+    ) == context_characters(65536) - tool_characters(request_tools(True, False, False))
 
 
 def test_smaller_model_window_drops_history_before_inference(boundary):
@@ -1303,3 +1311,75 @@ def test_selected_workflow_is_read_as_tool_data_without_adding_task_or_authoriza
     result = next(item for item in second_context if isinstance(item, ToolMessage))
     assert json.loads(result.content)["workflow"] == selected.model_dump(mode="json")
     assert boundary.deliveries == []
+
+
+@pytest.mark.parametrize("has_references", [False, True])
+@pytest.mark.parametrize("has_workflow", [False, True])
+def test_selected_readers_are_bound_and_budgeted_for_the_run(
+    boundary, has_references, has_workflow
+):
+    references = (
+        [
+            ReferenceSnapshot(
+                resource_id=uuid4(),
+                kind="memory",
+                title="Fact",
+                version=1,
+                markdown="Fact",
+            )
+        ]
+        if has_references
+        else []
+    )
+    workflow = (
+        WorkflowSnapshot(
+            id=uuid4(), title="Review", version=1, instructions="Review the task."
+        )
+        if has_workflow
+        else None
+    )
+    boundary.current = boundary.current.model_copy(
+        update={"references": references, "workflow": workflow}
+    )
+    tools = boundary.controller.bound_tools(boundary.current)
+    names = {tool.name for tool in tools}
+    assert ("read_request_references" in names) is has_references
+    assert ("read_workflow" in names) is has_workflow
+    assert boundary.controller.transcript_limit(
+        SimpleNamespace(context_limit=65536), boundary.current
+    ) == context_characters(65536) - tool_characters(tools)
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.controller.inference.tools == [[tool.name for tool in tools]]
+    assert boundary.current.status == "completed"
+
+
+@pytest.mark.parametrize("reader", ["read_request_references", "read_workflow"])
+def test_new_command_cannot_read_an_absent_selection(boundary, reader):
+    boundary.controller.inference = Commands(command(reader))
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert "unknown tool" in boundary.current.error
+    assert not any(item.role == "assistant" for item in boundary.current.transcript)
+    assert boundary.deliveries == []
+
+
+@pytest.mark.parametrize("reader", ["read_request_references", "read_workflow"])
+def test_saved_reader_without_a_selection_can_replay_safely(boundary, reader):
+    run = boundary.start_owned(
+        transcript=[
+            RunMessage(role="system", content="Instructions"),
+            RunMessage(role="assistant", content=command(reader).model_dump_json()),
+        ]
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.advance(run))
+    result = tool_result(boundary, -2)
+    if reader == "read_workflow":
+        assert result == {"workflow": None}
+    else:
+        assert result["references"] == []
+    assert boundary.current.status == "completed"
+    assert len(boundary.controller.inference.calls) == 1
+    assert boundary.deliveries == []
+    assert boundary.jobs == {}

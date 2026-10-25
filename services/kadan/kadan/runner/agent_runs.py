@@ -41,7 +41,7 @@ from .agent_inference import (
     tool_characters,
 )
 from .memories import AgentMemories
-from .tools import ALL_TOOLS, CONVERSATION_TOOLS, MEMORY_TOOLS, TOOLS_BY_NAME
+from .tools import CONVERSATION_TOOLS, MEMORY_TOOLS, TOOLS_BY_NAME, request_tools
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
 from .tools.workspace import CreateWorkspaceDocumentArguments
 
@@ -420,7 +420,7 @@ class AgentRuns(RunClient):
                 ]
             )
         if limit is None:
-            limit = MAX_CONTEXT - tool_characters(self.bound_tools())
+            limit = MAX_CONTEXT - tool_characters(self.bound_tools(run))
         budget = limit - len(system.content) - len(trigger.content)
         if budget < 0:
             raise ServiceError(
@@ -469,7 +469,7 @@ class AgentRuns(RunClient):
         run = state.run
         if not run.transcript:
             status = await self.services.inference_status()
-            limit = self.transcript_limit(status)
+            limit = self.transcript_limit(status, run)
             run = await self.update(run, transcript=await self.context(run, limit))
         return {"run": run}
 
@@ -492,7 +492,7 @@ class AgentRuns(RunClient):
             status = await self.services.inference_status()
             if status.state != "ready":
                 raise ServiceError(status.message, 503)
-            limit = self.transcript_limit(status)
+            limit = self.transcript_limit(status, run)
             if sum(len(item.content) for item in run.transcript) > limit:
                 raise ServiceError("The agent run exceeded its context limit.", 422)
             started = monotonic()
@@ -502,7 +502,7 @@ class AgentRuns(RunClient):
                 datetime.now(UTC).isoformat(),
             )
             try:
-                tools = self.bound_tools()
+                tools = self.bound_tools(run)
                 command = await self.inference.call(
                     transcript_messages(run.transcript),
                     status.model_id,
@@ -527,11 +527,11 @@ class AgentRuns(RunClient):
             )
         return {"run": run, "command": command, "replayed": replayed}
 
-    def transcript_limit(self, status) -> int:
+    def transcript_limit(self, status, run: AgentRun) -> int:
         """The transcript budget left after the bound tool definitions."""
         limit = context_characters(
             getattr(status, "context_limit", None)
-        ) - tool_characters(self.bound_tools())
+        ) - tool_characters(self.bound_tools(run))
         if limit <= 0:
             raise ServiceError(
                 "The model context limit leaves no room for agent instructions "
@@ -540,12 +540,10 @@ class AgentRuns(RunClient):
             )
         return limit
 
-    def bound_tools(self) -> list[StructuredTool]:
-        """All tools; the computer's only when one is configured."""
-        return (
-            ALL_TOOLS
-            if self.services.sandbox.configured
-            else [*CONVERSATION_TOOLS, *MEMORY_TOOLS]
+    def bound_tools(self, run: AgentRun) -> list[StructuredTool]:
+        """Tools available for this run's selections and configured computer."""
+        return request_tools(
+            self.services.sandbox.configured, bool(run.references), bool(run.workflow)
         )
 
     @traced("kadan.agent_runs.invoke_tool")

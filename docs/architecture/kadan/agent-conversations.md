@@ -52,3 +52,5 @@ The human-maintained `services/kadan/AGENT.md` supplies base instructions. Conte
 The image includes `/app/AGENT.md`. Operators can bind-mount an edited file read-only there, or set `KADAN_AGENT_INSTRUCTION_FILE` to another readable file. Supply the same intended file to every runner. It is separate from memories and persona records, and changing it does not alter tool schemas, run limits, ownership or cancellation rules.
 
 See the privately provided expectations for shared agent instructions.
+
+Request tool schemas follow the run's immutable selections: `read_request_references` is offered only with references and `read_workflow` only with a workflow. Computer tools still require a configured sandbox. The same tool set is used for context budgeting, model binding and validation of new commands. Saved read commands can still replay through the tool registry. This removes unused reader schemas; it does not guarantee that a particular model context window can fit the remaining tools, instructions, history and reply reserve.
