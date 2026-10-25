@@ -49,6 +49,13 @@ class AgentRunState(BaseModel):
         return self
 
 
+class WorkflowSnapshot(BaseModel):
+    id: UUID
+    title: str = Field(min_length=1, max_length=500)
+    version: int = Field(ge=1)
+    instructions: str = Field(min_length=1, max_length=12000, pattern=r"\S")
+
+
 class AgentRun(AgentRunState):
     trace_parent: str | None = Field(
         default=None, pattern=r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
@@ -60,6 +67,7 @@ class AgentRun(AgentRunState):
     trigger_job_id: UUID | None = None
     persona_id: UUID | None = None
     references: list[ReferenceSnapshot] = Field(default_factory=list, max_length=3)
+    workflow: WorkflowSnapshot | None = None
     delivered_message_ids: list[UUID] = Field(default_factory=list)
     version: int = Field(ge=1)
     created_at: datetime

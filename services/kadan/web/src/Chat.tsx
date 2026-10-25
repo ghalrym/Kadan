@@ -2,6 +2,8 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } f
 import { ArrowUpRight, RotateCw } from "lucide-react";
 import Markdown from "./Markdown";
 import RequestReferences, { type SelectedReference } from "./RequestReferences";
+import Workflows from "./Workflows";
+import type { WorkflowSelection } from "./workflows";
 import Composer, { readiness } from "./Composer";
 import Pet, { useMood } from "./Pet";
 import AgentCard from "./AgentCard";
@@ -224,7 +226,7 @@ export default function Chat({
       callbacks.current.onChange(latest);
     }
   }
-  async function send(generate: boolean, retry?: PendingMessage) {
+  async function send(generate: boolean, retry?: PendingMessage, workflow?: WorkflowSelection) {
     const text = retry?.content ?? draft.trim();
     if (!text || sendLock.current || sending || blocked) return;
     if (!retry && pending.current) {
@@ -233,6 +235,7 @@ export default function Chat({
     }
     const message = queueSend(pending.current, retry ?? {
       id: randomUuid(), content: text, generate, persona, references: generate ? references : [],
+      ...(workflow ? { workflow } : {}),
     });
     const messageId = message.id;
     const personaId = message.persona;
@@ -269,6 +272,8 @@ export default function Chat({
           expected_version: currentChain.current.version,
           persona_id: personaId || null,
           references: message.references.map(({ resource_id, expected_version }) => ({ resource_id, expected_version })),
+          workflow_id: message.workflow?.id ?? null,
+          workflow_version: message.workflow?.version ?? null,
           message_id: messageId,
         });
         accept(result.conversation);
@@ -504,6 +509,11 @@ export default function Chat({
       )}
       <RequestReferences agentKey={agentKey} selected={references} onChange={setReferences}
         disabled={sending || blocked || !!recovery} />
+      <Workflows agentKey={agentKey} task={draft}
+        disabled={sending || blocked || !ready.storage || !!recovery}
+        runDisabled={!ready.chat || dictating || voiceCall.active}
+        browserUrl={status?.tsuchi.browser_url ?? null}
+        onRun={workflow => void send(true, undefined, workflow)} />
       <Composer
         agentName={agentName}
         value={draft}

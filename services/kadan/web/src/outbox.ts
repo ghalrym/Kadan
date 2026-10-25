@@ -1,4 +1,5 @@
 import type { SelectedReference } from "./RequestReferences";
+import type { WorkflowSelection } from "./workflows";
 
 export interface PendingMessage {
   id: string;
@@ -6,6 +7,7 @@ export interface PendingMessage {
   generate: boolean;
   persona: string;
   references: SelectedReference[];
+  workflow?: WorkflowSelection;
 }
 
 export function readPending(raw: string | null): PendingMessage | null {
@@ -17,8 +19,10 @@ export function readPending(raw: string | null): PendingMessage | null {
       typeof value.persona === "string" &&
       Array.isArray(value.references) && value.references.length <= 3 &&
       value.references.every((item: SelectedReference) => typeof item.resource_id === "string" &&
-        Number.isInteger(item.expected_version) && item.expected_version >= 1 && typeof item.title === "string")
-      ? value : null;
+        Number.isInteger(item.expected_version) && item.expected_version >= 1 && typeof item.title === "string") &&
+      (value.workflow === undefined || (value.generate === true &&
+        value.workflow && typeof value.workflow.id === "string" &&
+        Number.isInteger(value.workflow.version) && value.workflow.version >= 1)) ? value : null;
   } catch {
     return null;
   }

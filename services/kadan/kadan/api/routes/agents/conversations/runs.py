@@ -1,8 +1,9 @@
 import asyncio
+from typing import Self
 from uuid import UUID
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ....pydantic_models.agent_runs import AgentRun, ImageJob, RequestReference
 from ....pydantic_models.resources import AgentKey, Resource
@@ -14,6 +15,14 @@ router = APIRouter()
 class RunInput(NoteInput):
     references: list[RequestReference] = Field(default_factory=list, max_length=3)
     persona_id: UUID | None
+    workflow_id: UUID | None = None
+    workflow_version: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def workflow_selection(self) -> Self:
+        if (self.workflow_id is None) != (self.workflow_version is None):
+            raise ValueError("Select a workflow and its version together")
+        return self
 
 
 class RunCreated(BaseModel):

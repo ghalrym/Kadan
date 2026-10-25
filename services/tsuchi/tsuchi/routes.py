@@ -95,6 +95,8 @@ class RunCreate(Model):
     message: Message
     persona_id: UUID | None = None
     references: list[RequestReference] = Field(default_factory=list, max_length=3)
+    workflow_id: UUID | None = None
+    workflow_version: int | None = Field(default=None, ge=1)
 
 
 class RunUpdate(AgentRunState):
@@ -197,7 +199,9 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
             value.message,
             value.expected_version,
             value.persona_id,
-            value.references,
+            references=value.references,
+            workflow_id=value.workflow_id,
+            workflow_version=value.workflow_version,
         )
 
     @router.get("/agents/{key}/runs/{run_id}", response_model=AgentRun)

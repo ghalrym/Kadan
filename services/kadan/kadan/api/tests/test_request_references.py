@@ -12,6 +12,7 @@ from kadan.api.pydantic_models.agent_runs import (
     RequestReference,
     RunMessage,
 )
+from kadan.api.routes.agents.conversations.runs import RunInput
 from kadan.api.run_client import RunClient
 from kadan.runner.agent_runs import RunConversation, transcript_messages
 
@@ -74,7 +75,7 @@ def test_run_client_sends_selected_versions_separately():
         calls.append(kwargs["json"])
         return run.model_dump(mode="json")
 
-    value = SimpleNamespace(
+    value = RunInput(
         message_id=uuid4(),
         content="Use my plan",
         persona_id=None,
