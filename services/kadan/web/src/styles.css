@@ -867,6 +867,62 @@ main:focus {
   text-align: center;
 }
 
+.chat-activity {
+  flex-shrink: 0;
+  align-self: center;
+  width: calc(100% - 40px);
+  max-width: 760px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  background: var(--panel);
+  margin: 6px 20px;
+  font-size: 12px;
+}
+.chat-activity > summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  font-weight: 600;
+}
+.chat-activity > summary > span {
+  color: var(--muted);
+  font-weight: 400;
+  margin-left: 12px;
+}
+.activity-content {
+  max-height: min(45vh, 420px);
+  overflow-y: auto;
+  padding: 0 14px 12px;
+}
+.activity-content > * + * {
+  margin-top: 12px;
+}
+.activity-content h3 {
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.activity-content ul {
+  list-style: none;
+  padding: 0;
+}
+.activity-content li {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.activity-state {
+  color: var(--accent);
+}
+.activity-state.review {
+  color: var(--warn);
+}
+.activity-content time {
+  font-size: 11px;
+}
+
 /* Markdown */
 .markdown {
   overflow-wrap: anywhere;

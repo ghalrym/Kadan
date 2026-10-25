@@ -5,6 +5,7 @@ import Composer, { readiness } from "./Composer";
 import Pet, { useMood } from "./Pet";
 import AgentCard from "./AgentCard";
 import ComputerViewer from "./ComputerViewer";
+import Activity from "./Activity";
 import { useVoiceCall } from "./VoiceCallControl";
 import { activeLabel } from "./presence";
 import { useAgentPet } from "./PetContext";
@@ -104,6 +105,7 @@ export default function Chat({
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [images, setImages] = useState<ImageJob[]>([]);
   const [pollError, setPollError] = useState("");
+  const [activityConversation, setActivityConversation] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
   const generating = runs.some(activeRun);
   const imagePending = images.some((job) => cancellableImage(job) || job.status === "cancelling" || (job.status === "completed" && !job.delivered_message_id));
@@ -177,6 +179,7 @@ export default function Chat({
           accept(snapshot.conversation);
           setRuns(snapshot.runs);
           setImages(snapshot.images);
+          setActivityConversation(chain.id);
           setPollError("");
         }
       } catch (e) {
@@ -475,6 +478,13 @@ export default function Chat({
           <div ref={end} />
         </div>
       </div>
+      <Activity
+        conversation={chain}
+        runs={runs}
+        images={images}
+        loading={activityConversation !== chain.id}
+        error={pollError}
+      />
       {(error || pollError) && (
         <div className="banner inline" role="alert">
           {error || pollError}
