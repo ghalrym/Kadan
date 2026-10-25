@@ -63,7 +63,7 @@ export default function ContextCheck({ agentKey, conversationId, version, task, 
     {visible?.error && <p className="notice" role="status">Context check unavailable: {visible.error} Your draft is unchanged; Send still validates the request.</p>}
     {advice && <details open>
       <summary>{advice.minimum_exceeds_budget ? "Task, instructions and tools exceed the approximate budget" : advice.selected_material_risk ? "Selected material may exceed the approximate budget" : "Context measurements"}</summary>
-      <p>{advice.context_limit === null ? "Model window unknown" : `${advice.context_limit.toLocaleString()} token window (${advice.context_source})`}
+      <p>At last check: {advice.model_id || "model not reported"} · {advice.context_limit === null ? "Model window unknown" : `${advice.context_limit.toLocaleString()} token window (${advice.context_source})`}
         {advice.context_source === "configured" || advice.context_source === "architecture" ? "; advisory before loading" : ""}.
         {` Approximate character budget: ${advice.approximate_character_budget.toLocaleString()}${advice.context_source === "unknown" ? " (fallback)" : ""}.`}</p>
       <p>{`Task: ${advice.task_characters.toLocaleString()} characters · Shared instructions and persona: ${advice.instruction_characters.toLocaleString()} · Selected text: ${advice.selected_characters.toLocaleString()} · Request tool schemas: ${advice.tool_schema_characters.toLocaleString()}.`}</p>
