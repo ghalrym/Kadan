@@ -651,9 +651,7 @@ def test_saved_context_reserves_bound_tool_definitions_before_inference(
     boundary, monkeypatch
 ):
     transcript = [RunMessage(role="user", content="Existing context")]
-    monkeypatch.setattr(
-        "kadan.runner.agent_runs.MAX_CONTEXT", len(transcript[0].content)
-    )
+    monkeypatch.setattr("kadan.context_budget.MAX_CONTEXT", len(transcript[0].content))
     boundary.controller.inference = Commands(finish())
     run = boundary.start_owned(transcript=transcript)
     with pytest.raises(ServiceError, match="context limit"):
