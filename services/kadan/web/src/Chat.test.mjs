@@ -57,6 +57,7 @@ async function chat(initialRuns, initialConversation = chain) {
     react,
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "lucide-react": {},
+    "./RequestReferences": { default: "RequestReferences" },
     "./Markdown": { default: "Markdown" },
     "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true }) },
     "./Pet": { default: "Pet", useMood: () => ["idle", () => {}] },
@@ -119,6 +120,7 @@ async function chat(initialRuns, initialConversation = chain) {
     notices: () => elements().filter(node => node.props?.className === "notice").map(node => node.props.children),
     alerts: () => elements().filter(node => node.props?.role === "alert").map(node => node.props.children[0]),
     receipts: () => elements().filter(node => node.props?.className === "receipt").map(node => node.props.children),
+    references: () => elements().find(node => node.type === "RequestReferences").props,
     composer: () => elements().find(node => node.type === "Composer").props,
     async poll(runs, conversation = selectedChain) {
       snapshotRuns = runs;
@@ -263,4 +265,38 @@ test("confirmed messages are Delivered before and after a normal reply", async (
 test("assistant-only history has no user delivery receipt", async () => {
   const view = await chat([], { ...chain, messages: [message("reply", "assistant", "Hello")] });
   assert.deepEqual(view.receipts(), []);
+});
+
+
+test("selected reference versions travel separately and clear on confirmed send", async () => {
+  const view = await chat([]);
+  view.references().onChange([{ resource_id: "space", expected_version: 4, title: "Plan" }]);
+  view.composer().onChange("Use the plan");
+  view.render();
+  const resolve = view.holdSend();
+  view.composer().onSend(true);
+  view.render();
+  assert.equal(view.references().selected.length, 1);
+  const body = view.requests.find(item => item.body?.content === "Use the plan").body;
+  assert.deepEqual(JSON.parse(JSON.stringify(body.references)), [{ resource_id: "space", expected_version: 4 }]);
+  assert.equal(body.content, "Use the plan");
+  resolve({ run: run("new", "queued"), conversation: { ...chain, version: 2,
+    messages: [message("sent-message", "user", "Use the plan")] } });
+  await settle();
+  view.render();
+  assert.equal(view.references().selected.length, 0);
+});
+
+test("saving a note retains selections and sends no references", async () => {
+  const view = await chat([]);
+  view.references().onChange([{ resource_id: "memory", expected_version: 2, title: "Fact" }]);
+  view.composer().onChange("A note");
+  view.render();
+  const resolve = view.holdSend();
+  view.composer().onSend(false);
+  resolve({ ...chain, version: 2, messages: [message("sent-message", "user", "A note")] });
+  await settle();
+  view.render();
+  assert.equal(view.references().selected.length, 1);
+  assert.equal(view.requests.find(item => item.body?.content === "A note").body.references, undefined);
 });

@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowUpRight, RotateCw } from "lucide-react";
 import Markdown from "./Markdown";
+import RequestReferences, { type SelectedReference } from "./RequestReferences";
 import Composer, { readiness } from "./Composer";
 import Pet, { useMood } from "./Pet";
 import AgentCard from "./AgentCard";
@@ -100,6 +101,7 @@ export default function Chat({
   const [recovery, setRecovery] = useState(pending.current);
   const [draft, setDraft] = useState(() => sessionStorage.getItem(draftKey) || "");
   const [persona, setPersona] = useState("");
+  const [references, setReferences] = useState<SelectedReference[]>(pending.current?.references ?? []);
   const [sending, setSending] = useState(false);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [images, setImages] = useState<ImageJob[]>([]);
@@ -200,7 +202,9 @@ export default function Chat({
     else sessionStorage.removeItem(draftKey);
   }, [draft, draftKey]);
   useEffect(() => {
-    savePending(confirmSend(pending.current, chain.messages));
+    const confirmed = confirmSend(pending.current, chain.messages);
+    if (pending.current?.generate && !confirmed) setReferences([]);
+    savePending(confirmed);
   }, [chain.messages]);
 
   function savePending(value: PendingMessage | null) {
@@ -211,7 +215,9 @@ export default function Chat({
   }
   function accept(value: Resource) {
     const latest = latestConversation(currentChain.current, value);
-    savePending(confirmSend(pending.current, latest.messages));
+    const confirmed = confirmSend(pending.current, latest.messages);
+    if (pending.current?.generate && !confirmed) setReferences([]);
+    savePending(confirmed);
     if (!pending.current) setOutgoing(null);
     if (latest !== currentChain.current) {
       currentChain.current = latest;
@@ -226,7 +232,7 @@ export default function Chat({
       return;
     }
     const message = queueSend(pending.current, retry ?? {
-      id: randomUuid(), content: text, generate, persona,
+      id: randomUuid(), content: text, generate, persona, references: generate ? references : [],
     });
     const messageId = message.id;
     const personaId = message.persona;
@@ -262,6 +268,7 @@ export default function Chat({
           content: text,
           expected_version: currentChain.current.version,
           persona_id: personaId || null,
+          references: message.references.map(({ resource_id, expected_version }) => ({ resource_id, expected_version })),
           message_id: messageId,
         });
         accept(result.conversation);
@@ -495,6 +502,8 @@ export default function Chat({
           <button disabled={blocked} onClick={() => savePending(null)}>Discard</button>
         </div>
       )}
+      <RequestReferences agentKey={agentKey} selected={references} onChange={setReferences}
+        disabled={sending || blocked || !!recovery} />
       <Composer
         agentName={agentName}
         value={draft}

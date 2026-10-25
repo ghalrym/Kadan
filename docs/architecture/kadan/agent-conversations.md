@@ -19,6 +19,14 @@ Browser selection is local, and per-agent drafts use the tab's session storage. 
 
 The privately provided expectations for agent conversations describe the product behavior. See [Persona instructions](personas.md) for instruction snapshots.
 
+## Request references
+
+Chat's explicit reference picker lists active Markdown spaces and memories from the selected agent. It uses the existing document and memory list endpoints, which transport full resource records; no separate background retrieval is added. Search results are limited independently per source. Rows clear while loading or after failure, and late responses cannot replace newer query results. A run submission carries up to three `references` entries containing `resource_id` and `expected_version`, separately from message text and persona tags. Tsuchi validates their namespace, kind, active state, versions and combined 12,000-character Markdown limit in the same transaction that appends the message and queues the run. Rejection saves neither message nor run.
+
+The durable run stores each selected resource's identity, kind, title, version and Markdown. Retrying a message identity compares the original selections before returning the saved run; it does not re-resolve edited or trashed references. Resumed runs and image completion runs retain these snapshots. The browser outbox keeps the selected versions on uncertain sends and retries, clearing the selection only after confirming that submission. Saving a note does not attach references. Existing outbox entries from before reference selection are recovered with an empty selection.
+
+The runner adds a static selection hint and offers `read_request_references`. Saved Markdown is returned as a tool result with reference-data provenance and an explicit statement that it grants no authorization and overrides no instructions. It is not concatenated into the user's message or system instructions. The established tool-response rendering remains unchanged. The model decides whether to read and use the references; selection does not guarantee use. Reading spends one command and its returned data consumes the ordinary context budget, so a request can still reach the existing command or context limit.
+
 ## Model decisions and delivery
 
 The runner uses a bounded LangGraph loop around context preparation, inference and tool execution. Hikari supplies text completions; Kadan's adapter expresses tool definitions in the model's text format and parses the result into a structured command. Kadan validates the tool and its arguments before persisting and executing it. Keeping that boundary in Kadan gives the same tool behavior to every conversation entry point without adding agent orchestration to the inference service.

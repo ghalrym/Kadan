@@ -1,16 +1,24 @@
+import type { SelectedReference } from "./RequestReferences";
+
 export interface PendingMessage {
   id: string;
   content: string;
   generate: boolean;
   persona: string;
+  references: SelectedReference[];
 }
 
 export function readPending(raw: string | null): PendingMessage | null {
   try {
     const value = JSON.parse(raw || "null");
+    if (value && value.references === undefined) value.references = [];
     return value && typeof value.id === "string" &&
       typeof value.content === "string" && typeof value.generate === "boolean" &&
-      typeof value.persona === "string" ? value : null;
+      typeof value.persona === "string" &&
+      Array.isArray(value.references) && value.references.length <= 3 &&
+      value.references.every((item: SelectedReference) => typeof item.resource_id === "string" &&
+        Number.isInteger(item.expected_version) && item.expected_version >= 1 && typeof item.title === "string")
+      ? value : null;
   } catch {
     return null;
   }

@@ -2,9 +2,9 @@ import asyncio
 from uuid import UUID
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from ....pydantic_models.agent_runs import AgentRun, ImageJob
+from ....pydantic_models.agent_runs import AgentRun, ImageJob, RequestReference
 from ....pydantic_models.resources import AgentKey, Resource
 from .notes import NoteInput
 
@@ -12,6 +12,7 @@ router = APIRouter()
 
 
 class RunInput(NoteInput):
+    references: list[RequestReference] = Field(default_factory=list, max_length=3)
     persona_id: UUID | None
 
 
