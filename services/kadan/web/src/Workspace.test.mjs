@@ -50,6 +50,7 @@ function workspace() {
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "lucide-react": {},
     "./Markdown": { default: "Markdown" },
+    "./MemoryEditor": { default: "MemoryEditor" },
     "./workspaceDocuments": documentNavigation,
     "./api": {
       ApiError,
@@ -84,6 +85,7 @@ function workspace() {
   function text(node) {
     if (node == null || typeof node === "boolean") return "";
     if (typeof node === "string" || typeof node === "number") return String(node);
+    if (node.type === "MemoryEditor") return node.props.memory.markdown;
     return [node?.props?.children].flat(Infinity).map(child => text(child)).join("");
   }
   const element = predicate => find(predicate, tree);

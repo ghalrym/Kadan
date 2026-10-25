@@ -1653,6 +1653,9 @@ dialog::backdrop {
   padding: 20px 22px;
   overflow-y: auto;
 }
+.memory-editor .persona-editor {
+  padding: 0;
+}
 .persona-editor textarea {
   flex: 1;
   min-height: 220px;
