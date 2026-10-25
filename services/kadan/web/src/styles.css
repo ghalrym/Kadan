@@ -2418,3 +2418,8 @@ dialog::backdrop {
 @media (max-width: 760px) {
   .call-controls button { min-height: 44px; }
 }
+
+.save-chat-result { margin-block: 8px; }
+.save-chat-result form { max-width: 520px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-sm); }
+.save-chat-result label { display: grid; gap: 6px; }
+.save-chat-result input { width: 100%; }
