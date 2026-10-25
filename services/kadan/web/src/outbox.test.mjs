@@ -49,3 +49,13 @@ test("legacy pending messages retain identity and content with empty references"
   assert.deepEqual(restored, { ...legacy, references: [] });
   assert.deepEqual(queueSend(restored, { ...first, references }), restored);
 });
+
+test("workflow selection survives outbox retry and ordinary sends omit it", () => {
+  const selected = { ...first, workflow: { id: "workflow-a", version: 3 } };
+  const recovered = readPending(JSON.stringify(selected));
+  assert.deepEqual(queueSend(recovered, { ...selected, workflow: { id: "workflow-b", version: 8 } }), selected);
+  assert.deepEqual(recovered.workflow, selected.workflow);
+  assert.equal(readPending(JSON.stringify({ ...selected, generate: false })), null);
+  assert.equal(readPending(JSON.stringify({ ...selected, workflow: { id: "a", version: 0 } })), null);
+  assert.equal(queueSend(null, next).workflow, undefined);
+});

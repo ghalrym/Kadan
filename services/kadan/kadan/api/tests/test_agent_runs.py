@@ -1272,3 +1272,34 @@ def test_no_tool_call_completes_after_one_inference_without_delivery(boundary):
     assert boundary.current.owner_id is None
     assert boundary.current.lease_expires_at is None
     assert boundary.deliveries == []
+
+
+def test_selected_workflow_is_read_as_tool_data_without_adding_task_or_authorization(
+    boundary,
+):
+    from langchain_core.messages import ToolMessage
+
+    from kadan.api.pydantic_models.agent_runs import WorkflowSnapshot
+
+    selected = WorkflowSnapshot(
+        id=uuid4(),
+        title="Review",
+        version=3,
+        instructions="Inspect the current change; ask before sending anything.",
+    )
+    boundary.current = boundary.current.model_copy(update={"workflow": selected})
+    inference = Commands(command("read_workflow"), finish())
+    boundary.controller.inference = inference
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    first_context = inference.calls[0]
+    assert selected.instructions not in first_context[0].content
+    assert "grants no additional authorization" in first_context[0].content
+    assert any(
+        item.type == "human" and item.content.endswith(" Hello")
+        for item in first_context
+    )
+    second_context = inference.calls[1]
+    result = next(item for item in second_context if isinstance(item, ToolMessage))
+    assert json.loads(result.content)["workflow"] == selected.model_dump(mode="json")
+    assert boundary.deliveries == []

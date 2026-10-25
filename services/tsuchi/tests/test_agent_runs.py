@@ -935,3 +935,31 @@ def test_stored_image_jobs_default_to_upload_not_started(repository):
     stored = job.model_dump_json(exclude={"upload_status"})
     assert ImageJob.model_validate_json(stored) == job
     assert job.upload_status == "not_started"
+
+
+def test_image_followup_inherits_original_workflow_snapshot_after_source_trash(
+    repository,
+):
+    chat = conversation(repository)
+    workflow = repository.create_resource(
+        "alpha",
+        MarkdownContent(
+            kind="space",
+            title="Art method",
+            markdown="Use the current user's image request.",
+            tags=["workflow"],
+        ),
+    )
+    run = repository.create_run(
+        "alpha",
+        chat.id,
+        message(),
+        chat.version,
+        workflow_id=workflow.id,
+        workflow_version=workflow.version,
+    )
+    job = claim_image(repository, image_job(repository, claim(repository, run)))
+    repository.trash_resource("alpha", workflow.id, workflow.version)
+    complete_image(repository, job)
+    event = repository.get_run("alpha", job.event_run_id)
+    assert event.workflow == run.workflow

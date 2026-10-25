@@ -68,6 +68,7 @@ async function chat(initialRuns, initialConversation = chain) {
     "./presence": { activeLabel: () => "Not active yet" },
     "./agentRuns": agentRuns,
     "./outbox": outbox,
+    "./Workflows": { default: "Workflows" },
     "./uuid": { randomUuid: () => "sent-message" },
     "./api": {
       agentPath: key => `/agents/${key}`,
@@ -122,6 +123,7 @@ async function chat(initialRuns, initialConversation = chain) {
     receipts: () => elements().filter(node => node.props?.className === "receipt").map(node => node.props.children),
     references: () => elements().find(node => node.type === "RequestReferences").props,
     composer: () => elements().find(node => node.type === "Composer").props,
+    workflows: () => elements().find(node => node.type === "Workflows").props,
     async poll(runs, conversation = selectedChain) {
       snapshotRuns = runs;
       selectedChain = conversation;
@@ -299,4 +301,51 @@ test("saving a note retains selections and sends no references", async () => {
   view.render();
   assert.equal(view.references().selected.length, 1);
   assert.equal(view.requests.find(item => item.body?.content === "A note").body.references, undefined);
+});
+
+test("Run now sends only the fresh draft as user content and persists the explicit workflow selection", async () => {
+  const view = await chat([]);
+  const finishSend = view.holdSend();
+  view.composer().onChange("Review this current change");
+  view.render();
+  view.workflows().onRun({ id: "review", version: 3 });
+  const request = view.requests.find(item => item.body?.workflow_id);
+  assert.equal(request.body.content, "Review this current change");
+  assert.equal(request.body.workflow_id, "review");
+  assert.equal(request.body.workflow_version, 3);
+  finishSend({ run: run("sent-message", "queued"), conversation: { ...chain, version: 2,
+    messages: [message("sent-message", "user", "Review this current change")] } });
+  await settle(); view.render();
+});
+
+test("ordinary Send never inherits a previewed workflow", async () => {
+  const view = await chat([]);
+  const finishSend = view.holdSend();
+  view.composer().onChange("A normal new task");
+  view.render();
+  view.composer().onSend(true);
+  const request = view.requests.find(item => item.body?.content === "A normal new task");
+  assert.equal(request.body.workflow_id, null);
+  assert.equal(request.body.workflow_version, null);
+  finishSend({ run: run("sent-message", "queued"), conversation: { ...chain, version: 2,
+    messages: [message("sent-message", "user", "A normal new task")] } });
+  await settle(); view.render();
+});
+
+
+test("Run now includes explicit reference versions while retaining fresh user text", async () => {
+  const view = await chat([]);
+  view.references().onChange([{ resource_id: "fact", expected_version: 2, title: "Evidence" }]);
+  view.composer().onChange("Review only this change");
+  view.render();
+  const finishSend = view.holdSend();
+  view.workflows().onRun({ id: "review", version: 3 });
+  const body = view.requests.find(item => item.body?.workflow_id).body;
+  assert.equal(body.content, "Review only this change");
+  assert.deepEqual(JSON.parse(JSON.stringify(body.references)), [{ resource_id: "fact", expected_version: 2 }]);
+  assert.equal(body.workflow_id, "review");
+  finishSend({ run: run("sent-message", "queued"), conversation: { ...chain, version: 2,
+    messages: [message("sent-message", "user", body.content)] } });
+  await settle(); view.render();
+  assert.equal(view.references().selected.length, 0);
 });

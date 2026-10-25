@@ -36,6 +36,7 @@ from .models import (
     ResourceVersion,
     Runner,
     Stats,
+    WorkflowSnapshot,
     resource_adapter,
     resource_input_adapter,
     utc_now,
@@ -420,12 +421,18 @@ class Repository:
         expected_version: int,
         persona_id: UUID | None = None,
         references: list[RequestReference] | None = None,
+        workflow_id: UUID | None = None,
+        workflow_version: int | None = None,
     ) -> AgentRun:
         references = references or []
         if len(references) > 3 or len({item.resource_id for item in references}) != len(
             references
         ):
             raise StorageError("Select up to three distinct references", 422)
+        if (workflow_id is None) != (workflow_version is None):
+            raise StorageError("Select a workflow and its version together", 409)
+        if workflow_id is not None and not message.content.strip():
+            raise StorageError("A workflow requires a fresh user task", 409)
         if message.role != "user":
             raise StorageError("An agent run must start with a user message", 409)
         with self.connect(write=True) as db:
@@ -446,6 +453,10 @@ class Repository:
                     == [
                         (item.resource_id, item.expected_version) for item in references
                     ]
+                    and (existing.workflow.id if existing.workflow else None)
+                    == workflow_id
+                    and (existing.workflow.version if existing.workflow else None)
+                    == workflow_version
                     and any(
                         item.model_dump(exclude={"created_at"})
                         == message.model_dump(exclude={"created_at"})
@@ -486,6 +497,26 @@ class Repository:
                         markdown=resource.markdown,
                     )
                 )
+            workflow = None
+            if workflow_id is not None:
+                document = self._resource(db, key, workflow_id)
+                self._active(document)
+                if (
+                    document.kind != ResourceKind.SPACE
+                    or "workflow" not in document.tags
+                ):
+                    raise StorageError("Select an active workflow Space", 409)
+                self._check_version(document, workflow_version)
+                if not document.markdown.strip() or len(document.markdown) > 12000:
+                    raise StorageError(
+                        "Workflow instructions must contain 1–12000 characters", 409
+                    )
+                workflow = WorkflowSnapshot(
+                    id=document.id,
+                    title=document.title,
+                    version=document.version,
+                    instructions=document.markdown,
+                )
             self._append_run_message(db, key, conversation, message)
             now = utc_now()
             run = AgentRun(
@@ -496,6 +527,7 @@ class Repository:
                 trigger_message_id=message.id,
                 persona_id=persona_id,
                 references=snapshots,
+                workflow=workflow,
                 version=1,
                 created_at=now,
                 updated_at=now,
@@ -791,6 +823,7 @@ class Repository:
                 trigger_job_id=job.id,
                 persona_id=origin.persona_id,
                 references=origin.references,
+                workflow=origin.workflow,
                 version=1,
                 created_at=now,
                 updated_at=now,

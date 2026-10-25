@@ -2183,3 +2183,13 @@ dialog::backdrop {
 @media (max-width: 760px) {
   .call-controls button { min-height: 44px; }
 }
+
+.workflows { margin: 0 24px 12px; font-size: 13px; }
+.workflows summary { cursor: pointer; padding: 8px 0; }
+.workflows p { color: var(--muted); margin: 8px 0; }
+.workflows label { display: block; margin: 10px 0; }
+.workflows label input, .workflows textarea { width: 100%; }
+.workflow-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.workflow-preview { margin-top: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; }
+.workflow-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.workflow-preview button { margin-right: 8px; }

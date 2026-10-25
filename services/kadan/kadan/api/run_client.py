@@ -10,6 +10,7 @@ from .pydantic_models.agent_runs import AgentRun
 from .pydantic_models.resources import Message
 
 if TYPE_CHECKING:
+    from .routes.agents.conversations.runs import RunInput
     from .services import LocalServices
 
 
@@ -29,7 +30,9 @@ class RunClient:
             raise ServiceError("Tsuchi returned the wrong agent run.", 502)
         return run
 
-    async def enqueue(self, key: str, conversation_id: UUID, value) -> AgentRun:
+    async def enqueue(
+        self, key: str, conversation_id: UUID, value: RunInput
+    ) -> AgentRun:
         message = Message(
             id=value.message_id,
             role="user",
@@ -47,6 +50,10 @@ class RunClient:
                     "references": [
                         item.model_dump(mode="json") for item in value.references
                     ],
+                    "workflow_id": str(value.workflow_id)
+                    if value.workflow_id
+                    else None,
+                    "workflow_version": value.workflow_version,
                     "persona_id": str(value.persona_id) if value.persona_id else None,
                 },
             )
