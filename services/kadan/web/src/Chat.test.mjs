@@ -68,6 +68,7 @@ async function chat(initialRuns, initialConversation = chain) {
     "./presence": { activeLabel: () => "Not active yet" },
     "./agentRuns": agentRuns,
     "./outbox": outbox,
+    "./ContextCheck": { default: "ContextCheck" },
     "./Workflows": { default: "Workflows" },
     "./uuid": { randomUuid: () => "sent-message" },
     "./api": {

@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 DownloadState = Literal[
     "not_downloaded", "downloading", "cancelling", "cancelled", "failed", "complete"
@@ -34,6 +34,7 @@ class HikariSettings(BaseModel):
 class HikariModelLifecycle(BaseModel):
     state: Literal["unloaded", "loading", "ready", "offloaded", "unloading", "error"]
     model_id: str | None = None
+    effective_context_limit: int | None = Field(default=None, gt=0, strict=True)
 
 
 class CompletionMessage(BaseModel):

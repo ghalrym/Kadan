@@ -106,6 +106,8 @@ class Boundary:
         self.requests.append((request.method, request.url.path))
         if request.url.path == "/v1/settings":
             return httpx.Response(200, json=self.settings)
+        if request.url.path == "/model-lifecycle":
+            return httpx.Response(200, json={"state": "unloaded"})
         if request.url.path == "/api/health":
             return httpx.Response(200, json={"status": "ok"})
         if request.url.path.endswith(f"/{PERSONA_ID}") and request.method == "GET":
@@ -160,7 +162,10 @@ def test_readiness_uses_actual_selected_language_checkpoint(settings, state):
     status = run(boundary, lambda service: service.inference_status())
     assert status.state == state
     assert status.settings_url == "http://127.0.0.1:8088/settings"
-    assert boundary.requests == [("GET", "/v1/settings")]
+    expected = [("GET", "/v1/settings")]
+    if state not in {"tier_required"} and settings.get("tiers"):
+        expected.append(("GET", "/model-lifecycle"))
+    assert boundary.requests == expected
 
 
 def test_unavailable_services_return_actionable_status():
@@ -401,3 +406,50 @@ def test_ready_status_reports_the_selected_models_context_window(limits, expecte
         Boundary(settings=settings), lambda service: service.inference_status()
     )
     assert status.context_limit == expected
+
+
+@pytest.mark.parametrize(
+    "lifecycle, expected, source",
+    [
+        (
+            {
+                "state": "ready",
+                "model_id": "test-model",
+                "effective_context_limit": 4096,
+            },
+            4096,
+            "effective",
+        ),
+        ({"state": "ready", "model_id": "test-model"}, None, "unknown"),
+        (
+            {"state": "ready", "model_id": "test-model", "effective_context_limit": 0},
+            None,
+            "unknown",
+        ),
+        (
+            {"state": "ready", "model_id": "other", "effective_context_limit": 4096},
+            None,
+            "unknown",
+        ),
+        ({"state": "unloaded"}, 8192, "configured"),
+        (None, None, "unknown"),
+    ],
+)
+def test_context_window_uses_one_lifecycle_observation(lifecycle, expected, source):
+    settings = ready_settings()
+    settings["tiers"][0]["models"][0]["model"]["context_limit"] = 8192
+    calls = []
+
+    def boundary(request):
+        calls.append(request.url.path)
+        if request.url.path == "/v1/settings":
+            return httpx.Response(200, json=settings)
+        if request.url.path == "/model-lifecycle":
+            return httpx.Response(200 if lifecycle else 503, json=lifecycle or {})
+        raise AssertionError(request.url.path)
+
+    result = run(boundary, lambda service: service.inference_status())
+    assert result.state == "ready"
+    assert result.context_limit == expected
+    assert result.context_source == source
+    assert calls.count("/model-lifecycle") == 1

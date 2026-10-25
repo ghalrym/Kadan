@@ -5,6 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field, model_validator
 
+from ....context_advice import ContextAdvice, context_advice
 from ....pydantic_models.agent_runs import AgentRun, ImageJob, RequestReference
 from ....pydantic_models.resources import AgentKey, Resource
 from .notes import NoteInput
@@ -80,3 +81,10 @@ async def cancel_image(key: AgentKey, job_id: UUID, request: Request) -> ImageJo
         "Tsuchi", "POST", f"/api/agents/{key}/image-jobs/{job_id}/cancel", json={}
     )
     return ImageJob.model_validate(value)
+
+
+@router.post("/api/agents/{key}/conversations/{conversation_id}/context-advice")
+async def check_context(
+    key: AgentKey, conversation_id: UUID, value: RunInput, request: Request
+) -> ContextAdvice:
+    return await context_advice(request.app.state.services, key, conversation_id, value)

@@ -22,6 +22,9 @@ class InferenceState(BaseModel):
     download_state: DownloadState | None = None
     # The selected language model's context window in tokens, when Hikari reports it.
     context_limit: int | None = None
+    context_source: Literal["effective", "configured", "architecture", "unknown"] = (
+        "unknown"
+    )
     # Whether the language model is resident; null when Hikari did not report it.
     model_state: (
         Literal["unloaded", "loading", "ready", "offloaded", "unloading", "error"]

@@ -3,6 +3,7 @@ import { ArrowUpRight, RotateCw } from "lucide-react";
 import Markdown from "./Markdown";
 import RequestReferences, { type SelectedReference } from "./RequestReferences";
 import Workflows from "./Workflows";
+import ContextCheck from "./ContextCheck";
 import type { WorkflowSelection } from "./workflows";
 import Composer, { readiness } from "./Composer";
 import Pet, { useMood } from "./Pet";
@@ -510,10 +511,13 @@ export default function Chat({
       <RequestReferences agentKey={agentKey} selected={references} onChange={setReferences}
         disabled={sending || blocked || !!recovery} />
       <Workflows agentKey={agentKey} task={draft}
+        context={{ conversationId: chain.id, version: chain.version, persona, references }}
         disabled={sending || blocked || !ready.storage || !!recovery}
         runDisabled={!ready.chat || dictating || voiceCall.active}
         browserUrl={status?.tsuchi.browser_url ?? null}
         onRun={workflow => void send(true, undefined, workflow)} />
+      <ContextCheck agentKey={agentKey} conversationId={chain.id} version={chain.version}
+        task={draft} persona={persona} references={references} disabled={sending || blocked || !!recovery} />
       <Composer
         agentName={agentName}
         value={draft}

@@ -1,6 +1,8 @@
 import { useRef, useState } from "react";
 import { agentPath, api } from "./api";
 import Markdown from "./Markdown";
+import ContextCheck from "./ContextCheck";
+import type { SelectedReference } from "./RequestReferences";
 import type { Resource } from "./types";
 import { exportWorkflow, parseWorkflow, type WorkflowBundle, type WorkflowSelection } from "./workflows";
 
@@ -10,10 +12,11 @@ interface Props {
   disabled: boolean;
   runDisabled: boolean;
   browserUrl: string | null;
+  context: { conversationId: string; version: number; persona: string; references: SelectedReference[] };
   onRun: (selection: WorkflowSelection) => void;
 }
 
-export default function Workflows({ agentKey, task, disabled, runDisabled, browserUrl, onRun }: Props) {
+export default function Workflows({ agentKey, task, disabled, runDisabled, browserUrl, context, onRun }: Props) {
   const requestVersion = useRef(0);
   const saving = useRef(false);
   const [items, setItems] = useState<Resource[]>([]);
@@ -121,6 +124,8 @@ export default function Workflows({ agentKey, task, disabled, runDisabled, brows
       {browserUrl && <a href={browserUrl} target="_blank" rel="noreferrer">Edit Spaces and revisions in Tsuchi</a>}
     </div>
     {selected && <div className="workflow-preview">
+      <ContextCheck agentKey={agentKey} {...context} task={task}
+        workflow={{ id: selected.id, version: selected.version }} disabled={disabled || busy} />
       <strong>{selected.title} · version {selected.version}</strong>
       <Markdown>{selected.markdown}</Markdown>
       <details><summary>Full instructions</summary><pre>{selected.markdown}</pre></details>

@@ -34,6 +34,7 @@ from ..api.pydantic_models.agent_runs import (
 from ..api.pydantic_models.resources import Message, ResourceKind
 from ..api.run_client import RunClient
 from ..api.services import parse_resource
+from ..context_budget import MAX_CONTEXT, context_characters
 from .agent_inference import (
     AgentInference,
     ToolCommand,
@@ -51,20 +52,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 60
 MAX_COMMANDS = 24
-# Transcript budget in characters when Hikari does not report a context window.
-MAX_CONTEXT = 48000
-# Tool results are JSON, which tokenizes densely; three characters per token
-# keeps a transcript inside the window. The reserve covers the reply and template.
-CHARACTERS_PER_TOKEN = 3
-RESERVED_TOKENS = 1024
 TOOL_RESULT = "Tool result: "
-
-
-def context_characters(context_limit: int | None) -> int:
-    """The agent's transcript budget, sized to the selected model's window."""
-    if context_limit is None:
-        return MAX_CONTEXT
-    return max(0, (context_limit - RESERVED_TOKENS) * CHARACTERS_PER_TOKEN)
 
 
 def transcript_messages(transcript: list[RunMessage]) -> list[BaseMessage]:

@@ -195,6 +195,34 @@ class LocalServices:
                     settings_url=settings_url,
                     message="Hikari has no language model for the selected tier. Check Hikari Settings.",
                 )
+            lifecycle = await self.model_lifecycle()
+            context_limit = None
+            context_source = "unknown"
+            model_state = None
+            if lifecycle is not None:
+                model_state = (
+                    lifecycle.state if lifecycle.model_id == model.id else "unloaded"
+                )
+                if lifecycle.state == "ready":
+                    if (
+                        lifecycle.model_id == model.id
+                        and lifecycle.effective_context_limit
+                    ):
+                        context_limit = lifecycle.effective_context_limit
+                        context_source = "effective"
+                else:
+                    context_limit = (
+                        model.context_limit or model.architecture_context_limit
+                    )
+                    context_source = (
+                        "configured"
+                        if model.context_limit
+                        else (
+                            "architecture"
+                            if model.architecture_context_limit
+                            else "unknown"
+                        )
+                    )
             status = model.status
             if status != "complete":
                 progress = (
@@ -207,8 +235,9 @@ class LocalServices:
                     tier=tier,
                     model_id=model.id,
                     download_state=status,
-                    context_limit=model.context_limit
-                    or model.architecture_context_limit,
+                    context_limit=context_limit,
+                    context_source=context_source,
+                    model_state=model_state,
                     settings_url=settings_url,
                     message=f"The selected language model {progress}. Check Hikari Settings. You can save notes now.",
                 )
@@ -218,8 +247,9 @@ class LocalServices:
                     tier=tier,
                     model_id=model.id,
                     download_state=status,
-                    context_limit=model.context_limit
-                    or model.architecture_context_limit,
+                    context_limit=context_limit,
+                    context_source=context_source,
+                    model_state=model_state,
                     settings_url=settings_url,
                     message="The selected language model does not support inference. Check Hikari Settings.",
                 )
@@ -228,7 +258,9 @@ class LocalServices:
                 tier=tier,
                 model_id=model.id,
                 download_state=status,
-                context_limit=model.context_limit or model.architecture_context_limit,
+                context_limit=context_limit,
+                context_source=context_source,
+                model_state=model_state,
                 settings_url=settings_url,
                 message="The selected language model is downloaded. Hikari loads it when chat starts.",
             )
@@ -259,22 +291,19 @@ class LocalServices:
                 browser_url=self.settings.tsuchi_browser_url,
             )
 
-    async def model_state(self, model_id: str | None):
+    async def model_lifecycle(self) -> HikariModelLifecycle | None:
         try:
             value = HikariModelLifecycle.model_validate(
                 await self.json_request("Hikari", "GET", "/model-lifecycle")
             )
         except (ServiceError, ValidationError):
             return None
-        # A different resident model means the selected one still has to load.
-        return value.state if value.model_id == model_id else "unloaded"
+        return value
 
     async def status(self) -> Status:
         storage, inference = await asyncio.gather(
             self.storage_status(), self.inference_status()
         )
-        if inference.state == "ready":
-            inference.model_state = await self.model_state(inference.model_id)
         return Status(tsuchi=storage, hikari=inference)
 
     async def update_persona(

@@ -25,6 +25,7 @@ function panel(api = async () => { throw new Error("Unexpected request"); }, pro
     },
     "react/jsx-runtime": { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) },
     "./api": { agentPath: key => `/agents/${key}`, api: async (path, body) => { requests.push({ path, body }); return api(path, body); } },
+    "./ContextCheck": { default: "ContextCheck" },
     "./Markdown": { default: "Markdown" },
     "./workflows": workflows,
   };
