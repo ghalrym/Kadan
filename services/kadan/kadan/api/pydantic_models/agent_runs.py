@@ -27,9 +27,23 @@ class RunMessage(BaseModel):
     content: str = Field(max_length=1000000)
 
 
+class SelectionProgress(BaseModel):
+    stage: Literal["selected", "tool_result_recorded", "model_response_recorded"] = (
+        "selected"
+    )
+    # Unknown until a complete snapshot result is durably recorded.
+    truncated: bool | None = None
+
+
+class SelectionReceipt(BaseModel):
+    references: SelectionProgress | None = None
+    workflow: SelectionProgress | None = None
+
+
 class AgentRunState(BaseModel):
     status: Literal["queued", "running", "completed", "failed", "cancelled"] = "queued"
     transcript: list[RunMessage] = Field(default_factory=list, max_length=1000)
+    selection_receipt: SelectionReceipt | None = None
     owner_id: UUID | None = None
     lease_expires_at: datetime | None = None
     error: str | None = Field(default=None, max_length=10000)
@@ -72,6 +86,21 @@ class AgentRun(AgentRunState):
     version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
+
+
+class SelectedContext(BaseModel):
+    id: UUID
+    kind: Literal["space", "memory", "workflow"]
+    title: str
+    version: int
+
+
+class RunContext(BaseModel):
+    run_id: UUID
+    status: Literal["queued", "running", "completed", "failed", "cancelled"]
+    selected_references: list[SelectedContext]
+    selected_workflow: SelectedContext | None
+    receipt: SelectionReceipt | None
 
 
 class ImageJobState(BaseModel):

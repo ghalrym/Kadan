@@ -57,6 +57,8 @@ export interface Status {
 export interface AgentRun {
   id: string;
   conversation_id: string;
+  trigger_job_id: string | null;
+  delivered_message_ids: string[];
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   error: string | null;
   created_at: string;

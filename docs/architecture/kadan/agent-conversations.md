@@ -33,6 +33,12 @@ The runner uses a bounded LangGraph loop around context preparation, inference a
 
 Only the `send_message` tool delivers an agent message to the conversation. Completing inference, returning a tool result or finishing a run does not itself deliver a reply. This distinction prevents internal reasoning and command output from becoming user messages, and lets a run end silently when it has nothing further to communicate.
 
+## Saved-selection receipts
+
+Selected reference and workflow versions belong to the queued run. A nullable receipt in the same run record separately captures preparation, a complete reader tool result being checkpointed, and a later validated model response being checkpointed. Those writes share the existing transcript update and lease/version fencing; the API does not infer use from legacy transcript text. Missing receipt evidence remains unavailable, and unknown truncation remains unknown. A recorded response confirms the saved tool data entered that call, not that the model understood or followed it.
+
+The scoped context read projects selection identities, titles, versions and receipt stages without bodies or internal transcripts. Chat loads it explicitly for original requests and delivered image-event responses, retaining a visibly stale receipt if a refresh fails. Image-event runs inherit selections and start their own receipt when prepared.
+
 ## Durable ownership and effects
 
 Tsuchi saves a user's message and its queued run atomically. One run at a time owns a conversation; leases and version checks fence stale owners. Commands are saved before execution, and stable action IDs and delivery receipts let recovery distinguish work already delivered from work still pending. Run progress belongs in Tsuchi rather than only in process memory, so a restarted runner can resume saved work while preserving the conversation.

@@ -793,6 +793,20 @@ main:focus {
   font-weight: 500;
   animation: fade 200ms;
 }
+.context-receipt {
+  align-self: flex-end;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+.context-receipt .notice {
+  margin: 4px 0 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  text-align: left;
+}
+.context-receipt .notice p + p { margin-top: 6px; }
 .tag {
   display: inline-flex;
   align-items: center;

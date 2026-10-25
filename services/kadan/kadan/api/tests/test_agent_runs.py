@@ -1303,3 +1303,216 @@ def test_selected_workflow_is_read_as_tool_data_without_adding_task_or_authoriza
     result = next(item for item in second_context if isinstance(item, ToolMessage))
     assert json.loads(result.content)["workflow"] == selected.model_dump(mode="json")
     assert boundary.deliveries == []
+
+
+def selected_snapshots(boundary):
+    from kadan.api.pydantic_models.agent_runs import ReferenceSnapshot, WorkflowSnapshot
+
+    boundary.current = boundary.current.model_copy(
+        update={
+            "references": [
+                ReferenceSnapshot(
+                    resource_id=uuid4(),
+                    kind="memory",
+                    title="Saved fact",
+                    version=3,
+                    markdown="private reference",
+                )
+            ],
+            "workflow": WorkflowSnapshot(
+                id=uuid4(), title="Review", version=2, instructions="private workflow"
+            ),
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "read_tool,field",
+    [("read_request_references", "references"), ("read_workflow", "workflow")],
+)
+def test_selection_receipt_records_only_checkpointed_results_and_model_response(
+    boundary, read_tool, field
+):
+    selected_snapshots(boundary)
+    boundary.controller.inference = Commands(command(read_tool), finish())
+
+    async def check():
+        prepared = await boundary.controller.prepare(
+            RunState(run=boundary.start_owned())
+        )
+        receipt = prepared["run"].selection_receipt
+        assert getattr(receipt, field).stage == "selected"
+        assert getattr(receipt, field).truncated is None
+        state = await boundary.controller.infer_command(RunState(**prepared))
+        assert getattr(boundary.current.selection_receipt, field).stage == "selected"
+        await boundary.controller.invoke_tool(RunState(**state))
+        progress = getattr(boundary.current.selection_receipt, field)
+        assert progress.stage == "tool_result_recorded"
+        assert progress.truncated is False
+        await boundary.controller.infer_command(RunState(run=boundary.current))
+        assert (
+            getattr(boundary.current.selection_receipt, field).stage
+            == "model_response_recorded"
+        )
+        expected_body = (
+            "private reference" if field == "references" else "private workflow"
+        )
+        assert any(
+            expected_body in str(message.content)
+            for message in boundary.controller.inference.calls[-1]
+        )
+        # Repeated reads cannot erase the completed model-call evidence.
+        await boundary.controller.save_result(boundary.current, read_tool, {}, False)
+        assert (
+            getattr(boundary.current.selection_receipt, field).stage
+            == "model_response_recorded"
+        )
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("failure", [ServiceError("offline"), command("missing_tool")])
+@pytest.mark.parametrize("read_first", [True, False])
+def test_selection_receipt_does_not_confirm_failed_or_invalid_inference(
+    boundary, failure, read_first
+):
+    selected_snapshots(boundary)
+    commands = [command("read_request_references")] if read_first else []
+    boundary.controller.inference = Commands(*commands, failure)
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert boundary.current.selection_receipt.references.stage == (
+        "tool_result_recorded" if read_first else "selected"
+    )
+    assert boundary.current.selection_receipt.workflow.stage == "selected"
+
+
+def test_selection_receipt_failure_before_prepare_leaves_receipt_unavailable(boundary):
+    selected_snapshots(boundary)
+    boundary.settings.agent_instruction_file = "/does-not-exist"
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert boundary.current.selection_receipt is None
+
+
+def test_legacy_transcript_never_creates_selection_evidence_on_resume(boundary):
+    selected_snapshots(boundary)
+    boundary.current = boundary.current.model_copy(
+        update={
+            "transcript": [
+                RunMessage(role="user", content="Tool result: private reference")
+            ]
+        }
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.selection_receipt is None
+
+
+def test_failed_selection_tool_result_and_cancel_preserve_baseline(boundary):
+    selected_snapshots(boundary)
+
+    async def check():
+        await boundary.controller.prepare(RunState(run=boundary.start_owned()))
+        await boundary.controller.save_result(
+            boundary.current, "read_workflow", {"error": "unavailable"}, False
+        )
+        assert boundary.current.selection_receipt.workflow.stage == "selected"
+        boundary.cancel()
+        assert boundary.current.selection_receipt.workflow.stage == "selected"
+
+    asyncio.run(check())
+
+
+def test_context_projection_returns_only_saved_selection_metadata_and_explicit_receipt(
+    boundary,
+):
+    selected_snapshots(boundary)
+    # A transcript resembling a read is never evidence for a legacy run.
+    boundary.current = boundary.current.model_copy(
+        update={
+            "transcript": [
+                RunMessage(role="user", content="Tool result: private reference")
+            ]
+        }
+    )
+    context = boundary.current
+    from kadan.api.run_client import RunClient
+
+    projection = asyncio.run(
+        RunClient(boundary).selection_context(
+            "test", context.conversation_id, context.id
+        )
+    )
+    assert projection.receipt is None
+    assert projection.selected_references[0].title == "Saved fact"
+    assert projection.selected_references[0].version == 3
+    assert projection.selected_workflow.kind == "workflow"
+    encoded = projection.model_dump_json()
+    assert "private" not in encoded
+    assert "transcript" not in encoded
+    assert "instructions" not in encoded
+    assert "markdown" not in encoded
+
+
+@pytest.mark.parametrize("scope", ["conversation", "agent", "run", "deleted", "kind"])
+def test_context_projection_rejects_wrong_or_inactive_scope(boundary, scope):
+    from kadan.api.run_client import RunClient
+
+    key, conversation_id, run_id = (
+        "test",
+        boundary.current.conversation_id,
+        boundary.current.id,
+    )
+    if scope == "conversation":
+        conversation_id = uuid4()
+    elif scope in {"agent", "run"}:
+        boundary.current = boundary.current.model_copy(
+            update={"agent_key": "other"} if scope == "agent" else {"id": uuid4()}
+        )
+
+        async def wrong_run(*args, **kwargs):
+            return boundary.current.model_dump(mode="json")
+
+        boundary.json_request = wrong_run
+    else:
+        boundary.conversation = boundary.conversation.model_copy(
+            update={"deleted_at": datetime.now(UTC)}
+            if scope == "deleted"
+            else {"kind": ResourceKind.SPACE}
+        )
+    with pytest.raises(ServiceError):
+        asyncio.run(RunClient(boundary).selection_context(key, conversation_id, run_id))
+
+
+def test_context_projection_preserves_unknown_truncation_and_no_selection(boundary):
+    from kadan.api.pydantic_models.agent_runs import SelectionProgress, SelectionReceipt
+    from kadan.api.run_client import RunClient
+
+    selected_snapshots(boundary)
+    boundary.current = boundary.current.model_copy(
+        update={
+            "selection_receipt": SelectionReceipt(
+                references=SelectionProgress(stage="tool_result_recorded")
+            )
+        }
+    )
+    result = asyncio.run(
+        RunClient(boundary).selection_context(
+            "test", boundary.current.conversation_id, boundary.current.id
+        )
+    )
+    assert result.receipt.references.truncated is None
+    boundary.current = boundary.current.model_copy(
+        update={
+            "references": [],
+            "workflow": None,
+            "selection_receipt": SelectionReceipt(),
+        }
+    )
+    result = asyncio.run(
+        RunClient(boundary).selection_context(
+            "test", boundary.current.conversation_id, boundary.current.id
+        )
+    )
+    assert result.selected_references == [] and result.selected_workflow is None

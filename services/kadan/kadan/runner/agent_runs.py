@@ -30,6 +30,8 @@ from ..api.pydantic_models.agent_runs import (
     AgentRunState,
     ImageJob,
     RunMessage,
+    SelectionProgress,
+    SelectionReceipt,
 )
 from ..api.pydantic_models.resources import Message, ResourceKind
 from ..api.run_client import RunClient
@@ -470,7 +472,14 @@ class AgentRuns(RunClient):
         if not run.transcript:
             status = await self.services.inference_status()
             limit = self.transcript_limit(status)
-            run = await self.update(run, transcript=await self.context(run, limit))
+            run = await self.update(
+                run,
+                transcript=await self.context(run, limit),
+                selection_receipt=SelectionReceipt(
+                    references=SelectionProgress() if run.references else None,
+                    workflow=SelectionProgress() if run.workflow else None,
+                ),
+            )
         return {"run": run}
 
     @traced("kadan.agent_runs.infer_command")
@@ -517,13 +526,27 @@ class AgentRuns(RunClient):
                     datetime.now(UTC).isoformat(),
                     monotonic() - started,
                 )
-            # Persist the action before side effects. Recovery reuses its derived ID.
+            receipt = (
+                run.selection_receipt.model_copy(deep=True)
+                if run.selection_receipt
+                else None
+            )
+            if receipt is not None:
+                for progress in (receipt.references, receipt.workflow):
+                    if (
+                        progress is not None
+                        and progress.stage == "tool_result_recorded"
+                    ):
+                        progress.stage = "model_response_recorded"
+            # Persist the action and its input receipt together after validation.
+            # Recovery reuses the saved action's derived ID.
             run = await self.update(
                 run,
                 transcript=[
                     *run.transcript,
                     RunMessage(role="assistant", content=command.model_dump_json()),
                 ],
+                selection_receipt=receipt,
             )
         return {"run": run, "command": command, "replayed": replayed}
 
@@ -626,6 +649,21 @@ class AgentRuns(RunClient):
     async def save_result(
         self, run: AgentRun, name: str, result: dict, end_run: bool
     ) -> AgentRun:
+        receipt = run.selection_receipt
+        selection = {
+            "read_request_references": "references",
+            "read_workflow": "workflow",
+        }.get(name)
+        if receipt is not None and selection and "error" not in result:
+            progress = getattr(receipt, selection)
+            if progress is not None and progress.stage == "selected":
+                receipt = receipt.model_copy(
+                    update={
+                        selection: SelectionProgress(
+                            stage="tool_result_recorded", truncated=False
+                        )
+                    }
+                )
         # Save the result and release ownership together. Recovery before this
         # write replays the same action ID; after it no inference is scheduled.
         run = await self.update(
@@ -634,6 +672,7 @@ class AgentRuns(RunClient):
                 *run.transcript,
                 RunMessage(role="user", content=TOOL_RESULT + json.dumps(result)),
             ],
+            selection_receipt=receipt,
             **(
                 {"status": "completed", "owner_id": None, "lease_expires_at": None}
                 if end_run

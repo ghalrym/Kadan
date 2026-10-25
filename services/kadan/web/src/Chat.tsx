@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowUpRight, RotateCw } from "lucide-react";
 import Markdown from "./Markdown";
+import ContextReceipt from "./ContextReceipt";
 import RequestReferences, { type SelectedReference } from "./RequestReferences";
 import Workflows from "./Workflows";
 import type { WorkflowSelection } from "./workflows";
@@ -415,6 +416,10 @@ export default function Chat({
             const last = gap(message, next) || next?.role !== message.role;
             const tags = message.resource_ids?.length > 0;
             const sources = message.sources?.length > 0;
+            const contextRun = conversationRuns.find(run =>
+              message.role === "user" ? run.id === message.id
+                : message.role === "assistant" && run.trigger_job_id !== null && run.delivered_message_ids.includes(message.id),
+            );
             return (
               <Fragment key={message.id}>
                 {split && (
@@ -452,6 +457,9 @@ export default function Chat({
                     </footer>
                   )}
                 </article>
+                {contextRun && (
+                  <ContextReceipt key={`${agentKey}:${chain.id}:${contextRun.id}:${message.id}`} agentKey={agentKey} conversationId={chain.id} runId={contextRun.id} />
+                )}
                 {index === lastUser && receipt && (
                   <p className="receipt" aria-live="polite">
                     {receipt}

@@ -579,9 +579,23 @@ class RunMessage(Model):
     content: str = Field(max_length=1000000)
 
 
+class SelectionProgress(Model):
+    stage: Literal["selected", "tool_result_recorded", "model_response_recorded"] = (
+        "selected"
+    )
+    # Unknown until a complete snapshot result is durably recorded.
+    truncated: bool | None = None
+
+
+class SelectionReceipt(Model):
+    references: SelectionProgress | None = None
+    workflow: SelectionProgress | None = None
+
+
 class AgentRunState(Model):
     status: Literal["queued", "running", "completed", "failed", "cancelled"] = "queued"
     transcript: list[RunMessage] = Field(default_factory=list, max_length=1000)
+    selection_receipt: SelectionReceipt | None = None
     owner_id: UUID | None = None
     lease_expires_at: datetime | None = None
     error: str | None = Field(default=None, max_length=10000)
