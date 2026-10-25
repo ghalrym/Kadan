@@ -15,6 +15,8 @@ Kadan opens the oldest active conversation in the agent's Tsuchi namespace. Addi
 
 The runner includes at most 97 recent user and assistant messages, subject to the selected model's context budget and bound tool definitions. Older history remains in Tsuchi. This separates durable records from the bounded input to one run.
 
+Bound tool definitions consume the same model context budget as instructions and history. Additional tool definitions can make a small configured window too narrow even for a short task; context preparation then fails visibly before inference rather than silently omitting tools or instructions. Larger windows still trim older delivered turns first.
+
 The runner can search literal text and read older delivered user/assistant messages
 through conversation tools scoped to its owned run. Results follow the existing
 tool-result transcript path, retaining source roles, identities and timestamps as
@@ -53,3 +55,4 @@ The human-maintained `services/kadan/AGENT.md` supplies base instructions. Conte
 The image includes `/app/AGENT.md`. Operators can bind-mount an edited file read-only there, or set `KADAN_AGENT_INSTRUCTION_FILE` to another readable file. Supply the same intended file to every runner. It is separate from memories and persona records, and changing it does not alter tool schemas, run limits, ownership or cancellation rules.
 
 See the privately provided expectations for shared agent instructions.
+

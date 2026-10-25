@@ -1122,13 +1122,14 @@ def test_transcript_budget_leaves_room_for_the_bound_tools(boundary):
 
 
 def test_smaller_model_window_drops_history_before_inference(boundary):
+    # Leave room for bound tool schemas while keeping the older turn too large.
     async def inference_status():
         return SimpleNamespace(
-            state="ready", model_id="selected-model", context_limit=4096
+            state="ready", model_id="selected-model", context_limit=8192
         )
 
     boundary.inference_status = inference_status
-    older = Message(role="assistant", content="x" * 10000)
+    older = Message(role="assistant", content="x" * 30000)
     boundary.conversation = boundary.conversation.model_copy(
         update={"messages": [older, *boundary.conversation.messages]}
     )
