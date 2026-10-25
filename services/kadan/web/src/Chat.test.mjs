@@ -16,6 +16,7 @@ const message = (id, role, content) => ({
 });
 const run = (id, status, error = null) => ({
   id, status, error, conversation_id: chain.id, created_at: "2026-10-23T10:00:00Z",
+  trigger_job_id: null, delivered_message_ids: [],
 });
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
@@ -59,6 +60,7 @@ async function chat(initialRuns, initialConversation = chain) {
     "lucide-react": {},
     "./RequestReferences": { default: "RequestReferences" },
     "./Markdown": { default: "Markdown" },
+    "./ContextReceipt": { default: "ContextReceipt" },
     "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true }) },
     "./Pet": { default: "Pet", useMood: () => ["idle", () => {}] },
     "./AgentCard": { default: "AgentCard" },
@@ -122,6 +124,7 @@ async function chat(initialRuns, initialConversation = chain) {
     alerts: () => elements().filter(node => node.props?.role === "alert").map(node => node.props.children[0]),
     receipts: () => elements().filter(node => node.props?.className === "receipt").map(node => node.props.children),
     references: () => elements().find(node => node.type === "RequestReferences").props,
+    contextReceipts: () => elements().filter(node => node.type === "ContextReceipt").map(node => node.props),
     composer: () => elements().find(node => node.type === "Composer").props,
     workflows: () => elements().find(node => node.type === "Workflows").props,
     async poll(runs, conversation = selectedChain) {
@@ -348,4 +351,32 @@ test("Run now includes explicit reference versions while retaining fresh user te
     messages: [message("sent-message", "user", body.content)] } });
   await settle(); view.render();
   assert.equal(view.references().selected.length, 0);
+});
+
+
+test("selection receipts attach only to user requests with a matching conversation run ID", async () => {
+  const view = await chat([run("request", "completed"), run("reply", "completed"), {
+    ...run("foreign", "completed"), conversation_id: "other",
+  }], { ...chain, messages: [message("request", "user", "Question"), message("note", "user", "Note"),
+    message("reply", "assistant", "Answer"), message("foreign", "user", "Other request")] });
+  assert.equal(view.contextReceipts().length, 1);
+  assert.equal(view.contextReceipts()[0].runId, "request");
+  assert.equal(view.contextReceipts()[0].conversationId, chain.id);
+});
+
+
+test("image follow-up replies expose their own run receipt without duplicating ordinary reply controls", async () => {
+  const view = await chat([
+    { ...run("request", "completed"), delivered_message_ids: ["reply"] },
+    { ...run("image-event", "completed"), trigger_job_id: "image-job", delivered_message_ids: ["image-reply"] },
+    { ...run("other-event", "completed"), trigger_job_id: "another-job", delivered_message_ids: [] },
+    { ...run("foreign-event", "completed"), conversation_id: "other", trigger_job_id: "foreign-job", delivered_message_ids: ["foreign-reply"] },
+    run("silent-request", "failed"),
+  ], { ...chain, messages: [
+    message("request", "user", "Draw a fox"), message("reply", "assistant", "Generating"),
+    message("image-reply", "assistant", "Your fox is ready"), message("other-event", "assistant", "Unconfirmed reply"),
+    message("foreign-reply", "assistant", "Another conversation"), message("silent-request", "user", "Try again"),
+  ] });
+  assert.deepEqual(view.contextReceipts().map(receipt => receipt.runId), ["request", "image-event", "silent-request"]);
+  assert.ok(view.contextReceipts().every(receipt => receipt.conversationId === chain.id));
 });

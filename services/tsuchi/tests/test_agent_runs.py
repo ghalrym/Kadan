@@ -963,3 +963,50 @@ def test_image_followup_inherits_original_workflow_snapshot_after_source_trash(
     complete_image(repository, job)
     event = repository.get_run("alpha", job.event_run_id)
     assert event.workflow == run.workflow
+
+
+def test_selection_receipt_survives_reopen_and_cancellation(repository):
+    from tsuchi.models import SelectionProgress, SelectionReceipt
+
+    run = claim(repository, enqueue(repository))
+    receipt = SelectionReceipt(
+        references=SelectionProgress(stage="tool_result_recorded", truncated=False)
+    )
+    run = repository.update_run(
+        "alpha",
+        run.id,
+        run_state(run, selection_receipt=receipt),
+        run.version,
+        run.owner_id,
+    )
+    reopened = Repository(repository.data_dir)
+    assert reopened.get_run("alpha", run.id).selection_receipt == receipt
+    assert reopened.cancel_run("alpha", run.id).selection_receipt == receipt
+
+
+def test_image_event_starts_without_origin_selection_receipt(repository):
+    from tsuchi.models import SelectionProgress, SelectionReceipt
+
+    run = claim(repository, enqueue(repository))
+    run = repository.update_run(
+        "alpha",
+        run.id,
+        run_state(
+            run,
+            selection_receipt=SelectionReceipt(
+                workflow=SelectionProgress(
+                    stage="model_response_recorded", truncated=False
+                )
+            ),
+        ),
+        run.version,
+        run.owner_id,
+    )
+    job = image_job(repository, run)
+    with repository.connect(write=True) as db:
+        repository._image_event(db, job)
+    assert repository.get_run("alpha", job.event_run_id).selection_receipt is None
+    assert (
+        repository.get_run("alpha", run.id).selection_receipt.workflow.stage
+        == "model_response_recorded"
+    )

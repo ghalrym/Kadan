@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from .config import ServiceError
-from .pydantic_models.agent_runs import AgentRun
-from .pydantic_models.resources import Message
+from .pydantic_models.agent_runs import AgentRun, RunContext, SelectedContext
+from .pydantic_models.resources import Message, ResourceKind
 
 if TYPE_CHECKING:
     from .routes.agents.conversations.runs import RunInput
@@ -29,6 +29,43 @@ class RunClient:
         if run.agent_key != key or run.id != run_id:
             raise ServiceError("Tsuchi returned the wrong agent run.", 502)
         return run
+
+    async def selection_context(
+        self, key: str, conversation_id: UUID, run_id: UUID
+    ) -> RunContext:
+        run = await self.get(key, run_id)
+        if run.conversation_id != conversation_id:
+            raise ServiceError("The run does not belong to this conversation.", 404)
+        conversation = await self.services.resource(key, conversation_id)
+        if (
+            conversation.id != conversation_id
+            or conversation.agent_key != key
+            or conversation.kind != ResourceKind.CONVERSATION
+            or conversation.deleted_at is not None
+        ):
+            raise ServiceError("The conversation is no longer available.", 404)
+        return RunContext(
+            run_id=run.id,
+            status=run.status,
+            selected_references=[
+                SelectedContext(
+                    id=item.resource_id,
+                    kind=item.kind,
+                    title=item.title,
+                    version=item.version,
+                )
+                for item in run.references
+            ],
+            selected_workflow=SelectedContext(
+                id=run.workflow.id,
+                kind="workflow",
+                title=run.workflow.title,
+                version=run.workflow.version,
+            )
+            if run.workflow
+            else None,
+            receipt=run.selection_receipt,
+        )
 
     async def enqueue(
         self, key: str, conversation_id: UUID, value: RunInput
