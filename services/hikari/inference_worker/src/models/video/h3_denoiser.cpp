@@ -4,22 +4,60 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <limits>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <variant>
 #include <vector>
 
 #include "h3_quant_marker.hpp"
 #include "h3_resident_block.hpp"
+#include "h3_wall_timing.hpp"
 #include "kadan/cleanup_error.hpp"
 
 namespace kadan::video {
 namespace {
 using Shard = checkpoint::Shard;
 using Dtype = checkpoint::Dtype;
+using WallStage = detail::H3WallStage;
+using WallPhase = detail::H3WallPhase;
+
+void report_wall_timing(const detail::H3WallRecord& record) {
+    static constexpr std::array stages{"refiner", "block", "feed_forward", "final"};
+    static constexpr std::array phases{"describe", "prepare", "execute"};
+    std::ostringstream out;
+    out << "H3_WALL {\"summary\":" << (record.summary ? "true" : "false")
+        << ",\"failed\":" << (record.failed ? "true" : "false")
+        << ",\"cancelled\":" << (record.cancelled ? "true" : "false");
+    if (record.summary) {
+        out << ",\"records\":" << record.records << ",\"dropped\":" << record.dropped;
+        for (std::size_t i = 0; i < phases.size(); ++i)
+            out << ",\"" << phases[i] << "_wall_ns\":" << record.phase_wall_ns[i]
+                << ",\"" << phases[i] << "_calls\":" << record.calls[i];
+    } else {
+        out << ",\"stage\":\"" << stages[std::size_t(record.stage)] << "\",\"phase\":\""
+            << phases[std::size_t(record.phase)] << "\",\"index\":" << record.index
+            << ",\"wall_ns\":" << record.wall_ns << ",\"tokens\":" << record.tokens
+            << ",\"plan_observed\":" << (record.plan_observed ? "true" : "false")
+            << ",\"rows\":" << record.rows << ",\"queries\":" << record.queries
+            << ",\"keys\":" << record.keys
+            << ",\"weight_bytes\":" << record.weight_bytes << ",\"devices\":[";
+        for (std::size_t i = 0; i < record.device_count; ++i) {
+            if (i)
+                out << ',';
+            out << "{\"id\":" << record.devices[i].id
+                << ",\"arena_bytes\":" << record.devices[i].arena_bytes << '}';
+        }
+        out << ']';
+    }
+    out << '}';
+    std::clog << out.str() << '\n';
+    std::clog.flush();
+}
 
 const char* fallback_phase(PlanFailure reason) {
     switch (reason) {
@@ -66,14 +104,21 @@ const char* attention_fallback_phase(PlanFailure reason) {
 void report_fallback(
     const H3Denoiser::Hook& hook, const char* phase, const MediaPlanError& error
 ) {
-    std::clog << "h3_fallback phase=" << phase << " detail=" << error.detail << '\n';
-    if (error.rejected)
-        for (const auto& device : error.rejected->devices)
-            std::clog << "h3_fallback phase=" << phase << " device=" << device.device
-                      << " arena_bytes=" << device.arena_bytes
-                      << " physical_shortfall_bytes=" << device.physical_shortfall
-                      << " ledger_shortfall_bytes=" << device.ledger_shortfall << '\n';
-    std::clog.flush();
+    try {
+        std::clog << "h3_fallback phase=" << phase << " detail=" << error.detail
+                  << '\n';
+        if (error.rejected)
+            for (const auto& device : error.rejected->devices)
+                std::clog << "h3_fallback phase=" << phase
+                          << " device=" << device.device
+                          << " arena_bytes=" << device.arena_bytes
+                          << " physical_shortfall_bytes=" << device.physical_shortfall
+                          << " ledger_shortfall_bytes=" << device.ledger_shortfall
+                          << '\n';
+        std::clog.flush();
+    } catch (...) {
+        // Diagnostic output must not replace inference or cleanup failures.
+    }
     if (hook)
         hook(phase, 0);
 }
@@ -988,6 +1033,10 @@ void H3Denoiser::execute(
     const Hook& hook,
     Resident* resident
 ) {
+    const auto* wall_flag = std::getenv("KADAN_H3_WALL_TIMING");
+    detail::H3WallTiming wall(
+        wall_flag && wall_flag[0] == '1' && !wall_flag[1], cancel, report_wall_timing
+    );
     stop(cancel);
     require(loaded(), "h3_denoiser_not_loaded");
     Active active(executing_);
@@ -1342,21 +1391,26 @@ void H3Denoiser::execute(
         if (!held)
             held = resident->session();
         require(bool(held), "h3_resident_session");
-        auto described = describe_block(*shard_, turbo_.get(), block, cancel);
+        auto described =
+            wall.measure(WallStage::block, block, WallPhase::describe, n, [&] {
+                return describe_block(*shard_, turbo_.get(), block, cancel);
+            });
         std::optional<MediaPlanError> error;
         if (auto* rejected = std::get_if<MediaPlanError>(&described))
             error = std::move(*rejected);
         else {
             const auto& layout = std::get<detail::H3Block>(described);
-            error = prepare(
-                *held,
-                *shard_,
-                turbo_.get(),
-                detail::h3_block_manifest(layout, n, groups, retained),
-                detail::h3_block_shape(layout, n),
-                *resources_,
-                cancel
-            );
+            error = wall.measure(WallStage::block, block, WallPhase::prepare, n, [&] {
+                return prepare(
+                    *held,
+                    *shard_,
+                    turbo_.get(),
+                    detail::h3_block_manifest(layout, n, groups, retained),
+                    detail::h3_block_shape(layout, n),
+                    *resources_,
+                    cancel
+                );
+            });
         }
         if (error) {
             // After a resident refiner, hidden lives only in the session.
@@ -1372,9 +1426,18 @@ void H3Denoiser::execute(
             return false;
         }
         const auto& layout = std::get<detail::H3Block>(described);
-        if (!retained)
-            upload_step(layout.time_width);
-        detail::execute_h3_block(*held, resident->launchers, layout, n, cancel);
+        wall.measure(
+            WallStage::block,
+            block,
+            WallPhase::execute,
+            n,
+            [&] {
+                if (!retained)
+                    upload_step(layout.time_width);
+                detail::execute_h3_block(*held, resident->launchers, layout, n, cancel);
+            },
+            &held->plan()
+        );
         return true;
     };
     // Both refiner blocks open the update's session, before block 0. Only the
@@ -1386,21 +1449,29 @@ void H3Denoiser::execute(
         held = resident->session();
         require(bool(held), "h3_resident_session");
         for (std::size_t block = 0; block < 2; ++block) {
-            auto described = describe_refiner(*shard_, turbo_.get(), block, cancel);
+            auto described =
+                wall.measure(WallStage::refiner, block, WallPhase::describe, n, [&] {
+                    return describe_refiner(*shard_, turbo_.get(), block, cancel);
+                });
             std::optional<MediaPlanError> error;
             if (auto* rejected = std::get_if<MediaPlanError>(&described))
                 error = std::move(*rejected);
             else {
                 const auto& layout = std::get<detail::H3Refiner>(described);
-                error = prepare(
-                    *held,
-                    *shard_,
-                    turbo_.get(),
-                    detail::h3_refiner_manifest(layout, n, nt, time_count, block != 0),
-                    detail::h3_refiner_shape(layout, n),
-                    *resources_,
-                    cancel
-                );
+                error =
+                    wall.measure(WallStage::refiner, block, WallPhase::prepare, n, [&] {
+                        return prepare(
+                            *held,
+                            *shard_,
+                            turbo_.get(),
+                            detail::h3_refiner_manifest(
+                                layout, n, nt, time_count, block != 0
+                            ),
+                            detail::h3_refiner_shape(layout, n),
+                            *resources_,
+                            cancel
+                        );
+                    });
             }
             if (error) {
                 if (block)
@@ -1415,10 +1486,19 @@ void H3Denoiser::execute(
                 return false;
             }
             const auto& layout = std::get<detail::H3Refiner>(described);
-            if (!block)
-                upload_step(layout.time_width);
-            detail::execute_h3_refiner(
-                *held, resident->launchers, layout, n, nt, cancel
+            wall.measure(
+                WallStage::refiner,
+                block,
+                WallPhase::execute,
+                n,
+                [&] {
+                    if (!block)
+                        upload_step(layout.time_width);
+                    detail::execute_h3_refiner(
+                        *held, resident->launchers, layout, n, nt, cancel
+                    );
+                },
+                &held->plan()
             );
             if (hook)
                 hook("refiner_completed", block + 1);
@@ -1428,39 +1508,52 @@ void H3Denoiser::execute(
     // After the last resident block, the final layer downloads only the output
     // rows; hidden never returns to the host.
     auto resident_final = [&] {
-        auto described = describe_final(*shard_, nv != 0, na != 0, cancel);
+        auto described = wall.measure(WallStage::final, 0, WallPhase::describe, n, [&] {
+            return describe_final(*shard_, nv != 0, na != 0, cancel);
+        });
         std::optional<MediaPlanError> error;
         if (auto* rejected = std::get_if<MediaPlanError>(&described))
             error = std::move(*rejected);
         else {
             const auto& layout = std::get<detail::H3Final>(described);
-            error = prepare(
-                *held,
-                *shard_,
-                nullptr,
-                detail::h3_final_manifest(layout, n, nv, na, time_count),
-                detail::h3_final_shape(layout, n),
-                *resources_,
-                cancel
-            );
+            error = wall.measure(WallStage::final, 0, WallPhase::prepare, n, [&] {
+                return prepare(
+                    *held,
+                    *shard_,
+                    nullptr,
+                    detail::h3_final_manifest(layout, n, nv, na, time_count),
+                    detail::h3_final_shape(layout, n),
+                    *resources_,
+                    cancel
+                );
+            });
         }
         if (error)
             throw std::runtime_error("h3_resident_admission: " + error->detail);
         std::vector<std::uint32_t> ids(n);
         for (std::size_t t = 0; t < n; ++t)
             ids[t] = std::uint32_t(time_ids[t]);
-        detail::upload_h3_final_inputs(*held, ids);
-        detail::execute_h3_final(
-            *held,
-            resident->launchers,
-            std::get<detail::H3Final>(described),
+        wall.measure(
+            WallStage::final,
+            0,
+            WallPhase::execute,
             n,
-            nt,
-            video_out,
-            audio_out,
-            cancel
+            [&] {
+                detail::upload_h3_final_inputs(*held, ids);
+                detail::execute_h3_final(
+                    *held,
+                    resident->launchers,
+                    std::get<detail::H3Final>(described),
+                    n,
+                    nt,
+                    video_out,
+                    audio_out,
+                    cancel
+                );
+                close_held(false);
+            },
+            &held->plan()
         );
-        close_held(false);
         finite(video_out);
         finite(audio_out);
     };
@@ -1472,21 +1565,28 @@ void H3Denoiser::execute(
         auto session = resident->session();
         require(bool(session), "h3_resident_session");
         try {
-            auto described =
-                describe_feed_forward(*shard_, turbo_.get(), block, cancel);
+            auto described = wall.measure(
+                WallStage::feed_forward, block, WallPhase::describe, n, [&] {
+                    return describe_feed_forward(*shard_, turbo_.get(), block, cancel);
+                }
+            );
             std::optional<MediaPlanError> error;
             if (auto* rejected = std::get_if<MediaPlanError>(&described))
                 error = std::move(*rejected);
             else {
                 const auto& layout = std::get<detail::H3FeedForward>(described);
-                error = prepare(
-                    *session,
-                    *shard_,
-                    turbo_.get(),
-                    detail::h3_feed_forward_manifest(layout, n, groups),
-                    detail::h3_feed_forward_shape(layout, n),
-                    *resources_,
-                    cancel
+                error = wall.measure(
+                    WallStage::feed_forward, block, WallPhase::prepare, n, [&] {
+                        return prepare(
+                            *session,
+                            *shard_,
+                            turbo_.get(),
+                            detail::h3_feed_forward_manifest(layout, n, groups),
+                            detail::h3_feed_forward_shape(layout, n),
+                            *resources_,
+                            cancel
+                        );
+                    }
                 );
             }
             if (error) {
@@ -1502,18 +1602,27 @@ void H3Denoiser::execute(
                 return false;
             }
             const auto& layout = std::get<detail::H3FeedForward>(described);
-            detail::upload_h3_feed_forward_inputs(
-                *session,
-                layout,
-                normalized,
-                current,
-                adaln.first(groups * 6 * hidden),
-                token_groups
+            wall.measure(
+                WallStage::feed_forward,
+                block,
+                WallPhase::execute,
+                n,
+                [&] {
+                    detail::upload_h3_feed_forward_inputs(
+                        *session,
+                        layout,
+                        normalized,
+                        current,
+                        adaln.first(groups * 6 * hidden),
+                        token_groups
+                    );
+                    detail::execute_h3_feed_forward(
+                        *session, resident->launchers, layout, n, current, cancel
+                    );
+                    detail::close_h3_resident(*session, resident->launchers);
+                },
+                &session->plan()
             );
-            detail::execute_h3_feed_forward(
-                *session, resident->launchers, layout, n, current, cancel
-            );
-            detail::close_h3_resident(*session, resident->launchers);
         } catch (...) {
             rethrow_after_cleanup(std::current_exception(), [&] {
                 detail::close_h3_resident(*session, resident->launchers, true);
