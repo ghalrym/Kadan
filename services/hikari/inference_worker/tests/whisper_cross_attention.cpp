@@ -68,6 +68,26 @@ void planning_and_admission() {
     );
     check(resources.snapshot().used == Footprint({0, 0, 0}));
     check(resources.snapshot().residents == 0);
+    Resources shared({bytes + 128});
+    const auto caller = shared.reserve(Workload::speech, {128});
+    {
+        WhisperCrossAttentionCache cache(shared, 2, 3, 4);
+        check(shared.snapshot().used[0] == bytes + 128);
+        check(shared.snapshot().residents == 2);
+    }
+    check(shared.snapshot().used[0] == 128 && shared.snapshot().residents == 1);
+    shared.released(caller);
+    check(shared.snapshot().used[0] == 0 && shared.snapshot().residents == 0);
+    Resources constrained({bytes + 127});
+    const auto held = constrained.reserve(Workload::speech, {128});
+    check(
+        fails([&] { WhisperCrossAttentionCache cache(constrained, 2, 3, 4); })
+        == "exhausted"
+    );
+    check(constrained.snapshot().used[0] == 128);
+    check(constrained.snapshot().residents == 1);
+    constrained.released(held);
+    check(constrained.snapshot().used[0] == 0 && constrained.snapshot().residents == 0);
 }
 
 void layer_reuse_and_request_scope() {
