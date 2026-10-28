@@ -38,54 +38,36 @@ def machine() -> dict:
         maximum = int(limit.read_text())
         total = min(total, maximum)
         free = min(free, max(0, maximum - int(current.read_text())))
-    rows = list(
-        csv.reader(
-            subprocess.check_output(
-                [
-                    "nvidia-smi",
-                    "--query-gpu=uuid,memory.total,memory.free",
-                    "--format=csv,noheader,nounits",
-                ],
-                text=True,
-            ).splitlines()
-        )
-    )
+    rows = list(csv.reader(subprocess.check_output([
+        "nvidia-smi", "--query-gpu=uuid,memory.total,memory.free",
+        "--format=csv,noheader,nounits",
+    ], text=True).splitlines()))
     index = int(os.getenv("HIKARI_EXPERIMENTAL_GPU", "0"))
     uuid, gpu_total, gpu_free = rows[index]
     boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
     return {
-        "id": boot,
-        "name": os.getenv("HIKARI_WORKER_MACHINE", "computer-" + boot[:8]),
-        "ram_total": total,
-        "ram_free": max(0, free - GIB),
+        "id": boot, "name": os.getenv("HIKARI_WORKER_MACHINE", "computer-" + boot[:8]),
+        "ram_total": total, "ram_free": max(0, free - GIB),
         # This trial uses one whole GPU; the hub must not pool several GPUs.
-        "devices": [
-            {
-                "index": 0,
-                "uuid": uuid.strip(),
-                "vram_total": int(gpu_total) * 1024**2,
-                "vram_free": max(0, int(gpu_free) * 1024**2 - GIB // 2),
-            }
-        ],
+        "devices": [{"index": 0, "uuid": uuid.strip(),
+                     "vram_total": int(gpu_total) * 1024**2,
+                     "vram_free": max(0, int(gpu_free) * 1024**2 - GIB // 2)}],
     }
 
 
-def execute_child(
-    connection, backend_name, metadata, manifest, root, request, device, budget
-):
+def execute_child(connection, backend_name, metadata, manifest, root, request, device, budget):
     """The subprocess is the allocation boundary; exit releases its CUDA context."""
-
     def emit(message):
         connection.send(message)
 
     try:
         store = ModelStore(Path(root), metadata, manifest)
         if request["operation"] == "download":
-            result = store.download(
-                request["input"].get("license_acknowledged", False), emit
-            )
+            result = store.download(request["input"].get("license_acknowledged", False), emit)
         else:
             os.environ["CUDA_VISIBLE_DEVICES"] = device["uuid"]
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
             # Inference libraries must exist only in the disposable executor.
             import torch
 
@@ -94,9 +76,7 @@ def execute_child(
                 raise ValueError("Insufficient CUDA allocation after runtime headroom")
             torch.cuda.set_per_process_memory_fraction(min(1.0, fraction), device=0)
             backend = importlib.import_module("experimental_worker." + backend_name)
-            result = backend.execute(
-                request["input"], request["operation"], str(store.root), emit
-            )
+            result = backend.execute(request["input"], request["operation"], str(store.root), emit)
         emit({"state": "result", "result": result})
     except BaseException as error:
         emit({"state": "error", "error": str(error) or type(error).__name__})
@@ -112,9 +92,7 @@ class Runtime:
             raise ValueError(f"Experimental worker requires {flag}=true")
         self.backend_name = backend_name
         self.backend = importlib.import_module("experimental_worker." + backend_name)
-        self.manifest = json.loads(
-            (Path(__file__).parent / f"catalog_{backend_name}.json").read_text()
-        )
+        self.manifest = json.loads((Path(__file__).parent / f"catalog_{backend_name}.json").read_text())
         self.root = Path(os.getenv("KADAN_MODEL_DIR", "/var/lib/kadan/models"))
         self.store = ModelStore(self.root, self.backend.MODEL, self.manifest)
         self.info = info if info is not None else machine()
@@ -135,16 +113,9 @@ class Runtime:
         await self.send({"state": "models", "models": self.store.status()})
 
     async def status(self, event="updated"):
-        await self.send(
-            {
-                "state": "worker",
-                "worker": self.kind,
-                "event": event,
-                "loaded": bool(self.budget[1]),
-                "budget": self.budget,
-                "model": None,
-            }
-        )
+        await self.send({"state": "worker", "worker": self.kind, "event": event,
+                         "loaded": bool(self.budget[1]), "budget": self.budget,
+                         "model": None})
 
     async def handle(self, message):
         command, request_id = message["command"], message["id"]
@@ -155,35 +126,16 @@ class Runtime:
         if command == "submit":
             task = message["input"]
             model = task.get("model_id") or task.get("model")
-            if (
-                message["operation"] not in ("configure",)
-                and model != self.backend.MODEL["id"]
-            ):
-                await self.send(
-                    {
-                        "id": request_id,
-                        "state": "rejected",
-                        "error": "Explicit experimental model ID is required.",
-                        "status_code": 422,
-                    }
-                )
+            if message["operation"] not in ("configure",) and model != self.backend.MODEL["id"]:
+                await self.send({"id": request_id, "state": "rejected", "error": "Explicit experimental model ID is required.", "status_code": 422})
                 return
             if message["operation"] in ("load", "unload"):
-                await self.send(
-                    {
-                        "id": request_id,
-                        "state": "rejected",
-                        "error": "Experimental models load per request; manual residency is unavailable.",
-                        "status_code": 422,
-                    }
-                )
+                await self.send({"id": request_id, "state": "rejected", "error": "Experimental models load per request; manual residency is unavailable.", "status_code": 422})
                 return
             try:
                 self.queue.put_nowait(message)
             except asyncio.QueueFull:
-                await self.send(
-                    {"id": request_id, "state": "rejected", "error": "queue_full"}
-                )
+                await self.send({"id": request_id, "state": "rejected", "error": "queue_full"})
             else:
                 await self.send({"id": request_id, "state": "queued"})
             return
@@ -191,57 +143,34 @@ class Runtime:
         if command == "requirement":
             model = message.get("model")
             if model not in (None, self.backend.MODEL["id"]):
-                reply.update(
-                    state="rejected", error="Unsupported model", status_code=422
-                )
+                reply.update(state="rejected", error="Unsupported model", status_code=422)
             else:
                 required = self.backend.REQUIREMENT
-                reply.update(
-                    state="requirement",
-                    model=self.backend.MODEL["id"],
-                    minimum=list(required),
-                    preferred=list(required),
-                    device_floor=required[1],
-                )
+                reply.update(state="requirement", model=self.backend.MODEL["id"],
+                             minimum=list(required), preferred=list(required), device_floor=required[1])
         elif command in ("load", "offload"):
             if self.active is not None and self.child is not None:
                 reply["ok"] = False
             else:
                 budget = list(message["budget"]) if command == "load" else [0, 0]
-                if len(budget) != 2 or any(
-                    type(value) is not int or value < 0 for value in budget
-                ):
-                    reply.update(
-                        state="rejected", error="Invalid memory grant", status_code=422
-                    )
+                if len(budget) != 2 or any(type(value) is not int or value < 0 for value in budget):
+                    reply.update(state="rejected", error="Invalid memory grant", status_code=422)
                 else:
                     self.budget = budget
                     self.granted.set()
                     await self.status(command)
         elif command == "status":
-            reply.update(
-                state="status",
-                workers=[
-                    {
-                        "worker": self.kind,
-                        "loaded": bool(self.budget[1]),
-                        "budget": self.budget,
-                        "used": self.budget if self.child is not None else [0, 0],
-                        "model": None,
-                    }
-                ],
-            )
+            reply.update(state="status", workers=[{"worker": self.kind,
+                         "loaded": bool(self.budget[1]), "budget": self.budget,
+                         "used": self.budget if self.child is not None else [0, 0], "model": None}])
         elif command == "is_busy":
             reply["busy"] = self.active is not None
         else:
-            reply.update(
-                state="rejected", error="Unknown worker command", status_code=422
-            )
+            reply.update(state="rejected", error="Unknown worker command", status_code=422)
         await self.send(reply)
 
     async def run_job(self, request):
         request_id = request["id"]
-
         async def event(state, **fields):
             await self.send({"id": request_id, "state": state, **fields})
 
@@ -251,30 +180,16 @@ class Runtime:
         if request["operation"] == "configure":
             # Native tier/Whisper settings are broadcast to all workers. They
             # never select or alter this explicit experimental checkpoint.
-            if (
-                request["input"].get("feature") == "model_context"
-                and request["input"].get("model_id") == self.backend.MODEL["id"]
-            ):
-                await event(
-                    "failed",
-                    error="The experimental trial uses a fixed bounded context.",
-                    status_code=422,
-                )
+            if request["input"].get("feature") == "model_context" and request["input"].get("model_id") == self.backend.MODEL["id"]:
+                await event("failed", error="The experimental trial uses a fixed bounded context.", status_code=422)
             else:
                 await event("succeeded", result=self.store.status())
             return
         if request["operation"] != "download":
             if not self.store.complete():
-                await event(
-                    "failed",
-                    error="Model is not downloaded; review its license and use the model download action first.",
-                    status_code=409,
-                )
+                await event("failed", error="Model is not downloaded; review its license and use the model download action first.", status_code=409)
                 return
-            while not all(
-                actual >= need
-                for actual, need in zip(self.budget, self.backend.REQUIREMENT)
-            ):
+            while not all(actual >= need for actual, need in zip(self.budget, self.backend.REQUIREMENT)):
                 await event("waiting_for_resources")
                 self.granted.clear()
                 if request_id in self.cancelled:
@@ -286,19 +201,10 @@ class Runtime:
             return
         context = multiprocessing.get_context("spawn")
         reader, writer = context.Pipe(duplex=False)
-        process = context.Process(
-            target=execute_child,
-            args=(
-                writer,
-                self.backend_name,
-                self.backend.MODEL,
-                self.manifest,
-                str(self.root),
-                request,
-                self.info["devices"][0],
-                self.budget,
-            ),
-        )
+        process = context.Process(target=execute_child, args=(
+            writer, self.backend_name, self.backend.MODEL, self.manifest,
+            str(self.root), request, self.info["devices"][0], self.budget,
+        ))
         self.child = process
         result, error = None, None
         started = False
@@ -314,17 +220,9 @@ class Runtime:
                     break
                 if request["operation"] != "download" and process.is_alive():
                     try:
-                        resident = next(
-                            line
-                            for line in Path(f"/proc/{process.pid}/status")
-                            .read_text()
-                            .splitlines()
-                            if line.startswith("VmRSS:")
-                        )
+                        resident = next(line for line in Path(f"/proc/{process.pid}/status").read_text().splitlines() if line.startswith("VmRSS:"))
                         if int(resident.split()[1]) * 1024 > self.budget[0]:
-                            error = (
-                                "Experimental executor exceeded its granted RAM budget."
-                            )
+                            error = "Experimental executor exceeded its granted RAM budget."
                             break
                     except (OSError, StopIteration):
                         pass
@@ -349,11 +247,7 @@ class Runtime:
             if started and process.is_alive():
                 process.terminate()
             deadline = asyncio.get_running_loop().time() + 10
-            while (
-                started
-                and process.is_alive()
-                and asyncio.get_running_loop().time() < deadline
-            ):
+            while started and process.is_alive() and asyncio.get_running_loop().time() < deadline:
                 await asyncio.sleep(0.02)
             if started and process.is_alive():
                 process.kill()
@@ -365,13 +259,16 @@ class Runtime:
             reader.close()
             if request["operation"] != "download":
                 self.budget = [0, 0]
-                await self.status("released")
         if request_id in self.cancelled:
             await event("cancelled")
         elif error is not None:
             await event("failed", error=error, status_code=502)
         else:
             await event("succeeded", model=self.backend.MODEL["id"], result=result)
+        if request["operation"] != "download":
+            # Settle the head job first, so its old pending count cannot make
+            # the scheduler regrant an already completed per-request engine.
+            await self.status("released")
         await self.models()
 
     async def consume(self):
@@ -381,14 +278,10 @@ class Runtime:
             try:
                 await self.run_job(request)
             except Exception as error:
-                await self.send(
-                    {
-                        "id": self.active,
-                        "state": "failed",
-                        "error": str(error),
-                        "status_code": 502,
-                    }
-                )
+                await self.send({"id": self.active, "state": "failed",
+                                 "error": str(error), "status_code": 502})
+                if self.child is None:
+                    await self.status("released")
             finally:
                 self.cancelled.discard(self.active)
                 self.active = None
@@ -399,23 +292,12 @@ class Runtime:
         from websockets.asyncio.client import connect
 
         token = os.getenv("HIKARI_WORKER_TOKEN", "insecure-api-key")
-        async with connect(
-            os.getenv("HIKARI_API_URL", "ws://hikari-api:8000/v1/workers"),
-            additional_headers={"Authorization": f"Bearer {token}"},
-            max_size=128 * 1024**2,
-            ping_interval=20,
-            ping_timeout=40,
-        ) as connection:
+        async with connect(os.getenv("HIKARI_API_URL", "ws://hikari-api:8000/v1/workers"),
+                           additional_headers={"Authorization": f"Bearer {token}"},
+                           max_size=128 * 1024**2, ping_interval=20, ping_timeout=40) as connection:
             self.socket = connection
-            await self.send(
-                {
-                    "state": "hello",
-                    "protocol": 4,
-                    "worker": self.kind,
-                    "instance": socket.gethostname(),
-                    "machine": self.info,
-                }
-            )
+            await self.send({"state": "hello", "protocol": 4, "worker": self.kind,
+                             "instance": socket.gethostname(), "machine": self.info})
             await self.models()
             await self.send({"state": "ready", "protocol": 4})
             consumer = asyncio.create_task(self.consume())
