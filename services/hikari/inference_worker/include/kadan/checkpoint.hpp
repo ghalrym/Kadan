@@ -119,6 +119,14 @@ public:
     void read_tensor(
         std::string_view name, std::size_t offset, std::span<std::uint8_t> destination
     ) const;
+    // Exact serialized bytes into caller-admitted storage, bypassing the read cache.
+    // File identity and cancellation are checked at every bounded read boundary.
+    void read_tensor_direct(
+        std::string_view name,
+        std::size_t offset,
+        std::span<std::uint8_t> destination,
+        const std::atomic_bool& cancel
+    ) const;
     // Exact F16/BF16/F32 decode, retained in the same bounded cache envelope.
     void read_float_tensor(
         std::string_view name,

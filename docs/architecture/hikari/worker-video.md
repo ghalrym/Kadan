@@ -36,6 +36,10 @@ Preparation records also contain one fixed-size `prepare_nested` aggregate for a
 
 Nested counters distinguish started and uploaded slices, planned bytes, and caller-completed read, validated and uploaded bytes for INT8, BF16, FP32 and other storage. A read or upload that throws may have made partial internal progress that is not counted; no completion is inferred. INT8 has no added validation scan, so its validated-byte count remains zero. Cancellation preserves completed counters and elapsed time in the active bucket. The prepare function’s explicit abort handler is outside nested buckets; any cleanup internal to admission remains included in admission wall time. Local object destruction during exception unwinding can still be charged to the active bucket before the abort handler. Untimed metadata work, normal buffer destruction and measurement overhead can leave outer prepare time unattributed. Neither timing nor byte counts establish a cache hit, physical disk I/O, bandwidth or the cause of a slowdown.
 
+## Resident weight-read experiment
+
+`KADAN_H3_DIRECT_WEIGHT_READS=1` opts only resident H3 denoiser/refiner/final weight uploads into direct serialized checkpoint reads. It defaults off. Direct reads use the same open shard, file-identity/range/short-read guards and 1 MiB cancellation boundaries, followed by the existing finite/scale checks and synchronized uploads. They bypass serialized host-cache population and its extra copy into staging; staging admission and lifetimes remain unchanged. Host-staged fallback, text conditioning and other workers retain their existing cache paths. This flag changes neither checkpoint bytes nor numerical operations and makes no performance or output-quality claim before a bounded manual comparison.
+
 ## Memory
 
 - **Minimum:** the RAM working stage for the largest clip the API accepts

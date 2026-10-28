@@ -921,6 +921,8 @@ std::optional<MediaPlanError> prepare(
     using PreparePhase = detail::H3PreparePhase;
     using PrepareCount = detail::H3PrepareCount;
     using PrepareDtype = detail::H3PrepareDtype;
+    const auto* direct_flag = std::getenv("KADAN_H3_DIRECT_WEIGHT_READS");
+    const bool direct_reads = direct_flag && std::string_view(direct_flag) == "1";
     if (timing)
         timing->phase(PreparePhase::admission);
     if (auto error = session.admit(manifest, stage))
@@ -955,7 +957,14 @@ std::optional<MediaPlanError> prepare(
             for (std::size_t at = 0; at < raw.size();) {
                 stop(cancel);
                 const auto count = std::min<std::size_t>(16 << 20, raw.size() - at);
-                source.read_tensor(slice.name, offset + at, {raw.data() + at, count});
+                if (direct_reads)
+                    source.read_tensor_direct(
+                        slice.name, offset + at, {raw.data() + at, count}, cancel
+                    );
+                else
+                    source.read_tensor(
+                        slice.name, offset + at, {raw.data() + at, count}
+                    );
                 if (timing)
                     timing->count(dtype, PrepareCount::read_bytes, count);
                 at += count;
