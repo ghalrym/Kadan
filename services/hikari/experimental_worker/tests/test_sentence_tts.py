@@ -36,10 +36,7 @@ class SentenceTtsTests(unittest.TestCase):
         )
         answer = conversation({"mode": "answer", "messages": MESSAGES})
         self.assertEqual(answer[0]["content"], "Saved persona")
-        self.assertEqual(answer[-2], {"role": "user", "content": "Hi"})
-        self.assertEqual(
-            answer[-1], {"role": "assistant", "content": "<think></think>"}
-        )
+        self.assertEqual(answer[-1], {"role": "user", "content": "Hi"})
 
     def test_public_answer_forces_text_only_and_strips_completed_reasoning_before_speech(
         self,
@@ -61,10 +58,7 @@ class SentenceTtsTests(unittest.TestCase):
             self.assertTrue(model.generate.call_args.kwargs["suppress_mixed"])
             self.assertTrue(model.generate.call_args.kwargs["suppress_audio_out"])
             self.assertTrue(
-                processor.apply_chat_template.call_args.kwargs["continue_final_message"]
-            )
-            self.assertNotIn(
-                "add_generation_prompt", processor.apply_chat_template.call_args.kwargs
+                processor.apply_chat_template.call_args.kwargs["add_generation_prompt"]
             )
             codec.decode.assert_not_called()
         model, processor, codec = audio_tests.AudioReplyCompletionTests().fixture(7)

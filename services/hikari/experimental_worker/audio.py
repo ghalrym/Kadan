@@ -103,14 +103,8 @@ def conversation(task: dict, audio_path: str | None = None) -> list[dict]:
         result[0]["content"] = (
             "Respond with interleaved text and audio.\n\n" + result[0]["content"]
         )
-    result.append(
-        {
-            "role": "assistant",
-            "content": "<think></think>"
-            if task["mode"] == "answer"
-            else "<|mixed_start|>",
-        }
-    )
+    if task["mode"] == "reply":
+        result.append({"role": "assistant", "content": "<|mixed_start|>"})
     return result
 
 
@@ -182,7 +176,7 @@ def generate(
         conversation(task, audio_path),
         **(
             {"add_generation_prompt": True}
-            if transcribe
+            if transcribe or answer
             else {"continue_final_message": True}
         ),
         tokenize=True,
