@@ -1,0 +1,25 @@
+# Opt-in d1 decision worker
+
+The separate Python `d1_decision` worker adds released BF16 `LiquidAI/d1-2B` alongside the CPU Laya worker. Laya remains the default. d1 is a specialist decision model, not a conversation backend or an authorization mechanism. Decisions propose classifications and scores; Kadan's existing permission and action ownership rules remain authoritative. See [decision expectations](../../user-expectations/hikari/decisions.md).
+
+The snapshot is pinned to `cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41`. `services/hikari/experimental_worker/catalog_d1.json` records the runtime artifacts, code, tokenizer, calibration, license, exact sizes and content hashes. Loading uses the verified local directory with offline mode; it never resolves a mutable branch or acquires a missing artifact during inference. Downloading requires this checkpoint's explicit license acknowledgement. Existing LFM downloads do not acknowledge d1. The [pinned license](https://huggingface.co/LiquidAI/d1-2B/blob/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/LICENSE) is the LFM Open License v1.0.
+
+## Selection and typed mapping
+
+`POST /v1/decisions` accepts optional `model: "d1-2b-bf16"`; omitted, null or explicit `"laya"` retains Laya. d1 requires `HIKARI_ENABLE_D1=true` on the API and worker. The Compose `d1` profile starts `hikari-worker-d1`, with its separate `d1_models` volume. It is disabled by default. An unavailable d1 worker or incomplete download fails without switching models. The normal Hikari Settings flow lists its connected checkpoint and obtains licence acceptance before queuing acquisition.
+
+The adapter uses the pinned model's `AutoModel.system_one` interface. It preserves request question order through named question keys and maps Choice options to ordered `criteria` names/descriptions. Score levels become lowest-first criteria; d1 supports 2–10 levels. Noul guidance becomes `criteria.true` and `criteria.false`. Extra fields, media, extraction, multilabel and other question types are unsupported in this first integration and fail explicitly.
+
+Choice returns the selected original option key, confidence and probabilities keyed by the original labels. Score calls `score_readout="mean"`, preserving Hikari's fractional expected zero-based rubric index; d1's default median would change that contract. Score probabilities retain stringified ordinal indices. Noul returns P(true), with null confidence and probabilities because the upstream binary answer does not provide separate confidence metadata. Missing or malformed answers and invalid probabilities fail rather than producing substitute decisions. The [official API code](https://huggingface.co/LiquidAI/d1-2B/blob/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/api.py) defines these readouts.
+
+## Context, resources and cleanup
+
+The [checkpoint config](https://huggingface.co/LiquidAI/d1-2B/blob/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/config.json) defines 128,000 positions. Each question reads the full state with `set_size=1`; the pinned engine's `tokens()` measures the longest complete prompt including its question, options and template. Requests beyond that limit fail with no truncation. d1 bypasses Laya's 8,000-state-character and 16,000-request-character caps, while the existing 3 MiB worker transport limit remains. No output-token reservation is needed: the model reads decision probabilities without generated tokens.
+
+The [model card](https://huggingface.co/LiquidAI/d1-2B) warns that reliability declines beyond roughly 64K state tokens. That is separate from the 128,000-position capacity; neither establishes physical fit or quality on this installation.
+
+The existing pinned experimental-worker requirements provide Transformers 5.21.0 and PyTorch 2.14.1. This worker requires CUDA BF16 support; it preserves the checkpoint's custom attention implementation and does not compile, quantize or substitute another model. Official CPU examples use FP32; no CPU d1 backend is offered here.
+
+The grant is 8 GiB RAM and 22 GiB VRAM on one GPU. An initial 16 GiB grant hit its allocator limit during a maximum-context trial while the physical card still had free memory, so admission reserves the larger envelope. This is not a general maximum-context fit guarantee; long prompts can still exceed it and fail. d1 shares the API's physical memory ledger at decision priority; it does not reuse Laya's 3 GiB CPU envelope. Each job runs in the existing disposable executor. Cancellation, budget overruns and failures terminate and join that process before releasing its grant. Reconnection requires fresh admission and never replays unconfirmed work.
+
+Unit validation uses fake model/queue/process boundaries and no inference. Before relying on this backend, owner validation must check the explicit download, real Choice/Score/Noul behavior, latency and RAM/VRAM, over-context rejection, cancellation and subsequent native Image Turbo/video availability. No successful runtime or quality trial is established by the code or unit tests.

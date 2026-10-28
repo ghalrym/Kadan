@@ -404,6 +404,10 @@ export type DecisionPlaygroundResponse = {
  */
 export type DecisionRequest = {
   /**
+   * Model
+   */
+  model?: 'laya' | 'd1-2b-bf16' | null
+  /**
    * Questions
    */
   questions: Array<ChoiceQuestion | ScoreQuestion | NoulQuestion>

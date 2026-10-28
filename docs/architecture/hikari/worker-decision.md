@@ -47,4 +47,6 @@ Choice returns an option key and optional probabilities. Score is the expected z
 
 The playground starts with empty state and no questions. New Choice questions have one empty option; Score questions have two empty levels. Answers remain associated with the evaluated input, and later edits mark them outdated. Retry uses the current form. Cancellation ignores late responses while native cleanup finishes.
 
+The endpoint also accepts explicit `model: "d1-2b-bf16"` for a separately enabled Python worker. Omitted, null and explicit `"laya"` keep this CPU backend and its limits. The [d1 worker contract](worker-d1.md) describes its separate context, rubric constraints, resource grant and opt-in download; it does not replace Laya or give model decisions authority over permissions.
+
 See the user expectations for [decisions](../../user-expectations/hikari/decisions.md).

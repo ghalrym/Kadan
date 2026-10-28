@@ -1,9 +1,11 @@
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
+
 from api.pydantic_models.decisions import (
     ChoiceQuestion,
     DecisionAnswer,
+    DecisionModel,
     DecisionQuestion,
     ScoreQuestion,
 )
@@ -15,8 +17,18 @@ router = APIRouter(prefix="/v1/decisions", tags=["Decisions"])
 
 class DecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    state: str = Field(min_length=1, max_length=8000)
+    model: DecisionModel | None = None
+    state: str = Field(min_length=1)
     questions: list[DecisionQuestion] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="before")
+    @classmethod
+    def d1_questions(cls, values):
+        if isinstance(values, dict) and values.get("model") == "d1-2b-bf16":
+            from experimental_worker.d1 import prepare_questions
+
+            prepare_questions(values)
+        return values
 
     @model_validator(mode="after")
     def validate_questions(self):
@@ -68,7 +80,14 @@ class DecisionRequest(BaseModel):
                 )
         if not self.state.strip():
             raise PydanticCustomError("blank_state", "State must not be blank")
-        if len(self.model_dump_json()) > 16000:
+        if self.model != "d1-2b-bf16" and len(self.state) > 8000:
+            raise PydanticCustomError(
+                "state_too_large", "Laya state must fit 8000 characters"
+            )
+        if (
+            self.model != "d1-2b-bf16"
+            and len(self.model_dump_json(exclude={"model"})) > 16000
+        ):
             raise PydanticCustomError(
                 "request_too_large", "The total request must fit 16000 characters"
             )
@@ -95,12 +114,20 @@ def get_decisions() -> DecisionPlaygroundResponse:
 async def evaluate_decisions(
     body: DecisionRequest, request: Request
 ) -> DecisionResponse:
-    """Queue typed CPU decisions, preserving validation and disconnect cleanup."""
+    """Queue the selected specialist, preserving validation and disconnect cleanup."""
     try:
-        return DecisionResponse(
-            answers=await infer(request, inference.submit(body, feature="decisions"))
-        )
+        result = await infer(request, inference.submit(body, feature="decisions"))
+        if body.model == "d1-2b-bf16":
+            if result["model"] != body.model:
+                raise ValueError("The worker returned a different decision model.")
+            result = result["answers"]
+        response = DecisionResponse(answers=result)
+        if body.model == "d1-2b-bf16" and [
+            (answer.key, answer.type) for answer in response.answers
+        ] != [(question.key, question.type) for question in body.questions]:
+            raise ValueError("The worker returned different decision questions.")
+        return response
     except (ValueError, TypeError, KeyError) as exc:
         raise HTTPException(
-            502, "Laya returned an invalid typed decision response."
+            502, "The decision model returned an invalid typed decision response."
         ) from exc

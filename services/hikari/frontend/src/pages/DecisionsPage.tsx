@@ -8,17 +8,19 @@ import {
   validateDecisionRequest,
   type Answer,
   type DecisionIssue,
+  type DecisionModel,
   type Question,
 } from '../api/decisions'
+import { fetchExperimentalModels, type CheckpointStatus } from '../api/settings'
 
 const MAX_QUESTIONS = 8
 const localFailure = new DecisionError('Check your inputs', 'Some fields need attention before evaluating.')
 
 /** The inputs an answer set was produced from, so results stay readable while editing. */
-type Evaluation = { state: string; questions: Question[]; answers: Answer[]; elapsedMs: number }
+type Evaluation = { state: string; questions: Question[]; model: DecisionModel; answers: Answer[]; elapsedMs: number }
 
 /**
- * Edit page-local decision state and display answers from the CPU Laya API.
+ * Edit page-local decision state and display answers from the selected specialist.
  * Only the active request may update results; leaving the page aborts that request.
  * Answers render against the snapshot they were evaluated with and are marked
  * outdated, not discarded, when inputs change.
@@ -26,8 +28,12 @@ type Evaluation = { state: string; questions: Question[]; answers: Answer[]; ela
 export default function DecisionsPage() {
   const [state, setState] = useState('')
   const [questions, setQuestions] = useState<Question[]>([])
+  const [model, setModel] = useState<DecisionModel>('laya')
+  const [d1, setD1] = useState<CheckpointStatus | null>(null)
+  const [modelError, setModelError] = useState('')
+  const [refresh, setRefresh] = useState(0)
   const [evaluation, setEvaluation] = useState<Evaluation | null>(null)
-  const [pending, setPending] = useState<{ questions: Question[]; startedAt: number } | null>(null)
+  const [pending, setPending] = useState<{ questions: Question[]; model: DecisionModel; startedAt: number } | null>(null)
   const [failure, setFailure] = useState<DecisionError | null>(null)
   const [checkInputs, setCheckInputs] = useState(false)
   const [notice, setNotice] = useState('')
@@ -46,13 +52,30 @@ export default function DecisionsPage() {
     const timer = setInterval(() => setNow(Date.now()), 250)
     return () => clearInterval(timer)
   }, [pending])
+  useEffect(() => {
+    const controller = new AbortController()
+    void fetchExperimentalModels(controller.signal).then((models) => {
+      if (!controller.signal.aborted) {
+        setD1(models.find((item) => item.id === 'd1-2b-bf16') ?? null)
+        setModelError('')
+      }
+    }).catch(() => {
+      if (!controller.signal.aborted) {
+        setD1(null)
+        setModelError('Could not check D1 availability. Refresh models to try again.')
+      }
+    })
+    return () => controller.abort()
+  }, [refresh])
 
   // After a rejected submit, recheck locally on every edit so fixed fields clear at once.
-  const localIssues = checkInputs ? validateDecisionRequest(state, questions) : []
+  const localIssues = checkInputs ? validateDecisionRequest(state, questions, model) : []
   const issues: DecisionIssue[] = localIssues.length ? localIssues : (failure?.issues ?? [])
   const shownFailure = localIssues.length ? localFailure : failure
   const pageIssues = issues.filter((issue) => issue.question === undefined)
-  const stale = !!evaluation && (evaluation.state !== state || JSON.stringify(evaluation.questions) !== JSON.stringify(questions))
+  const stale = !!evaluation && (evaluation.model !== model || evaluation.state !== state || JSON.stringify(evaluation.questions) !== JSON.stringify(questions))
+  const d1Ready = d1?.status === 'complete' && d1.inference_available
+  const unavailable = model === 'd1-2b-bf16' && !d1Ready
 
   /** Record an input edit: server field errors may no longer apply, runtime failures still do. */
   function edited() {
@@ -78,9 +101,9 @@ export default function DecisionsPage() {
    */
   async function evaluate(event?: React.FormEvent) {
     event?.preventDefault()
-    if (active.current) return
+    if (active.current || unavailable) return
     setNotice('')
-    if (validateDecisionRequest(state, questions).length) {
+    if (validateDecisionRequest(state, questions, model).length) {
       setCheckInputs(true)
       setFailure(null)
       return
@@ -89,12 +112,12 @@ export default function DecisionsPage() {
     setFailure(null)
     const controller = new AbortController()
     active.current = controller
-    const snapshot = { state, questions }
+    const snapshot = { state, questions, model }
     const startedAt = Date.now()
     setNow(startedAt)
-    setPending({ questions, startedAt })
+    setPending({ questions, model, startedAt })
     try {
-      const answers = await requestDecisions(snapshot.state, snapshot.questions, controller.signal)
+      const answers = await requestDecisions(snapshot.state, snapshot.questions, controller.signal, snapshot.model)
       if (active.current === controller && !controller.signal.aborted) {
         setEvaluation({ ...snapshot, answers, elapsedMs: Date.now() - startedAt })
         // In the single-column layout the answers sit below the form.
@@ -118,7 +141,7 @@ export default function DecisionsPage() {
     active.current?.abort()
     active.current = null
     setPending(null)
-    setNotice('Evaluation cancelled. The CPU worker may take a moment to finish.')
+    setNotice('Evaluation cancelled. The worker may take a moment to finish cleanup.')
   }
 
   const elapsed = pending ? Math.max(0, Math.floor((now - pending.startedAt) / 1000)) : 0
@@ -128,9 +151,29 @@ export default function DecisionsPage() {
         <form className="stack" onSubmit={evaluate} noValidate>
           <fieldset disabled={!!pending} className="decisions-fieldset stack">
             <Panel className="panel-body stack">
+              <label className="field">
+                <span className="eyebrow">Decision model</span>
+                <select className="input" aria-label="Decision model" value={model} onChange={(event) => {
+                  if (active.current) return
+                  const selected = event.target.value
+                  if (selected !== 'laya' && !(selected === 'd1-2b-bf16' && d1)) return
+                  setModel(selected)
+                  edited()
+                }}>
+                  <option value="laya">Laya · CPU</option>
+                  {(d1 || model === 'd1-2b-bf16') && <option value="d1-2b-bf16">D1 2B BF16 · experimental</option>}
+                </select>
+              </label>
+              <div className="row">
+                <button type="button" className="button button--text" onClick={() => setRefresh((value) => value + 1)}>Refresh models</button>
+                {unavailable && <p role="status" className="muted">{d1 && d1.status !== 'complete' ? <>D1 is not ready. Review its license and download it in <a href="/settings">Settings</a>.</> : 'D1 inference is unavailable. Refresh models after its worker is ready.'}</p>}
+              </div>
+              {modelError && <p role="status" className="muted">{modelError}</p>}
+            </Panel>
+            <Panel className="panel-body stack">
               <div className="decisions-section-heading">
                 <SectionHeading number="01">State</SectionHeading>
-                <span className={`mono ${state.length > 8000 ? 'error' : 'faint'}`}>{state.length.toLocaleString()} / 8,000</span>
+                <span className={`mono ${model === 'laya' && state.length > 8000 ? 'error' : 'faint'}`}>{state.length.toLocaleString()}{model === 'laya' ? ' / 8,000' : ' characters'}</span>
               </div>
               <textarea
                 aria-label="State"
@@ -187,7 +230,7 @@ export default function DecisionsPage() {
             </Panel>
           </fieldset>
           <div className="decisions-actions">
-            <button className="button button--primary" type="submit" disabled={!!pending}>
+            <button className="button button--primary" type="submit" disabled={!!pending || unavailable}>
               {pending ? 'Evaluating…' : 'Evaluate'}
             </button>
             {pending && (
@@ -197,8 +240,8 @@ export default function DecisionsPage() {
             )}
           </div>
           <p className="muted decisions-footnote">
-            Uses Laya on CPU, independently of the chat model. Inputs must fit the
-            specialist’s token budget. Questions and answers are not saved.
+            {model === 'laya' ? 'Uses Laya on CPU, independently of the chat model. Inputs must fit the specialist’s token budget.' : 'Uses D1 2B BF16 on GPU. The full prompt must fit 128,000 tokens. Score requires 2–10 rubric levels.'}{' '}
+            Questions and answers are not saved.
           </p>
         </form>
         <Panel className="answers-panel">
@@ -233,7 +276,7 @@ export default function DecisionsPage() {
               <>
                 <p role="status" className="answers-progress">
                   <span className="answers-spinner" aria-hidden="true" />
-                  Evaluating {pending.questions.length} question{pending.questions.length === 1 ? '' : 's'} on CPU… <span className="mono faint">{elapsed}s</span>
+                  Evaluating {pending.questions.length} question{pending.questions.length === 1 ? '' : 's'} with {pending.model === 'laya' ? 'Laya on CPU' : 'D1'}… <span className="mono faint">{elapsed}s</span>
                 </p>
                 {pending.questions.map((question, i) => (
                   <div key={i} className="answer-card answer-card--loading" aria-hidden="true">
@@ -250,8 +293,8 @@ export default function DecisionsPage() {
               <>
                 {stale && (
                   <div className="answers-stale" role="status">
-                    <span>Inputs changed since these answers.</span>
-                    <button type="button" className="button" onClick={() => void evaluate()}>Re-evaluate</button>
+                    <span>Inputs or model changed since these answers.</span>
+                    <button type="button" className="button" disabled={unavailable} onClick={() => void evaluate()}>Re-evaluate</button>
                   </div>
                 )}
                 {evaluation.answers.map((answer, i) => (

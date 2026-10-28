@@ -26,6 +26,7 @@ PRIORITY = {
     "lfm3_llm": 1,
     "lfm3_vision": 1,
     "lfm3_audio": 1,
+    "d1_decision": 1,
 }
 TOP_PRIORITY = min(PRIORITY.values())
 

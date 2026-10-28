@@ -382,6 +382,33 @@ test('explicit model acknowledgement downloads only that checkpoint and shows ac
   view.unmount()
 })
 
+test('a completed LFM download does not acknowledge the separate D1 license', async () => {
+  const view = await page('ExperimentalModelDownloads')
+  const d1 = {
+    ...experimental()[0], id: 'd1-2b-bf16', display_name: 'D1 2B BF16',
+    license_notice: 'Review the D1 checkpoint license and pinned custom Python code.',
+    license_url: 'https://huggingface.co/LiquidAI/d1-2B/blob/pinned/LICENSE',
+  }
+  view.reads[0].resolve([...experimental('complete'), d1])
+  await view.flush()
+  assert.equal(view.changes.length, 0)
+  const download = elements(view.tree).find(node => node.props?.['aria-label'] === 'Download D1 2B BF16')
+  assert.equal(download.props.disabled, false)
+  download.props.onClick()
+  await view.flush()
+  assert.match(content(modal(view.tree)), /Review the D1 checkpoint license/)
+  assert.equal(button(modal(view.tree), 'Accept and download').props.disabled, true)
+  button(modal(view.tree), 'Accept and download').props.onClick()
+  await view.flush()
+  assert.equal(view.changes.length, 0)
+  await acknowledge(view)
+  await view.click('Accept and download', modal(view.tree))
+  assert.equal(view.changes.length, 1)
+  assert.equal(view.changes[0].tier, 'd1-2b-bf16')
+  assert.equal(view.changes[0].acknowledged, true)
+  view.unmount()
+})
+
 test('uncertain individual download requires a state refresh without replaying acceptance', async () => {
   const view = await experimentalPage()
   await view.click('Download')

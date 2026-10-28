@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from experimental_worker.runtime import GIB, Runtime, machine
 
@@ -182,3 +182,111 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                 await runtime.serve()
         self.assertEqual(calls, 2)
         pause.assert_awaited_once_with(1)
+
+
+class D1RuntimeTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        env = patch.dict(
+            "os.environ",
+            {"HIKARI_ENABLE_D1": "true", "KADAN_MODEL_DIR": self.directory.name},
+        )
+        env.start()
+        self.addCleanup(env.stop)
+        self.runtime = Runtime(
+            "d1", {"devices": [{"uuid": "GPU-test", "vram_total": 24 * GIB}]}
+        )
+        self.runtime.socket = Socket()
+
+    def request(self, **fields):
+        return {
+            "id": "d" * 32,
+            "command": "submit",
+            "operation": "generate",
+            "input": {
+                "feature": "decisions",
+                "model": "d1-2b-bf16",
+                "state": "State",
+                "questions": [{"key": "q", "type": "Noul", "instructions": "True?"}],
+            },
+            **fields,
+        }
+
+    def test_disabled_d1_fails_before_machine_probe_or_connection(self):
+        with (
+            patch.dict("os.environ", {"HIKARI_ENABLE_D1": "false"}),
+            patch("experimental_worker.runtime.machine") as probe,
+        ):
+            with self.assertRaisesRegex(ValueError, "HIKARI_ENABLE_D1"):
+                Runtime("d1")
+        probe.assert_not_called()
+
+    async def test_d1_validation_precedes_queuing_and_never_accepts_chat(self):
+        request = self.request()
+        request["input"]["questions"][0]["type"] = "Text"
+        await self.runtime.handle(request)
+        self.assertTrue(self.runtime.queue.empty())
+        self.assertEqual(self.runtime.socket.messages[-1]["status_code"], 422)
+        await self.runtime.handle(self.request())
+        self.assertEqual(self.runtime.queue.qsize(), 1)
+
+    async def test_missing_d1_snapshot_requires_explicit_download_before_executor_spawn(
+        self,
+    ):
+        with patch("multiprocessing.get_context") as process:
+            await self.runtime.run_job(self.request())
+        process.assert_not_called()
+        self.assertEqual(self.runtime.socket.messages[-1]["status_code"], 409)
+
+    async def test_native_settings_broadcast_still_succeeds_without_changing_d1(self):
+        request = self.request(
+            operation="configure", input={"feature": "tier_selection", "tier": "go"}
+        )
+        await self.runtime.handle(request)
+        self.assertEqual(self.runtime.queue.qsize(), 1)
+        await self.runtime.run_job(request)
+        message = self.runtime.socket.messages[-1]
+        self.assertEqual(message["state"], "succeeded")
+        self.assertIsNone(message["result"]["selected_tier"])
+        self.assertEqual(message["result"]["models"][0]["id"], "d1-2b-bf16")
+
+    async def test_d1_requirement_is_distinct_from_laya_and_uses_one_gpu(self):
+        await self.runtime.handle({"id": "req", "command": "requirement"})
+        message = self.runtime.socket.messages[-1]
+        self.assertEqual(message["model"], "d1-2b-bf16")
+        self.assertEqual(message["minimum"], [8 * GIB, 22 * GIB])
+        self.assertEqual(message["preferred"], message["minimum"])
+        self.assertEqual(message["device_floor"], message["minimum"][1])
+
+    async def test_d1_input_errors_keep_422_after_executor_cleanup(self):
+        runtime = self.runtime
+        runtime.store.complete = lambda: True
+        runtime.budget = list(runtime.backend.REQUIREMENT)
+        messages = [
+            {
+                "state": "error",
+                "error": "Full prompt exceeds context",
+                "status_code": 422,
+            }
+        ]
+        process = SimpleNamespace(
+            start=lambda: None, is_alive=lambda: False, join=Mock()
+        )
+        reader = SimpleNamespace(
+            poll=lambda: bool(messages), recv=lambda: messages.pop(), close=lambda: None
+        )
+        writer = SimpleNamespace(close=lambda: None)
+        context = SimpleNamespace(
+            Pipe=lambda **kwargs: (reader, writer), Process=lambda **kwargs: process
+        )
+        with patch("multiprocessing.get_context", return_value=context):
+            await runtime.run_job(self.request())
+        process.join.assert_called_once_with()
+        failed = next(
+            message
+            for message in runtime.socket.messages
+            if message["state"] == "failed"
+        )
+        self.assertEqual(failed["status_code"], 422)
+        self.assertEqual(runtime.budget, [0, 0])

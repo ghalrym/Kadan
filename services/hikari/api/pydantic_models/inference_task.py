@@ -12,7 +12,7 @@ from api.pydantic_models.chat import (
     lfm3_messages,
     require_lfm3_tools,
 )
-from api.pydantic_models.decisions import DecisionQuestion
+from api.pydantic_models.decisions import DecisionModel, DecisionQuestion
 from api.pydantic_models.inference import Operation
 from api.pydantic_models.model_store import TierId
 
@@ -97,8 +97,18 @@ class ImageTask(TaskInput):
 
 class DecisionTask(TaskInput):
     feature: Literal["decisions"] = "decisions"
+    model: DecisionModel | None = None
     state: str
     questions: list[DecisionQuestion]
+
+    @model_validator(mode="before")
+    @classmethod
+    def d1_questions(cls, values):
+        if isinstance(values, dict) and values.get("model") == "d1-2b-bf16":
+            from experimental_worker.d1 import prepare_questions
+
+            prepare_questions(values)
+        return values
 
 
 class VisionTask(TaskInput):

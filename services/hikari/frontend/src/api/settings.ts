@@ -59,7 +59,7 @@ export async function chooseTier(
 }
 
 export function experimentalModels(models: CheckpointStatus[]): CheckpointStatus[] {
-  return models.filter((model) => model.id.startsWith('lfm3-'))
+  return models.filter((model) => model.id.startsWith('lfm3-') || model.id === 'd1-2b-bf16')
 }
 
 export async function fetchExperimentalModels(signal: AbortSignal): Promise<CheckpointStatus[]> {
