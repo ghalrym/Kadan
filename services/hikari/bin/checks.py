@@ -15,8 +15,6 @@ app = typer.Typer(no_args_is_help=True)
 
 INFERENCE_WORKER_UNIT_TARGETS = [
     "inference-request-tests",
-    "text-prefix-tests",
-    "text-state-tests",
     "bf16-projection-tests",
     "media-session-tests",
     "media-residency-tests",
@@ -45,7 +43,6 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "mlx-quantization-tests",
     "gguf-quantization-tests",
     "gguf-checkpoint-tests",
-    "gguf-text-tests",
     "h3-profile-tests",
     "worker-compute-tests",
     "device-workspace-tests",
@@ -56,10 +53,7 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "inference-trace-tests",
     "websocket-tests",
     "worker-host-tests",
-    "kadan-worker-formatting",
     "preparation-tests",
-    "chat-load-tests",
-    "s1-mini-metadata-tests",
     "text-tokenizer-tests",
     "inference-worker-text-tests",
 ]
@@ -73,7 +67,6 @@ CPP_LINT_OPTIONS = [
     "-DKADAN_BUILD_TOOLS=ON",
     "-DKADAN_ENABLE_DECISIONS=ON",
     "-DKADAN_ENABLE_H3_GENERATION=ON",
-    "-DKADAN_ENABLE_TTS_WORKER=ON",
     "-DKADAN_ENABLE_IMAGE_GENERATION=OFF",
     "-DBUILD_TESTING=ON",
 ]
@@ -230,7 +223,6 @@ def inference_worker(
             "-DKADAN_BUILD_TOOLS=OFF",
             "-DKADAN_ENABLE_DECISIONS=OFF",
             "-DKADAN_ENABLE_H3_GENERATION=OFF",
-            "-DKADAN_ENABLE_TTS_WORKER=OFF",
             "-DKADAN_ENABLE_IMAGE_GENERATION=OFF",
             "-DKADAN_ENABLE_WHISPER_BLAS=OFF",
             "-DBUILD_TESTING=ON",

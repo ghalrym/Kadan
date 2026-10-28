@@ -12,23 +12,10 @@
 #include <thread>
 #include <unistd.h>
 
-#include "../weights/metadata_json.hpp"
-#include "kadan/gguf_text.hpp"
 #include "kadan/preparation.hpp"
 
 namespace kadan::serving {
 namespace {
-void validate_text_checkpoint(const fs::path& checkpoint) {
-    try {
-        auto budget = std::make_shared<checkpoint::MemoryBudget>(4ULL * 1024 * 1024);
-        text::validate_config(checkpoint.string().c_str(), budget);
-    } catch (const std::exception& error) {
-        throw RequestError(
-            std::string("Unsupported text checkpoint: ") + error.what(), 422
-        );
-    }
-}
-
 struct Transfer {
     std::function<void(std::size_t)> progress;
     std::string bytes;
@@ -338,9 +325,13 @@ CatalogEntry CatalogEntry::parse(const Json& value) {
     entry.kind = value.at("kind");
     entry.layout = value.at("layout");
     preparation_check(
+        entry.kind == "image" || entry.kind == "video" || entry.kind == "transcription"
+            || entry.kind == "decision",
+        "Unsupported native checkpoint kind"
+    );
+    preparation_check(
         entry.layout == "root" || entry.layout == "components"
-            || entry.layout == "composite" || entry.layout == "single_file"
-            || entry.layout == "gguf",
+            || entry.layout == "composite" || entry.layout == "single_file",
         "Invalid checkpoint layout"
     );
     preparation_check(
@@ -367,15 +358,6 @@ CatalogEntry CatalogEntry::parse(const Json& value) {
     entry.component_paths = value.value("component_paths", std::vector<std::string>());
     entry.weight_paths = value.value("weight_paths", std::vector<std::string>());
     entry.manifest = parse_manifest(value.at("manifest"));
-    // The first manifest file carries the GGUF metadata: one unsplit file, or a
-    // tensor-free first split acquired before any weight split.
-    if (entry.layout == "gguf")
-        preparation_check(
-            entry.kind == "llm" && !entry.manifest.empty()
-                && !fs::path(entry.asset_name).has_parent_path()
-                && entry.manifest.front().name == entry.asset_name,
-            "Invalid GGUF catalog metadata"
-        );
     return entry;
 }
 
@@ -394,7 +376,6 @@ ModelStore::ModelStore(
         );
         catalog_.push_back(std::move(model));
     }
-
 }
 
 const CatalogEntry& ModelStore::entry(const std::string& model) const {
@@ -413,7 +394,7 @@ bool ModelStore::allowed(const std::string& name, const CatalogEntry& model) con
                              const std::string& value) {
         return std::find(values.begin(), values.end(), value) != values.end();
     };
-    if (layout == "composite" || layout == "gguf")
+    if (layout == "composite")
         return contains(required, name);
     if (layout == "single_file")
         return model.asset_name == name && fs::path(name).parent_path().empty();
@@ -469,25 +450,11 @@ void ModelStore::validate_files(
         preparation_check(
             names.contains(name), "Checkpoint is missing required assets"
         );
-    if (layout == "composite" || layout == "single_file" || layout == "gguf") {
+    if (layout == "composite" || layout == "single_file") {
         preparation_check(
             names.size() == required.size(),
             "Checkpoint manifest differs from pinned assets"
         );
-        if (layout == "gguf") {
-            preparation_check(
-                names.contains(model.asset_name), "Invalid GGUF split manifest"
-            );
-            for (const auto& file : files)
-                preparation_check(
-                    file.name.ends_with(".gguf")
-                        && !fs::path(file.name).has_parent_path()
-                        && file.url.starts_with("https://")
-                        && (files.size() == 1 || file.name != model.asset_name
-                            || file.size <= 32 * 1024 * 1024),
-                    "Invalid GGUF split asset"
-                );
-        }
         return;
     }
     const auto paths =
@@ -512,8 +479,7 @@ bool ModelStore::complete(const CatalogEntry& model) const {
             return false;
         const auto files = parse_manifest(marker.at("files"));
         validate_files(model, files);
-        if ((model.layout == "composite" || model.layout == "gguf")
-            && files != model.manifest)
+        if ((model.layout == "composite") && files != model.manifest)
             return false;
         if (model.layout == "single_file"
             && (files.size() != 1 || files.front().algorithm != "sha256"
@@ -536,7 +502,7 @@ bool ModelStore::complete(const CatalogEntry& model) const {
 
 std::vector<ManifestFile>
 ModelStore::manifest(const CatalogEntry& model, const std::atomic_bool& cancel) const {
-    if (model.layout == "composite" || model.layout == "gguf") {
+    if (model.layout == "composite") {
         validate_files(model, model.manifest);
         return model.manifest;
     }
@@ -582,48 +548,17 @@ ModelStore::manifest(const CatalogEntry& model, const std::atomic_bool& cancel) 
     return files;
 }
 
-void ModelStore::prepare_gguf(
-    const CatalogEntry& catalog,
-    const fs::path& destination,
-    const std::atomic_bool& cancel
-) {
-    std::optional<GgufAssetValidation> validation;
-    const auto key = destination.string();
-    {
-        // Download and inference preparation can acquire the same store at once.
-        std::lock_guard guard(gguf_mutex_);
-        const auto found = gguf_validations_.find(key);
-        if (found != gguf_validations_.end())
-            validation = found->second;
-    }
-    prepare_gguf_assets(destination, catalog.asset_name, cancel, &validation);
-    validate_text_checkpoint(destination);
-    preparation_cancel(cancel);
-    {
-        std::lock_guard guard(gguf_mutex_);
-        gguf_validations_.insert_or_assign(key, std::move(*validation));
-    }
-}
-
 fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& cancel) {
     const auto& catalog = entry(model);
     const auto revision = catalog.revision;
     const auto destination = root_ / (model + "-" + revision);
     preparation_cancel(cancel);
     if (complete(catalog)) {
-        if (catalog.layout == "gguf")
-            prepare_gguf(catalog, destination, cancel);
-        else if (catalog.kind == "llm")
-            validate_text_checkpoint(destination);
         return destination;
     }
     fs::create_directories(root_);
     StoreLock lock(root_ / ".download.lock", cancel);
     if (complete(catalog)) {
-        if (catalog.layout == "gguf")
-            prepare_gguf(catalog, destination, cancel);
-        else if (catalog.kind == "llm")
-            validate_text_checkpoint(destination);
         return destination;
     }
     preparation_check(
@@ -645,35 +580,15 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
     std::stable_partition(ordered.begin(), ordered.end(), [](const auto& file) {
         return file.name.ends_with(".safetensors.index.json");
     });
-    if (catalog.kind == "llm")
-        std::stable_partition(ordered.begin(), ordered.end(), [](const auto& file) {
-            return file.name == "config.json";
-        });
-    if (catalog.layout == "gguf")
-        std::stable_partition(ordered.begin(), ordered.end(), [&](const auto& file) {
-            return file.name == catalog.asset_name;
-        });
     std::set<std::string> names;
     for (const auto& file : files) {
         names.insert(file.name);
-        preparation_check(
-            catalog.kind != "llm" || file.name != "config.json"
-                || file.size <= 16 * 1024 * 1024,
-            "Text checkpoint config exceeds size limit",
-            422
-        );
         preparation_check(
             !file.name.ends_with(".safetensors.index.json")
                 || file.size <= 32 * 1024 * 1024,
             "Checkpoint weight index exceeds size limit"
         );
     }
-    preparation_check(
-        catalog.kind != "llm" || names.contains("config.json")
-            || (catalog.layout == "gguf" && names.contains(catalog.asset_name)),
-        "Text checkpoint is missing config.json",
-        422
-    );
     auto identity_files = files;
     std::sort(
         identity_files.begin(),
@@ -750,17 +665,12 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
     for (const auto& file : ordered) {
         preparation_cancel(cancel);
         const auto name = file.name;
-        const auto url = (catalog.layout == "composite" || catalog.layout == "gguf")
-                             ? file.url
+        const auto url = (catalog.layout == "composite") ? file.url
                          : catalog.layout == "single_file"
                              ? catalog.asset_url
                              : "https://huggingface.co/" + catalog.repo_id + "/resolve/"
                                    + revision + "/" + name;
         download(url, stage / name, file, cancel, fetch_, progress);
-        if (catalog.layout == "gguf" && name == catalog.asset_name)
-            prepare_gguf_assets(stage, name, cancel);
-        if (catalog.kind == "llm" && name == "config.json")
-            validate_text_checkpoint(stage);
         if (!name.ends_with(".safetensors.index.json"))
             continue;
         const auto index = read_document(stage / name);
@@ -785,10 +695,6 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
     return destination;
 }
 
-std::string ModelStore::selected() const {
-    throw RequestError("Language inference belongs to the LFM3 worker.", 422);
-}
-
 std::string ModelStore::whisper_model(const std::string& name) const {
     const std::string model = name == "large"   ? "large-v3"
                               : name == "turbo" ? "large-v3-turbo"
@@ -803,38 +709,6 @@ std::string ModelStore::whisper_model(const std::string& name) const {
 
 std::string ModelStore::whisper_selected() const {
     return "medium";
-}
-
-Json ModelStore::context(const std::string& model) const {
-    if (!fs::exists(root_ / "context.json"))
-        return 65536;
-    return read_document(root_ / "context.json").value(model, Json(65536));
-}
-
-void ModelStore::set_context(const std::string& model, const Json& value) {
-    preparation_check(
-        entry(model).kind == "llm", "This checkpoint is not a language model", 422
-    );
-    preparation_check(
-        value.is_null()
-            || (value.is_number_integer() && value > 0 && value <= 2147483647),
-        "Invalid context limit",
-        422
-    );
-    const auto maximum = architecture_context(model);
-    preparation_check(
-        value.is_null() || maximum.is_null() || value <= maximum,
-        "Context limit exceeds the checkpoint architecture maximum",
-        422
-    );
-    fs::create_directories(root_);
-    // Hold the shared-volume lock across the read as well as the atomic rename.
-    StoreLock lock(root_ / ".settings.lock");
-    auto values = fs::exists(root_ / "context.json")
-                      ? read_document(root_ / "context.json")
-                      : Json::object();
-    values[model] = value;
-    atomic_document(root_ / "context.json", values);
 }
 
 void ModelStore::select_whisper(const std::string& name) {
@@ -853,17 +727,6 @@ void ModelStore::set_whisper_formatting(bool enabled) {
     fs::create_directories(root_);
     StoreLock lock(root_ / ".settings.lock");
     atomic_document(root_ / "whisper-formatting.json", {{"enabled", enabled}});
-}
-
-Json ModelStore::architecture_context(const std::string& model) const {
-    const auto& item = entry(model);
-    if (item.kind != "llm" || !complete(item))
-        return nullptr;
-    const auto config =
-        read_document(root_ / (model + "-" + item.revision) / "config.json");
-    const auto text = config.value("text_config", config);
-    const auto maximum = text.value("max_position_embeddings", Json());
-    return maximum.is_number_integer() && maximum > 0 ? maximum : Json(nullptr);
 }
 
 Json ModelStore::status() const {
@@ -892,13 +755,6 @@ Json ModelStore::status() const {
         model["error"] = nullptr;
         model["context_limit"] = nullptr;
         model["architecture_context_limit"] = nullptr;
-        try {
-            model["context_limit"] = item.kind == "llm" ? context(id) : Json(nullptr);
-            model["architecture_context_limit"] = architecture_context(id);
-        } catch (const std::exception& error) {
-            model["status"] = "failed";
-            model["error"] = error.what();
-        }
         models.push_back(std::move(model));
     }
     return {

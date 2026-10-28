@@ -41,15 +41,14 @@ find_package(OpenSSL REQUIRED)
 find_package(LibArchive REQUIRED)
 find_package(PNG REQUIRED)
 add_library(kadan_preparation src/preparation/preparation_io.cpp src/preparation/model_store.cpp
-  src/preparation/gguf_assets.cpp
   src/preparation/preparation.cpp src/preparation/whisper_export.cpp src/preparation/tokenizer_assets.cpp
   src/requests/inference_request.cpp src/preparation/audio_input.cpp src/preparation/image_upload.cpp
-  src/requests/inference_chat_request.cpp src/requests/inference_image_request.cpp
-  src/requests/inference_decision_request.cpp src/requests/inference_speech_request.cpp
+  src/requests/inference_image_request.cpp
+  src/requests/inference_decision_request.cpp
   src/requests/inference_whisper_request.cpp src/requests/inference_video_request.cpp
   src/preparation/worker_requirement.cpp)
 target_link_libraries(kadan_preparation PUBLIC kadan_resources nlohmann_json::nlohmann_json
-  PRIVATE kadan_metadata kadan_gguf_text kadan_h3_profile CURL::libcurl OpenSSL::Crypto LibArchive::LibArchive PNG::PNG)
+  PRIVATE kadan_metadata kadan_h3_profile CURL::libcurl OpenSSL::Crypto LibArchive::LibArchive PNG::PNG)
 target_compile_definitions(kadan_preparation PRIVATE KADAN_WORKER_SOURCE_DATA="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(kadan_preparation PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
@@ -101,22 +100,14 @@ target_link_libraries(kadan_weight_backing PUBLIC kadan_checkpoint kadan_resourc
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_weight_backing PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
-add_library(kadan_metadata src/weights/metadata_json.cpp)
-target_link_libraries(kadan_metadata PUBLIC kadan_checkpoint)
+# Generic arithmetic remains available independently of retired language engines.
 add_library(kadan_layer_math src/models/text/layer_math.cpp)
 target_link_libraries(kadan_layer_math PUBLIC kadan_resources)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_layer_math PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
-# Native GGUF text models for the hardware tiers.
-add_library(kadan_gguf_text src/models/text/gguf_engine.cpp src/models/text/gguf_weights.cpp
-  src/models/text/gguf_placement.cpp src/models/text/cpu_matvec.cpp
-  src/models/text/qwen_layers.cpp src/models/text/qwen35moe.cpp src/models/text/qwen4exp.cpp)
-target_link_libraries(kadan_gguf_text PUBLIC kadan_gguf_checkpoint kadan_metadata kadan_resources
-  PRIVATE ggml-base ggml-cpu)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(kadan_gguf_text PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
-endif()
+add_library(kadan_metadata src/weights/metadata_json.cpp)
+target_link_libraries(kadan_metadata PUBLIC kadan_checkpoint)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_metadata PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -189,8 +180,6 @@ endif()
 
 if(KADAN_ENABLE_CUDA)
   add_library(kadan_h3_cuda src/cuda/h3_compute.cu)
-  target_compile_definitions(kadan_gguf_text PRIVATE KADAN_WORKER_CUDA=1)
-  target_link_libraries(kadan_gguf_text PUBLIC kadan_h3_cuda)
 
   target_link_libraries(kadan_h3_cuda PUBLIC kadan_resources kadan_checkpoint CUDA::cudart CUDA::cublas CUDA::cuda_driver)
   set_target_properties(kadan_h3_cuda PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES 86)
@@ -219,34 +208,12 @@ if(KADAN_ENABLE_WHISPER_BLAS)
   target_link_libraries(kadan_whisper PRIVATE ${KADAN_WHISPER_OPENBLAS})
 endif()
 
-add_library(kadan_tts_audio src/models/speech/tts_audio.cpp)
-target_link_libraries(kadan_tts_audio PUBLIC kadan_checkpoint kadan_resources)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(kadan_tts_audio PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
-endif()
-
-add_library(kadan_tts_generator src/models/speech/tts_generator.cpp)
-target_link_libraries(kadan_tts_generator PUBLIC kadan_checkpoint kadan_resources)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(kadan_tts_generator PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
-endif()
-
-option(KADAN_ENABLE_TTS_WORKER "Build complete native custom-voice CPU speech worker" OFF)
-
 # Decoder-boundary helpers remain for shared CUDA utilities and CPU unit checks.
 add_library(kadan_image_vae src/models/image/image_vae.cpp)
 target_link_libraries(kadan_image_vae PUBLIC kadan_checkpoint kadan_resources kadan_media_session)
 target_compile_options(kadan_image_vae PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 
-add_library(kadan_s1_mini src/models/text/s1_mini.cpp)
-target_link_libraries(kadan_s1_mini PUBLIC kadan_resources kadan_checkpoint kadan_metadata kadan_layer_math)
-target_compile_options(kadan_s1_mini PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
-if(KADAN_ENABLE_WHISPER_BLAS)
-  target_compile_definitions(kadan_s1_mini PRIVATE KADAN_WHISPER_BLAS=1)
-  target_link_libraries(kadan_s1_mini PRIVATE ${KADAN_WHISPER_OPENBLAS})
-endif()
-
-# The text tokenizer and transcript formatter serve several worker programs.
+# The tokenizer serves the image and video workers.
 find_package(nlohmann_json 3.10 REQUIRED)
 target_link_libraries(kadan_resources INTERFACE nlohmann_json::nlohmann_json)
 find_package(ICU REQUIRED COMPONENTS uc i18n)
@@ -254,9 +221,6 @@ find_library(KADAN_TEXT_PCRE2 pcre2-8 REQUIRED)
 add_library(kadan_text_tokenizer src/tokenization/text_tokenizer.cpp)
 target_link_libraries(kadan_text_tokenizer PUBLIC kadan_resources PRIVATE nlohmann_json::nlohmann_json ICU::uc ICU::i18n ${KADAN_TEXT_PCRE2})
 target_compile_options(kadan_text_tokenizer PRIVATE -Wall -Wextra -Wpedantic -Werror)
-add_library(kadan_transcription_formatting src/inference/inference_transcription_formatting.cpp)
-target_link_libraries(kadan_transcription_formatting PUBLIC kadan_s1_mini kadan_text_tokenizer kadan_preparation)
-target_compile_options(kadan_transcription_formatting PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 if(KADAN_ENABLE_IMAGE_GENERATION)
   # Avoid Torch's native GPU probing and keep toolkit/library versions coherent.
@@ -407,31 +371,14 @@ if(BUILD_TESTING)
 endif()
 
 if(BUILD_TESTING)
-  add_executable(s1-mini-metadata-tests tests/s1_mini_metadata.cpp)
-  target_link_libraries(s1-mini-metadata-tests PRIVATE kadan_transcription_formatting)
-  target_compile_options(s1-mini-metadata-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  add_test(NAME s1-mini-metadata COMMAND s1-mini-metadata-tests)
   add_executable(preparation-tests tests/preparation.cpp)
   target_link_libraries(preparation-tests PRIVATE kadan_preparation LibArchive::LibArchive)
   target_compile_options(preparation-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  target_link_options(preparation-tests PRIVATE -Wl,--wrap=pread)
   add_test(NAME preparation COMMAND preparation-tests)
-  add_executable(chat-load-tests tests/chat_load.cpp src/inference/inference_chat.cpp)
-  target_link_libraries(chat-load-tests PRIVATE kadan_preparation kadan_gguf_text kadan_text_tokenizer)
-  target_compile_options(chat-load-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  add_test(NAME chat-load COMMAND chat-load-tests)
   add_executable(inference-request-tests tests/inference_request.cpp)
   target_link_libraries(inference-request-tests PRIVATE kadan_preparation)
   target_compile_options(inference-request-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
   add_test(NAME inference-request COMMAND inference-request-tests)
-  add_executable(text-prefix-tests tests/text_prefix.cpp)
-  target_link_libraries(text-prefix-tests PRIVATE kadan_resources)
-  target_compile_options(text-prefix-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  add_test(NAME text-prefix COMMAND text-prefix-tests)
-  add_executable(text-state-tests tests/text_state.cpp)
-  target_link_libraries(text-state-tests PRIVATE kadan_gguf_text ggml-base)
-  target_compile_options(text-state-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  add_test(NAME text-state COMMAND text-state-tests)
   add_executable(mlx-quantization-tests tests/mlx_quantization.cpp)
   target_link_libraries(mlx-quantization-tests PRIVATE kadan_quantization)
   target_compile_options(mlx-quantization-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -440,10 +387,6 @@ if(BUILD_TESTING)
   target_link_libraries(gguf-quantization-tests PRIVATE kadan_quantization ggml-base)
   target_compile_options(gguf-quantization-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
   add_test(NAME gguf_quantization COMMAND gguf-quantization-tests)
-  add_executable(gguf-text-tests tests/gguf_text.cpp)
-  target_link_libraries(gguf-text-tests PRIVATE kadan_gguf_text ggml-base)
-  target_compile_options(gguf-text-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  add_test(NAME gguf_text COMMAND gguf-text-tests)
   add_executable(gguf-checkpoint-tests tests/gguf_checkpoint.cpp)
   target_link_options(gguf-checkpoint-tests PRIVATE -Wl,--wrap=pread)
   target_link_libraries(gguf-checkpoint-tests PRIVATE kadan_gguf_checkpoint ggml-base)
@@ -491,28 +434,12 @@ function(kadan_install_worker target)
   install(PROGRAMS packaging/run_worker.sh DESTINATION bin RENAME ${target} COMPONENT ${target})
 endfunction()
 
-if(KADAN_ENABLE_CUDA)
-  add_executable(kadan-worker-llm workers/llm/main.cpp src/inference/inference_chat.cpp)
-  target_compile_definitions(kadan-worker-llm PRIVATE KADAN_WORKER_CUDA=1)
-  target_link_libraries(kadan-worker-llm PRIVATE kadan_worker_runtime kadan_gguf_text
-    kadan_text_tokenizer kadan_h3_cuda)
-  kadan_install_worker(kadan-worker-llm)
-endif()
-
 if(KADAN_ENABLE_DECISIONS)
   add_executable(kadan-worker-decision workers/decision/main.cpp
     src/inference/inference_decision.cpp)
   target_link_libraries(kadan-worker-decision PRIVATE kadan_worker_runtime
     kadan_decision_executor)
   kadan_install_worker(kadan-worker-decision)
-endif()
-
-if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_TTS_WORKER)
-  add_executable(kadan-worker-tts workers/tts/main.cpp src/inference/inference_speech.cpp)
-  target_compile_definitions(kadan-worker-tts PRIVATE KADAN_WORKER_CUDA=1)
-  target_link_libraries(kadan-worker-tts PRIVATE kadan_worker_runtime kadan_tts_generator
-    kadan_tts_audio kadan_text_tokenizer kadan_h3_cuda)
-  kadan_install_worker(kadan-worker-tts)
 endif()
 
 if(KADAN_ENABLE_CUDA)
@@ -523,11 +450,6 @@ if(KADAN_ENABLE_CUDA)
     kadan_stt kadan_h3_cuda)
   kadan_install_worker(kadan-worker-speech)
 endif()
-
-add_executable(kadan-worker-formatting workers/formatting/main.cpp)
-target_link_libraries(kadan-worker-formatting PRIVATE kadan_worker_runtime
-  kadan_transcription_formatting)
-kadan_install_worker(kadan-worker-formatting)
 
 if(KADAN_ENABLE_IMAGE_GENERATION)
   add_executable(kadan-worker-image workers/image/main.cpp src/inference/inference_image.cpp)

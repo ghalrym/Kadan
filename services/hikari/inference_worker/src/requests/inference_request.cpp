@@ -24,12 +24,6 @@ InferenceRequest parse_request(const Json& envelope) {
     const auto operation = envelope.at("operation").get<std::string>();
     if (operation == "generate")
         request.operation = Operation::generate;
-    else if (operation == "completion")
-        request.operation = Operation::completion;
-    else if (operation == "load")
-        request.operation = Operation::load;
-    else if (operation == "unload")
-        request.operation = Operation::unload;
     else if (operation == "download")
         request.operation = Operation::download;
     else if (operation == "configure")
@@ -38,20 +32,7 @@ InferenceRequest parse_request(const Json& envelope) {
         throw RequestError("Invalid task operation", 422);
     const auto& body = envelope.at("input");
     const auto feature = body.at("feature").get<std::string>();
-    if (feature == "llm") {
-        ChatRequest input;
-        input.model = optional<std::string>(body, "model_id");
-        if (!input.model)
-            input.model = optional<std::string>(body, "model");
-        input.conversation_id = optional<std::string>(body, "conversation_id");
-        input.reuse_prefix = body.value("reuse_prefix", true);
-        input.context_supplied = body.contains("context_limit");
-        input.context_limit = optional<std::size_t>(body, "context_limit");
-        for (const auto& message : body.value("messages", Json::array()))
-            input.messages.push_back({message.at("role"), message.at("text")});
-        request.input = std::move(input);
-        request.workload = Workload::llm;
-    } else if (feature == "image") {
+    if (feature == "image") {
         ImageRequest input;
         input.prompt = body.at("prompt");
         input.model = optional<std::string>(body, "model_id");
@@ -137,15 +118,6 @@ InferenceRequest parse_request(const Json& envelope) {
         }
         request.input = std::move(input);
         request.workload = Workload::decision;
-    } else if (feature == "tts") {
-        SpeechRequest input;
-        input.script = body.at("script");
-        input.model = body.value("model_id", input.model);
-        input.language = body.value("language", input.language);
-        input.speaker = body.at("voice").at("speaker");
-        input.instruction = body.at("voice").value("instruction", "");
-        request.input = std::move(input);
-        request.workload = Workload::tts;
     } else if (feature == "stt") {
         TranscriptionRequest input;
         input.audio = body.at("audio");
@@ -154,9 +126,6 @@ InferenceRequest parse_request(const Json& envelope) {
         input.formatting = optional<bool>(body, "formatting");
         request.input = std::move(input);
         request.workload = Workload::speech;
-    } else if (feature == "stt_formatting") {
-        request.input = TranscriptionFormattingRequest{body.at("text")};
-        request.workload = Workload::formatting;
     } else if (feature == "video") {
         VideoRequest input;
         input.prompt = body.at("prompt");
@@ -186,10 +155,6 @@ InferenceRequest parse_request(const Json& envelope) {
         request.input = std::move(input);
         request.workload = Workload::video;
 
-    } else if (feature == "model_context") {
-        request.input = ContextRequest{
-            body.at("model_id"), optional<std::size_t>(body, "context_limit")
-        };
     } else if (feature == "whisper_selection") {
         request.input = WhisperSelectionRequest{body.at("model")};
     } else if (feature == "whisper_formatting") {
@@ -200,9 +165,8 @@ InferenceRequest parse_request(const Json& envelope) {
         };
     } else
         throw RequestError("Invalid task feature", 422);
-    const bool settings = feature == "model_context"
-                          || feature == "whisper_selection"
-                          || feature == "whisper_formatting";
+    const bool settings =
+        feature == "whisper_selection" || feature == "whisper_formatting";
     preparation_check(
         settings == (request.operation == Operation::configure),
         "Invalid settings operation",
@@ -216,7 +180,7 @@ InferenceRequest parse_request(const Json& envelope) {
     preparation_check(
         request.operation == Operation::generate
             || request.operation == Operation::download
-            || request.operation == Operation::configure || feature == "llm",
+            || request.operation == Operation::configure,
         "Invalid modality operation",
         422
     );

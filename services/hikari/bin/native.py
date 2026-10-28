@@ -58,7 +58,6 @@ def build(
             "-DKADAN_ENABLE_CUDA=OFF",
             "-DKADAN_ENABLE_DECISIONS=OFF",
             "-DKADAN_ENABLE_H3_GENERATION=OFF",
-            "-DKADAN_ENABLE_TTS_WORKER=OFF",
             "-DKADAN_ENABLE_WHISPER_BLAS=OFF",
             "-DKADAN_ENABLE_IMAGE_GENERATION=OFF",
         ]
@@ -82,14 +81,3 @@ def checkpoint_inspect(
 ) -> None:
     """Inspect a safetensors shard using a bounded metadata budget."""
     execute(ctx.obj, "kadan-checkpoint-inspect", [root, shard, metadata_bytes])
-
-
-@app.command("preparation-benchmark")
-def preparation_benchmark(
-    ctx: typer.Context,
-    models: Path,
-    model: str,
-    samples: Annotated[int, typer.Option(min=1, max=100)] = 5,
-) -> None:
-    """Time GGUF metadata preparation on CPU; use a read-only complete model store."""
-    execute(ctx.obj, "kadan-preparation-benchmark", [models, model, samples])

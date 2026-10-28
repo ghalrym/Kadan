@@ -20,7 +20,7 @@ struct FakeEngine : InferenceEngine {
     ) override {
         Footprint reservation(free.size());
         reservation[0] = 1;
-        handle = ledger->reserve(Workload::llm, reservation);
+        handle = ledger->reserve(Workload::image, reservation);
     }
 
     void prepare(
@@ -44,7 +44,7 @@ struct Harness {
     std::vector<std::string> prepared, cleaned;
     std::unique_ptr<WorkerHost> host;
 
-    explicit Harness(Workload workload = Workload::llm) {
+    explicit Harness(Workload workload = Workload::image) {
         WorkerHost::Hooks hooks;
         hooks.send = [this](const Json& message) {
             sent.push_back(message);
@@ -101,26 +101,25 @@ std::string id(char c) {
     return std::string(32, c);
 }
 
-Json chat(const std::string& request_id) {
+Json image_request(const std::string& request_id) {
     return {
         {"id", request_id},
         {"command", "submit"},
-        {"operation", "completion"},
-        {"input",
-         {{"feature", "llm"}, {"messages", {{{"role", "user"}, {"text", "hi"}}}}}}
+        {"operation", "generate"},
+        {"input", {{"feature", "image"}, {"prompt", "hi"}, {"count", 1}}}
     };
 }
 
 void inference_waits_for_a_budget_on_its_own_worker() {
     Harness harness;
-    harness.command(chat(id('a')));
+    harness.command(image_request(id('a')));
     assert(harness.last(id('a'))["state"] == "queued");
-    assert(harness.last(id('a'))["worker"] == "llm");
+    assert(harness.last(id('a'))["worker"] == "image");
     assert(!harness.host->advance_all());
     harness.command(
         {{"id", id('b')},
          {"command", "load"},
-         {"worker", "llm"},
+         {"worker", "image"},
          {"budget", {500, 600}}}
     );
     const auto loaded = harness.last(id('b'));
@@ -128,9 +127,9 @@ void inference_waits_for_a_budget_on_its_own_worker() {
     while (harness.host->advance_all()) {
     }
     const auto done = harness.last(id('a'));
-    assert(done["state"] == "succeeded" && done["worker"] == "llm");
+    assert(done["state"] == "succeeded" && done["worker"] == "image");
     assert(done["result"]["model"] == "fake");
-    assert(harness.prepared == std::vector<std::string>({"llm:" + id('a')}));
+    assert(harness.prepared == std::vector<std::string>({"image:" + id('a')}));
     assert(harness.cleaned == std::vector<std::string>({id('a')}));
     harness.host->stop();
 }
@@ -147,7 +146,7 @@ void downloads_and_settings_run_on_the_store_worker() {
         {{"id", id('d')},
          {"command", "submit"},
          {"operation", "configure"},
-         {"input", {{"feature", "tier_selection"}, {"tier", "go"}}}}
+         {"input", {{"feature", "whisper_formatting"}, {"enabled", false}}}}
     );
     while (harness.host->advance_all()) {
     }
@@ -162,40 +161,43 @@ void status_offload_and_requirement_replies() {
     harness.command({{"id", id('e')}, {"command", "status"}});
     const auto status = harness.last(id('e'));
     assert(status["state"] == "status" && status["machine"]["name"] == "box");
-    assert(status["workers"].size() == 2 && status["workers"][1]["worker"] == "llm");
+    assert(status["workers"].size() == 2 && status["workers"][1]["worker"] == "image");
     assert(status["workers"][1]["loaded"] == false);
     assert(status["workers"][1]["releasing"] == false);
     // Budget commands need not name the worker: a program runs one.
     harness.command({{"id", id('f')}, {"command", "load"}, {"budget", {1, 1}}});
     harness.command({{"id", id('0')}, {"command", "is_busy"}});
     assert(harness.last(id('0'))["busy"] == false);
-    harness.command({{"id", id('1')}, {"command", "offload"}, {"worker", "llm"}});
+    harness.command({{"id", id('1')}, {"command", "offload"}, {"worker", "image"}});
     assert(harness.last(id('1'))["ok"] == true);
     harness.host->advance_all();
     const auto& event = harness.sent.back();
     assert(event["state"] == "worker" && event["event"] == "offloaded");
-    assert(event["worker"] == "llm" && event["loaded"] == false);
+    assert(event["worker"] == "image" && event["loaded"] == false);
     harness.command(
         {{"id", id('2')},
          {"command", "requirement"},
-         {"worker", "llm"},
-         {"model", "qwen"}}
+         {"worker", "image"},
+         {"model", "qwen-image-2.1-turbo"}}
     );
     const auto requirement = harness.last(id('2'));
-    assert(requirement["state"] == "requirement" && requirement["worker"] == "llm");
-    assert(requirement["model"] == "qwen" && requirement["preferred"][1] == 4);
+    assert(requirement["state"] == "requirement" && requirement["worker"] == "image");
+    assert(
+        requirement["model"] == "qwen-image-2.1-turbo"
+        && requirement["preferred"][1] == 4
+    );
     assert(requirement["context"] == "saved");
     harness.command(
         {{"id", id('8')},
          {"command", "requirement"},
-         {"worker", "llm"},
+         {"worker", "image"},
          {"context", 8192}}
     );
     assert(harness.last(id('8'))["context"] == 8192);
     harness.command(
         {{"id", id('9')},
          {"command", "requirement"},
-         {"worker", "llm"},
+         {"worker", "image"},
          {"context", nullptr}}
     );
     assert(harness.last(id('9'))["context"].is_null());
@@ -205,7 +207,7 @@ void status_offload_and_requirement_replies() {
 void invalid_commands_are_rejected_not_thrown() {
     Harness harness;
     harness.command(
-        {{"id", id('3')}, {"command", "load"}, {"worker", "llm"}, {"budget", {1}}}
+        {{"id", id('3')}, {"command", "load"}, {"worker", "image"}, {"budget", {1}}}
     );
     assert(harness.last(id('3'))["state"] == "rejected");
     assert(harness.last(id('3'))["status_code"] == 422);
@@ -219,7 +221,7 @@ void invalid_commands_are_rejected_not_thrown() {
         {{"id", id('6')},
          {"command", "submit"},
          {"operation", "generate"},
-         {"input", {{"feature", "image"}, {"prompt", "fox"}, {"count", 1}}}}
+         {"input", {{"feature", "video"}, {"prompt", "fox"}}}}
     );
     assert(harness.last(id('6'))["state"] == "rejected");
     harness.host->handle("{\"id\": \"short\", \"command\": \"status\"}");
@@ -233,7 +235,9 @@ void invalid_commands_are_rejected_not_thrown() {
 
 void each_program_runs_only_its_own_type() {
     Harness image(Workload::image);
-    image.command(chat(id('a')));
+    auto other = image_request(id('a'));
+    other["input"] = {{"feature", "video"}, {"prompt", "fox"}};
+    image.command(other);
     assert(image.last(id('a'))["state"] == "rejected");
     assert(image.last(id('a'))["status_code"] == 404);
     image.command(
@@ -248,7 +252,7 @@ void each_program_runs_only_its_own_type() {
 
 void sampled_phases_share_context_without_changing_results() {
     Harness harness;
-    auto message = chat(id('a'));
+    auto message = image_request(id('a'));
     const auto parent =
         std::string("00-") + std::string(32, 'b') + "-" + std::string(16, 'c') + "-03";
     message["traceparent"] = parent;
@@ -261,7 +265,7 @@ void sampled_phases_share_context_without_changing_results() {
     harness.command(
         {{"id", id('b')},
          {"command", "load"},
-         {"worker", "llm"},
+         {"worker", "image"},
          {"budget", {500, 600}}}
     );
     while (harness.host->advance_all()) {

@@ -53,20 +53,17 @@ int main() {
     const auto parsed = parse_request(reference);
     assert(std::get<ImageRequest>(parsed.input).reference);
     assert(std::get<ImageRequest>(parsed.input).batch_collection_target == 2);
-    auto chat = envelope;
-    chat["operation"] = "completion";
-    chat["input"] = {
-        {"feature", "llm"}, {"conversation_id", "chat-1"}, {"messages", Json::array()}
-    };
-    assert(std::get<ChatRequest>(parse_request(chat).input).reuse_prefix);
-    chat["input"]["reuse_prefix"] = false;
-    assert(!std::get<ChatRequest>(parse_request(chat).input).reuse_prefix);
-    std::string unicode_id;
-    for (int i = 0; i < 65; ++i)
-        unicode_id += "\xc3\xa9";
-    chat["input"]["conversation_id"] = unicode_id;
-    assert(
-        std::get<ChatRequest>(parse_request(chat).input).conversation_id == unicode_id
-    );
+    for (const auto* feature :
+         {"llm", "tts", "stt_formatting", "model_context", "tier_selection"}) {
+        auto retired = envelope;
+        retired["input"] = {{"feature", feature}};
+        bool rejected = false;
+        try {
+            (void)parse_request(retired);
+        } catch (const RequestError& error) {
+            rejected = error.status == 422;
+        }
+        assert(rejected);
+    }
     std::cout << "Inference request parser units passed\n";
 }

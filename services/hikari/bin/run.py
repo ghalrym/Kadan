@@ -20,7 +20,7 @@ WORKER_SOURCE = Path(os.getenv("HIKARI_WORKER_SOURCE", "/src/inference_worker"))
 WORKER_BUILD = Path(os.getenv("HIKARI_WORKER_BUILD", "/build"))
 WORKER_PREFIX = Path(os.getenv("HIKARI_WORKER_PREFIX", "/opt/kadan"))
 NATIVE_SUFFIXES = {".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp", ".cmake", ".sh"}
-WORKERS = ("llm", "decision", "tts", "speech", "formatting", "image", "video")
+WORKERS = ("decision", "speech", "image", "video")
 
 
 def environment() -> dict[str, str]:

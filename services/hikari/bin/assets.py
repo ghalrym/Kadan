@@ -27,13 +27,3 @@ def whisper_assets(vocabulary: int, destination: Path) -> None:
         "kadan-prepare-assets",
         ["whisper-assets", vocabulary, destination],
     )
-
-
-@app.command("tts-tokenizer")
-def tts_tokenizer(checkpoint: Path, destination: Path) -> None:
-    """Prepare a local speech tokenizer without downloading or running a model."""
-    execute(
-        DEFAULT_BUILD,
-        "kadan-prepare-assets",
-        ["tts-tokenizer", checkpoint, destination],
-    )

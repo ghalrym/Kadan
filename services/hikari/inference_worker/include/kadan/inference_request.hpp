@@ -33,19 +33,6 @@ enum class Operation {
     configure
 };
 
-struct ChatMessage {
-    std::string role, text;
-};
-
-struct ChatRequest {
-    std::vector<ChatMessage> messages;
-    std::optional<std::string> model, conversation_id;
-    bool reuse_prefix = true;
-    bool context_supplied = false;
-    std::optional<std::size_t> context_limit;
-    std::size_t max_output_tokens = 256;
-};
-
 struct ImageRequest {
     std::string prompt, aspect = "1:1";
     std::optional<std::string> model;
@@ -111,22 +98,12 @@ struct DecisionAnswer {
     std::variant<ChoiceResult, ScoreResult, NoulResult> result;
 };
 
-struct SpeechRequest {
-    std::string script, model = "qwen-tts-1.7b-custom", language = "Auto";
-    std::string speaker, instruction;
-    std::filesystem::path tokenizer;
-};
-
 struct TranscriptionRequest {
     std::string audio;
     std::optional<std::string> model, language;
     std::optional<bool> formatting;
     std::filesystem::path assets;
     std::vector<float> pcm;
-};
-
-struct TranscriptionFormattingRequest {
-    std::string text;
 };
 
 struct VideoRequest {
@@ -142,11 +119,6 @@ struct DownloadRequest {
     bool license_acknowledged = false;
 };
 
-struct ContextRequest {
-    std::string model;
-    std::optional<std::size_t> limit;
-};
-
 struct WhisperSelectionRequest {
     std::string model;
 };
@@ -156,15 +128,11 @@ struct WhisperFormattingRequest {
 };
 
 using TaskInput = std::variant<
-    ChatRequest,
     ImageRequest,
     DecisionRequest,
-    SpeechRequest,
     TranscriptionRequest,
-    TranscriptionFormattingRequest,
     VideoRequest,
     DownloadRequest,
-    ContextRequest,
     WhisperSelectionRequest,
     WhisperFormattingRequest>;
 
@@ -184,7 +152,7 @@ struct InferenceRequest {
     TraceSink trace;
     Operation operation = Operation::generate;
     TaskInput input;
-    Workload workload = Workload::llm;
+    Workload workload = Workload::image;
     bool prepared = false;
     EngineConfiguration configuration;
     std::filesystem::path workspace;

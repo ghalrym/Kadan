@@ -52,10 +52,6 @@ void prepare_task(
 ) {
     preparation_cancel(cancel);
     request.workspace = files.create(request.id);
-    if (request.operation == Operation::unload) {
-        request.model = "none";
-        return;
-    }
     std::visit(
         [&](auto& input) { prepare_input(input, request, store, cancel); },
         request.input
@@ -76,16 +72,6 @@ void prepare_input(
     );
     request.model = input.model;
     request.configuration.checkpoint = store.acquire(input.model, cancel);
-}
-
-void prepare_input(
-    ContextRequest& input,
-    InferenceRequest& request,
-    ModelStore& store,
-    const std::atomic_bool&
-) {
-    request.model = input.model;
-    store.set_context(input.model, input.limit ? Json(*input.limit) : Json(nullptr));
 }
 
 void prepare_input(

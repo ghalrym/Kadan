@@ -4,7 +4,6 @@
 #include <filesystem>
 #include <functional>
 #include <map>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -12,7 +11,6 @@
 #include <nlohmann/json.hpp>
 
 #include "kadan/inference_owner.hpp"
-#include "kadan/weight_identity.hpp"
 
 namespace kadan::serving {
 using Json = nlohmann::json;
@@ -28,22 +26,6 @@ std::string
 base64_decode(std::string_view encoded, std::size_t maximum = 3 * 1024 * 1024);
 std::string file_digest(const fs::path& path, const std::atomic_bool& cancel);
 fs::path worker_data_directory();
-
-// Only the validated identity and expected configuration survive preparation;
-// the tokenizer vocabulary and merge table are released after parsing.
-struct GgufAssetValidation {
-    WeightIdentity identity;
-    Json config;
-};
-
-// Validate the GGUF architecture and derive config.json and tokenizer.json
-// from the first file's metadata before any remaining split is downloaded.
-void prepare_gguf_assets(
-    const fs::path&,
-    const std::string& first_file,
-    const std::atomic_bool& cancel,
-    std::optional<GgufAssetValidation>* validation = nullptr
-);
 
 struct ManifestFile {
     std::string name;
@@ -87,17 +69,12 @@ public:
     );
     const CatalogEntry& entry(const std::string& model) const;
     fs::path acquire(const std::string& model, const std::atomic_bool& cancel);
-    // Native chat is retired; language inference belongs to the LFM worker.
-    std::string selected() const;
     std::string whisper_selected() const;
     std::string whisper_model(const std::string& name) const;
-    Json context(const std::string& model) const;
-    void set_context(const std::string& model, const Json& value);
     void select_whisper(const std::string& model);
     bool whisper_formatting() const;
     void set_whisper_formatting(bool enabled);
     Json status() const;
-    Json architecture_context(const std::string& model) const;
 
     const fs::path& root() const {
         return root_;
@@ -114,8 +91,6 @@ public:
     ) const;
 
 private:
-    void
-    prepare_gguf(const CatalogEntry&, const fs::path&, const std::atomic_bool& cancel);
     std::vector<ManifestFile>
     manifest(const CatalogEntry& entry, const std::atomic_bool& cancel) const;
     fs::path root_, data_;
@@ -123,16 +98,11 @@ private:
     std::vector<std::string> assets_;
     Fetch fetch_;
     DownloadProgress progress_;
-    std::mutex gguf_mutex_;
-    std::map<std::string, GgufAssetValidation> gguf_validations_;
 };
 
-// What a worker needs before the API grants its budget, from the catalog or,
-// for a downloaded language model, its GGUF plan. Reads metadata only.
+// Native media/decision admission reads catalog sizes without loading a model.
 // {"model", "minimum": [host, device], "preferred": [host, device],
 //  "device_floor": per extra GPU}
-// A language `context` overrides the saved limit as a load request does: a
-// number, or null for the checkpoint's supported maximum.
 Json worker_requirement(
     Workload workload,
     const std::optional<std::string>& model,
@@ -150,11 +120,6 @@ void export_whisper(
 void export_whisper_assets(
     std::size_t vocabulary,
     const fs::path& data,
-    const fs::path& destination,
-    const std::atomic_bool& cancel
-);
-void export_speech_tokenizer(
-    const fs::path& checkpoint,
     const fs::path& destination,
     const std::atomic_bool& cancel
 );
@@ -184,25 +149,13 @@ void prepare_task(
     InferenceRequest&, ModelStore&, JobWorkspace&, const std::atomic_bool&
 );
 void prepare_input(
-    ChatRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
-);
-void prepare_input(
     ImageRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
     DecisionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
-    SpeechRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
-);
-void prepare_input(
     TranscriptionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
-);
-void prepare_input(
-    TranscriptionFormattingRequest&,
-    InferenceRequest&,
-    ModelStore&,
-    const std::atomic_bool&
 );
 void prepare_input(
     VideoRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
@@ -211,18 +164,13 @@ void prepare_input(
     DownloadRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
-    ContextRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
-);
-void prepare_input(
     WhisperSelectionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
     WhisperFormattingRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
-Json present_chat(const InferenceRequest&, Json result);
 Json present_image(const InferenceRequest&, const std::vector<fs::path>& images);
 Json present_decisions(const std::vector<DecisionAnswer>& answers);
-Json present_speech(const InferenceRequest&, const fs::path& output);
 Json present_transcription(const InferenceRequest&, const std::string& text);
 Json present_video(const InferenceRequest&, const fs::path& output);
 }  // namespace kadan::serving
