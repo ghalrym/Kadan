@@ -194,6 +194,7 @@
               "formatting",
               "image",
               "decision",
+              "vision",
               "audio"
             ],
             "title": "Kind",
@@ -797,6 +798,72 @@
           "answers"
         ],
         "title": "DecisionResponse",
+        "type": "object"
+      },
+      "DescribeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "image_base64": {
+            "maxLength": 2796204,
+            "minLength": 1,
+            "title": "Image Base64",
+            "type": "string"
+          },
+          "max_new_tokens": {
+            "default": 1024,
+            "maximum": 1024.0,
+            "minimum": 1.0,
+            "title": "Max New Tokens",
+            "type": "integer"
+          },
+          "media_type": {
+            "enum": [
+              "image/png",
+              "image/jpeg"
+            ],
+            "title": "Media Type",
+            "type": "string"
+          },
+          "model": {
+            "const": "lfm3-vl-2b-bf16",
+            "default": "lfm3-vl-2b-bf16",
+            "title": "Model",
+            "type": "string"
+          },
+          "question": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "image_base64",
+          "media_type",
+          "question"
+        ],
+        "title": "DescribeRequest",
+        "type": "object"
+      },
+      "DescribeResponse": {
+        "properties": {
+          "model": {
+            "const": "lfm3-vl-2b-bf16",
+            "title": "Model",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 32000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "text"
+        ],
+        "title": "DescribeResponse",
         "type": "object"
       },
       "DownloadRequest": {
@@ -4358,6 +4425,47 @@
         "summary": "Get Video Content",
         "tags": [
           "Videos"
+        ]
+      }
+    },
+    "/v1/vision/describe": {
+      "post": {
+        "operationId": "describeScreenshot",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DescribeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DescribeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Describe Screenshot",
+        "tags": [
+          "Vision"
         ]
       }
     }

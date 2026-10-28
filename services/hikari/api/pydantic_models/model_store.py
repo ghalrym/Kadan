@@ -34,6 +34,7 @@ class CheckpointStatus(BaseModel):
         "formatting",
         "image",
         "decision",
+        "vision",
         "audio",
     ]
     display_name: str | None

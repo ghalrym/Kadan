@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # The agent's AIO sandbox computer. Unset leaves the agent without one.
     sandbox_url: str | None = None
     sandbox_api_key: SecretStr = SecretStr("insecure-api-key")
+    experimental_lfm3_vision: bool = False
     frontend_directory: str = "web/dist"
     agent_instruction_file: str = str(Path(__file__).resolve().parents[2] / "AGENT.md")
 
