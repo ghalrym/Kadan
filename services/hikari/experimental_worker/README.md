@@ -66,3 +66,46 @@ Vision and audio are separate additive draft changes with their own profiles
 and trial instructions. Audio's initial integration returns buffered speech
 segments through the existing call interruption and playback-acknowledgement
 protocol; it makes no claim of full-duplex model inference.
+
+## Combined morning checkout
+
+The review drafts are [conversation/core #468](https://github.com/ghalrym/Kadan/pull/468),
+[vision #469](https://github.com/ghalrym/Kadan/pull/469), and
+[audio #470](https://github.com/ghalrym/Kadan/pull/470). Vision and audio independently
+target the core branch. `ai-reed/lfm3-morning-trial` combines all three for the
+owner's manual evaluation; it does not merge any PR into master.
+
+| Worker | Supported total context | Provisional RAM / one GPU |
+| --- | ---: | ---: |
+| Text | 262,144 tokens | 16 GiB / 20 GiB |
+| Screenshot vision | 128,000 tokens | 8 GiB / 16 GiB |
+| Audio | 32,768 tokens | 8 GiB / 16 GiB |
+
+Each window includes its reply reservation. These are per-model limits, not a
+promise of simultaneous fit. The scheduler admits each complete provisional
+reservation and can wait or reject requests; an execution allocation failure
+also reports an error. No adapter truncates the submitted prompt to fit. The
+existing session-history selection and call-history retention still apply.
+
+To build all additive workers from this checkout without starting any services:
+
+```sh
+docker compose -f compose.yaml -f compose.lfm3-text.yaml -f compose.lfm3-vision.yaml -f compose.lfm3-audio.yaml --profile lfm3-text --profile lfm3-vision --profile lfm3-audio build hikari-worker-lfm3-text hikari-worker-lfm3-vision hikari-worker-lfm3-audio
+```
+
+The API needs `HIKARI_ENABLE_LFM3_TEXT`, `HIKARI_ENABLE_LFM3_VISION` and
+`HIKARI_ENABLE_LFM3_AUDIO` enabled for the corresponding trials. Kadan API and
+runner use `KADAN_EXPERIMENTAL_LFM3_TEXT` and `KADAN_EXPERIMENTAL_LFM3_VISION`;
+the optional audio button uses `VITE_ENABLE_LFM3_AUDIO`. All default to false.
+An owner must explicitly choose to run the reviewed API/runner/frontend code
+with these flags, preserving existing Tsuchi data, volume identities and worker
+token. The implementation task did not recreate or deploy those services.
+
+Only after that owner step, use the same Compose files/profiles and `up -d
+--no-deps` naming just the new worker services. Review each pinned license URL
+and approve each model's download separately through `/v1/models/{id}/download`.
+Wait for `complete` before inference. Start with the short read-only conversation
+test, a screenshot compared with the live desktop, and a short spoken utterance;
+then check stop/interruption and the unchanged native paths. Detailed vision and
+audio checks are in the linked architecture pages. Maximum-window trials come
+after basic runtime/quality validation and measured memory observation.
