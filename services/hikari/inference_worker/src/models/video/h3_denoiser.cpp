@@ -54,6 +54,37 @@ void report_wall_timing(const detail::H3WallRecord& record) {
         }
         out << ']';
     }
+    if (record.prepare_observed) {
+        static constexpr std::array prepare_phases{
+            "admission", "staging_allocation", "checkpoint_read", "validation", "upload"
+        };
+        static constexpr std::array dtypes{"i8", "bf16", "fp32", "other"};
+        static constexpr std::array counters{
+            "started_slices",
+            "uploaded_slices",
+            "planned_bytes",
+            "read_bytes",
+            "validated_bytes",
+            "uploaded_bytes"
+        };
+        out << ",\"prepare_nested\":{\"included_in_outer_prepare_wall\":true,"
+               "\"dropped\":"
+            << record.prepare.dropped;
+        for (std::size_t i = 0; i < prepare_phases.size(); ++i)
+            out << ",\"" << prepare_phases[i]
+                << "_wall_ns\":" << record.prepare.wall_ns[i] << ",\""
+                << prepare_phases[i] << "_calls\":" << record.prepare.calls[i];
+        out << ",\"dtype\":[";
+        for (std::size_t i = 0; i < dtypes.size(); ++i) {
+            if (i)
+                out << ',';
+            out << "{\"kind\":\"" << dtypes[i] << '\"';
+            for (std::size_t j = 0; j < counters.size(); ++j)
+                out << ",\"" << counters[j] << "\":" << record.prepare.dtype[i][j];
+            out << '}';
+        }
+        out << "]}";
+    }
     out << '}';
     std::clog << out.str() << '\n';
     std::clog.flush();
@@ -884,10 +915,18 @@ std::optional<MediaPlanError> prepare(
     const StageManifest& manifest,
     const MediaShape& stage,
     Resources& resources,
-    const std::atomic_bool& cancel
+    const std::atomic_bool& cancel,
+    detail::H3PrepareTiming* timing
 ) {
+    using PreparePhase = detail::H3PreparePhase;
+    using PrepareCount = detail::H3PrepareCount;
+    using PrepareDtype = detail::H3PrepareDtype;
+    if (timing)
+        timing->phase(PreparePhase::admission);
     if (auto error = session.admit(manifest, stage))
         return error;
+    if (timing)
+        timing->pause();
     try {
         for (const auto& slice : session.plan().weights) {
             const bool adapter = slice.name.starts_with("diffusion_model.");
@@ -899,16 +938,31 @@ std::optional<MediaPlanError> prepare(
                                       : t.dtype == Dtype::bf16 ? 2
                                                                : 4;
             const auto columns = t.rank == 1 ? 1 : std::size_t(t.shape[1]);
+            const auto dtype = t.dtype == Dtype::i8     ? PrepareDtype::i8
+                               : t.dtype == Dtype::bf16 ? PrepareDtype::bf16
+                               : t.dtype == Dtype::fp32 ? PrepareDtype::fp32
+                                                        : PrepareDtype::other;
+            if (timing) {
+                timing->count(dtype, PrepareCount::started_slices, 1);
+                timing->count(dtype, PrepareCount::planned_bytes, slice.stored_bytes);
+                timing->phase(PreparePhase::staging_allocation);
+            }
             Admission staging(resources, slice.stored_bytes);
             std::vector<std::uint8_t> raw(slice.stored_bytes);
+            if (timing)
+                timing->phase(PreparePhase::checkpoint_read);
             const auto offset = slice.first_row * columns * width;
             for (std::size_t at = 0; at < raw.size();) {
                 stop(cancel);
                 const auto count = std::min<std::size_t>(16 << 20, raw.size() - at);
                 source.read_tensor(slice.name, offset + at, {raw.data() + at, count});
+                if (timing)
+                    timing->count(dtype, PrepareCount::read_bytes, count);
                 at += count;
             }
             source.check_unchanged();
+            if (timing)
+                timing->phase(PreparePhase::validation);
             stop(cancel);
             if (t.dtype == Dtype::bf16)
                 for (std::size_t i = 0; i < raw.size(); i += 2)
@@ -926,10 +980,22 @@ std::optional<MediaPlanError> prepare(
                         "h3_cuda_scale"
                     );
                 }
+            if (timing) {
+                if (t.dtype == Dtype::bf16 || t.dtype == Dtype::fp32)
+                    timing->count(dtype, PrepareCount::validated_bytes, raw.size());
+                timing->phase(PreparePhase::upload);
+            }
             auto destination = session.weight(slice);
             session.upload_weight(destination, std::as_bytes(std::span(raw)));
+            if (timing) {
+                timing->count(dtype, PrepareCount::uploaded_slices, 1);
+                timing->count(dtype, PrepareCount::uploaded_bytes, raw.size());
+                timing->pause();
+            }
         }
     } catch (...) {
+        if (timing)
+            timing->pause();
         session.abort(std::current_exception());
         throw;
     }
@@ -1400,17 +1466,20 @@ void H3Denoiser::execute(
             error = std::move(*rejected);
         else {
             const auto& layout = std::get<detail::H3Block>(described);
-            error = wall.measure(WallStage::block, block, WallPhase::prepare, n, [&] {
-                return prepare(
-                    *held,
-                    *shard_,
-                    turbo_.get(),
-                    detail::h3_block_manifest(layout, n, groups, retained),
-                    detail::h3_block_shape(layout, n),
-                    *resources_,
-                    cancel
-                );
-            });
+            error = wall.measure_prepare(
+                WallStage::block, block, n, [&](detail::H3PrepareTiming* timing) {
+                    return prepare(
+                        *held,
+                        *shard_,
+                        turbo_.get(),
+                        detail::h3_block_manifest(layout, n, groups, retained),
+                        detail::h3_block_shape(layout, n),
+                        *resources_,
+                        cancel,
+                        timing
+                    );
+                }
+            );
         }
         if (error) {
             // After a resident refiner, hidden lives only in the session.
@@ -1458,8 +1527,8 @@ void H3Denoiser::execute(
                 error = std::move(*rejected);
             else {
                 const auto& layout = std::get<detail::H3Refiner>(described);
-                error =
-                    wall.measure(WallStage::refiner, block, WallPhase::prepare, n, [&] {
+                error = wall.measure_prepare(
+                    WallStage::refiner, block, n, [&](detail::H3PrepareTiming* timing) {
                         return prepare(
                             *held,
                             *shard_,
@@ -1469,9 +1538,11 @@ void H3Denoiser::execute(
                             ),
                             detail::h3_refiner_shape(layout, n),
                             *resources_,
-                            cancel
+                            cancel,
+                            timing
                         );
-                    });
+                    }
+                );
             }
             if (error) {
                 if (block)
@@ -1516,17 +1587,20 @@ void H3Denoiser::execute(
             error = std::move(*rejected);
         else {
             const auto& layout = std::get<detail::H3Final>(described);
-            error = wall.measure(WallStage::final, 0, WallPhase::prepare, n, [&] {
-                return prepare(
-                    *held,
-                    *shard_,
-                    nullptr,
-                    detail::h3_final_manifest(layout, n, nv, na, time_count),
-                    detail::h3_final_shape(layout, n),
-                    *resources_,
-                    cancel
-                );
-            });
+            error = wall.measure_prepare(
+                WallStage::final, 0, n, [&](detail::H3PrepareTiming* timing) {
+                    return prepare(
+                        *held,
+                        *shard_,
+                        nullptr,
+                        detail::h3_final_manifest(layout, n, nv, na, time_count),
+                        detail::h3_final_shape(layout, n),
+                        *resources_,
+                        cancel,
+                        timing
+                    );
+                }
+            );
         }
         if (error)
             throw std::runtime_error("h3_resident_admission: " + error->detail);
@@ -1575,8 +1649,11 @@ void H3Denoiser::execute(
                 error = std::move(*rejected);
             else {
                 const auto& layout = std::get<detail::H3FeedForward>(described);
-                error = wall.measure(
-                    WallStage::feed_forward, block, WallPhase::prepare, n, [&] {
+                error = wall.measure_prepare(
+                    WallStage::feed_forward,
+                    block,
+                    n,
+                    [&](detail::H3PrepareTiming* timing) {
                         return prepare(
                             *session,
                             *shard_,
@@ -1584,7 +1661,8 @@ void H3Denoiser::execute(
                             detail::h3_feed_forward_manifest(layout, n, groups),
                             detail::h3_feed_forward_shape(layout, n),
                             *resources_,
-                            cancel
+                            cancel,
+                            timing
                         );
                     }
                 );

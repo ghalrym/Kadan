@@ -164,6 +164,162 @@ void enabled_observation_preserves_reference_and_move_only_results() {
     });
     check(*moved == 17);
 }
+
+void nested_prepare_is_silent_when_disabled_and_aggregates_slices_when_enabled() {
+    std::atomic_bool cancel = false;
+    records.clear();
+    {
+        H3WallTiming wall(false, cancel, collect, []() -> std::uint64_t {
+            throw std::runtime_error("disabled nested clock");
+        });
+        check(
+            wall.measure_prepare(
+                H3WallStage::block,
+                0,
+                8,
+                [](H3PrepareTiming* timing) {
+                    check(timing == nullptr);
+                    return 42;
+                }
+            )
+            == 42
+        );
+    }
+    check(records.empty());
+    ticks = 0;
+    {
+        H3WallTiming wall(true, cancel, collect, clock_value);
+        for (std::size_t block = 0; block < 2; ++block)
+            wall.measure_prepare(
+                H3WallStage::block, block, 8, [](H3PrepareTiming* timing) {
+                    if (!timing)
+                        throw std::runtime_error("enabled collector missing");
+                    timing->phase(H3PreparePhase::admission);
+                    ticks += 2;
+                    timing->pause();
+                    for (auto dtype :
+                         {H3PrepareDtype::i8,
+                          H3PrepareDtype::bf16,
+                          H3PrepareDtype::fp32}) {
+                        timing->count(dtype, H3PrepareCount::started_slices, 1);
+                        timing->count(dtype, H3PrepareCount::planned_bytes, 128);
+                        timing->phase(H3PreparePhase::staging_allocation);
+                        ticks += 3;
+                        timing->phase(H3PreparePhase::checkpoint_read);
+                        ticks += 5;
+                        timing->count(dtype, H3PrepareCount::read_bytes, 128);
+                        timing->phase(H3PreparePhase::validation);
+                        if (dtype != H3PrepareDtype::i8) {
+                            ticks += 11;
+                            timing->count(dtype, H3PrepareCount::validated_bytes, 128);
+                        }
+                        timing->phase(H3PreparePhase::upload);
+                        ticks += 7;
+                        timing->count(dtype, H3PrepareCount::uploaded_slices, 1);
+                        timing->count(dtype, H3PrepareCount::uploaded_bytes, 128);
+                        timing->pause();
+                    }
+                }
+            );
+    }
+    // Two prepare payloads and one summary, regardless of slice count.
+    check(records.size() == 3 && records.back().summary);
+    const auto& first = records[0];
+    check(first.prepare_observed && first.phase == H3WallPhase::prepare);
+    check(
+        first.wall_ns == 69
+        && first.prepare.wall_ns == std::array<std::uint64_t, 5>{2, 9, 15, 22, 21}
+    );
+    check(first.prepare.dtype[0][std::size_t(H3PrepareCount::validated_bytes)] == 0);
+    check(first.prepare.dtype[1][std::size_t(H3PrepareCount::validated_bytes)] == 128);
+    check(first.prepare.dtype[2][std::size_t(H3PrepareCount::uploaded_bytes)] == 128);
+    const auto& summary = records.back();
+    check(summary.phase_wall_ns[1] == 138 && summary.prepare.wall_ns[3] == 44);
+    check(summary.prepare.dtype[0][std::size_t(H3PrepareCount::uploaded_slices)] == 2);
+}
+
+void nested_partial_cancellation_and_sink_failure_preserve_primary_exception() {
+    std::atomic_bool cancel = false;
+    records.clear();
+    ticks = 0;
+    try {
+        H3WallTiming wall(
+            true,
+            cancel,
+            [](const H3WallRecord& record) {
+                collect(record);
+                throw std::runtime_error("nested diagnostic sink");
+            },
+            clock_value
+        );
+        wall.measure_prepare(H3WallStage::block, 27, 8, [&](H3PrepareTiming* timing) {
+            if (!timing)
+                throw std::runtime_error("enabled collector missing");
+            try {
+                timing->phase(H3PreparePhase::admission);
+                ticks += 2;
+                timing->count(H3PrepareDtype::bf16, H3PrepareCount::started_slices, 1);
+                timing->count(H3PrepareDtype::bf16, H3PrepareCount::planned_bytes, 100);
+                timing->phase(H3PreparePhase::staging_allocation);
+                ticks += 3;
+                timing->phase(H3PreparePhase::checkpoint_read);
+                timing->count(H3PrepareDtype::bf16, H3PrepareCount::read_bytes, 40);
+                ticks += 7;
+                cancel.store(true);
+                throw std::runtime_error("primary prepare cancellation");
+            } catch (...) {
+                timing->pause();
+                ticks += 100;  // Simulated abort work stays outside the nested buckets.
+                throw;
+            }
+        });
+        check(false);
+    } catch (const std::runtime_error& error) {
+        check(std::string(error.what()) == "primary prepare cancellation");
+    }
+    check(records.size() == 2 && records[0].failed && records[0].cancelled);
+    check(records[0].wall_ns == 112 && records[0].prepare.wall_ns[2] == 7);
+    const auto& counts = records[0].prepare.dtype[std::size_t(H3PrepareDtype::bf16)];
+    check(counts[std::size_t(H3PrepareCount::read_bytes)] == 40);
+    check(counts[std::size_t(H3PrepareCount::uploaded_slices)] == 0);
+    check(counts[std::size_t(H3PrepareCount::uploaded_bytes)] == 0);
+    check(records.back().prepare_observed && records.back().dropped == 1);
+}
+
+void nested_clock_faults_and_counter_overflow_do_not_change_work() {
+    std::atomic_bool cancel = false;
+    records.clear();
+    ticks = 0;
+    static unsigned clock_calls = 0;
+    clock_calls = 0;
+    {
+        H3WallTiming wall(true, cancel, collect, []() -> std::uint64_t {
+            if (++clock_calls == 2)
+                throw std::runtime_error("nested diagnostic clock");
+            return ticks;
+        });
+        wall.measure_prepare(H3WallStage::final, 0, 8, [](H3PrepareTiming* timing) {
+            if (!timing)
+                throw std::runtime_error("enabled collector missing");
+            timing->phase(H3PreparePhase::admission);
+            ticks += 5;
+            timing->phase(H3PreparePhase::checkpoint_read);
+            timing->count(
+                H3PrepareDtype::other,
+                H3PrepareCount::planned_bytes,
+                std::numeric_limits<std::uint64_t>::max()
+            );
+            timing->count(H3PrepareDtype::other, H3PrepareCount::planned_bytes, 1);
+            ticks += 4;
+        });
+    }
+    check(records.size() == 2 && records[0].wall_ns == 9);
+    check(records[0].prepare.dropped == 1 && records[0].prepare.wall_ns[0] == 0);
+    check(records[0].prepare.wall_ns[2] == 4 && !records.back().failed);
+    check(
+        records.back().prepare.dtype[3][2] == std::numeric_limits<std::uint64_t>::max()
+    );
+}
 }  // namespace
 
 int main() {
@@ -173,4 +329,7 @@ int main() {
     broken_clock_does_not_skip_work_or_fabricate_duration();
     cancellation_flag_is_not_an_execution_failure();
     enabled_observation_preserves_reference_and_move_only_results();
+    nested_prepare_is_silent_when_disabled_and_aggregates_slices_when_enabled();
+    nested_partial_cancellation_and_sink_failure_preserve_primary_exception();
+    nested_clock_faults_and_counter_overflow_do_not_change_work();
 }
