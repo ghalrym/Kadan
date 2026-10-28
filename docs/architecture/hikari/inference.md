@@ -1,74 +1,26 @@
 # Inference architecture
 
-Hikari manages model loading and memory allocations across inference workers so users can switch inference types without manually unloading models. The user expectations for [inference operations](../../user-expectations/hikari/inference.md) describe the user-visible contract.
+Hikari routes a fixed model stack through connected workers and manages their shared physical resources. The [inference expectations](../../user-expectations/hikari/inference.md) describe observable waiting, cancellation and failure behavior. Model assignments and observed checkpoint availability are separate: the API must not infer a connected executor or completed download from a configured default.
 
-## Mixture-of-experts language models
+## Execution and memory admission
 
-Every hardware tier uses a mixture-of-experts (MoE) language checkpoint. Hikari is designed to run checkpoints larger than GPU memory by keeping routed experts across GPU memory (VRAM), system memory (RAM) and disk. The complete checkpoint does not have to fit in VRAM.
+LFM conversation, vision and audio run in separate Python worker containers. Each request waits for a hub grant, starts a disposable executor and releases its model and cache when that executor exits. The current BF16 implementations use one selected GPU; they do not combine several GPUs into one language-model allocation or offload experts. See [LFM workers](worker-lfm3.md) for checkpoint and execution details.
 
-Frequently used routed experts should stay in VRAM where capacity permits. Other routed experts can remain in RAM, with disk holding those that do not fit in either memory tier. Placement adapts to expert use within the memory available to the language model. Only routed experts move between these tiers. Non-expert matrices, including shared experts, remain pinned in VRAM while the language model is loaded, so sufficient VRAM for those weights and execution state is still required.
+Native decision, transcription, image and video workers retain their existing specialist engines. Their allocations can span supported devices, but each physical GPU remains an independent capacity. Workers on one computer share one ledger, identified by kernel boot ID and GPU UUID; workers on other computers use separate resources. A budget grant permits loading and does not establish that an engine is resident or that every request fits.
 
-Experts held in RAM execute on the CPU alongside GPU work. Hikari balances that work against streaming experts to the GPU using measured execution and transfer rates. It should not send every RAM-resident expert across the GPU connection by default.
+## Scheduling and residency
 
-Offloading preserves the selected checkpoint rather than substituting a smaller or dense language model. This allows models larger than VRAM to run, with performance depending on the memory available and the execution and transfer rates of the hardware.
+Active priorities are LFM conversation, screenshot understanding, speech and transcript formatting together with decisions; then native transcription; then images; then video. A higher-priority request waits for active lower-priority work when necessary rather than interrupting it. Lower-priority idle allocations are reclaimed first, with release acknowledged before the ledger credits memory. An idle worker with no queued work can also yield to a lower-priority request.
 
-## Memory accounting
+Where feasible, the scheduler reserves the conversation worker's minimum while other work runs. This is best effort and gives no immediate-start guarantee. Sustained higher-priority demand can delay other work.
 
-Workers on the same computer share that computer's memory capacity, including when they run in separate containers. Hikari accounts for RAM and each physical GPU separately. Several GPUs may participate where supported, but their VRAM is not one contiguous allocation; each GPU must satisfy its own placement requirements. Workers on different computers use their respective computers' resources.
-
-Concurrent requests require enough RAM and VRAM for each worker. Requests wait when their combined requirements exceed available memory. Placement admission must remain independent of the total number of expert slices.
-
-## Memory priority and reclamation
-
-Priority governs access to memory in this order, highest first:
-
-1. Chat and decisions.
-2. Speech synthesis.
-3. Transcription and transcription formatting.
-4. Image generation.
-5. Video generation.
-
-A higher-priority request does not interrupt inference already running. It may wait for an active image or video request to finish if there is insufficient memory to run alongside it.
-
-Hikari first tries to make room by reducing an idle worker's memory allocation before unloading its model entirely. It reclaims memory from lower-priority workers first, and from the least recently used workers within a priority. An idle worker with no queued requests can yield memory even to a lower-priority type. A worker with queued requests yields only to a strictly higher-priority type. Memory becomes available to another worker only after its release is confirmed.
-
-Where possible, Hikari keeps enough room for the selected language tier's minimum requirements so chat can start while another type runs. This reservation is best effort: if preserving it prevents other work from fitting, Hikari can let that work proceed. Chat therefore has no unconditional immediate-start guarantee, and sustained higher-priority demand can delay lower-priority work.
-
-For example, an idle chat model holding more memory than it needs can have its allocation reduced to admit an image request. An active video request continues to completion even if chat is waiting for its memory.
-
-## Allocation changes and model lifecycle
-
-Models load on demand. Moving individual MoE experts between memory tiers is distinct from changing a worker's overall memory allocation. Currently, shrinking or growing a resident worker's allocation unloads its whole engine; its next request reloads the model within the new allocation. Switching workloads under memory pressure can therefore incur a full model reload.
-
-When work is no longer waiting for memory, idle workers can regain available capacity, with higher-priority types favored. Extra memory may allow more experts to remain resident, but does not establish a fixed throughput improvement.
-
-The API hub also expires resident models after `HIKARI_MODEL_IDLE_SECONDS` (default 3600, positive integer). Its monotonic clock resets when an inference or lifecycle request finishes, for every worker type. A reconnect starts a fresh idle period because completion history is unavailable. Request scheduling runs first; expiry waits while any worker on that computer has outstanding inference or lifecycle requests. It uses the same confirmed offload path as memory reclamation, retaining the old allocation charge until cleanup completes. An unloaded worker receives another budget only when a request needs it.
-
-Requests must respect their actual input and memory requirements. Hikari must not silently truncate chat history or reduce requested media settings to force a fit. Cancellation must finish cleanup before the released resources are reused.
-
-Concurrent throughput, model quality and physical memory fit require manual validation on the target machine. Scheduling and offloading policies alone do not establish measured latency or guarantee that every combination of inference requests fits.
+Changing a retained native engine's allocation unloads the whole engine; a subsequent request reloads within its new budget. Native resident models also expire after `HIKARI_MODEL_IDLE_SECONDS` (3600 seconds by default), measured from completion. Scheduling takes precedence, and expiry waits for active or queued work on that computer. LFM executors already release after every request and retain no reusable prefix or model between turns.
 
 ## Submission and cancellation ownership
 
-Hikari keeps a job's submission scopes open until every in-progress send returns, including an overlapping worker handoff. It registers recipient ownership only after acquiring that connection's write lock. Cancellation while waiting for the lock can therefore retire locally without a worker reply. Once a write begins, caller cancellation preserves its completion and the lock; an error or transport deadline cannot prove that delivery failed. That recipient remains owned until a terminal event or disconnect, even if cancellation sends fail or an unknown cancellation ID produces no reply.
+A job owns every worker recipient whose send may have begun. Cancellation records an unsuccessful outcome, prevents further fanout or requeue, and waits for terminal acknowledgement or disconnect; a failed send is not proof of nondelivery. Running work is not silently replayed on another worker. Queued work can move only while it remains eligible and has not been cancelled.
 
-Cancellation records an unsuccessful outcome independently of recipient retirement and stops further fanout or handoff. Earlier worker failures retain their original error. A store operation cannot report success after skipping recipients, and a terminal failure deferred by an open submission cannot restart work on another worker.
-
-## Reusable conversation state
-
-Each resident chat engine keeps one completed conversation prefix, its exact committed token sequence and the corresponding attention and recurrent state. Both supported GGUF architectures are recurrent, so a hit requires the entire retained sequence to match the start of a longer prompt; an arbitrary common prefix cannot safely rewind recurrence. Selected output tokens not yet fed through the engine are excluded. On a hit, only the remaining prompt suffix executes, at the retained absolute position.
-
-Callers such as Kadan's runner end each prompt with an instruction that the next turn replaces, so the live state rarely matches the next prompt. Prefill therefore also keeps one conversation checkpoint: a host copy of the state at the start of the prompt's last message. When the live state misses, a prompt in the same conversation that extends the checkpoint's tokens restores it and executes only the rest. Copies cover only the positions in use; the plan's host bytes count a second full state for it. A restored checkpoint is reported as `checkpoint_hit`.
-
-Request cleanup releases transient scratch while keeping prefix allocations charged to the worker's existing RAM and per-GPU budgets. Missing conversation IDs and disabled reuse retain no entry. A miss resets state, and cancellation discards incomplete state. Cache response counts describe actual reuse, and prefill timing counts only tokens that executed.
-
-The inference owner can detach one completed prefix before model eviction or budget changes. That RAM snapshot survives destruction of the engine and contains no weights, open checkpoint files or device allocations. Attention keys/values already have complete host copies. Device recurrence is copied back synchronously, including convolution history; host recurrence keeps its execution mode. Qwen4Exp additionally retains QSA index keys/pools, PLE convolution history and recent tokens. On restoration, device recurrence is uploaded lazily on its newly selected device. If it cannot be admitted before the first restored step, the complete host state remains available for the host path. KV device mirrors can be rebuilt from the host copy.
-
-Restoration requires the same model ID, workload, checkpoint path, context, tokenizer file identity and every GGUF tensor's immutable shard identity. The exact committed token/conversation match still decides whether any prefix is reused. An incompatible request replaces the one retained entry. There is no cross-worker affinity or disk-cache layer.
-
-Detached bytes remain charged as a host-only worker budget after confirmed offload. A second scheduler offload can reclaim that RAM before admitting another job, with the same busy/queued-work rules. Physical RAM pressure can also discard optional state; cache admission failure must not prevent model eviction or make a job wait indefinitely. Engine cleanup still independently proves that its device/model allocations are gone.
-
-`HIKARI_KV_CACHE_IDLE_SECONDS` uses the existing typed API settings and budget-control path, defaulting to 3600 positive seconds. The execution thread checks expiry only while its queue is empty; it never interrupts a running request. A successful generation starts the retained state's idle period, and model unloading, budget changes or model-loading requests do not extend it. Expiry releases reusable device state or the detached RAM entry independently of model expiry. Worker restart loses all reusable state; checkpoint files and conversation history are separate.
+For LFM work, cleanup terminates and joins the executor before reporting completion or cancellation and returning its allocation. Native workers retain their confirmed-release path. No path may silently truncate prompts, replace the checkpoint, reduce media settings or count unconfirmed cleanup as free memory. Physical fit, concurrent throughput and quality still require target-machine validation.
 
 ## Workers on another computer
 
