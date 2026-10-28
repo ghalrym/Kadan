@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import {
-  BookUser,
   FolderOpen,
   Menu,
   MessageCircle,
@@ -17,7 +16,6 @@ import { latestConversation } from "./agentRuns";
 import type { Agent, PetJob, Resource, Status } from "./types";
 import Chat from "./Chat";
 import Workspace from "./Workspace";
-import Personas from "./Personas";
 import Hatch from "./Hatch";
 import Pet, { agentPet, useMood } from "./Pet";
 import { agentHue } from "./pet";
@@ -77,7 +75,7 @@ export default function App() {
   const [personas, setPersonas] = useState<Resource[]>([]);
   // Each agent has one continuous conversation rather than separate threads.
   const [chain, setChain] = useState<Resource | null>(null);
-  const [view, setView] = useState<"chat" | "workspace" | "personas">("chat");
+  const [view, setView] = useState<"chat" | "workspace">("chat");
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -333,7 +331,7 @@ export default function App() {
             >
               <span className={`dot ${status?.tsuchi.state === "ready" ? "ready" : status ? "down" : ""}`} />
               <span className="sr-only">
-                Tsuchi {status?.tsuchi.state === "ready" ? "connected" : "unavailable"}
+                Tsuchi {!status ? "checking" : status.tsuchi.state === "ready" ? "connected" : "unavailable"}
               </span>
             </a>
             <a
@@ -347,7 +345,7 @@ export default function App() {
                 className={`dot ${status?.hikari.state === "ready" ? "ready" : status?.hikari.state === "unavailable" ? "down" : status ? "warn" : ""}`}
               />
               <span className="sr-only">
-                Hikari {status?.hikari.state === "ready" ? "ready" : "needs attention"}
+                Hikari {!status ? "checking" : status.hikari.state === "ready" ? "ready" : "needs attention"}
               </span>
             </a>
           </div>
@@ -396,14 +394,6 @@ export default function App() {
               <FolderOpen size={17} />
               Workspace
             </button>
-            <button
-              className={view === "personas" ? "selected" : ""}
-              disabled={!key || disabled}
-              onClick={() => show("personas")}
-            >
-              <BookUser size={17} />
-              Personas
-            </button>
           </nav>
         </div>
       </aside>
@@ -420,11 +410,7 @@ export default function App() {
             <Menu size={20} />
           </button>
           <h1>
-            {view === "workspace"
-              ? "Workspace"
-              : view === "personas"
-                ? "Personas"
-                : selectedAgent?.name || "Kadan"}
+            {view === "workspace" ? "Workspace" : selectedAgent?.name || "Kadan"}
           </h1>
           <button
             className="icon"
@@ -467,17 +453,6 @@ export default function App() {
           </div>
         ) : view === "workspace" ? (
           <Workspace key={key} agentKey={key} browserUrl={status?.tsuchi.browser_url ?? null} />
-        ) : view === "personas" ? (
-          <Personas
-            key={key}
-            agentKey={key}
-            personas={personas}
-            onChange={(rows) => {
-              if (activeAgent.current === key) setPersonas(rows);
-            }}
-            onBusy={setBusy}
-            blocked={loading}
-          />
         ) : chain ? (
           <Chat
             key={`${key}:${chain.id}`}

@@ -58,6 +58,7 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "worker-host-tests",
     "kadan-worker-formatting",
     "preparation-tests",
+    "chat-load-tests",
     "s1-mini-metadata-tests",
     "text-tokenizer-tests",
     "inference-worker-text-tests",

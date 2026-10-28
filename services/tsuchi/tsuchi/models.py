@@ -313,6 +313,7 @@ PET_STEP_NAMES = (
         for frame in range(count)
     ),
 )
+PetReferenceMode = Literal["single_image", "character_sheet"]
 PetStatus = Literal[
     "queued", "running", "cancelling", "cancelled", "interrupted", "failed", "ready"
 ]
@@ -387,13 +388,14 @@ class PetPendingFrame(Model):
 
 class PetState(Model):
     origin: Literal["generated", "imported"] = "generated"
+    reference_mode: PetReferenceMode = "single_image"
     status: PetStatus = "queued"
     stage: str = Field(default="queued", min_length=1, max_length=500)
-    completed_steps: int = Field(default=0, ge=0, le=74)
-    total_steps: Literal[74] = 74
+    completed_steps: int = Field(default=0, ge=0, le=75)
+    total_steps: Literal[74, 75] = 74
     error: str | None = Field(default=None, max_length=10000)
     cancel_requested: bool = False
-    steps: list[PetStep] = Field(default_factory=list, max_length=74)
+    steps: list[PetStep] = Field(default_factory=list, max_length=75)
     parent_pet_id: UUID | None = None
     rejections: list[PetRejection] = Field(default_factory=list)
     manifest: PetManifest | None = None
@@ -432,11 +434,19 @@ class PetState(Model):
 
     @model_validator(mode="after")
     def valid_progress(self) -> Self:
+        sheet_mode = self.reference_mode == "character_sheet"
+        step_order = (
+            ("character-sheet", *PET_STEP_NAMES) if sheet_mode else PET_STEP_NAMES
+        )
+        if self.total_steps != len(step_order):
+            raise ValueError("Pet total steps must match its reference mode")
         if self.completed_steps != len(self.steps):
             raise ValueError("Completed steps must match persisted step outputs")
         names = [step.name for step in self.steps]
-        if names != [name for name in PET_STEP_NAMES if name in names] or (
-            names and names[0] != "base"
+        if (
+            names != [name for name in step_order if name in names]
+            or (names and names[0] != step_order[0])
+            or (any("/" in name for name in names) and "base" not in names)
         ):
             raise ValueError("Pet steps must follow the canonical creation order")
         if len({step.output_asset_id for step in self.steps}) != len(self.steps):
@@ -444,13 +454,14 @@ class PetState(Model):
         if any(step.source_asset_id == step.output_asset_id for step in self.steps):
             raise ValueError("Source and output artwork must be separate assets")
         history = [*self.steps, *(rejection.step for rejection in self.rejections)]
+        base = next((step for step in self.steps if step.name == "base"), None)
         for step in history:
-            if step.name not in PET_STEP_NAMES:
+            if step.name not in step_order:
                 raise ValueError("Pet history must reference canonical frames")
             if step.method == "canonical" and (
                 step.name not in {"idle/0", "idle/5"}
-                or not self.steps
-                or step.source_asset_id != self.steps[0].output_asset_id
+                or base is None
+                or step.source_asset_id != base.output_asset_id
                 or step.output_asset_id == step.source_asset_id
             ):
                 raise ValueError(
@@ -476,7 +487,7 @@ class PetState(Model):
             raise ValueError("Pending seed requires a pending request")
         if self.pending_step_name is not None:
             next_step = next(
-                (name for name in PET_STEP_NAMES if name not in names), "atlas"
+                (name for name in step_order if name not in names), "atlas"
             )
             if self.pending_step_name != next_step:
                 raise ValueError("Pending step must be the next unfinished step")
@@ -485,16 +496,14 @@ class PetState(Model):
         pending = self.pending_images
         pending_names = [frame.name for frame in pending]
         if pending_names != [
-            name
-            for name in PET_STEP_NAMES
-            if name in pending_names and name not in names
+            name for name in step_order if name in pending_names and name not in names
         ] or len({frame.request_id for frame in pending}) != len(pending):
             raise ValueError(
                 "Pending frames must be distinct unfinished frames in order"
             )
         if self.additional_pending_frames and (
             not self.steps
-            or "base" in pending_names
+            or any(name in {"base", "character-sheet"} for name in pending_names)
             or any(name in {"idle/0", "idle/5"} for name in pending_names)
         ):
             raise ValueError("Only independent generated poses can share a cohort")
@@ -508,6 +517,7 @@ class PetState(Model):
         if self.origin == "imported":
             if (
                 self.status != "ready"
+                or sheet_mode
                 or self.steps
                 or self.rejections
                 or self.parent_pet_id is not None
@@ -524,13 +534,13 @@ class PetState(Model):
             if (
                 self.cancel_requested
                 or self.manifest is None
-                or len(self.steps) != len(PET_STEP_NAMES)
+                or len(self.steps) != len(step_order)
                 or self.pending_step_name is not None
             ):
                 raise ValueError("Ready pets require every step and an atlas manifest")
             if self.manifest.sprite_version != 2:
                 raise ValueError("Generated pets use the v2 atlas")
-            if self.manifest.base_asset_id != self.steps[0].output_asset_id:
+            if self.manifest.base_asset_id != base.output_asset_id:
                 raise ValueError("Manifest must reference the generated base artwork")
             if self.manifest.atlas_asset_id in image_ids | provenance_ids:
                 raise ValueError("Atlas must be assembled into a separate asset")
@@ -610,6 +620,9 @@ class ImageJobState(Model):
     status: Literal[
         "queued", "running", "completed", "failed", "cancelling", "cancelled"
     ] = "queued"
+    upload_status: Literal["not_started", "pending", "completed", "failed"] = (
+        "not_started"
+    )
     owner_id: UUID | None = None
     lease_expires_at: datetime | None = None
     asset_id: UUID | None = None
@@ -629,6 +642,14 @@ class ImageJobState(Model):
             raise ValueError("Lease timestamps require a timezone")
         if (self.status == "completed") != (self.asset_id is not None):
             raise ValueError("Only completed image jobs require an image asset")
+        if self.upload_status == "pending" and self.status in {
+            "completed",
+            "failed",
+            "cancelled",
+        }:
+            raise ValueError("An unresolved upload must remain recoverable")
+        if self.status == "completed" and self.upload_status == "failed":
+            raise ValueError("A failed upload cannot complete an image job")
         return self
 
 
