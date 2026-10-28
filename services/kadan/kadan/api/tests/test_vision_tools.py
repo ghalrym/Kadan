@@ -1,4 +1,4 @@
-"""Screenshot tool and flag tests with in-memory HTTP/computer boundaries."""
+"""Screenshot tool and availability tests with in-memory HTTP/computer boundaries."""
 
 import asyncio
 from types import SimpleNamespace
@@ -13,8 +13,8 @@ from kadan.runner.tools import ALL_TOOLS, VISION_TOOLS
 from kadan.runner.tools.vision import computer_look
 
 
-def computer(enabled=True, response=None):
-    settings = Settings(experimental_lfm3_vision=enabled, _env_file=None)
+def computer(response=None):
+    settings = Settings(_env_file=None)
     client = SimpleNamespace(
         post=AsyncMock(
             return_value=response
@@ -49,29 +49,15 @@ def test_tool_uses_fresh_screenshot_and_only_returns_a_bounded_observation():
     assert call.kwargs["json"]["image_base64"] == "c2NyZWVuc2hvdA=="
 
 
-def test_disabled_tool_does_not_read_computer_or_submit_work():
-    target = computer(enabled=False)
-    with pytest.raises(ServiceError, match="disabled"):
-        invoke(target)
-    target.screenshot.assert_not_awaited()
-    target.services.client.post.assert_not_awaited()
-
-
 def test_worker_failure_is_reported_without_fabricating_an_observation():
     with pytest.raises(ServiceError, match="HTTP 503"):
         invoke(computer(response=httpx.Response(503)))
 
 
-def test_vision_flag_does_not_change_default_tool_set_or_enable_without_computer():
-    for configured, enabled, expected in (
-        (True, False, ALL_TOOLS),
-        (True, True, [*ALL_TOOLS, *VISION_TOOLS]),
-    ):
-        services = SimpleNamespace(
-            settings=SimpleNamespace(experimental_lfm3_vision=enabled),
-            sandbox=SimpleNamespace(configured=configured),
-        )
-        owner = SimpleNamespace(services=services)
-        assert AgentRuns.bound_tools(owner) == expected
+def test_vision_is_available_only_when_the_agent_has_a_computer():
+    owner = SimpleNamespace(services=SimpleNamespace(
+        settings=Settings(_env_file=None), sandbox=SimpleNamespace(configured=True),
+    ))
+    assert AgentRuns.bound_tools(owner) == [*ALL_TOOLS, *VISION_TOOLS]
     owner.services.sandbox.configured = False
     assert not any(tool in VISION_TOOLS for tool in AgentRuns.bound_tools(owner))

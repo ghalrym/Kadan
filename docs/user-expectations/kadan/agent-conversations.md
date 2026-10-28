@@ -8,7 +8,7 @@ Each agent has its own saved conversation. Drafts are kept separately in the cur
 
 Sending saves the message and queues work. Users can keep typing and send more messages while earlier work waits. Replies can be delayed by other work or model loading. The agent can finish work without sending a visible reply; errors and stopped work must remain visible.
 
-The opt-in LFM3 trial delivers a completed plain answer as an agent reply when the agent is permitted to reply. Empty output can still finish silently. Malformed tool output must fail visibly instead of appearing as a reply.
+Kadan uses the fixed LFM3 conversation model. Hikari Settings provides the explicit model download and saved context limit; no hardware tier is required. A connected worker and completed download are required before replies can start. LFM3 delivers a completed plain answer as an agent reply when the agent is permitted to reply. Empty output can still finish silently. Malformed tool output must fail visibly instead of appearing as a reply.
 
 **Sending…** means a message or note is awaiting save confirmation. **Delivered** means it was saved in the conversation; it does not confirm that the model has read it. A later reply may come from earlier work.
 

@@ -10,14 +10,12 @@ from pydantic import ValidationError
 from kadan.api.config import ServiceError
 from kadan.runner.agent_inference import (
     MAX_COMMAND_CHARACTERS,
-    TOOLS_FOOTER,
-    TOOLS_HEADER,
     AgentInference,
     HikariChatModel,
     ToolCommand,
     parse_command,
     parse_tool_calls,
-    render_tool_call,
+    tool_characters,
 )
 from kadan.runner.tools import CONVERSATION_TOOLS
 from kadan.runner.tools.file import file_grep_files, file_read_file
@@ -41,7 +39,11 @@ def completed(content):
 
 
 def call(name, **arguments):
-    return render_tool_call(name, arguments)
+    parameters = "".join(
+        f"<parameter={key}>\n" + (value if isinstance(value, str) else json.dumps(value))
+        + "\n</parameter>\n" for key, value in arguments.items()
+    )
+    return f"<tool_call>\n<function={name}>\n{parameters}</function>\n</tool_call>"
 
 
 def invoke(
@@ -49,7 +51,7 @@ def invoke(
     status=200,
     media_type="text/event-stream",
     seen=None,
-    model_id="selected-model",
+    model_id="lfm3-1.7b-bf16",
     bound_tools=TOOLS,
     history=None,
 ):
@@ -107,8 +109,9 @@ def test_lfm3_plain_answer_after_tool_uses_existing_reply_action():
     )
 
 
-def test_native_plain_answer_still_finishes_without_delivery():
-    assert invoke(completed("A plain answer")) == ToolCommand(tool="finish")
+def test_unsupported_model_cannot_fall_back_to_another_checkpoint():
+    with pytest.raises(ValueError, match="fixed LFM3"):
+        invoke(completed("A plain answer"), model_id="retired-qwen-model")
 
 
 @pytest.mark.parametrize("answer", ["", "   ", call("finish")])
@@ -142,20 +145,14 @@ def test_lfm3_malformed_tool_output_is_not_published_as_plain_answer(answer):
     assert error.value.code == "invalid_command"
 
 
-def test_every_bound_tool_is_rendered_in_the_checkpoint_tool_format():
+def test_bound_tools_use_lfm_schemas_without_changing_system_instructions():
     seen = []
     invoke(completed(call("finish")), seen=seen)
-    system = seen[0]["messages"][0]
-    assert system["role"] == "system"
-    assert system["content"].startswith(TOOLS_HEADER)
-    assert TOOLS_FOOTER + "\n\nInstructions" in system["content"]
-    rendered = [
-        json.loads(line)["function"]["name"]
-        for line in system["content"].split("\n")
-        if line.startswith('{"type": "function"')
-    ]
-    assert rendered == [tool.name for tool in TOOLS]
+    assert seen[0]["messages"][0] == {"role": "system", "content": "Instructions"}
     assert seen[0]["messages"][1] == {"role": "user", "content": "Hello"}
+    assert seen[0]["tools"] == [convert_to_openai_tool(tool) for tool in TOOLS]
+    functions = [convert_to_openai_tool(tool)["function"] for tool in TOOLS]
+    assert tool_characters(TOOLS) == len("<tools>\n" + "\n".join(json.dumps(function) for function in functions) + "\n</tools>")
 
 
 def test_lfm3_sends_structured_tools_and_true_tool_result_roles():
@@ -204,7 +201,7 @@ def test_lfm3_sends_structured_tools_and_true_tool_result_roles():
         "file": "/tmp/a"
     }
     assert body["tools"] == [convert_to_openai_tool(tool) for tool in TOOLS]
-    assert not body["messages"][0]["content"].startswith(TOOLS_HEADER)
+    assert "<tools>" not in body["messages"][0]["content"]
 
 
 @pytest.mark.parametrize(
@@ -357,20 +354,6 @@ def test_only_the_first_of_several_calls_is_taken():
     assert invoke(completed(reply)) == ToolCommand(tool="finish")
 
 
-@pytest.mark.parametrize(
-    "reply",
-    [
-        "Hello there",
-        '{"tool":"finish"}',
-        "<tool_call>\n<function=finish>\n</tool_call>",
-        "<tool_call>\n<function=bad name!>\n</function>\n</tool_call>",
-        "",
-    ],
-)
-def test_replies_without_a_tool_call_finish_the_run(reply):
-    assert invoke(completed(reply)) == ToolCommand(tool="finish")
-
-
 def test_saved_commands_round_trip_and_accept_older_formats():
     command = ToolCommand(tool="send_message", arguments={"content": "Hi"})
     assert parse_command(command.model_dump_json()) == command
@@ -449,7 +432,7 @@ def test_incomplete_or_invalid_stream_cannot_execute_even_a_valid_command(ending
     assert error.value.code in {"incomplete_stream", "invalid_stream"}
 
 
-@pytest.mark.parametrize("model_id", ["selected-model", "lfm3-1.7b-bf16"])
+@pytest.mark.parametrize("model_id", ["lfm3-1.7b-bf16"])
 @pytest.mark.parametrize(
     "reply", [call("finish"), "42", "<tool_call>\n<function=send_message>"]
 )
@@ -503,7 +486,7 @@ def test_cancel_closes_silent_hikari_stream():
         ) as client:
             task = asyncio.create_task(
                 AgentInference(client, "http://hikari").call(
-                    [HumanMessage(content="Hello")], "model", "conversation", TOOLS
+                    [HumanMessage(content="Hello")], "lfm3-1.7b-bf16", "conversation", TOOLS
                 )
             )
             await stream.waiting.wait()
@@ -515,34 +498,16 @@ def test_cancel_closes_silent_hikari_stream():
     asyncio.run(check())
 
 
-def test_tool_calls_and_results_replay_as_checkpoint_text():
-    wire = HikariChatModel._wire_messages(
-        [
-            SystemMessage(content="Instructions"),
-            HumanMessage(content="Hello"),
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {"name": "shell_exec_command", "args": {"command": "ls"}, "id": "1"}
-                ],
-            ),
-            ToolMessage(content='{"output": "a.txt"}', tool_call_id="1"),
-            HumanMessage(content="Thanks"),
-        ],
-        [],
-    )
+def test_tool_calls_and_results_keep_structured_roles_and_argument_mapping():
+    wire = HikariChatModel._wire_messages([
+        SystemMessage(content="Instructions"), HumanMessage(content="Hello"),
+        AIMessage(content="", tool_calls=[{"name": "shell_exec_command", "args": {"command": "ls"}, "id": "1"}]),
+        ToolMessage(content='{"output": "a.txt"}', tool_call_id="1"), HumanMessage(content="Thanks"),
+    ])
     assert wire == [
-        {"role": "system", "content": "Instructions"},
-        {"role": "user", "content": "Hello"},
-        {
-            "role": "assistant",
-            "content": "<tool_call>\n<function=shell_exec_command>\n"
-            "<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>",
-        },
-        {
-            "role": "user",
-            "content": '<tool_response>\n{"output": "a.txt"}\n</tool_response>',
-        },
+        {"role": "system", "content": "Instructions"}, {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1", "type": "function", "function": {"name": "shell_exec_command", "arguments": {"command": "ls"}}}]},
+        {"role": "tool", "content": '{"output": "a.txt"}', "tool_call_id": "1"},
         {"role": "user", "content": "Thanks"},
     ]
 
@@ -565,5 +530,5 @@ def test_hikari_chat_model_rejects_stop_sequences():
 def test_hikari_chat_model_rejects_non_text_messages():
     with pytest.raises(TypeError):
         HikariChatModel._wire_messages(
-            [HumanMessage(content=[{"type": "text", "text": "Hello"}])], []
+            [HumanMessage(content=[{"type": "text", "text": "Hello"}])]
         )

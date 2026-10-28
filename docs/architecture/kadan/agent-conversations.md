@@ -34,11 +34,11 @@ The user expectations for [agent conversations](../../user-expectations/kadan/ag
 
 ## Model decisions and delivery
 
-The runner uses a bounded LangGraph loop around context preparation, inference and tool execution. Hikari supplies text completions; Kadan's adapter expresses tool definitions in the model's text format and parses the result into a structured command. Kadan validates the tool and its arguments before persisting and executing it. Keeping that boundary in Kadan gives the same tool behavior to every conversation entry point without adding agent orchestration to the inference service.
+The runner uses a bounded LangGraph loop around context preparation, inference and tool execution. Hikari supplies text completions; Kadan sends structured tool definitions and tool-call history for the fixed LFM3 checkpoint to render, then parses its reply into a structured command. Kadan validates the tool and its arguments before persisting and executing it. Keeping that boundary in Kadan gives the same tool behavior to every conversation entry point without adding agent orchestration to the inference service.
 
 Only the `send_message` tool delivers an agent message to the conversation. Completing inference, returning a tool result or finishing a run does not itself deliver a reply. This distinction prevents internal reasoning and command output from becoming user messages, and lets a run end silently when it has nothing further to communicate.
 
-For the opt-in LFM3 text model, a completed nonempty plain answer becomes a `send_message` command with `end_run=true`, only when that tool is bound. The existing run owner validates, records and delivers it through the ordinary action path. Empty output and an explicit `finish` call remain silent; malformed tool markup fails instead of being published as an answer. Native model behavior is unchanged.
+For the fixed LFM3 text model, a completed nonempty plain answer becomes a `send_message` command with `end_run=true`, only when that tool is bound. The existing run owner validates, records and delivers it through the ordinary action path. Empty output and an explicit `finish` call remain silent; malformed tool markup fails instead of being published as an answer.
 
 ## Conversation work snapshots
 

@@ -1,11 +1,4 @@
-"""Hikari chat with LangChain tool binding over its text-only stream.
-
-Native Hikari accepts only text messages, so `bind_tools` renders the tool definitions
-into the system message in the Qwen checkpoint's own tool format and parses
-`<tool_call>` blocks in the reply back into LangChain tool calls.
-The explicit LFM3 trial instead sends structured tools and tool-role history to
-its checkpoint's own chat template; the same parser and action owner apply.
-"""
+"""Structured LFM3 prompts and validated agent commands over Hikari streams."""
 
 import json
 import logging
@@ -41,23 +34,6 @@ MAX_EVENT_CHARACTERS = 300000
 INFERENCE_TIMEOUT = httpx.Timeout(None, connect=3)
 logger = logging.getLogger(__name__)
 
-# The checkpoint chat template's tool section, verbatim.
-TOOLS_HEADER = "# Tools\n\nYou have access to the following functions:\n\n<tools>"
-TOOLS_FOOTER = (
-    "\n</tools>\n\nIf you choose to call a function ONLY reply in the following "
-    "format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n"
-    "<parameter=example_parameter_1>\nvalue_1\n</parameter>\n"
-    "<parameter=example_parameter_2>\nThis is the value for the second parameter\n"
-    "that can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n"
-    "<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an "
-    "inner <function=...></function> block must be nested within "
-    "<tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n"
-    "- You may provide optional reasoning for your function call in natural "
-    "language BEFORE the function call, but NOT after\n- If there is no function "
-    "call available, answer the question like normal with your current knowledge "
-    "and do not tell the user about function calls\n</IMPORTANT>"
-)
-# Hikari drops special tokens, so the <tool_call> wrapper may not arrive.
 TOOL_CALL = re.compile(
     r"(?:<tool_call>\s*)?<function=([^>\s]+)>(.*?)</function>(?:\s*</tool_call>)?",
     re.DOTALL,
@@ -112,16 +88,6 @@ def parse_command(text: str) -> ToolCommand:
         ) from error
 
 
-def render_tool_call(name: str, arguments: dict[str, Any]) -> str:
-    parameters = "".join(
-        f"<parameter={key}>\n"
-        + (value if isinstance(value, str) else json.dumps(value))
-        + "\n</parameter>\n"
-        for key, value in arguments.items()
-    )
-    return f"<tool_call>\n<function={name}>\n{parameters}</function>\n</tool_call>"
-
-
 def is_string(schema: Any) -> bool:
     if not isinstance(schema, dict):
         return False
@@ -132,16 +98,14 @@ def is_string(schema: Any) -> bool:
     return schema.get("type") == "string"
 
 
-def tool_section(tools: Sequence[dict]) -> str:
-    """The system prompt's tool definitions, as the checkpoint template renders them."""
-    return (
-        TOOLS_HEADER + "".join("\n" + json.dumps(tool) for tool in tools) + TOOLS_FOOTER
-    )
-
-
 def tool_characters(tools: Sequence[BaseTool]) -> int:
     """Characters the bound tools add to the prompt."""
-    return len(tool_section([convert_to_openai_tool(tool) for tool in tools]))
+    functions = [convert_to_openai_tool(tool)["function"] for tool in tools]
+    return len(
+        "<tools>\n"
+        + "\n".join(json.dumps(function) for function in functions)
+        + "\n</tools>"
+    )
 
 
 def parse_tool_calls(text: str, tools: Sequence[dict]) -> tuple[str, list[dict]]:
@@ -199,7 +163,7 @@ async def stream_data(lines: AsyncIterator[str]) -> AsyncIterator[str]:
 
 
 class HikariChatModel(BaseChatModel):
-    """Hikari's text-only API with tools rendered in the checkpoint's format."""
+    """The fixed LFM3 API with checkpoint-rendered tools and structured history."""
 
     client: httpx.AsyncClient = Field(exclude=True)
     hikari_url: str
@@ -220,56 +184,7 @@ class HikariChatModel(BaseChatModel):
         )
 
     @staticmethod
-    def _wire_messages(
-        messages: list[BaseMessage], tools: Sequence[dict]
-    ) -> list[dict[str, str]]:
-        wire: list[dict[str, str]] = []
-        for message in messages:
-            if not isinstance(message.content, str):
-                raise TypeError("Hikari accepts only text messages")
-            if isinstance(message, ToolMessage):
-                response = f"<tool_response>\n{message.content}\n</tool_response>"
-                if (
-                    wire
-                    and wire[-1]["role"] == "user"
-                    and wire[-1]["content"].startswith("<tool_response>")
-                ):
-                    wire[-1]["content"] += "\n" + response
-                else:
-                    wire.append({"role": "user", "content": response})
-            elif isinstance(message, AIMessage):
-                if message.invalid_tool_calls:
-                    raise ValueError("Hikari cannot replay invalid tool calls")
-                content = "\n\n".join(
-                    part
-                    for part in [
-                        message.content.strip(),
-                        *(
-                            render_tool_call(call["name"], call["args"])
-                            for call in message.tool_calls
-                        ),
-                    ]
-                    if part
-                )
-                wire.append({"role": "assistant", "content": content})
-            elif isinstance(message, SystemMessage):
-                wire.append({"role": "system", "content": message.content})
-            elif isinstance(message, HumanMessage):
-                wire.append({"role": "user", "content": message.content})
-            else:
-                raise TypeError(
-                    "Hikari accepts system, user, assistant and tool messages"
-                )
-        if tools:
-            section = tool_section(tools)
-            if wire and wire[0]["role"] == "system":
-                wire[0]["content"] = section + "\n\n" + wire[0]["content"].strip()
-            else:
-                wire.insert(0, {"role": "system", "content": section})
-        return wire
-
-    @staticmethod
-    def _lfm3_wire_messages(messages: list[BaseMessage]) -> list[dict]:
+    def _wire_messages(messages: list[BaseMessage]) -> list[dict]:
         wire = []
         for message in messages:
             if not isinstance(message.content, str):
@@ -334,16 +249,15 @@ class HikariChatModel(BaseChatModel):
         length = 0
         finished = False
         done = False
-        experimental = self.model_id == "lfm3-1.7b-bf16"
+        if self.model_id != "lfm3-1.7b-bf16":
+            raise ValueError("Kadan uses the fixed LFM3 conversation model")
         try:
             async with self.client.stream(
                 "POST",
                 self.hikari_url + "/v1/chat/completions",
                 json={
-                    "messages": self._lfm3_wire_messages(messages)
-                    if experimental
-                    else self._wire_messages(messages, tools),
-                    **({"tools": list(tools)} if experimental else {}),
+                    "messages": self._wire_messages(messages),
+                    "tools": list(tools),
                     "model": self.model_id,
                     "stream": True,
                     "conversation_id": self.conversation_key,
@@ -448,7 +362,7 @@ class AgentInference:
         ).bind_tools(tools)
         response = await model.ainvoke(messages)
         if not response.tool_calls:
-            if model_id == "lfm3-1.7b-bf16" and response.content.strip():
+            if response.content.strip():
                 if TOOL_MARKUP.search(response.content):
                     raise ServiceError(
                         "The agent returned an invalid tool command.",

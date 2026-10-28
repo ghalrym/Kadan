@@ -2,7 +2,7 @@
 
 Kadan agents can use their configured computer to browse websites, read and change files, and run commands or code during text conversations. Hikari supplies the model's decisions; Kadan executes the actions. Voice calls do not provide these tools.
 
-Operators can opt text conversations into the experimental LFM3 BF16 worker. This uses the same saved session, personas, tool permissions and action recovery. The trial must have its own enabled worker and user-approved checkpoint download. It does not change the saved Hikari tier or fall back to that tier when unavailable. Its bounded context can reject long conversations; the trial's tool-use quality and speed need manual evaluation before relying on it.
+Text conversations use the fixed LFM3 BF16 worker with the same saved session, personas, tool permissions and action recovery. Its worker must be available and the user must approve the checkpoint download. It does not fall back to another conversation model when unavailable. Its context can reject long conversations, and tool-use quality and speed still need review before relying on it.
 
 The current deployment shares one computer across agents. Actions and manual input can affect the same browser, files and processes. Agent separation in Tsuchi does not create separate desktops. Files created on the computer are not automatically added to Tsuchi's file library.
 
@@ -10,7 +10,7 @@ A computer action can fail because the computer, website, program or requested f
 
 Action results have a limited text size. The current agent cannot inspect screenshot pixels through its text model, even though users can view the computer. A delivered chat message does not prove that an external change succeeded; inspect the resulting page, file or application when confirmation matters.
 
-An optional experimental vision worker lets the agent ask about a fresh screenshot of its configured computer. It returns a text observation to the same conversation; it does not control the computer or replace the conversation model. The experiment is disabled by default and requires an operator to enable it and a user to approve the model download. Oversized screenshots, unavailable workers and failed inference report an error. Observations can be inaccurate, and a screenshot describes only the moment captured. This path has unit validation; model execution and visual accuracy still require a manual trial.
+The LFM3 vision worker lets the agent ask about a fresh screenshot of its configured computer. It returns a text observation to the same conversation; it does not control the computer or replace the conversation model. The user must approve its model download. Oversized screenshots, unavailable workers and failed inference report an error. Observations can be inaccurate, and a screenshot describes only the moment captured.
 
 An interrupted or timed-out action may already have happened. After a runner restart, Kadan does not automatically replay an unconfirmed action that could change state; the agent is told to check before retrying. Stopping a response does not undo actions or guarantee that an already launched external process has stopped.
 
