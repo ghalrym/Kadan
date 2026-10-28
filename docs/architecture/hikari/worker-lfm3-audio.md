@@ -74,3 +74,21 @@ frontend passed HTTP and API-proxy checks, but the browser independently
 blocked localhost navigation with ERR_BLOCKED_BY_CLIENT. No policy, extension,
 certificate or network setting was changed to bypass that block. A saved
 no-autoplay WAV player provides a user-driven morning listening option.
+
+The owner-authorized private streaming probe decoded five finite chunks totalling
+74,880 samples for one real reply. Its first generated audio frame arrived
+0.232 seconds and its first private PCM chunk 0.683 seconds after probe
+construction. The final validated WAV arrived at 8.83 seconds from call start.
+Chunked and offline decoding had equal sample counts but were not bit-identical:
+maximum absolute sample difference was 0.00724. Audible equivalence was not
+validated, and the delivered waveform remained the original offline decode.
+
+A separate real turn was interrupted after monitoring observed the first decoded
+chunk. Cleanup was acknowledged in 0.215 seconds, no audio or late events
+appeared in the bounded check, and GPU memory returned to idle. This establishes
+generation/decoder interruption; microphone capture and audible-playback barge-in
+remain unverified. The diagnostic flag was disabled after these measurements.
+The official callbacks provide no reliable word-to-sample alignment, and their
+end callback also runs after errors or output limits. The trial therefore keeps
+speech behind final EOS/privacy validation and claims no earlier playback from
+this diagnostic.
