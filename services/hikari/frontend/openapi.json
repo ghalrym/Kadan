@@ -414,42 +414,6 @@
         "title": "CompletionChoice",
         "type": "object"
       },
-      "CompletionMessage": {
-        "additionalProperties": false,
-        "properties": {
-          "meta": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Meta"
-          },
-          "role": {
-            "enum": [
-              "system",
-              "user",
-              "assistant"
-            ],
-            "title": "Role",
-            "type": "string"
-          },
-          "text": {
-            "minLength": 1,
-            "title": "Text",
-            "type": "string"
-          }
-        },
-        "required": [
-          "role",
-          "text"
-        ],
-        "title": "CompletionMessage",
-        "type": "object"
-      },
       "CompletionOutputMessage": {
         "properties": {
           "meta": {
@@ -499,14 +463,7 @@
           },
           "messages": {
             "items": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/CompletionMessage"
-                },
-                {
-                  "$ref": "#/components/schemas/Lfm3Message"
-                }
-              ]
+              "$ref": "#/components/schemas/Lfm3Message"
             },
             "minItems": 1,
             "title": "Messages",
@@ -515,6 +472,7 @@
           "model": {
             "anyOf": [
               {
+                "const": "lfm3-1.7b-bf16",
                 "type": "string"
               },
               {
@@ -629,32 +587,6 @@
           "context_limit"
         ],
         "title": "ContextRequest",
-        "type": "object"
-      },
-      "CustomVoice": {
-        "additionalProperties": false,
-        "properties": {
-          "instruction": {
-            "default": "",
-            "maxLength": 8000,
-            "title": "Instruction",
-            "type": "string"
-          },
-          "mode": {
-            "const": "custom",
-            "title": "Mode",
-            "type": "string"
-          },
-          "speaker": {
-            "title": "Speaker",
-            "type": "string"
-          }
-        },
-        "required": [
-          "mode",
-          "speaker"
-        ],
-        "title": "CustomVoice",
         "type": "object"
       },
       "DecisionPlaygroundResponse": {
@@ -1227,6 +1159,17 @@
         "additionalProperties": false,
         "description": "Structured history consumed only by the explicit experimental checkpoint.",
         "properties": {
+          "meta": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meta"
+          },
           "role": {
             "enum": [
               "system",
@@ -1486,6 +1429,61 @@
         "title": "MetricsResponse",
         "type": "object"
       },
+      "ModelAssignments": {
+        "description": "Fixed assignments; checkpoint availability is observed from workers.",
+        "properties": {
+          "decisions": {
+            "const": "laya",
+            "default": "laya",
+            "title": "Decisions",
+            "type": "string"
+          },
+          "formatting": {
+            "const": "lfm3-1.7b-bf16",
+            "default": "lfm3-1.7b-bf16",
+            "title": "Formatting",
+            "type": "string"
+          },
+          "image": {
+            "const": "qwen-image-2.1-turbo",
+            "default": "qwen-image-2.1-turbo",
+            "title": "Image",
+            "type": "string"
+          },
+          "llm": {
+            "const": "lfm3-1.7b-bf16",
+            "default": "lfm3-1.7b-bf16",
+            "title": "Llm",
+            "type": "string"
+          },
+          "speech": {
+            "const": "lfm3-audio-2b-bf16",
+            "default": "lfm3-audio-2b-bf16",
+            "title": "Speech",
+            "type": "string"
+          },
+          "transcription": {
+            "const": "whisper-medium",
+            "default": "whisper-medium",
+            "title": "Transcription",
+            "type": "string"
+          },
+          "video": {
+            "const": "h3-fl2va-int8-turbo",
+            "default": "h3-fl2va-int8-turbo",
+            "title": "Video",
+            "type": "string"
+          },
+          "vision": {
+            "const": "lfm3-vl-2b-bf16",
+            "default": "lfm3-vl-2b-bf16",
+            "title": "Vision",
+            "type": "string"
+          }
+        },
+        "title": "ModelAssignments",
+        "type": "object"
+      },
       "ModelLifecycleStatus": {
         "properties": {
           "configured_context_limit": {
@@ -1522,9 +1520,15 @@
             "title": "Error"
           },
           "max_output_tokens": {
-            "default": 256,
-            "title": "Max Output Tokens",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Output Tokens"
           },
           "memory": {
             "anyOf": [
@@ -1599,11 +1603,7 @@
           "model_id": {
             "anyOf": [
               {
-                "enum": [
-                  "qwen3.6-35b-a3b-q4-k-m",
-                  "qwen3.8-flash-next-ud-iq3-xxs",
-                  "qwen3.8-flash-next-q3-k-xl"
-                ],
+                "const": "lfm3-1.7b-bf16",
                 "type": "string"
               },
               {
@@ -2150,30 +2150,7 @@
       },
       "SettingsRequest": {
         "additionalProperties": false,
-        "description": "Persist the hardware tier and transcription formatting.",
         "properties": {
-          "license_acknowledged": {
-            "default": false,
-            "description": "The user read the license notices of the tier's checkpoints.",
-            "title": "License Acknowledged",
-            "type": "boolean"
-          },
-          "tier": {
-            "anyOf": [
-              {
-                "enum": [
-                  "go",
-                  "plus",
-                  "pro"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Tier"
-          },
           "whisper_formatting": {
             "anyOf": [
               {
@@ -2190,41 +2167,29 @@
         "type": "object"
       },
       "SettingsResponse": {
-        "description": "Expose the hardware tier and transcription formatting.",
         "properties": {
-          "tier": {
-            "anyOf": [
-              {
-                "enum": [
-                  "go",
-                  "plus",
-                  "pro"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The selected hardware tier; null until the user chooses one.",
-            "title": "Tier"
+          "defaults": {
+            "$ref": "#/components/schemas/ModelAssignments"
           },
-          "tiers": {
+          "models": {
             "items": {
-              "$ref": "#/components/schemas/TierSetting"
+              "$ref": "#/components/schemas/CheckpointStatus"
             },
-            "title": "Tiers",
+            "title": "Models",
             "type": "array"
           },
+          "video_defaults": {
+            "$ref": "#/components/schemas/VideoDefaults"
+          },
           "whisper_formatting": {
-            "description": "Normalize speech transcripts with S1-mini by Superwhisper; retain raw text.",
             "title": "Whisper Formatting",
             "type": "boolean"
           }
         },
         "required": [
-          "tier",
-          "tiers",
+          "models",
+          "defaults",
+          "video_defaults",
           "whisper_formatting"
         ],
         "title": "SettingsResponse",
@@ -2242,15 +2207,10 @@
           "script": {
             "title": "Script",
             "type": "string"
-          },
-          "voice_description": {
-            "title": "Voice Description",
-            "type": "string"
           }
         },
         "required": [
           "audio",
-          "voice_description",
           "script"
         ],
         "title": "SpeechHistoryResponse",
@@ -2258,51 +2218,95 @@
       },
       "SpeechModelOption": {
         "properties": {
-          "default_speaker": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+          "default_gender": {
+            "default": "female",
+            "enum": [
+              "female",
+              "male"
             ],
-            "title": "Default Speaker"
+            "title": "Default Gender",
+            "type": "string"
+          },
+          "default_language": {
+            "default": "American English",
+            "enum": [
+              "Arabic",
+              "Danish",
+              "German",
+              "Greek",
+              "British English",
+              "American English",
+              "Finnish",
+              "French",
+              "Hebrew",
+              "Italian",
+              "Japanese",
+              "Korean",
+              "Dutch",
+              "Polish",
+              "Portuguese",
+              "Spanish",
+              "Swedish",
+              "Turkish",
+              "Chinese"
+            ],
+            "title": "Default Language",
+            "type": "string"
+          },
+          "genders": {
+            "items": {
+              "enum": [
+                "female",
+                "male"
+              ],
+              "type": "string"
+            },
+            "title": "Genders",
+            "type": "array"
           },
           "id": {
+            "const": "lfm3-audio-2b-bf16",
             "title": "Id",
             "type": "string"
           },
-          "mode": {
-            "enum": [
-              "custom",
-              "describe",
-              "clone"
-            ],
-            "title": "Mode",
-            "type": "string"
+          "languages": {
+            "items": {
+              "enum": [
+                "Arabic",
+                "Danish",
+                "German",
+                "Greek",
+                "British English",
+                "American English",
+                "Finnish",
+                "French",
+                "Hebrew",
+                "Italian",
+                "Japanese",
+                "Korean",
+                "Dutch",
+                "Polish",
+                "Portuguese",
+                "Spanish",
+                "Swedish",
+                "Turkish",
+                "Chinese"
+              ],
+              "type": "string"
+            },
+            "title": "Languages",
+            "type": "array"
           },
           "name": {
             "title": "Name",
             "type": "string"
-          },
-          "speakers": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Speakers",
-            "type": "array"
-          },
-          "supports_instruction": {
-            "default": false,
-            "title": "Supports Instruction",
-            "type": "boolean"
           }
         },
         "required": [
           "id",
           "name",
-          "mode"
+          "languages",
+          "genders"
         ],
         "title": "SpeechModelOption",
         "type": "object"
@@ -2310,14 +2314,44 @@
       "SpeechRequest": {
         "additionalProperties": false,
         "properties": {
+          "gender": {
+            "default": "female",
+            "enum": [
+              "female",
+              "male"
+            ],
+            "title": "Gender",
+            "type": "string"
+          },
           "language": {
-            "default": "Auto",
+            "default": "American English",
+            "enum": [
+              "Arabic",
+              "Danish",
+              "German",
+              "Greek",
+              "British English",
+              "American English",
+              "Finnish",
+              "French",
+              "Hebrew",
+              "Italian",
+              "Japanese",
+              "Korean",
+              "Dutch",
+              "Polish",
+              "Portuguese",
+              "Spanish",
+              "Swedish",
+              "Turkish",
+              "Chinese"
+            ],
             "title": "Language",
             "type": "string"
           },
           "model_id": {
-            "const": "qwen-tts-1.7b-custom",
-            "default": "qwen-tts-1.7b-custom",
+            "const": "lfm3-audio-2b-bf16",
+            "default": "lfm3-audio-2b-bf16",
             "title": "Model Id",
             "type": "string"
           },
@@ -2325,14 +2359,10 @@
             "minLength": 1,
             "title": "Script",
             "type": "string"
-          },
-          "voice": {
-            "$ref": "#/components/schemas/CustomVoice"
           }
         },
         "required": [
-          "script",
-          "voice"
+          "script"
         ],
         "title": "SpeechRequest",
         "type": "object"
@@ -2362,86 +2392,6 @@
         "title": "SpeechUnavailable",
         "type": "object"
       },
-      "TierModel": {
-        "description": "A tier's checkpoint for one modality, with its live download state.",
-        "properties": {
-          "modality": {
-            "enum": [
-              "llm",
-              "image",
-              "video",
-              "speech",
-              "transcription",
-              "formatting"
-            ],
-            "title": "Modality",
-            "type": "string"
-          },
-          "model": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/CheckpointStatus"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Null while the tier assigns no checkpoint to this modality."
-          }
-        },
-        "required": [
-          "modality",
-          "model"
-        ],
-        "title": "TierModel",
-        "type": "object"
-      },
-      "TierSetting": {
-        "description": "A selectable hardware tier and the checkpoints it downloads.",
-        "properties": {
-          "id": {
-            "enum": [
-              "go",
-              "plus",
-              "pro"
-            ],
-            "title": "Id",
-            "type": "string"
-          },
-          "models": {
-            "items": {
-              "$ref": "#/components/schemas/TierModel"
-            },
-            "title": "Models",
-            "type": "array"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "ram_gb": {
-            "title": "Ram Gb",
-            "type": "integer"
-          },
-          "video_defaults": {
-            "$ref": "#/components/schemas/VideoDefaults"
-          },
-          "vram_gb": {
-            "title": "Vram Gb",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "vram_gb",
-          "ram_gb",
-          "video_defaults",
-          "models"
-        ],
-        "title": "TierSetting",
-        "type": "object"
-      },
       "TranscriptionRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2460,7 +2410,7 @@
                 "type": "null"
               }
             ],
-            "description": "Null or omitted uses the saved formatting setting. Enabled uses S1-mini by Superwhisper to normalize the transcript; raw_text is always retained.",
+            "description": "Null or omitted uses the saved formatting setting. Enabled uses LFM3 to normalize the transcript; raw_text is always retained.",
             "title": "Formatting"
           },
           "language": {
@@ -2617,12 +2567,14 @@
         "description": "Suggested clip settings; request limits and memory admission are separate.",
         "properties": {
           "duration": {
+            "default": 5,
             "maximum": 15.0,
             "minimum": 1.0,
             "title": "Duration",
             "type": "integer"
           },
           "resolution": {
+            "default": "480p",
             "enum": [
               "480p",
               "768p"
@@ -2631,10 +2583,6 @@
             "type": "string"
           }
         },
-        "required": [
-          "duration",
-          "resolution"
-        ],
         "title": "VideoDefaults",
         "type": "object"
       },
@@ -3265,7 +3213,6 @@
     },
     "/v1/audio/speech": {
       "get": {
-        "description": "Return empty speech history and blank editor defaults, without fixture audio.",
         "operationId": "listSpeech",
         "responses": {
           "200": {
@@ -3285,7 +3232,7 @@
         ]
       },
       "post": {
-        "description": "Queue native speech; cancellation waits for owned cleanup.",
+        "description": "Queue the approved LFM checkpoint; cancellation waits for owned cleanup.",
         "operationId": "generateSpeech",
         "requestBody": {
           "content": {
@@ -3337,7 +3284,7 @@
     },
     "/v1/audio/speech/models": {
       "get": {
-        "description": "Expose only enabled native checkpoint integrations.",
+        "description": "Expose the fixed audio checkpoint's supported language and gender choices.",
         "operationId": "listSpeechModels",
         "responses": {
           "200": {
@@ -3415,7 +3362,7 @@
     },
     "/v1/audio/transcriptions/models": {
       "get": {
-        "description": "List all unique official checkpoints and the persisted selection.",
+        "description": "Report the fixed transcription checkpoint and observed model store.",
         "operationId": "getWhisperModels",
         "responses": {
           "200": {
@@ -4179,7 +4126,6 @@
     },
     "/v1/settings": {
       "get": {
-        "description": "Read the shared model store, including each tier's download progress.\n\nRaise HTTP 503 if the worker status is unavailable; this read does not load\na model or configure another modality.",
         "operationId": "getSettings",
         "responses": {
           "200": {
@@ -4199,7 +4145,6 @@
         ]
       },
       "put": {
-        "description": "Persist the hardware tier and queue downloads of its checkpoints, and transcription formatting. The tier selects the language, image and video models and unloads a resident language model of another tier after earlier chats finish.",
         "operationId": "updateSettings",
         "requestBody": {
           "content": {
