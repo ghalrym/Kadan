@@ -7,8 +7,10 @@ import json
 import logging
 import multiprocessing
 import os
+import resource
 import socket
 import subprocess
+import time
 from contextlib import suppress
 from pathlib import Path
 
@@ -81,6 +83,7 @@ def execute_child(
         connection.send(message)
 
     try:
+        started = time.perf_counter()
         store = ModelStore(Path(root), metadata, manifest)
         if request["operation"] == "download":
             result = store.download(
@@ -97,9 +100,33 @@ def execute_child(
             if fraction <= 0:
                 raise ValueError("Insufficient CUDA allocation after runtime headroom")
             torch.cuda.set_per_process_memory_fraction(min(1.0, fraction), device=0)
+            torch.cuda.reset_peak_memory_stats(0)
             backend = importlib.import_module("experimental_worker." + backend_name)
             result = backend.execute(
                 request["input"], request["operation"], str(store.root), emit
+            )
+            torch.cuda.synchronize()
+            timing = result.setdefault("timing", {})
+            timing.update(
+                executor_seconds=time.perf_counter() - started,
+                peak_rss_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                * 1024,
+                peak_cuda_allocated_bytes=torch.cuda.max_memory_allocated(0),
+                peak_cuda_reserved_bytes=torch.cuda.max_memory_reserved(0),
+            )
+            # Operator measurements contain counts/times only, never prompts,
+            # generated text, screenshots or audio. CUDA allocator peaks exclude
+            # driver/context memory; the server trial also samples nvidia-smi.
+            print(
+                "LFM3_METRIC "
+                + json.dumps(
+                    {
+                        "request_id": request["id"],
+                        "model": metadata["id"],
+                        "timing": timing,
+                    }
+                ),
+                flush=True,
             )
         emit({"state": "result", "result": result})
     except BaseException as error:

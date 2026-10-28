@@ -38,15 +38,23 @@ def messages(task: dict) -> list[dict]:
             raise ValueError("Unsupported LFM3 message role.")
         content = message.get("text", message.get("content"))
         calls = message.get("tool_calls")
-        if not isinstance(content, str) or (not content and not calls and role != "tool"):
+        if not isinstance(content, str) or (
+            not content and not calls and role != "tool"
+        ):
             raise ValueError("LFM3 requires nonempty text messages.")
         row = {"role": role, "content": content}
         if calls:
-            if role != "assistant" or any(not isinstance(call.get("function", {}).get("arguments"), dict) for call in calls):
+            if role != "assistant" or any(
+                not isinstance(call.get("function", {}).get("arguments"), dict)
+                for call in calls
+            ):
                 raise ValueError("LFM3 assistant tool arguments must be mappings.")
             row["tool_calls"] = calls
         if role == "tool":
-            if not isinstance(message.get("tool_call_id"), str) or not message["tool_call_id"]:
+            if (
+                not isinstance(message.get("tool_call_id"), str)
+                or not message["tool_call_id"]
+            ):
                 raise ValueError("LFM3 tool results require their call ID.")
             row["tool_call_id"] = message["tool_call_id"]
         result.append(row)
@@ -143,9 +151,16 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
     inputs = inputs.to(model.device)
     # Dense math attention can allocate [heads, chunk, full-history] scores.
     # Fail explicitly if this GPU lacks an efficient SDPA kernel for the mask.
-    with torch.inference_mode(), sdpa_kernel([
-        SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION,
-    ]):
+    with (
+        torch.inference_mode(),
+        sdpa_kernel(
+            [
+                SDPBackend.FLASH_ATTENTION,
+                SDPBackend.EFFICIENT_ATTENTION,
+                SDPBackend.CUDNN_ATTENTION,
+            ]
+        ),
+    ):
         output = generate_text(model, inputs)
     generated = output[0, prompt_tokens:]
     # Preserve reasoning and tool delimiters until parsing; some tokenizer builds
@@ -155,4 +170,9 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
     finish = "length" if len(generated) >= MAX_NEW_TOKENS else "stop"
     if task.get("stream") and text:
         emit({"state": "content", "content": text})
-    return {"model": MODEL_ID, "text": text, "finish_reason": finish}
+    return {
+        "model": MODEL_ID,
+        "text": text,
+        "finish_reason": finish,
+        "timing": {"output_tokens": len(generated), "prefill_tokens": prompt_tokens},
+    }
