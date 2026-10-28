@@ -234,7 +234,9 @@ class LfmFormattingTests(unittest.IsolatedAsyncioTestCase):
             result = await transcription.transcribe(TranscriptionTask(audio="unit"))
         task = submit.await_args_list[1].args[0]
         self.assertEqual(task.model, "lfm3-1.7b-bf16")
-        self.assertEqual(json.loads(task.messages[-1].text), {"transcript": raw["raw_text"]})
+        self.assertEqual(
+            json.loads(task.messages[-1].text), {"transcript": raw["raw_text"]}
+        )
         self.assertEqual(
             submit.await_args_list[1].kwargs,
             {"feature": "llm", "operation": "completion"},
