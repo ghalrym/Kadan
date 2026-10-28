@@ -63,6 +63,47 @@ class FixedStackTests(unittest.TestCase):
         with self.assertRaisesRegex(InferenceFailure, 'fixed stack'):
             hub._store_targets(task)
 
+    def test_native_catalog_requires_a_connected_owner_for_each_kind(self):
+        hub = WorkerHub()
+        catalog = ModelStoreStatus(models=[
+            checkpoint('laya', 'decision'), checkpoint('qwen-image-2.1-turbo', 'image'),
+            checkpoint('whisper-medium', 'transcription'), checkpoint('h3-fl2va-int8-turbo', 'video'),
+        ], whisper_formatting=False)
+        hub.primary = 'decision'
+        hub.workers = {'decision': SimpleNamespace(models=catalog, kind='decision')}
+        hub._refresh_models()
+        self.assertEqual([model.id for model in hub.models.models], ['laya'])
+        self.assertFalse(hub.models.whisper_formatting)
+        hub.workers['image'] = SimpleNamespace(models=catalog, kind='image')
+        hub._refresh_models()
+        self.assertEqual([model.id for model in hub.models.models], ['laya', 'qwen-image-2.1-turbo'])
+        hub.workers.pop('image')
+        hub._refresh_models()
+        self.assertEqual([model.id for model in hub.models.models], ['laya'])
+
+    def test_transcription_settings_only_target_native_persistence(self):
+        hub = WorkerHub()
+        language = SimpleNamespace(kind='lfm3_llm')
+        image = SimpleNamespace(kind='image')
+        task = InferenceTask(operation='configure', input={'feature': 'whisper_formatting', 'enabled': False})
+        with patch.object(hub, '_ready', return_value=[language, image]):
+            self.assertEqual(hub._store_targets(task), [image])
+        with patch.object(hub, '_ready', return_value=[language]):
+            with self.assertRaises(InferenceFailure) as error:
+                hub._store_targets(task)
+        self.assertEqual(error.exception.status_code, 503)
+
+    def test_fixed_medium_selection_reaches_native_store_but_other_sizes_do_not(self):
+        hub = WorkerHub()
+        speech = SimpleNamespace(kind='speech')
+        with patch.object(hub, '_ready', return_value=[speech]):
+            task = InferenceTask(operation='configure', input={'feature': 'whisper_selection', 'model': 'medium'})
+            self.assertEqual(hub._store_targets(task), [speech])
+            other = InferenceTask(operation='configure', input={'feature': 'whisper_selection', 'model': 'tiny.en'})
+            with self.assertRaises(InferenceFailure) as error:
+                hub._store_targets(other)
+        self.assertEqual(error.exception.status_code, 422)
+
 
 class LfmFormattingTests(unittest.IsolatedAsyncioTestCase):
     async def test_late_replica_receives_context_from_observed_lfm_catalog(self):
@@ -71,7 +112,7 @@ class LfmFormattingTests(unittest.IsolatedAsyncioTestCase):
         source['context_limit'] = 4096
         target = {**source, 'context_limit': 8192}
         hub.models = ModelStoreStatus(models=[source])
-        worker = SimpleNamespace(id='replica', models=ModelStoreStatus(models=[target]), jobs=set())
+        worker = SimpleNamespace(id='replica', kind='lfm3_llm', models=ModelStoreStatus(models=[target]), jobs=set())
         sent = []
 
         async def send(message):
@@ -85,6 +126,14 @@ class LfmFormattingTests(unittest.IsolatedAsyncioTestCase):
         }])
         self.assertFalse(hub.jobs)
         self.assertFalse(worker.jobs)
+
+    async def test_lfm_replica_does_not_acknowledge_unowned_native_preferences(self):
+        hub = WorkerHub()
+        model = checkpoint('lfm3-1.7b-bf16', 'llm')
+        hub.models = ModelStoreStatus(models=[model], selected_whisper='medium', whisper_formatting=False)
+        worker = SimpleNamespace(kind='lfm3_llm', models=ModelStoreStatus(models=[model]), send=AsyncMock())
+        await hub._synchronize(worker)
+        worker.send.assert_not_awaited()
 
     def raw(self):
         return {'text': 'hello there', 'raw_text': 'hello there', 'language': 'en',

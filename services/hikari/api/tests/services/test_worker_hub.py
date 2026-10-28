@@ -413,8 +413,9 @@ class JobTests(HubTestCase):
         job = await submission
         self.assertEqual(job.machines, {worker.id})
 
-    async def test_settings_go_to_every_worker_and_settle_once_all_finish(self):
-        first, _ = await self.connect("lfm3_llm")
+    async def test_settings_go_to_native_stores_and_settle_once_all_finish(self):
+        language, _ = await self.connect("lfm3_llm")
+        first, _ = await self.connect("decision")
         second, _ = await self.connect("image")
         job = await self.hub.submit(
             InferenceTask(
@@ -422,6 +423,7 @@ class JobTests(HubTestCase):
                 input={"feature": "whisper_formatting", "enabled": False},
             )
         )
+        self.assertFalse(language.commands("submit"))
         first.push({"id": job.request.id, "state": "succeeded", "result": {}})
         await self.settle()
         self.assertFalse(job.result.done())
@@ -953,7 +955,7 @@ class CancellationHandoffTests(CancellationTestCase):
                 self.assertEqual(await job.result, {"text": "current"})
 
     async def test_cancelled_store_waits_for_all_remaining_workers(self):
-        first = self.add_worker("first")
+        first = self.add_worker("first", "decision")
         second = self.add_worker("second", "image")
         job = await self.add_job(request=self.store_request())
         await self.hub.cancel(job.request.id)
@@ -968,7 +970,7 @@ class CancellationHandoffTests(CancellationTestCase):
         self.assertEqual(len(second.websocket.commands("submit")), 1)
 
     async def test_cancel_during_store_submission_skips_unsent_workers(self):
-        first = self.add_worker("first")
+        first = self.add_worker("first", "decision")
         second = self.add_worker("second", "image")
         entered, release = asyncio.Event(), asyncio.Event()
         send_text = first.websocket.send_text
@@ -1011,7 +1013,7 @@ class CancellationHandoffTests(CancellationTestCase):
         self.assert_cancelled(job)
 
     async def test_store_cancel_attempts_other_workers_after_a_send_failure(self):
-        workers = [self.add_worker("first"), self.add_worker("second", "image")]
+        workers = [self.add_worker("first", "decision"), self.add_worker("second", "image")]
         job = await self.add_job(request=self.store_request())
         first, second = [self.hub.workers[worker_id] for worker_id in job.machines]
         with (
@@ -1026,7 +1028,7 @@ class CancellationHandoffTests(CancellationTestCase):
         self.assert_cancelled(job)
 
     async def test_send_disconnect_cancels_remaining_store_workers_and_joins(self):
-        self.add_worker("first")
+        self.add_worker("first", "decision")
         self.add_worker("second", "image")
         job = await self.add_job(request=self.store_request())
         first, second = [self.hub.workers[worker_id] for worker_id in job.machines]
@@ -1058,7 +1060,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
         return job
 
     async def test_early_terminal_does_not_complete_remaining_fanout(self):
-        first = self.add_worker("first")
+        first = self.add_worker("first", "decision")
         second = self.add_worker("second", "image")
         job = self.register_job()
 
@@ -1075,7 +1077,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
         self.assertEqual(raised.exception.status_code, 422)
 
     async def test_all_early_terminals_wait_for_submission_to_close(self):
-        workers = [self.add_worker("first"), self.add_worker("second", "image")]
+        workers = [self.add_worker("first", "decision"), self.add_worker("second", "image")]
         job = self.register_job()
         completed_during_send = []
 
@@ -1097,7 +1099,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
         self.assertEqual(job.machines, set())
 
     async def test_cancel_after_early_terminal_stops_unsent_targets(self):
-        first = self.add_worker("first")
+        first = self.add_worker("first", "decision")
         second = self.add_worker("second", "image")
         third = self.add_worker("third", "video")
         job = self.register_job()
@@ -1143,7 +1145,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
         self.assert_cancelled(job)
 
     async def test_cancelled_partial_fanout_cannot_succeed(self):
-        first = self.add_worker("first")
+        first = self.add_worker("first", "decision")
         second = self.add_worker("second", "image")
         third = self.add_worker("third", "video")
         job = self.register_job()
@@ -1196,7 +1198,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
         self.assertEqual(raised.exception.status_code, 507)
 
     async def test_cancel_preserves_prior_store_failure_while_other_send_is_open(self):
-        first = self.add_worker("first")
+        first = self.add_worker("first", "decision")
         second = self.add_worker("second", "image")
         third = self.add_worker("third", "video")
         job = self.register_job()
@@ -1226,7 +1228,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
         self.assertEqual(raised.exception.status_code, 422)
 
     async def test_disconnected_unsent_store_target_is_incomplete(self):
-        first = self.add_worker("first")
+        first = self.add_worker("first", "decision")
         second = self.add_worker("second", "image")
         job = self.register_job()
 
@@ -1242,7 +1244,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
         self.assertEqual(raised.exception.status_code, 503)
 
     async def test_cancel_with_no_recipients_waits_for_open_send(self):
-        worker = self.add_worker("first")
+        worker = self.add_worker("first", "decision")
         job = self.register_job()
         completed_during_send = []
 
@@ -1350,7 +1352,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
         self.assertEqual(raised.exception.status_code, 503)
 
     async def test_partial_send_failure_keeps_submission_until_all_cleanup(self):
-        first = self.add_worker("first")
+        first = self.add_worker("first", "decision")
         second = self.add_worker("second", "image")
         third = self.add_worker("third", "video")
         first_socket = first.websocket = JobSocket(self.hub, first)

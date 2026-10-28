@@ -87,6 +87,7 @@ MODEL_WORKERS = {
     "whisper-medium": "speech",
     "laya": "decision",
 }
+NATIVE_MODEL_STORES = frozenset(("decision", "speech", "image", "video"))
 
 
 def model_worker(model: str | None) -> str | None:
@@ -301,9 +302,11 @@ class WorkerHub:
             else ModelStoreStatus(models=[])
         )
         allowed = set(ModelAssignments().model_dump().values())
-        snapshot.models = [model for model in snapshot.models if model.id in allowed]
+        # A native store lists every checkpoint on its volume, including kinds
+        # this process cannot execute. Only a connected owner can advertise one.
+        snapshot.models = []
         snapshot.selected_model_id = snapshot.defaults.llm
-        known = {model.id for model in snapshot.models}
+        known = set()
         for worker in self.workers.values():
             if worker.models is None:
                 continue
@@ -528,14 +531,21 @@ class WorkerHub:
         return max(loaded or candidates, key=Worker.free_bytes)
 
     def _store_targets(self, request: InferenceTask) -> list[Worker]:
-        """Settings go to every worker; a download to one worker of its type per computer."""
+        """Route settings to their persistence owner, downloads to model owners."""
         model = requested_model(request)
+        if request.feature == "whisper_selection":
+            if model != "medium":
+                raise InferenceFailure("The fixed transcription model is Whisper medium.", 422)
+            model = None
         if model is not None and model not in MODEL_WORKERS:
             raise InferenceFailure("The requested model is not in the fixed stack.", 422)
         if request.operation == "configure":
-            model = requested_model(request)
-            kind = model_worker(model)
-            targets = self._ready(kind) if kind else self._ready()
+            if request.feature in ("whisper_formatting", "whisper_selection"):
+                targets = [worker for worker in self._ready() if worker.kind in NATIVE_MODEL_STORES]
+                if not targets:
+                    raise InferenceFailure("No native model store is connected to save transcription settings.", 503)
+            else:
+                targets = self._ready(model_worker(model))
         else:
             kind = model_worker(request.input.model_id)
             for model in self.models.models if self.models is not None else []:
@@ -865,13 +875,14 @@ class WorkerHub:
             return
         tasks = []
         if (
-            source.selected_whisper
+            worker.kind in NATIVE_MODEL_STORES
+            and source.selected_whisper
             and source.selected_whisper != target.selected_whisper
         ):
             tasks.append(
                 {"feature": "whisper_selection", "model": source.selected_whisper}
             )
-        if source.whisper_formatting != target.whisper_formatting:
+        if worker.kind in NATIVE_MODEL_STORES and source.whisper_formatting != target.whisper_formatting:
             tasks.append(
                 {"feature": "whisper_formatting", "enabled": source.whisper_formatting}
             )
