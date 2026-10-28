@@ -10,6 +10,7 @@ import wave
 from collections.abc import Callable
 from pathlib import Path
 
+from experimental_worker.audio_stream_probe import create_probe
 from experimental_worker.call_history import append_call_history
 
 MODEL = {
@@ -139,9 +140,21 @@ def validate_context(input_tokens: int, output_tokens: int = MAX_NEW_TOKENS) -> 
         )
 
 
-def generate(task: dict, model, processor, codec, torch, audio_path=None) -> dict:
+def generate(
+    task: dict,
+    model,
+    processor,
+    codec,
+    torch,
+    audio_path=None,
+    *,
+    codec_streaming_probe=False,
+    emit=None,
+) -> dict:
     """Use the pinned model-card contract; dependencies are passed for unit tests."""
     transcribe = task["mode"] == "transcribe"
+    if codec_streaming_probe and transcribe:
+        raise ValueError("The private codec probe cannot run during transcription")
     inputs = processor.apply_chat_template(
         conversation(task, audio_path),
         **(
@@ -165,11 +178,13 @@ def generate(task: dict, model, processor, codec, torch, audio_path=None) -> dic
             "audio_repetition_window": 4096,
         }
     )
+    probe = create_probe(codec, torch, emit) if codec_streaming_probe else None
     with torch.no_grad():
         output = model.generate(
             **inputs,
             max_new_tokens=MAX_NEW_TOKENS,
             return_dict_in_generate=True,
+            **({"audio_streamer": probe} if probe is not None else {}),
             **sampling,
         )
         tokens = output.sequences[0, count:]
@@ -202,6 +217,7 @@ def generate(task: dict, model, processor, codec, torch, audio_path=None) -> dic
 
     if not np.isfinite(samples).all() or not 1 <= samples.size <= 60 * 24000:
         raise ValueError("Audio model returned invalid or oversized speech")
+    probe_timing = probe.finish(samples) if probe is not None else None
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as sink:
         sink.setnchannels(1)
@@ -211,6 +227,7 @@ def generate(task: dict, model, processor, codec, torch, audio_path=None) -> dic
     return {
         "text": text,
         "audio_base64": base64.b64encode(buffer.getvalue()).decode("ascii"),
+        **({"timing": probe_timing} if probe_timing is not None else {}),
     }
 
 
@@ -226,6 +243,9 @@ def execute(
             "The audio worker only serves explicitly selected audio-call turns"
         )
     mode = task.get("mode")
+    streaming_probe = task.get("codec_streaming_probe", False)
+    if not isinstance(streaming_probe, bool) or (streaming_probe and mode != "turn"):
+        raise ValueError("The private codec probe requires a complete audio turn")
     data = audio_bytes(task.get("audio")) if mode in ("transcribe", "turn") else None
     if mode == "turn":
         conversation({"mode": "reply", "messages": task.get("messages")})
@@ -283,6 +303,11 @@ def execute(
                     processor,
                     codec,
                     torch,
+                    **(
+                        {"codec_streaming_probe": True, "emit": emit}
+                        if streaming_probe
+                        else {}
+                    ),
                 )
                 torch.cuda.synchronize()
                 stage_timing["reply_operation_seconds"] = (
@@ -295,6 +320,7 @@ def execute(
         result = generate(task, model, processor, codec, torch)
     torch.cuda.synchronize()
     result["timing"] = {
+        **result.get("timing", {}),
         "audio_import_seconds": imported - started,
         "model_load_seconds": loaded - imported,
         "processor_load_seconds": prepared - loaded,

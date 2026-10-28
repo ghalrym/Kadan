@@ -261,7 +261,7 @@ class AudioReplyCompletionTests(unittest.TestCase):
 
 
 class FusedAudioExecutorTests(unittest.TestCase):
-    def execute(self, generate_results):
+    def execute(self, generate_results, *, probe=False):
         torch = Mock()
         torch.cuda.is_available.return_value = True
         torch.cuda.is_bf16_supported.return_value = True
@@ -277,8 +277,8 @@ class FusedAudioExecutorTests(unittest.TestCase):
         transformers.AutoProcessor.from_pretrained.return_value = processor
         calls = []
 
-        def generated(task, *args):
-            calls.append((task, args))
+        def generated(task, *args, **kwargs):
+            calls.append((task, args, kwargs))
             result = generate_results[len(calls) - 1]
             if isinstance(result, Exception):
                 raise result
@@ -289,6 +289,7 @@ class FusedAudioExecutorTests(unittest.TestCase):
             "feature": "audio_call",
             "model_id": "lfm3-audio-2b-bf16",
             "mode": "turn",
+            "codec_streaming_probe": probe,
             "audio": wav_uri(),
             "messages": [
                 {"role": "system", "text": "Persona"},
@@ -345,3 +346,23 @@ class FusedAudioExecutorTests(unittest.TestCase):
         self.assertEqual(result["transcript"], "")
         self.assertIsNone(result["audio_base64"])
         self.assertEqual(len(calls), 1)
+
+    def test_probe_is_passed_only_to_reply_and_numeric_diagnostics_survive_setup_timing(
+        self,
+    ):
+        result, calls, *_ = self.execute(
+            [
+                {"text": "Hi"},
+                {
+                    "text": "Hello",
+                    "audio_base64": "AAAA",
+                    "timing": {"streamed_chunk_count": 2},
+                },
+            ],
+            probe=True,
+        )
+        self.assertEqual(calls[0][2], {})
+        self.assertIs(calls[1][2]["codec_streaming_probe"], True)
+        self.assertTrue(callable(calls[1][2]["emit"]))
+        self.assertEqual(result["timing"]["streamed_chunk_count"], 2)
+        self.assertIn("model_load_seconds", result["timing"])

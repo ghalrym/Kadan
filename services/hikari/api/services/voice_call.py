@@ -200,6 +200,10 @@ class VoiceCall:
         stream = await self.inference.open_audio_turn(
             AudioCallTask(
                 mode="turn",
+                codec_streaming_probe=os.getenv(
+                    "HIKARI_LFM3_AUDIO_STREAM_PROBE", ""
+                ).lower()
+                in ("1", "true", "yes"),
                 audio=audio,
                 model_id=self.models.llm,
                 messages=[
