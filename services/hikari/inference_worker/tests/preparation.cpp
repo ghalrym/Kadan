@@ -153,14 +153,13 @@ void completed_checkpoint_size_units() {
     for (const std::string layout : {"composite", "components", "single_file"}) {
         Directory tmp;
         const auto data = tmp.path / "data", root = tmp.path / "models";
-        const auto files = local_manifest(
-            tmp.path / "source",
+        const auto content =
             layout == "single_file"
                 ? std::map<std::string, std::string>{{"test.pt", "metadata-only"}}
                 : std::map<std::string, std::string>{
-                      {"config.json", "{}"}, {"weights.safetensors", "local-bytes"}
-                  }
-        );
+                      {"config.json", "{}"}, {"model.safetensors", "local-bytes"}
+                  };
+        const auto files = local_manifest(tmp.path / "source", content);
         auto model = entry("test", files);
         model["layout"] = layout;
         model["estimated_bytes"] = layout == "components" ? 0 : 999;
@@ -168,53 +167,86 @@ void completed_checkpoint_size_units() {
             model["revision"] = files[0].at("digest");
             model["asset_name"] = "test.pt";
             model["asset_url"] = "https://unit.invalid/test.pt";
+        } else if (layout == "components") {
+            model["component_paths"] = Json::array({"."});
+            model["weight_paths"] = Json::array({""});
         }
         catalog(data, Json::array({model}));
         const auto checkpoint = root / ("test-" + model["revision"].get<std::string>());
         std::uint64_t total = 0;
-        for (const auto& file : files) {
-            const auto name = file.at("name").get<std::string>();
-            bytes(checkpoint / name, read_bytes(tmp.path / "source" / name, 64));
-            total += file.at("size").get<std::uint64_t>();
+        for (const auto& [name, value] : content) {
+            bytes(checkpoint / name, value);
+            total += value.size();
         }
-        // Derived caches and the completion marker are not downloaded artifacts.
+        // Neither derived assets nor the completion marker are downloaded artifacts.
         bytes(checkpoint / "derived.cache", "unrelated-derived-bytes");
         const Json marker{{"revision", model["revision"]}, {"files", files}};
         write_document(checkpoint / "complete.json", marker);
         unsigned transfers = 0;
-        ModelStore store(
-            root,
-            data,
-            [&](const auto&, const auto&, const auto&, bool, std::uint64_t)
-                -> std::int64_t {
-                ++transfers;
-                throw RequestError("Status must not transfer checkpoint data");
-            }
-        );
+        const auto fetch = [&](const auto&,
+                               const auto&,
+                               const auto&,
+                               bool,
+                               std::uint64_t) -> std::int64_t {
+            ++transfers;
+            throw RequestError("Status must not transfer checkpoint data");
+        };
+        ModelStore store(root, data, fetch);
         const auto status = store.status().at("models").at(0);
+        assert(store.complete(store.entry("test")));
         assert(status.at("status") == "complete");
         assert(status.at("downloaded_bytes") == total);
         assert(status.at("total_bytes") == total);
         assert(status.at("estimated_bytes") == model["estimated_bytes"]);
-        ModelStore reopened(root, data);
+        ModelStore reopened(root, data, fetch);
         assert(reopened.status().at("models").at(0) == status);
-        for (const auto* invalid : {"revision", "size", "missing-marker"}) {
+
+        const auto first = checkpoint / files[0].at("name").get<std::string>();
+        for (const std::string invalid :
+             {"revision",
+              "size",
+              "missing-file",
+              "missing-marker",
+              "symlink",
+              "manifest"}) {
             write_document(checkpoint / "complete.json", marker);
-            const auto first = checkpoint / files[0].at("name").get<std::string>();
-            if (std::string(invalid) == "revision") {
+            if (invalid == "revision") {
                 auto changed = marker;
                 changed["revision"] = "wrong-revision";
                 write_document(checkpoint / "complete.json", changed);
-            } else if (std::string(invalid) == "size")
+            } else if (invalid == "size")
                 bytes(first, "");
-            else
+            else if (invalid == "missing-file")
+                fs::remove(first);
+            else if (invalid == "missing-marker")
                 fs::remove(checkpoint / "complete.json");
+            else if (invalid == "symlink") {
+                fs::remove(first);
+                fs::create_symlink(tmp.path / "source" / first.filename(), first);
+            } else {
+                auto changed = marker;
+                if (layout == "composite" || layout == "single_file")
+                    changed["files"][0]["digest"] = std::string(64, 'a');
+                else
+                    changed["files"][0]["name"] = "../outside";
+                write_document(checkpoint / "complete.json", changed);
+            }
+            assert(!store.complete(store.entry("test")));
             const auto incomplete = store.status().at("models").at(0);
             assert(incomplete.at("status") == "not_downloaded");
             assert(incomplete.at("downloaded_bytes") == 0);
             assert(incomplete.at("total_bytes") == 0);
-            bytes(first, read_bytes(tmp.path / "source" / first.filename(), 64));
+            fs::remove(first);
+            bytes(first, content.at(first.filename().string()));
         }
+        write_document(checkpoint / "complete.json", marker);
+        fs::rename(checkpoint, tmp.path / "relocated");
+        fs::create_directory_symlink(tmp.path / "relocated", checkpoint);
+        assert(!store.complete(store.entry("test")));
+        const auto linked = store.status().at("models").at(0);
+        assert(linked.at("status") == "not_downloaded");
+        assert(linked.at("downloaded_bytes") == 0);
+        assert(linked.at("total_bytes") == 0);
         assert(transfers == 0);
     }
 }

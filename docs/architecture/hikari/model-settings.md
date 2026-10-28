@@ -7,3 +7,5 @@ Hikari uses fixed assignments from `ModelAssignments`, returned with observed ch
 Each model is downloaded through its existing model-specific action with explicit license acknowledgement. Context configuration goes to the worker owning the language checkpoint. Its saved per-model setting is stored separately from the pinned artifact manifest and affects future requests only; null uses the architecture maximum. The LFM executor still loads per request and retains no resident model or prefix cache.
 
 The native model store no longer reads or writes `tier.json`. Existing checkpoint directories and historical settings files are left untouched. LFM snapshots retain their existing model-volume paths so this migration does not lose verified downloads.
+
+Completed native status totals sum artifact sizes from the validated completion manifest, preserving pinned composite files and single-file revisions. Both downloaded and total bytes use that sum; invalid or incomplete stores receive no completed totals. Markers and derived caches are excluded. Settings labels catalog fallbacks as estimates and identifies unknown sizes explicitly.
