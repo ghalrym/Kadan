@@ -732,7 +732,6 @@ void ModelStore::set_whisper_formatting(bool enabled) {
 Json ModelStore::status() const {
     Json models = Json::array();
     for (const auto& item : catalog_) {
-        const auto id = item.id;
         const auto text = [](const std::optional<std::string>& value) -> Json {
             return value ? Json(*value) : Json(nullptr);
         };
