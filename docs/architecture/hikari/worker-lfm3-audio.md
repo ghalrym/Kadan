@@ -6,7 +6,7 @@ This is a user-directed dense-model experiment alongside the project's MoE langu
 
 `AudioCallTask` sends either a transcription request with one WAV utterance or a reply request with the call's text history. Both route to `lfm3_audio`, enter normal memory admission and execute in a child process. Cancellation terminates and joins that process before cleanup is acknowledged. The trial currently loads a fresh model for each queued request, so a turn can require two model loads. It retains no engine or prefix cache.
 
-The adapter accepts only mono PCM16 16-kHz audio, at most twenty seconds. Its full released 32,768-token audio context reserves 1,024 generation steps, so prompts above 31,744 input tokens are rejected without truncation. The checkpoint exports a 128,000-position text backbone; that does not establish a larger supported multimodal context than the audio model card advertises. Replies require terminal output plus both text and speech. Raw decoded output is checked before special markers are removed: unfinished reasoning and tool markup are rejected, and any reasoning in a spoken reply rejects the entire waveform because thought-to-audio alignment is unverified. Completed reasoning in transcription-only output is removed; PCM16 WAV output is mono 24 kHz and limited to sixty seconds. The existing call history retention remains bounded independently of the model context. No extra adapter character or turn cap reduces that context, and the advertised streaming modes remain unexposed. The provisional grant is 8 GiB RAM plus 16 GiB VRAM, including model and codec. This has not been measured and does not establish fit or coexistence with other models.
+The adapter accepts only mono PCM16 16-kHz audio, at most twenty seconds. Its full released 32,768-token audio context reserves 1,024 generation steps, so prompts above 31,744 input tokens are rejected without truncation. The checkpoint exports a 128,000-position text backbone; that does not establish a larger supported multimodal context than the audio model card advertises. Replies require the mixed turn's EOS/im_end plus both text and speech. The text-end marker starts the audio tail and cannot complete a reply; transcription-only output can end at text-end. Raw decoded output is checked before special markers are removed: unfinished reasoning and tool markup are rejected, and any reasoning in a spoken reply rejects the entire waveform because thought-to-audio alignment is unverified. Completed reasoning in transcription-only output is removed; PCM16 WAV output is mono 24 kHz and limited to sixty seconds. The existing call history retention remains bounded independently of the model context. No extra adapter character or turn cap reduces that context, and the advertised streaming modes remain unexposed. The provisional grant is 8 GiB RAM plus 16 GiB VRAM, including model and codec. The short-utterance trial below measured one request; maximum-context fit and coexistence with other models remain unverified.
 
 The Hikari call start accepts `backend: "lfm3"` only with `HIKARI_ENABLE_LFM3_AUDIO=true`. Omitting it preserves the native call. Kadan forwards this explicit choice after resolving the same saved persona snapshot. A frontend built or started with `VITE_ENABLE_LFM3_AUDIO=true` offers **Try LFM3 call** beside **Call**. The existing utterance, interruption, playback and disconnect protocol is unchanged. The whole buffered reply is one acknowledged segment, and only acknowledged assistant text enters later history. There is no extra agent authority or tool access.
 
@@ -20,4 +20,22 @@ Use `compose.yaml` with `compose.lfm3-audio.yaml`, `HIKARI_ENABLE_LFM3_AUDIO=tru
 4. Exercise mute, disconnect and a new call; check history resets and existing image/video workers remain available. Inspect jobs after any uncertain result before retrying.
 5. Disable the trial flag or omit the backend choice and confirm ordinary calls remain selected. No containers or models need removal to stop the trial.
 
-Runtime build, model acquisition, BF16 fit, audio quality and these manual call checks remain unverified until performed by the operator. The adapter's unit tests use fake processors, models and queues and run no inference.
+Human microphone capture, audible playback quality, playback acknowledgements, and maximum-context fit still require operator validation. The adapter's unit tests use fake processors, models and queues and run no inference.
+
+## Manual trial evidence
+
+An owner-authorized trial used the actual Kadan call WebSocket relay and BF16
+checkpoint with a clearly labelled generated English test utterance. Recognition
+returned the correct transcript at 7.69 seconds; the correct arithmetic reply
+and a complete mono 24-kHz PCM16 WAV arrived at 15.61 seconds. The waveform
+contained about 3.12 seconds of speech. Recognition and reply each loaded a fresh
+model: executor times were 7.39 and 7.61 seconds, peak RSS 4.54 GiB and CUDA
+allocation/reservation about 3.84/3.85 GiB. Interrupting another pending
+recognition turn was acknowledged in 0.106 seconds.
+
+This latency is a limitation for live phone use. The LAN HTTP frontend rejected
+microphone capture because calls require HTTPS or localhost. Browser playback
+was blocked by the client, so no audible-quality or played-acknowledgement claim
+is made and no played acknowledgement was sent. The test does not establish
+full-duplex inference or interruption during audible playback. Native call
+behavior was covered by unit tests, not a new live native-model call.
