@@ -91,8 +91,8 @@ class WorkerEvent(BaseModel):
     value: int = 0
     total: int = 0
     content: str | None = None
-    transcript: str | None = Field(default=None, max_length=4000)
-    answer: str | None = Field(default=None, min_length=1, max_length=8000)
+    transcript: str | None = None
+    answer: str | None = Field(default=None, min_length=1)
     audio_segment: AudioSegment | None = None
     model: str | None = None
     context: dict[str, int | None] | None = None

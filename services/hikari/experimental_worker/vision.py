@@ -27,6 +27,30 @@ def validate_context(prompt_tokens: int, output_tokens: int) -> None:
         )
 
 
+def output_budget(prompt_tokens: int, requested_tokens: int | None = None) -> int:
+    if requested_tokens is not None and (
+        type(requested_tokens) is not int or requested_tokens < 1
+    ):
+        raise ValueError("A screenshot response needs a positive integer output budget")
+    if prompt_tokens >= MAX_CONTEXT:
+        raise ValueError(
+            "Screenshot and question leave no output space in the 128000-token context; no input was truncated."
+        )
+    budget = (
+        MAX_CONTEXT - prompt_tokens if requested_tokens is None else requested_tokens
+    )
+    validate_context(prompt_tokens, budget)
+    return budget
+
+
+def validate_completion(count: int, last_token: int | None, eos_ids) -> None:
+    endings = eos_ids if isinstance(eos_ids, (list, tuple)) else [eos_ids]
+    if count < 1 or last_token not in endings:
+        raise ValueError(
+            "The vision model ended without a terminal EOS; the observation is incomplete."
+        )
+
+
 def description(text: str) -> str:
     """Return the final observation, rejecting an unfinished reasoning block."""
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
@@ -72,11 +96,15 @@ def execute(
     if task.get("model", MODEL["id"]) != MODEL["id"]:
         raise ValueError("This worker serves only the pinned LFM3-VL BF16 model.")
     question = task.get("question", "")
-    if not isinstance(question, str) or not question.strip() or len(question) > 4000:
-        raise ValueError("A screenshot question must contain 1 to 4000 characters.")
-    tokens = task.get("max_new_tokens", 1024)
-    if type(tokens) is not int or not 1 <= tokens <= 1024:
-        raise ValueError("A screenshot response requires 1 to 1024 output tokens.")
+    if not isinstance(question, str) or not question.strip():
+        raise ValueError("A screenshot question cannot be blank.")
+    tokens = task.get("max_new_tokens")
+    if tokens is not None and (
+        type(tokens) is not int or not 1 <= tokens < MAX_CONTEXT
+    ):
+        raise ValueError(
+            "A screenshot response requires an output budget below 128000 tokens."
+        )
     content = image_bytes(task)
 
     # Heavy inference dependencies load only inside the isolated job process.
@@ -123,7 +151,7 @@ def execute(
         enable_thinking=False,
     ).to(model.device)
     prompt_tokens = inputs["input_ids"].shape[1]
-    validate_context(prompt_tokens, tokens)
+    tokens = output_budget(prompt_tokens, tokens)
     emit({"state": "running", "model": MODEL["id"]})
     with torch.inference_mode():
         outputs = model.generate(
@@ -137,9 +165,10 @@ def execute(
             logits_to_keep=1,
         )
     generated = outputs[:, prompt_tokens:]
-    if generated.shape[1] >= tokens:
-        raise ValueError(
-            "The vision model reached its output limit before completing the observation."
-        )
+    validate_completion(
+        generated.shape[1],
+        int(generated[0, -1]) if generated.shape[1] else None,
+        model.config.text_config.eos_token_id,
+    )
     text = processor.batch_decode(generated, skip_special_tokens=False)[0]
     return {"model": MODEL["id"], "text": description(text)}

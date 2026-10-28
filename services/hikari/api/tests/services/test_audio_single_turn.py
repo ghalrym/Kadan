@@ -130,6 +130,7 @@ class SingleTurnCallTests(unittest.IsolatedAsyncioTestCase):
 
     def test_shared_history_keeps_exact_existing_call_bounds(self):
         call = self.call(TurnStream())
+        call.models.backend = "native"
         raw = []
         for text in [
             "a" * 4001,
@@ -186,14 +187,17 @@ class AudioTurnTransportTests(unittest.IsolatedAsyncioTestCase):
         cancel.assert_awaited_once_with(job.request.id)
 
     def test_worker_transcript_has_a_separate_bounded_typed_field(self):
-        for fields in (
-            {"state": "audio_transcript"},
-            {"state": "audio_transcript", "transcript": "x" * 4001},
-        ):
+        for fields in ({"state": "audio_transcript"},):
             with self.assertRaises(ValidationError):
                 WorkerEvent(**fields)
         self.assertEqual(
             WorkerEvent(state="audio_transcript", transcript="").transcript, ""
+        )
+        self.assertEqual(
+            len(
+                WorkerEvent(state="audio_transcript", transcript="x" * 5000).transcript
+            ),
+            5000,
         )
 
     def test_complete_turn_requires_both_utterance_and_existing_text_context(self):

@@ -13,7 +13,6 @@ from .base import Arguments, computer_tool
 class LookArguments(Arguments):
     question: str = Field(
         min_length=1,
-        max_length=4000,
         description="What to inspect in the current computer screenshot.",
     )
 
