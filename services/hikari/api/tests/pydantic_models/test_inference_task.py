@@ -17,7 +17,8 @@ class InferenceTaskTests(unittest.TestCase):
             {
                 "feature": "tts",
                 "script": "Hello",
-                "voice": {"mode": "custom", "speaker": "Ryan"},
+                "language": "American English",
+                "gender": "female",
             },
             {"feature": "stt", "audio": "data:audio/wav;base64,AAAA"},
             {"feature": "video", "prompt": "Mountain"},

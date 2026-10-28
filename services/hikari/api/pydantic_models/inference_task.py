@@ -3,6 +3,12 @@
 from typing import Annotated, Literal
 from uuid import uuid4
 
+from experimental_worker.speech_voice import (
+    DEFAULT_GENDER,
+    DEFAULT_LANGUAGE,
+    SpeechGender,
+    SpeechLanguage,
+)
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 from api.pydantic_models.chat import (
@@ -110,18 +116,12 @@ class VisionTask(TaskInput):
     max_new_tokens: int | None = Field(default=None, ge=1, lt=128000, strict=True)
 
 
-class SpeechVoice(TaskInput):
-    mode: Literal["custom"]
-    speaker: str
-    instruction: str = ""
-
-
 class SpeechTask(TaskInput):
     feature: Literal["tts"] = "tts"
-    script: str
-    model_id: str = "qwen-tts-1.7b-custom"
-    language: str = "Auto"
-    voice: SpeechVoice
+    script: str = Field(min_length=1)
+    model_id: Literal["lfm3-audio-2b-bf16"] = "lfm3-audio-2b-bf16"
+    language: SpeechLanguage = DEFAULT_LANGUAGE
+    gender: SpeechGender = DEFAULT_GENDER
 
 
 class TranscriptionTask(TaskInput):

@@ -1,52 +1,82 @@
-from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from pydantic import ValidationError
+
+from api.routes.v1.audio import speech
 from api.routes.v1.audio.speech import SpeechRequest, list_speech_models
 
 
-class SpeechTests(unittest.TestCase):
-    def test_model_options_use_worker_snapshot(self):
+class SpeechTests(unittest.IsolatedAsyncioTestCase):
+    def test_model_options_expose_only_real_lfm_languages_and_gender_choices(self):
         snapshot = SimpleNamespace(
             models=[
                 SimpleNamespace(
-                    id="qwen-tts-1.7b-custom",
-                    display_name="Worker name",
-                    kind="speech",
+                    id="lfm3-audio-2b-bf16",
+                    display_name="LFM3 Audio",
+                    kind="audio",
                     inference_available=True,
                 ),
                 SimpleNamespace(
-                    id="disabled",
-                    display_name="Disabled",
+                    id="qwen-tts-1.7b-custom",
+                    display_name="Retired",
                     kind="speech",
-                    inference_available=False,
-                ),
-                SimpleNamespace(
-                    id="small",
-                    display_name="Small",
-                    kind="llm",
                     inference_available=True,
                 ),
             ]
         )
-        with patch(
-            "api.routes.v1.audio.speech.inference.models_status", return_value=snapshot
-        ):
+        with patch.object(speech.inference, "models_status", return_value=snapshot):
             models = list_speech_models()
-        self.assertEqual(
-            [(model.id, model.name) for model in models],
-            [("qwen-tts-1.7b-custom", "Worker name")],
-        )
-        self.assertEqual(models[0].mode, "custom")
-        self.assertIn("Ryan", models[0].speakers)
+        self.assertEqual([model.id for model in models], ["lfm3-audio-2b-bf16"])
+        self.assertEqual(len(models[0].languages), 19)
+        self.assertEqual(models[0].genders, ["female", "male"])
+        self.assertEqual(models[0].default_language, "American English")
+        self.assertFalse(hasattr(models[0], "speakers"))
 
-    def test_voice_options_are_http_input_constraints(self):
-        request = SpeechRequest(
-            script="Hello", voice={"mode": "custom", "speaker": "Ryan"}
+    def test_language_gender_and_retired_named_voice_are_http_input_constraints(self):
+        request = SpeechRequest(script="Hello", language="Japanese", gender="male")
+        self.assertEqual(request.model_id, "lfm3-audio-2b-bf16")
+        for changes in (
+            {"language": "Auto"},
+            {"language": "Russian"},
+            {"gender": "Ryan"},
+            {"voice": {"mode": "custom", "speaker": "Ryan"}},
+            {"model_id": "qwen-tts-1.7b-custom"},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValidationError):
+                SpeechRequest(script="Hello", **changes)
+        self.assertEqual(len(SpeechRequest(script="x" * 40000).script), 40000)
+
+    async def test_speech_submission_carries_explicit_checkpoint_and_selected_locale(
+        self,
+    ):
+        body = SpeechRequest(
+            script="Known words", language="British English", gender="female"
         )
-        self.assertEqual(request.model_id, "qwen-tts-1.7b-custom")
-        with self.assertRaises(ValidationError):
-            SpeechRequest(
-                script="Hello", voice={"mode": "custom", "speaker": "Unknown"}
-            )
+        result = {
+            "voice": "Female · British English",
+            "meta": "LFM3 Audio BF16",
+            "script": "Known words",
+            "time": "1.00s",
+            "mime_type": "audio/wav",
+            "audio_base64": "AAAA",
+        }
+
+        async def await_queue(request, operation):
+            return await operation
+
+        with (
+            patch.object(
+                speech.inference, "submit", new=AsyncMock(return_value=result)
+            ) as submit,
+            patch.object(speech, "infer", await_queue),
+        ):
+            response = await speech.generate_speech(body, object())
+        queued = submit.call_args.args[0].model_dump(exclude_unset=True)
+        self.assertEqual(queued["model_id"], "lfm3-audio-2b-bf16")
+        self.assertEqual(
+            (queued["language"], queued["gender"]), ("British English", "female")
+        )
+        self.assertEqual(submit.call_args.kwargs, {"feature": "tts"})
+        self.assertEqual(response.audio.audio_base64, "AAAA")
