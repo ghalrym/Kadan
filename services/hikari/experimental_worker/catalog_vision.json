@@ -9,8 +9,8 @@
   "kind": "vision",
   "display_name": "LFM3-VL 2B BF16 (experimental)",
   "short_name": "LFM3-VL",
-  "context_limit": 8192,
-  "architecture_context_limit": 131072,
+  "context_limit": 128000,
+  "architecture_context_limit": 128000,
   "artifacts": [
     {
       "name": "LICENSE",
