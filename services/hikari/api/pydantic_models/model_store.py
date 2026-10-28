@@ -70,6 +70,6 @@ class ModelStoreStatus(BaseModel):
     models: list[CheckpointStatus]
     defaults: ModelAssignments = Field(default_factory=ModelAssignments)
     video_defaults: VideoDefaults = Field(default_factory=VideoDefaults)
-    selected_model_id: str | None = None
+    selected_model_id: str | None = "lfm3-1.7b-bf16"
     selected_whisper: str | None = None
     whisper_formatting: bool = True

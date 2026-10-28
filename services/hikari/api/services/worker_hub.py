@@ -859,11 +859,8 @@ class WorkerHub:
     # Settings consistency across workers
 
     async def _synchronize(self, worker: Worker):
-        """Bring a newly connected worker's settings in line with the primary."""
-        primary = self.workers.get(self.primary or "")
-        if primary is None or primary is worker:
-            return
-        source, target = primary.models, worker.models
+        """Mirror observed settings, including context owned by other LFM workers."""
+        source, target = self.models, worker.models
         if source is None or target is None:
             return
         tasks = []

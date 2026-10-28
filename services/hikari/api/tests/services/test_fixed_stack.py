@@ -65,6 +65,27 @@ class FixedStackTests(unittest.TestCase):
 
 
 class LfmFormattingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_late_replica_receives_context_from_observed_lfm_catalog(self):
+        hub = WorkerHub()
+        source = checkpoint('lfm3-1.7b-bf16', 'llm')
+        source['context_limit'] = 4096
+        target = {**source, 'context_limit': 8192}
+        hub.models = ModelStoreStatus(models=[source])
+        worker = SimpleNamespace(id='replica', models=ModelStoreStatus(models=[target]), jobs=set())
+        sent = []
+
+        async def send(message):
+            sent.append(message)
+            hub.jobs[message['id']].result.set_result({})
+
+        worker.send = send
+        await hub._synchronize(worker)
+        self.assertEqual([message['input'] for message in sent], [{
+            'feature': 'model_context', 'model_id': 'lfm3-1.7b-bf16', 'context_limit': 4096,
+        }])
+        self.assertFalse(hub.jobs)
+        self.assertFalse(worker.jobs)
+
     def raw(self):
         return {'text': 'hello there', 'raw_text': 'hello there', 'language': 'en',
                 'model': 'medium', 'formatting_status': 'requested', 'formatting_model': None}
