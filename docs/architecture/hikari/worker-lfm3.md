@@ -1,6 +1,6 @@
 # Experimental LFM3 workers
 
-The fixed BF16 stack uses separate conversation, screenshot and audio worker kinds that use the existing Hikari queue, worker authentication, per-computer memory ledger and model download endpoints. LFM inference does not use the retired native C++ language executors. Qwen Image Turbo generation/editing and H3 media components remain available.
+The fixed BF16 stack uses separate conversation, screenshot and audio worker kinds. They use the existing Hikari queue, worker authentication, per-computer memory ledger and model download endpoints. LFM inference does not use the retired native C++ language executors. Qwen Image Turbo generation/editing and H3 media components remain available.
 
 Each inference runs in a spawned Python executor after its worker receives a memory grant. Cancellation terminates and joins that executor before reporting cleanup. The initial experiment loads on every request and retains no CUDA model or conversation-prefix state between requests. Fixed conservative resource reservations and bounded input/context sizes make admission reviewable, but memory fit and speed still depend on the target hardware and request.
 

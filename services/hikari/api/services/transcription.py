@@ -30,7 +30,7 @@ def formatted_text(result: dict) -> str:
     text = result.get("text")
     if (result.get("model") != "lfm3-1.7b-bf16" or result.get("finish_reason") != "stop"
             or not isinstance(text, str) or not text.strip()
-            or re.search(r"</?(?:tool_call|function|parameter)(?:[=>\s]|$)", text)):
+            or re.search(r"</?(?:tool_call|function|parameter)(?:[=>\s]|$)", text, re.IGNORECASE)):
         raise InferenceFailure("LFM3 did not return a complete formatted transcript; raw text retained.", 502)
     return text.strip()
 

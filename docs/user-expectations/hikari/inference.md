@@ -14,11 +14,10 @@ Requests for different inference types can execute concurrently when the hardwar
 
 When requests compete for memory, Hikari uses this priority order, highest first:
 
-1. Chat and decisions.
-2. Speech synthesis.
-3. Transcription and transcription formatting.
-4. Image generation.
-5. Video generation.
+1. LFM conversation, screenshot understanding, speech and transcript formatting, plus decisions.
+2. Native transcription.
+3. Image generation.
+4. Video generation.
 
 A higher-priority request does not interrupt inference already running. For example, chat and image generation can overlap when both fit. If a video is already running and occupies the memory chat needs, chat waits rather than cancelling the video.
 
@@ -26,9 +25,9 @@ Hikari tries to keep room for chat while other work runs, but chat has no uncond
 
 ## Loading, waiting and completion
 
-Models load on demand. A first request, a change of hardware tier, or returning to a previously unloaded inference type can incur model-loading time. Switching workloads under memory pressure can also require a model to reload. Hikari handles this automatically.
+Models load on demand. LFM requests currently load a fresh executor for each request; returning to an unloaded specialist engine can also incur model-loading time. Switching workloads under memory pressure can also require a model to reload. Hikari handles this automatically.
 
-Every inference type unloads its resident model after one hour without work, measured from the last request's completion. Operators can configure this period; see [inference architecture](../../architecture/hikari/inference.md). Idle expiry never interrupts active or queued requests. Explicit unloading and requests that need memory can release a model sooner. A later request reloads it; downloaded checkpoints and conversation history are unchanged.
+Retained specialist engines unload their resident model after one hour without work, measured from the last request's completion. LFM executors release their models after each request. Operators can configure this period; see [inference architecture](../../architecture/hikari/inference.md). Idle expiry never interrupts active or queued requests. Explicit unloading and requests that need memory can release a model sooner. A later request reloads it; downloaded checkpoints and conversation history are unchanged.
 
 A queued request has been accepted, not completed. Hikari must not silently truncate chat history or reduce requested media settings to force a fit. Invalid inputs, unavailable checkpoints and execution failures must produce explicit errors rather than fabricated results. Cancellation must finish cleanup before the released resources are reused.
 

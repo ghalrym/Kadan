@@ -1,39 +1,9 @@
-# Transcript formatting worker (`formatting`)
+# Transcript formatting
 
-Cleans up Whisper transcripts with S1-mini by Superwhisper into semi-formal
-prose. It is optional per request and saved as a setting.
+Transcript formatting reuses the fixed LFM conversation worker after native Whisper returns raw text. `api/services/transcription.py` owns the sequence and submits a separate completion through the same worker hub and physical memory admission. There is no S1-mini worker or Qwen-derived formatter in the active stack.
 
-## Program and container
+The formatter receives the raw transcript as user content with separate instructions to preserve its meaning and language, correct punctuation and obvious errors, and return only the complete transcript. It has no tools, conversation identity or prefix reuse. Input is limited to 32,000 characters; language-model context and memory checks still apply.
 
-- Its own program, `kadan-worker-formatting`, built from
-  `services/hikari/inference_worker/workers/formatting/`. It links only this engine;
-  the shared worker runtime supplies the API contract, the WebSocket client and
-  the model store.
-- Its own image, built by `workers/formatting/Dockerfile`: no CUDA; OpenBLAS.
-- Its own Compose service, `hikari-worker-formatting` (CPU only). It can be scaled, and
-  run on another computer using the same services in `compose.yaml`.
-- It connects to the API and takes memory only as the API grants it. Workers on
-  one computer share its RAM and GPUs in the API's ledger.
+A valid result must name the fixed LFM checkpoint, finish normally, contain nonempty text and contain no tool markup. Failure, incomplete output or rejected input returns the raw transcript with a visible formatting warning. Cancellation remains cancellation and does not turn into successful raw fallback. Formatting quality still needs review against the retained raw text.
 
-## Serves
-
-- Formatting of transcripts after the transcription worker, when enabled.
-
-## Engine
-
-- S1-mini on the CPU, with its weights resident as floats. English input up to
-  1,000 tokens and output up to 1,024 tokens.
-
-## Memory
-
-- **Minimum and preferred:** twice the checkpoint size plus 1 GiB of RAM. It
-  uses no VRAM.
-
-## Scheduling
-
-- Priority 3, shared with transcription. Its budget never includes a GPU.
-
-## Constraints
-
-- A formatter failure returns the raw transcript with an error. It never fails
-  the transcription.
+Because formatting shares the conversation model and worker queue, it also shares that worker's admission priority. It does not acquire a separate CPU-only formatter allocation.

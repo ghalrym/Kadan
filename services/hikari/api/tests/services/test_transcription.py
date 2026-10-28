@@ -3,7 +3,6 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from api.pydantic_models.inference_task import (
-    TranscriptionFormattingTask,
     TranscriptionTask,
 )
 from api.services import transcription
@@ -15,7 +14,7 @@ def raw_result(status="requested", text="um send it friday no thursday"):
         "text": text,
         "raw_text": text,
         "language": "en",
-        "model": "large-v3",
+        "model": "medium",
         "formatting_status": status,
         "formatting_model": None,
     }
@@ -36,27 +35,26 @@ class TranscriptionSequenceTests(unittest.IsolatedAsyncioTestCase):
     ):
         raw = raw_result()
         body = TranscriptionTask(audio="data:audio/wav;base64,AAAA")
-        for text in ("Send it Thursday.", ""):
+        for text in ("Send it Thursday.",):
             with patch.object(
                 transcription.inference,
                 "submit",
                 new=AsyncMock(
-                    side_effect=[raw, {"text": text, "model": "superwhisper/s1-mini"}]
+                    side_effect=[raw, {"text": text, "model": "lfm3-1.7b-bf16", "finish_reason": "stop"}]
                 ),
             ) as submit:
                 result = await transcription.transcribe(body)
-            self.assertEqual(
-                submit.await_args_list[1].args,
-                (TranscriptionFormattingTask(text=raw["raw_text"]),),
-            )
-            self.assertEqual(
-                submit.await_args_list[1].kwargs, {"feature": "stt_formatting"}
-            )
+            formatter = submit.await_args_list[1].args[0]
+            self.assertEqual(formatter.messages[-1].text, raw["raw_text"])
+            self.assertEqual(formatter.model, "lfm3-1.7b-bf16")
+            self.assertFalse(formatter.reuse_prefix)
+            self.assertEqual(submit.await_args_list[1].kwargs,
+                             {"feature": "llm", "operation": "completion"})
             self.assertEqual(result["text"], text)
             self.assertEqual(result["raw_text"], raw["raw_text"])
-            self.assertEqual(result["model"], "large-v3")
+            self.assertEqual(result["model"], "medium")
             self.assertEqual(result["formatting_status"], "formatted")
-            self.assertEqual(result["formatting_model"], "superwhisper/s1-mini")
+            self.assertEqual(result["formatting_model"], "lfm3-1.7b-bf16")
 
     async def test_no_speech_skips_formatter_loading(self):
         with patch.object(
@@ -109,11 +107,11 @@ class TranscriptionSequenceTests(unittest.IsolatedAsyncioTestCase):
         waiting = asyncio.get_running_loop().create_future()
         calls = []
 
-        async def submit(body, *, feature):
+        async def submit(body, *, feature, operation=None):
             calls.append(feature)
             if feature == "stt":
                 return await waiting
-            return {"text": "Thursday.", "model": "superwhisper/s1-mini"}
+            return {"text": "Thursday.", "model": "lfm3-1.7b-bf16", "finish_reason": "stop"}
 
         with patch.object(transcription.inference, "submit", new=submit):
             task = asyncio.create_task(
@@ -123,4 +121,4 @@ class TranscriptionSequenceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(calls, ["stt"])
             waiting.set_result(raw_result())
             await task
-        self.assertEqual(calls, ["stt", "stt_formatting"])
+        self.assertEqual(calls, ["stt", "llm"])
