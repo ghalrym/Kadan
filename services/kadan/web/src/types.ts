@@ -64,16 +64,23 @@ export interface Status {
 export interface AgentRun {
   id: string;
   conversation_id: string;
+  trigger_message_id: string | null;
+  trigger_job_id: string | null;
+  delivered_message_ids: string[];
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   error: string | null;
   created_at: string;
+  updated_at: string;
 }
 export interface ImageJob {
   id: string;
   conversation_id: string;
+  prompt: string;
   status: "queued" | "running" | "completed" | "failed" | "cancelling" | "cancelled";
   error: string | null;
   delivered_message_id: string | null;
+  created_at: string;
+  updated_at: string;
 }
 export interface RunSnapshot {
   runs: AgentRun[];

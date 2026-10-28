@@ -59,6 +59,7 @@ function chat(chain, storageValues = {}) {
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "lucide-react": {},
     "./Markdown": { default: "Markdown" },
+    "./Activity": { default: "Activity" },
     "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true }) },
     "./Pet": { default: "Pet", useMood: () => ["idle", reactToMood] },
     "./AgentCard": { default: "AgentCard" },

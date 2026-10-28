@@ -62,6 +62,7 @@ async function chat(initialRuns, initialConversation = chain) {
     "./Pet": { default: "Pet", useMood: () => ["idle", () => {}] },
     "./AgentCard": { default: "AgentCard" },
     "./ComputerViewer": { default: "ComputerViewer" },
+    "./Activity": { default: "Activity" },
     "./VoiceCallControl": { useVoiceCall: () => ({ active: false }) },
     "./PetContext": { useAgentPet: () => null },
     "./presence": { activeLabel: () => "Not active yet" },
@@ -120,6 +121,7 @@ async function chat(initialRuns, initialConversation = chain) {
     alerts: () => elements().filter(node => node.props?.role === "alert").map(node => node.props.children[0]),
     receipts: () => elements().filter(node => node.props?.className === "receipt").map(node => node.props.children),
     composer: () => elements().find(node => node.type === "Composer").props,
+    activity: () => elements().find(node => node.type === "Activity").props,
     async poll(runs, conversation = selectedChain) {
       snapshotRuns = runs;
       selectedChain = conversation;
@@ -217,11 +219,25 @@ test("replacing the conversation hides its old outcomes while the new poll waits
   const failPoll = view.replaceConversation({ ...chain, id: "replacement" });
   assert.equal(view.requests.at(-1).path, "/agents/guide/conversations/replacement/runs");
   assert.deepEqual(view.notices(), []);
+  assert.equal(view.activity().loading, true);
   failPoll(new Error("Storage offline"));
   await settle();
   view.render();
   assert.deepEqual(view.notices(), []);
   assert.deepEqual(view.alerts(), ["Updates unavailable: Storage offline"]);
+  assert.equal(view.activity().loading, true);
+  assert.equal(view.activity().error, "Updates unavailable: Storage offline");
+});
+
+test("activity reuses chat's snapshot without adding a polling request", async () => {
+  const records = [run("queued", "queued")];
+  const view = await chat(records);
+  assert.equal(view.requests.length, 1);
+  assert.equal(view.activity().loading, false);
+  assert.equal(view.activity().runs, records);
+  await view.poll([run("queued", "completed")]);
+  assert.equal(view.requests.length, 2);
+  assert.equal(view.activity().runs[0].status, "completed");
 });
 
 for (const generate of [true, false]) {
