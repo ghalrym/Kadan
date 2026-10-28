@@ -579,6 +579,32 @@ void Shard::read_tensor(
     impl_->unchanged();
 }
 
+void Shard::read_tensor_direct(
+    std::string_view name,
+    std::size_t offset,
+    std::span<std::uint8_t> destination,
+    const std::atomic_bool& cancel
+) const {
+    const auto& tensor = impl_->find(name);
+    impl_->unchanged();
+    require(
+        offset <= tensor.end - tensor.begin
+            && destination.size() <= tensor.end - tensor.begin - offset,
+        "tensor_read_bounds"
+    );
+    while (!destination.empty()) {
+        require(!cancel.load(), "checkpoint_read_cancelled");
+        const auto count = std::min<std::size_t>(1024 * 1024, destination.size());
+        impl_->read(tensor, offset, destination.first(count));
+        impl_->unchanged();
+        require(!cancel.load(), "checkpoint_read_cancelled");
+        offset += count;
+        destination = destination.subspan(count);
+    }
+    impl_->unchanged();
+    require(!cancel.load(), "checkpoint_read_cancelled");
+}
+
 void Shard::read_float_tensor(
     std::string_view name,
     std::size_t first,

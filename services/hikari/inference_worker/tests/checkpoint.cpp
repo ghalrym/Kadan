@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cerrno>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -16,6 +17,49 @@
 
 #include "kadan/checkpoint_cache.hpp"
 #include "kadan/weight_inventory.hpp"
+
+namespace {
+struct DirectReads {
+    std::size_t calls = 0, bytes = 0, maximum_request = 0;
+    std::size_t maximum_result = std::numeric_limits<std::size_t>::max();
+    std::atomic_bool* cancel_after_read = nullptr;
+    const char* truncate_after_read = nullptr;
+    bool eof = false, interrupt_first = false;
+    int mutation_error = 0;
+};
+
+thread_local DirectReads* active_direct_reads = nullptr;
+}  // namespace
+
+extern "C" ssize_t original_pread(int, void*, size_t, off_t) asm("__real_pread");
+extern "C" ssize_t observed_pread(int, void*, size_t, off_t) asm("__wrap_pread");
+
+extern "C" ssize_t observed_pread(int fd, void* output, size_t count, off_t offset) {
+    auto* observed = active_direct_reads;
+    if (!observed)
+        return original_pread(fd, output, count, offset);
+    ++observed->calls;
+    observed->maximum_request = std::max(observed->maximum_request, count);
+    if (observed->interrupt_first && observed->calls == 1) {
+        errno = EINTR;
+        return -1;
+    }
+    if (observed->eof)
+        return 0;
+    const auto result =
+        original_pread(fd, output, std::min(count, observed->maximum_result), offset);
+    const int saved_errno = errno;
+    if (result > 0) {
+        observed->bytes += std::size_t(result);
+        if (observed->cancel_after_read)
+            observed->cancel_after_read->store(true);
+        if (observed->truncate_after_read
+            && ::truncate(observed->truncate_after_read, 8) != 0)
+            observed->mutation_error = errno;
+    }
+    errno = saved_errno;
+    return result;
+}
 
 using namespace kadan::checkpoint;
 
@@ -648,6 +692,128 @@ void inventory_cases() {
     check(inventory.stored_bytes == 24);
 }
 
+void direct_read_cases() {
+    const auto resources = std::make_shared<kadan::Resources>(kadan::Footprint{4096});
+    auto cache = std::make_shared<ReadCache>(resources, 4096, kadan::Workload::video);
+    std::atomic_bool cancel{false};
+    for (const auto& [dtype, width] : std::vector<std::pair<std::string, unsigned>>{
+             {"I8", 1}, {"BF16", 2}, {"F32", 4}
+         }) {
+        Fixture f;
+        std::vector<std::uint8_t> payload(8 * width);
+        for (std::size_t i = 0; i < payload.size(); ++i)
+            payload[i] = std::uint8_t(i * 37 + 129);
+        f.write(
+            "{" + tensor("weight", dtype, "[2,4]", 0, payload.size()) + "}", payload
+        );
+        Shard shard(f.root.c_str(), "model.safetensors", budget());
+        shard.cache_reads(cache, &cancel);
+        const auto before = cache->stats();
+        auto unchanged_cache = [&] {
+            const auto after = cache->stats();
+            check(
+                after.allocated == before.allocated && after.entries == before.entries
+                && after.hits == before.hits && after.misses == before.misses
+                && after.source_bytes == before.source_bytes
+            );
+        };
+        std::vector<std::uint8_t> output(3 * width);
+        DirectReads observed;
+        active_direct_reads = &observed;
+        shard.read_tensor_direct("weight", 4 * width, output, cancel);
+        active_direct_reads = nullptr;
+        check(std::equal(output.begin(), output.end(), payload.begin() + 4 * width));
+        check(observed.bytes == output.size() && observed.calls == 1);
+        unchanged_cache();
+        shard.read_tensor_direct("weight", payload.size(), {}, cancel);
+        fails(
+            [&] { shard.read_tensor_direct("weight", payload.size() + 1, {}, cancel); },
+            "tensor_read_bounds"
+        );
+        fails(
+            [&] {
+                shard.read_tensor_direct("weight", payload.size() - 1, output, cancel);
+            },
+            "tensor_read_bounds"
+        );
+        fails(
+            [&] { shard.read_tensor_direct("missing", 0, output, cancel); },
+            "missing_tensor"
+        );
+        unchanged_cache();
+        shard.read_tensor("weight", 0, output);
+        const auto cached = cache->stats();
+        check(cached.source_bytes == before.source_bytes + payload.size());
+        shard.read_tensor_direct("weight", width, output, cancel);
+        check(
+            cache->stats().hits == cached.hits
+            && cache->stats().source_bytes == cached.source_bytes
+        );
+        shard.read_tensor("weight", width, output);
+        check(cache->stats().hits == cached.hits + 1);
+    }
+    for (const auto* action :
+         {"bytes",
+          "cancel-before",
+          "cancel-after",
+          "changed",
+          "truncate",
+          "short",
+          "eof"}) {
+        Fixture f;
+        constexpr unsigned chunk = 1024 * 1024;
+        std::vector<std::uint8_t> payload(2 * chunk + 8, 37),
+            output(payload.size(), 255);
+        f.write(
+            "{" + tensor("weight", "U8", "[2097160]", 0, payload.size()) + "}", payload
+        );
+        Shard shard(f.root.c_str(), "model.safetensors", budget());
+        const auto path = (f.root / "model.safetensors").string();
+        const std::string mode(action);
+        DirectReads observed;
+        cancel = mode == "cancel-before";
+        if (mode == "cancel-after")
+            observed.cancel_after_read = &cancel;
+        if (mode == "truncate")
+            observed.truncate_after_read = path.c_str();
+        if (mode == "short") {
+            observed.maximum_result = 65536;
+            observed.interrupt_first = true;
+        }
+        observed.eof = mode == "eof";
+        if (mode == "changed") {
+            std::ofstream changed(path, std::ios::binary | std::ios::app);
+            changed.put('x');
+        }
+        active_direct_reads = &observed;
+        const auto read = [&] {
+            shard.read_tensor_direct("weight", 0, output, cancel);
+        };
+        if (mode == "cancel-before" || mode == "cancel-after")
+            fails(read, "checkpoint_read_cancelled");
+        else if (mode == "changed" || mode == "truncate")
+            fails(read, "checkpoint_changed");
+        else if (mode == "eof")
+            fails(read, "short_or_failed_read");
+        else {
+            read();
+            check(output == payload && observed.bytes == payload.size());
+        }
+        active_direct_reads = nullptr;
+        check(!observed.mutation_error && observed.maximum_request <= chunk);
+        if (mode == "cancel-before" || mode == "changed")
+            check(observed.calls == 0 && output.front() == 255);
+        if (mode == "cancel-after" || mode == "truncate") {
+            check(observed.calls == 1 && observed.bytes == chunk);
+            check(output[chunk - 1] == 37 && output[chunk] == 255);
+        }
+        if (mode == "bytes")
+            check(observed.calls == 3);
+        if (mode == "short")
+            check(observed.calls == 34);
+    }
+}
+
 void cache_retirement() {
     auto resources = std::make_shared<kadan::Resources>(kadan::Footprint{4096});
     ReadCache cache(resources, 4096, kadan::Workload::video);
@@ -868,6 +1034,7 @@ int main() {
     try {
         u32_tensor();
         compressed_nvfp4_rows();
+        direct_read_cases();
         cache_retirement();
         converted_cache_cases();
         cache_cases();
