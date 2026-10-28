@@ -435,7 +435,7 @@ export type DescribeRequest = {
   /**
    * Max New Tokens
    */
-  max_new_tokens?: number
+  max_new_tokens?: number | null
   /**
    * Media Type
    */
