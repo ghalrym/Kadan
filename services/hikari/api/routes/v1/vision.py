@@ -41,7 +41,10 @@ async def describe_screenshot(
         image_bytes(body.model_dump())
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
-    result = await infer(request, inference.submit(body, feature="vision"))
+    # Queue serialization omits unset defaults; the dedicated vision endpoint
+    # still needs to carry its explicit checkpoint to the experimental worker.
+    selected = body.model_copy(update={"model": body.model})
+    result = await infer(request, inference.submit(selected, feature="vision"))
     try:
         return DescribeResponse.model_validate(result)
     except ValueError as error:
