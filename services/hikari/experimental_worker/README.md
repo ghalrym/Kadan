@@ -74,7 +74,7 @@ The changes are [conversation/core #468](https://github.com/ghalrym/Kadan/pull/4
 [vision #469](https://github.com/ghalrym/Kadan/pull/469), and
 [audio #470](https://github.com/ghalrym/Kadan/pull/470). Core and vision have merged
 after real BF16 tests, independent review and green CI. Audio remains draft
-because its measured 15.6-second turn latency and microphone/playback validation
+because its optimized 8.8-second turn latency and microphone/playback validation
 need further work. `ai-reed/lfm3-morning-trial` combines the merged features and
 audio draft for the owner's manual evaluation.
 
