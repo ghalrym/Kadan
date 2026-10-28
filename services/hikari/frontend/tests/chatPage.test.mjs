@@ -12,13 +12,7 @@ const source = await readFile(
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX },
 })
-const ready = {
-  id: 'lfm3-1.7b-bf16',
-  display_name: 'LFM3 trial',
-  kind: 'llm',
-  status: 'complete',
-  inference_available: true,
-}
+const conversationModel = 'lfm3-1.7b-bf16'
 function elements(node) {
   return !node || typeof node !== 'object'
     ? []
@@ -49,10 +43,10 @@ async function page() {
     lateUpdates = 0
   const slots = [],
     effects = [],
-    calls = [],
-    read = deferred()
+    calls = []
   const context = createContext({
     AbortController,
+    Error,
     Uint8Array,
     crypto: { getRandomValues: (bytes) => bytes.fill(++serial) },
   })
@@ -101,12 +95,6 @@ async function page() {
       },
     }),
     'react/jsx-runtime': module({ jsx, jsxs: jsx, Fragment: 'fragment' }),
-    '../api/settings': module({
-      fetchExperimentalModels: (signal) => {
-        read.signal = signal
-        return read.promise
-      },
-    }),
     '../api/chat': module({
       streamChat: (...args) => {
         const call = { args, ...deferred() }
@@ -134,7 +122,6 @@ async function page() {
   }
   await flush()
   return {
-    read,
     calls,
     flush,
     get tree() {
@@ -142,13 +129,6 @@ async function page() {
     },
     get lateUpdates() {
       return lateUpdates
-    },
-    get select() {
-      return elements(tree).find((node) => node.type === 'select')
-    },
-    async choose(value) {
-      this.select.props.onChange({ target: { value } })
-      await flush()
     },
     async send(text) {
       elements(tree)
@@ -175,58 +155,47 @@ async function page() {
     },
   }
 }
-test('offers only downloaded inference-ready LFM3 text; keeps Settings as default', async () => {
+test('Chat sends the released BF16 LFM3 model without waiting for Settings', async () => {
   const view = await page()
-  view.read.resolve([
-    ready,
-    { ...ready, id: 'lfm3-audio-2b-bf16' },
-    { ...ready, status: 'not_downloaded' },
-    { ...ready, inference_available: false },
-  ])
-  await view.flush()
-  assert.equal(view.select.props.value, '')
-  assert.deepEqual(
-    elements(view.select)
-      .filter((node) => node.type === 'option')
-      .map((node) => node.props.value),
-    ['', ready.id],
-  )
+  assert.match(content(view.tree), /LFM3 1\.7B BF16/)
+  await view.send('Hello')
+  assert.equal(view.calls[0].args[4], conversationModel)
   view.unmount()
 })
-test('retry keeps model; New chat unlocks selection and resets conversation identity', async () => {
+test('a missing LFM3 model fails visibly; retry and New chat keep LFM3', async () => {
   const view = await page()
-  view.read.resolve([ready])
-  await view.flush()
-  await view.choose(ready.id)
   await view.send('Hello')
-  assert.equal(view.calls[0].args[4], ready.id)
   const first = view.calls[0].args[3]
-  assert.equal(view.select.props.disabled, true)
-  view.calls[0].reject(new Error('Unavailable'))
+  view.calls[0].reject(
+    new Error('Download LFM3 explicitly in Settings before chat.'),
+  )
   await view.flush()
-  assert.equal(view.select.props.disabled, true)
+  assert.match(
+    content(view.tree),
+    /Download LFM3 explicitly in Settings before chat\./,
+  )
   await view.click('Retry last message')
-  assert.equal(view.calls[1].args[4], ready.id)
+  assert.equal(view.calls[1].args[4], conversationModel)
   assert.equal(view.calls[1].args[3], first)
+  assert.deepEqual(view.calls[1].args[0], view.calls[0].args[0])
   view.calls[1].resolve({ role: 'assistant', text: 'Hello' })
   await view.flush()
   await view.click('New chat')
-  assert.equal(view.select.props.disabled, false)
-  await view.choose('')
-  await view.send('Native')
-  assert.equal(view.calls[2].args[4], undefined)
+  await view.send('A fresh conversation')
+  assert.equal(view.calls[2].args[4], conversationModel)
   assert.notEqual(view.calls[2].args[3], first)
   view.unmount()
 })
-test('unmount aborts model read and ignores late results', async () => {
+test('unmount aborts the chat request and ignores its late response', async () => {
   const view = await page()
+  await view.send('Hello')
   view.unmount()
-  assert.equal(view.read.signal.aborted, true)
-  view.read.resolve([ready])
+  assert.equal(view.calls[0].args[1].aborted, true)
+  view.calls[0].resolve({ role: 'assistant', text: 'Late response' })
   await view.flush()
   assert.equal(view.lateUpdates, 0)
 })
-test('request builder sends explicit model only when selected', async () => {
+test('request builder preserves explicit LFM3 and omitted-model API requests', async () => {
   const source = await readFile(
     new URL('../src/api/chat.ts', import.meta.url),
     'utf8',
@@ -238,5 +207,8 @@ test('request builder sends explicit model only when selected', async () => {
   await module.evaluate()
   const messages = [{ role: 'user', text: 'Hello' }]
   assert.equal('model' in module.namespace.chatRequest(messages), false)
-  assert.equal(module.namespace.chatRequest(messages, ready.id).model, ready.id)
+  assert.equal(
+    module.namespace.chatRequest(messages, conversationModel).model,
+    conversationModel,
+  )
 })

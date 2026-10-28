@@ -8,7 +8,7 @@ Each agent has its own saved conversation. Drafts are kept separately in the cur
 
 Sending saves the message and queues work. Users can keep typing and send more messages while earlier work waits. Replies can be delayed by other work or model loading. The agent can finish work without sending a visible reply; errors and stopped work must remain visible.
 
-The opt-in LFM3 trial delivers a completed plain answer as an agent reply when the agent is permitted to reply. Empty output can still finish silently. Malformed tool output must fail visibly instead of appearing as a reply.
+The standard deployment uses released BF16 LFM3-1.7B for text conversations. Its checkpoint must be downloaded through Hikari Settings first; an unavailable worker or incomplete download produces an error without switching models. A completed plain answer becomes an agent reply when the agent is permitted to reply. Empty output can still finish silently. Malformed tool output must fail visibly instead of appearing as a reply.
 
 **Sending…** means a message or note is awaiting save confirmation. **Delivered** means it was saved in the conversation; it does not confirm that the model has read it. A later reply may come from earlier work.
 

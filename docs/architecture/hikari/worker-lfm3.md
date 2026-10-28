@@ -1,8 +1,10 @@
-# Experimental LFM3 workers
+# LFM3 conversation worker
 
-Andrew's requested BF16 evaluation is an explicit exception to the production MoE-only language design. Separate opt-in worker kinds use the existing Hikari queue, worker authentication, per-computer memory ledger and model download endpoints. They do not enter hardware tiers or the native C++ executors. Existing language, image and video workers remain available.
+Andrew's later migration direction makes released BF16 LFM3 the conversation default in the normal Compose deployment. Separate Python worker kinds use the existing Hikari queue, worker authentication, per-computer memory ledger and model download endpoints. They do not enter hardware tiers or the native C++ executors. Existing language, speech, image and video workers remain available for their remaining consumers; audio migration is separate.
 
-Each inference runs in a spawned Python executor after its worker receives a memory grant. Cancellation terminates and joins that executor before reporting cleanup. The initial experiment loads on every request and retains no CUDA model or conversation-prefix state between requests. Fixed conservative resource reservations and bounded input/context sizes make admission reviewable, but memory fit and speed still depend on the target hardware and request.
+Each inference runs in a spawned Python executor after its worker receives a memory grant. Cancellation terminates and joins that executor before reporting cleanup. It loads on every request and retains no CUDA model or conversation-prefix state between requests. Fixed conservative resource reservations and bounded input/context sizes make admission reviewable, but memory fit and speed still depend on the target hardware and request.
+
+Normal Compose starts both text and vision workers without profiles and defaults their API/worker flags and Kadan API/runner selection flags to true. Existing explicit environment overrides still apply. Hikari Chat always sends the released text model ID, including retries and new conversations; it never falls back to the native model. Public API requests omitting a model retain their existing native/tier contract. Separately launched services still require their matching flags. This change does not enable audio or remove the native engines and tiers still used by calls and other features.
 
 The text checkpoint is `LiquidAI/LFM3-1.7B` at `40ebe0aa6662c9d40389c2f5d565b6a2c6aebacd`, with BF16 weights and checkpoint custom code. The artifact manifest pins sizes and content hashes, including code, tokenizer, config and license. Loading uses only the verified local snapshot; it cannot resolve a mutable upstream branch or download a replacement during inference. The user must review and acknowledge the LFM Open License v1.0 through the existing download flow. Enabling a container does not acknowledge it.
 
@@ -34,4 +36,4 @@ Executor measurements report elapsed time, peak RSS and CUDA allocation and
 reservation. Generation timing excludes model loading but includes prefill.
 They do not include prompt or reply content. Workers reconnect with capped
 backoff after transport loss, refresh resource identity and do not replay
-unconfirmed work. Profile workers restart unless explicitly stopped.
+unconfirmed work. Workers restart unless explicitly stopped.
