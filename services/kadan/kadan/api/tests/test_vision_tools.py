@@ -15,9 +15,15 @@ from kadan.runner.tools.vision import computer_look
 
 def computer(enabled=True, response=None):
     settings = Settings(experimental_lfm3_vision=enabled, _env_file=None)
-    client = SimpleNamespace(post=AsyncMock(return_value=response or httpx.Response(
-        200, json={"model": "lfm3-vl-2b-bf16", "text": "A Save button is visible."},
-    )))
+    client = SimpleNamespace(
+        post=AsyncMock(
+            return_value=response
+            or httpx.Response(
+                200,
+                json={"model": "lfm3-vl-2b-bf16", "text": "A Save button is visible."},
+            )
+        )
+    )
     return SimpleNamespace(
         services=SimpleNamespace(settings=settings, client=client),
         screenshot=AsyncMock(return_value=(b"screenshot", "image/jpeg")),
@@ -25,10 +31,12 @@ def computer(enabled=True, response=None):
 
 
 def invoke(target):
-    return asyncio.run(computer_look.ainvoke(
-        {"question": "Where is Save?"},
-        config={"configurable": {"computer": target}},
-    ))
+    return asyncio.run(
+        computer_look.ainvoke(
+            {"question": "Where is Save?"},
+            config={"configurable": {"computer": target}},
+        )
+    )
 
 
 def test_tool_uses_fresh_screenshot_and_only_returns_a_bounded_observation():

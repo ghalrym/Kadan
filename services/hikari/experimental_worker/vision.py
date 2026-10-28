@@ -19,8 +19,17 @@ MAX_CONTEXT = 8192
 def description(text: str) -> str:
     """Return the final observation, rejecting an unfinished reasoning block."""
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    # A generation prompt may already contain the opening think token.
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[1].strip()
+    while text.endswith(("<|im_end|>", "<|endoftext|>")):
+        for ending in ("<|im_end|>", "<|endoftext|>"):
+            if text.endswith(ending):
+                text = text.removesuffix(ending).strip()
     if "<think>" in text or not text:
         raise ValueError("The vision model did not complete a screenshot description.")
+    if "<|im_start|>" in text:
+        raise ValueError("The vision model generated another conversation turn.")
     return text
 
 
@@ -46,7 +55,9 @@ def execute(
     emit: Callable[[dict], None],
 ) -> dict:
     if operation != "generate":
-        raise ValueError("The vision worker supports screenshot generation requests only.")
+        raise ValueError(
+            "The vision worker supports screenshot generation requests only."
+        )
     if task.get("model", MODEL["id"]) != MODEL["id"]:
         raise ValueError("This worker serves only the pinned LFM3-VL BF16 model.")
     question = task.get("question", "")
@@ -67,7 +78,9 @@ def execute(
     with Image.open(io.BytesIO(content)) as source:
         expected = "PNG" if task["media_type"] == "image/png" else "JPEG"
         if source.format != expected or source.width * source.height > MAX_PIXELS:
-            raise ValueError("Screenshot format must match its media type and fit 4,194,304 pixels.")
+            raise ValueError(
+                "Screenshot format must match its media type and fit 4,194,304 pixels."
+            )
         image = source.convert("RGB")
 
     model = AutoModelForImageTextToText.from_pretrained(
@@ -80,23 +93,43 @@ def execute(
     processor = AutoProcessor.from_pretrained(
         model_path, trust_remote_code=True, local_files_only=True
     )
-    messages = [{"role": "user", "content": [
-        {"type": "image", "image": image},
-        {"type": "text", "text": question},
-    ]}]
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": question},
+            ],
+        }
+    ]
     inputs = processor.apply_chat_template(
-        messages, add_generation_prompt=True, tokenize=True,
-        return_dict=True, return_tensors="pt", enable_thinking=False,
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+        enable_thinking=False,
     ).to(model.device)
     prompt_tokens = inputs["input_ids"].shape[1]
     if prompt_tokens + tokens > MAX_CONTEXT:
-        raise ValueError("Screenshot and question exceed the experimental 8192-token context.")
+        raise ValueError(
+            "Screenshot and question exceed the experimental 8192-token context."
+        )
     emit({"state": "running", "model": MODEL["id"]})
     with torch.inference_mode():
         outputs = model.generate(
-            **inputs, do_sample=True, temperature=0.1, top_p=1.0,
-            top_k=50, repetition_penalty=1.1, max_new_tokens=tokens,
+            **inputs,
+            do_sample=True,
+            temperature=0.1,
+            top_p=1.0,
+            top_k=50,
+            repetition_penalty=1.1,
+            max_new_tokens=tokens,
         )
     generated = outputs[:, prompt_tokens:]
-    text = processor.batch_decode(generated, skip_special_tokens=True)[0]
+    if generated.shape[1] >= tokens:
+        raise ValueError(
+            "The vision model reached its output limit before completing the observation."
+        )
+    text = processor.batch_decode(generated, skip_special_tokens=False)[0]
     return {"model": MODEL["id"], "text": description(text)}

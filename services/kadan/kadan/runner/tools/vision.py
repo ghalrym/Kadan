@@ -12,7 +12,8 @@ from .base import Arguments, computer_tool
 
 class LookArguments(Arguments):
     question: str = Field(
-        min_length=1, max_length=4000,
+        min_length=1,
+        max_length=4000,
         description="What to inspect in the current computer screenshot.",
     )
 
@@ -47,15 +48,22 @@ async def computer_look(args: LookArguments, computer: SandboxClient) -> dict:
     if not response.is_success:
         raise ServiceError(
             f"Hikari screenshot understanding returned HTTP {response.status_code}.",
-            response.status_code, "vision_error",
+            response.status_code,
+            "vision_error",
         )
     try:
         result = response.json()
         text = result["text"]
-        if result["model"] != "lfm3-vl-2b-bf16" or not isinstance(text, str) or not text.strip():
+        if (
+            result["model"] != "lfm3-vl-2b-bf16"
+            or not isinstance(text, str)
+            or not text.strip()
+        ):
             raise ValueError("Invalid description")
     except (ValueError, KeyError, TypeError) as error:
-        raise ServiceError("Hikari returned an invalid screenshot description.", 502) from error
+        raise ServiceError(
+            "Hikari returned an invalid screenshot description.", 502
+        ) from error
     return {"model": result["model"], **truncated(text, MAX_RESULT_CHARACTERS)}
 
 
