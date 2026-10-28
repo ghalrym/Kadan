@@ -17,10 +17,15 @@ from experimental_worker.text import (
 
 
 class TextTests(unittest.TestCase):
-    def test_full_context_prefill_is_delegated_without_slicing_or_duplicate_decode(self):
+    def test_full_context_prefill_is_delegated_without_slicing_or_duplicate_decode(
+        self,
+    ):
         tokens, mask = object(), object()
         model = SimpleNamespace(generate=Mock(return_value="output"))
-        self.assertEqual(generate_text(model, {"input_ids": tokens, "attention_mask": mask}), "output")
+        self.assertEqual(
+            generate_text(model, {"input_ids": tokens, "attention_mask": mask}),
+            "output",
+        )
         model.generate.assert_called_once()
         options = model.generate.call_args.kwargs
         self.assertIs(options["input_ids"], tokens)

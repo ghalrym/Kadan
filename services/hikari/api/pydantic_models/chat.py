@@ -1,5 +1,12 @@
 from typing import Literal
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    model_validator,
+)
 
 
 class ChatMessage(BaseModel):
@@ -57,11 +64,26 @@ class Lfm3Message(BaseModel):
 
 def lfm3_messages(values):
     """Select the rich message schema only for this user-selected experiment."""
-    if isinstance(values, dict) and (values.get("model_id") or values.get("model")) == "lfm3-1.7b-bf16":
-        values = {**values, "messages": [Lfm3Message.model_validate(row.model_dump() if isinstance(row, BaseModel) else row) for row in values.get("messages", [])]}
+    if (
+        isinstance(values, dict)
+        and (values.get("model_id") or values.get("model")) == "lfm3-1.7b-bf16"
+    ):
+        values = {
+            **values,
+            "messages": [
+                Lfm3Message.model_validate(
+                    row.model_dump() if isinstance(row, BaseModel) else row
+                )
+                for row in values.get("messages", [])
+            ],
+        }
     return values
 
 
 def require_lfm3_tools(model, messages, tools):
-    if model != "lfm3-1.7b-bf16" and (tools is not None or any(isinstance(row, Lfm3Message) for row in messages)):
-        raise ValueError("Structured tools and tool history require the explicit experimental LFM3 text model")
+    if model != "lfm3-1.7b-bf16" and (
+        tools is not None or any(isinstance(row, Lfm3Message) for row in messages)
+    ):
+        raise ValueError(
+            "Structured tools and tool history require the explicit experimental LFM3 text model"
+        )

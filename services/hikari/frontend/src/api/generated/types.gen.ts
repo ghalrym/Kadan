@@ -303,7 +303,7 @@ export type CompletionRequest = {
   /**
    * Messages
    */
-  messages: Array<CompletionMessage>
+  messages: Array<CompletionMessage | Lfm3Message>
   /**
    * Model
    */
@@ -318,6 +318,10 @@ export type CompletionRequest = {
    * Stream
    */
   stream?: boolean
+  /**
+   * Tools
+   */
+  tools?: Array<Lfm3Tool> | null
 }
 
 /**
@@ -632,6 +636,98 @@ export type InferenceProgress = {
    * Workload
    */
   workload: string
+}
+
+export type JsonValue = unknown
+
+/**
+ * Lfm3CallFunction
+ */
+export type Lfm3CallFunction = {
+  /**
+   * Arguments
+   */
+  arguments: {
+    [key: string]: JsonValue
+  }
+  /**
+   * Name
+   */
+  name: string
+}
+
+/**
+ * Lfm3Function
+ */
+export type Lfm3Function = {
+  /**
+   * Description
+   */
+  description?: string
+  /**
+   * Name
+   */
+  name: string
+  /**
+   * Parameters
+   */
+  parameters?: {
+    [key: string]: JsonValue
+  }
+  /**
+   * Strict
+   */
+  strict?: boolean | null
+}
+
+/**
+ * Lfm3Message
+ *
+ * Structured history consumed only by the explicit experimental checkpoint.
+ */
+export type Lfm3Message = {
+  /**
+   * Role
+   */
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  /**
+   * Text
+   */
+  text?: string
+  /**
+   * Tool Call Id
+   */
+  tool_call_id?: string | null
+  /**
+   * Tool Calls
+   */
+  tool_calls?: Array<Lfm3ToolCall> | null
+}
+
+/**
+ * Lfm3Tool
+ */
+export type Lfm3Tool = {
+  function: Lfm3Function
+  /**
+   * Type
+   */
+  type?: 'function'
+}
+
+/**
+ * Lfm3ToolCall
+ */
+export type Lfm3ToolCall = {
+  function: Lfm3CallFunction
+  /**
+   * Id
+   */
+  id: string
+  /**
+   * Type
+   */
+  type?: 'function'
 }
 
 /**
