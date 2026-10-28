@@ -432,3 +432,46 @@ test('unmount aborts a pending context save and ignores its late failure', async
   await view.flush()
   assert.equal(view.updatesAfterUnmount, 0)
 })
+
+test('checkpoint sizes distinguish completed totals, estimates and unknown sizes', async () => {
+  for (const [overrides, expected] of [
+    [
+      {
+        status: 'complete',
+        downloaded_bytes: 33_100_000_000,
+        total_bytes: 33_100_000_000,
+      },
+      '33.1 GB / 33.1 GB',
+    ],
+    [
+      {
+        status: 'not_downloaded',
+        downloaded_bytes: 0,
+        total_bytes: 0,
+        estimated_bytes: 33_100_000_000,
+      },
+      '0.0 GB / 33.1 GB (estimated)',
+    ],
+    [
+      {
+        status: 'not_downloaded',
+        downloaded_bytes: 0,
+        total_bytes: 0,
+        estimated_bytes: 0,
+      },
+      'Size unknown',
+    ],
+    [
+      {
+        status: 'downloading',
+        downloaded_bytes: 1_000_000_000,
+        total_bytes: 2_000_000_000,
+      },
+      '1.0 GB / 2.0 GB',
+    ],
+  ]) {
+    const view = await loaded([{ ...textModel(), ...overrides }])
+    assert.ok(content(view.tree).includes(expected))
+    view.unmount()
+  }
+})

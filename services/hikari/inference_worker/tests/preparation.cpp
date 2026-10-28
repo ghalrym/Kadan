@@ -149,6 +149,76 @@ void pinned_catalog_units() {
     assert(!store.allowed("FL2VA/transformer/model-00001-of-00013.safetensors", video));
 }
 
+void completed_checkpoint_size_units() {
+    for (const std::string layout : {"composite", "components", "single_file"}) {
+        Directory tmp;
+        const auto data = tmp.path / "data", root = tmp.path / "models";
+        const auto files = local_manifest(
+            tmp.path / "source",
+            layout == "single_file"
+                ? std::map<std::string, std::string>{{"test.pt", "metadata-only"}}
+                : std::map<std::string, std::string>{
+                      {"config.json", "{}"}, {"weights.safetensors", "local-bytes"}
+                  }
+        );
+        auto model = entry("test", files);
+        model["layout"] = layout;
+        model["estimated_bytes"] = layout == "components" ? 0 : 999;
+        if (layout == "single_file") {
+            model["revision"] = files[0].at("digest");
+            model["asset_name"] = "test.pt";
+            model["asset_url"] = "https://unit.invalid/test.pt";
+        }
+        catalog(data, Json::array({model}));
+        const auto checkpoint = root / ("test-" + model["revision"].get<std::string>());
+        std::uint64_t total = 0;
+        for (const auto& file : files) {
+            const auto name = file.at("name").get<std::string>();
+            bytes(checkpoint / name, read_bytes(tmp.path / "source" / name, 64));
+            total += file.at("size").get<std::uint64_t>();
+        }
+        // Derived caches and the completion marker are not downloaded artifacts.
+        bytes(checkpoint / "derived.cache", "unrelated-derived-bytes");
+        const Json marker{{"revision", model["revision"]}, {"files", files}};
+        write_document(checkpoint / "complete.json", marker);
+        unsigned transfers = 0;
+        ModelStore store(
+            root,
+            data,
+            [&](const auto&, const auto&, const auto&, bool, std::uint64_t)
+                -> std::int64_t {
+                ++transfers;
+                throw RequestError("Status must not transfer checkpoint data");
+            }
+        );
+        const auto status = store.status().at("models").at(0);
+        assert(status.at("status") == "complete");
+        assert(status.at("downloaded_bytes") == total);
+        assert(status.at("total_bytes") == total);
+        assert(status.at("estimated_bytes") == model["estimated_bytes"]);
+        ModelStore reopened(root, data);
+        assert(reopened.status().at("models").at(0) == status);
+        for (const auto* invalid : {"revision", "size", "missing-marker"}) {
+            write_document(checkpoint / "complete.json", marker);
+            const auto first = checkpoint / files[0].at("name").get<std::string>();
+            if (std::string(invalid) == "revision") {
+                auto changed = marker;
+                changed["revision"] = "wrong-revision";
+                write_document(checkpoint / "complete.json", changed);
+            } else if (std::string(invalid) == "size")
+                bytes(first, "");
+            else
+                fs::remove(checkpoint / "complete.json");
+            const auto incomplete = store.status().at("models").at(0);
+            assert(incomplete.at("status") == "not_downloaded");
+            assert(incomplete.at("downloaded_bytes") == 0);
+            assert(incomplete.at("total_bytes") == 0);
+            bytes(first, read_bytes(tmp.path / "source" / first.filename(), 64));
+        }
+        assert(transfers == 0);
+    }
+}
+
 void shared_settings_units() {
     Directory tmp;
     ModelStore store(tmp.path, worker_data_directory());
@@ -1466,6 +1536,7 @@ void tokenizer_asset_units() {
 int main() {
     manifest_model_units();
     pinned_catalog_units();
+    completed_checkpoint_size_units();
     shared_settings_units();
     whisper_formatting_setting_units();
     whisper_formatting_request_units();

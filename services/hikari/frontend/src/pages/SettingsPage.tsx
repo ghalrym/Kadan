@@ -361,7 +361,9 @@ export function ModelDownloads() {
                         </a>
                       )}
                       <span className="mono muted">
-                        {gigabytes(model.downloaded_bytes)} / {gigabytes(size)}
+                        {size
+                          ? `${gigabytes(model.downloaded_bytes)} / ${gigabytes(size)}${model.total_bytes ? '' : ' (estimated)'}`
+                          : 'Size unknown'}
                       </span>
                       {active ? (
                         <button
