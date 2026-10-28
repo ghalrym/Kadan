@@ -48,7 +48,7 @@ class MachineTests(unittest.TestCase):
                 self.assertEqual(info["ram_limit"], expected_limit)
                 self.assertEqual(
                     info["ram_total"],
-                    int(limit) if limit not in (None, "max") else 440 * GIB
+                    int(limit) if limit not in (None, "max") else 440 * GIB,
                 )
                 self.assertEqual(info["physical_ram_total"], 440 * GIB)
                 self.assertEqual(info["physical_ram_free"], (available - 1) * GIB)
