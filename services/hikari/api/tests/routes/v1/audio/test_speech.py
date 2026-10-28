@@ -4,6 +4,10 @@ from unittest.mock import AsyncMock, patch
 
 from pydantic import ValidationError
 
+from api.pydantic_models.inference_task import SpeechTask
+from api.services.inference import InferenceService
+from api.services.inference_worker import InferenceJob
+from api.services.worker_hub import target_worker
 from api.routes.v1.audio import speech
 from api.routes.v1.audio.speech import SpeechRequest, list_speech_models
 
@@ -80,3 +84,51 @@ class SpeechTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(submit.call_args.kwargs, {"feature": "tts"})
         self.assertEqual(response.audio.audio_base64, "AAAA")
+
+    async def test_public_defaults_reach_typed_audio_worker_without_tiers_or_flags(
+        self,
+    ):
+        service = InferenceService()
+        queued = []
+        result = {
+            "voice": "Female · American English",
+            "meta": "LFM3 Audio BF16 · WAV 24 kHz",
+            "script": "Known words",
+            "time": "1.00s",
+            "mime_type": "audio/wav",
+            "audio_base64": "AAAA",
+        }
+
+        async def accept(request, *, streaming):
+            queued.append(request)
+            self.assertFalse(streaming)
+            self.assertIsInstance(request.input, SpeechTask)
+            self.assertEqual(target_worker(request), "lfm3_audio")
+            self.assertEqual(request.input.model_id, "lfm3-audio-2b-bf16")
+            self.assertEqual(request.input.language, "American English")
+            self.assertEqual(request.input.gender, "female")
+            self.assertNotIn("voice", request.input.model_dump())
+            job = InferenceJob(request, streaming=False)
+            service.worker.jobs[request.id] = job
+            job.result.set_result(result)
+            return job
+
+        async def await_queue(request, operation):
+            return await operation
+
+        with (
+            patch.object(speech, "inference", service),
+            patch.object(service.worker, "submit", side_effect=accept),
+            patch.object(speech, "infer", await_queue),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            response = await speech.generate_speech(
+                SpeechRequest(script="Known words"), object()
+            )
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(
+            queued[0].input.model_dump(exclude_unset=True)["model_id"],
+            "lfm3-audio-2b-bf16",
+        )
+        self.assertEqual(response.audio.model_dump(), result)
+        self.assertEqual(service.worker.jobs, {})
