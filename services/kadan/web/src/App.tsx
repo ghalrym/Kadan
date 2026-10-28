@@ -8,6 +8,7 @@ import {
   Plus,
   Palette,
   Pencil,
+  Server,
   RefreshCw,
   X,
 } from "lucide-react";
@@ -22,6 +23,7 @@ import Pet, { agentPet, useMood } from "./Pet";
 import { agentHue } from "./pet";
 import PetEditor from "./PetEditor";
 import RenameAgent from "./RenameAgent";
+import RunnerAssignment from "./RunnerAssignment";
 import { PetContext, useAgentPet } from "./PetContext";
 
 /** Animate a view change, letting the agent's pet glide between layouts. */
@@ -68,6 +70,7 @@ export default function App() {
   const [pets, setPets] = useState<Record<string, PetJob | null>>({});
   const [editingPet, setEditingPet] = useState(false);
   const [renamingAgent, setRenamingAgent] = useState("");
+  const [runnerAgent, setRunnerAgent] = useState("");
   const petSelectionRevision = useRef<Record<string, number>>({});
   const pendingPetSelection = useRef<Record<string, number>>({});
   const [key, setKey] = useState(localStorage.getItem("kadan.agent") || "");
@@ -205,6 +208,7 @@ export default function App() {
   useEffect(() => {
     setEditingPet(false);
     setRenamingAgent("");
+    setRunnerAgent("");
     localStorage.setItem("kadan.agent", key);
     setChain(null);
     setPersonas([]);
@@ -364,6 +368,10 @@ export default function App() {
             </button>
           </header>
           <nav className="panel-nav" aria-label="Agent views">
+            <button disabled={!selectedAgent || disabled} onClick={() => { setMenu(false); setRunnerAgent(key); }}>
+              <Server size={17} />
+              Runner assignment
+            </button>
             <button disabled={!selectedAgent || disabled} onClick={() => { setMenu(false); setRenamingAgent(key); }}>
               <Pencil size={17} />
               Rename agent
@@ -506,6 +514,14 @@ export default function App() {
         }}
         onClose={() => {
           setRenamingAgent("");
+          if (mobile && !menu) openNavigation.current?.focus();
+        }}
+      />}
+      {runnerAgent === key && selectedAgent && <RunnerAssignment
+        key={key}
+        agent={selectedAgent}
+        onClose={() => {
+          setRunnerAgent("");
           if (mobile && !menu) openNavigation.current?.focus();
         }}
       />}
