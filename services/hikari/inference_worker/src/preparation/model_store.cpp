@@ -543,36 +543,46 @@ void ModelStore::validate_files(
     }
 }
 
-bool ModelStore::complete(const CatalogEntry& model) const {
+std::optional<Bytes> ModelStore::completed_bytes(const CatalogEntry& model) const {
     const auto directory = root_ / (model.id + "-" + model.revision);
     if (!fs::exists(directory / "complete.json"))
-        return false;
+        return std::nullopt;
     try {
         const auto marker = read_document(directory / "complete.json");
         if (marker.at("revision") != model.revision)
-            return false;
+            return std::nullopt;
         const auto files = parse_manifest(marker.at("files"));
         validate_files(model, files);
         if ((model.layout == "composite" || model.layout == "gguf")
             && files != model.manifest)
-            return false;
+            return std::nullopt;
         if (model.layout == "single_file"
             && (files.size() != 1 || files.front().algorithm != "sha256"
                 || files.front().digest != model.revision))
-            return false;
+            return std::nullopt;
+        Bytes total = 0;
+        for (const auto& file : files) {
+            if (file.size > UINT64_MAX - total)
+                return std::nullopt;
+            total += file.size;
+        }
         for (const auto& file : files) {
             const auto path = directory / file.name;
             for (auto parent = path; parent != root_ && !parent.empty();
                  parent = parent.parent_path())
                 if (fs::is_symlink(parent))
-                    return false;
+                    return std::nullopt;
             if (!fs::is_regular_file(path) || fs::file_size(path) != file.size)
-                return false;
+                return std::nullopt;
         }
-        return true;
+        return total;
     } catch (const std::exception&) {
-        return false;
+        return std::nullopt;
     }
+}
+
+bool ModelStore::complete(const CatalogEntry& model) const {
+    return completed_bytes(model).has_value();
 }
 
 std::vector<ManifestFile>
@@ -965,9 +975,10 @@ Json ModelStore::status() const {
             {"license_notice", text(item.license_notice)},
             {"inference_available", item.inference_available}
         };
-        model["status"] = complete(item) ? "complete" : "not_downloaded";
-        model["downloaded_bytes"] = 0;
-        model["total_bytes"] = 0;
+        const auto downloaded = completed_bytes(item);
+        model["status"] = downloaded ? "complete" : "not_downloaded";
+        model["downloaded_bytes"] = downloaded.value_or(0);
+        model["total_bytes"] = downloaded.value_or(0);
         model["error"] = nullptr;
         model["context_limit"] = nullptr;
         model["architecture_context_limit"] = nullptr;

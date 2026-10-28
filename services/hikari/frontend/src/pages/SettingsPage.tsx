@@ -21,6 +21,12 @@ import './SettingsPage.css'
 /** Format bytes as decimal GB to match checkpoint size estimates. */
 const gigabytes = (bytes: number) => `${(bytes / 1e9).toFixed(1)} GB`
 
+function downloadSize(model: CheckpointStatus): string {
+  if (model.total_bytes > 0) return gigabytes(model.total_bytes)
+  if (model.estimated_bytes > 0) return `${gigabytes(model.estimated_bytes)} (estimated)`
+  return 'Size unknown'
+}
+
 const stateLabels = {
   unassigned: 'Not assigned yet',
   not_downloaded: 'Not downloaded',
@@ -74,12 +80,11 @@ function CheckIcon() {
 /** A plain model name; hovering or focusing it reveals the checkpoint details. */
 function ModelName({ id, model }: { id: string; model: NonNullable<TierModel['model']> }) {
   const tooltipId = `${id}-details`
-  const size = model.total_bytes || model.estimated_bytes
   const details: [string, ReactNode][] = [
     ['Checkpoint', model.display_name ?? model.id],
     ['Repository', <span key="repo" className="mono">{model.repo_id}</span>],
+    ['Download', downloadSize(model)],
   ]
-  if (size) details.push(['Download', gigabytes(size)])
   if (model.context_limit) details.push(['Context', `${model.context_limit.toLocaleString()} tokens`])
   if (model.license) details.push(['License', model.license])
   return (
@@ -201,9 +206,9 @@ function DownloadProgress({ tier }: { tier: TierSetting }) {
                   }
                 />
                 <span className="mono faint">
-                  {state === 'complete'
-                    ? gigabytes(size)
-                    : `${gigabytes(model.downloaded_bytes)} / ${gigabytes(size)}`}
+                  {state === 'complete' || !size
+                    ? downloadSize(model)
+                    : `${gigabytes(model.downloaded_bytes)} / ${downloadSize(model)}`}
                 </span>
               </>
             )}
@@ -329,7 +334,7 @@ export function ExperimentalModelDownloads() {
           <p>{model.license_notice || 'This download includes pinned model-specific Python code.'}</p>
           <div className="experimental-model-actions">
             {model.license_url && <a href={model.license_url} target="_blank" rel="noreferrer">{model.license === 'lfm1.0' ? 'LFM Open License v1.0' : model.license}</a>}
-            <span className="mono muted">{gigabytes(model.downloaded_bytes)} / {gigabytes(size)}</span>
+            <span className="mono muted">{size ? `${gigabytes(model.downloaded_bytes)} / ${downloadSize(model)}` : 'Size unknown'}</span>
             <button id={`${model.id}-download`} className="button" type="button"
               aria-label={`Download ${name}`} disabled={submitting || active || model.status === 'complete' || needsRefresh}
               onClick={() => { setAcknowledged(false); setConfirmModel(model) }}>
