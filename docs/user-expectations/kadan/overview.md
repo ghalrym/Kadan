@@ -7,10 +7,16 @@ Saved work can continue after the browser closes. A queued message does not prom
 | Feature | What to expect |
 | --- | --- |
 | [Agent conversations](agent-conversations.md) | Hatch agents, send messages and return to saved history within bounded response context. |
+| [Reading chat](reading-chat.md) | Keep the current reading position or jump to the latest message. |
+| [Finding chat text](finding-chat-text.md) | Find literal text in the saved conversation. |
+| [Conversation history](conversation-history.md) | Let the agent search and read older delivered chat within explicit limits. |
+| [Conversation activity](conversation-activity.md) | Review queued, failed, stopped and completed work without inferring external success. |
+| [Renaming agents](renaming-agents.md) | Change a display name while preserving identity and saved work. |
+| [Agent memory](memories.md) | Let agents maintain memories while users inspect saved records. |
 | [Saving chat notes](saving-chat-notes.md) | Save text without requesting a reply, including when inference is unavailable. |
+| [Forgetting memories](forgetting-memories.md) | Ask an agent to move an outdated memory to recoverable trash. |
 | [Stopping chat work](stopping-chat-work.md) | Cancel response work and image jobs with separate controls. |
-| [Agent memory](memories.md) | Intended agent-managed memory, with current browsing and recall limits described separately. |
-| [Personas](personas.md) | Intended agent-curated personas, with current manual editing and selection described separately. |
+| [Personas](personas.md) | Let agents maintain saved response instructions, with optional additional named personas. |
 | [Shared agent instructions](agent-instructions.md) | Change operator-maintained instructions for subsequent agent work. |
 | [Agent actions](agent-actions.md) | Ask agents to browse, change files and run commands, with explicit limits on recovery. |
 | [Computer](computer.md) | Watch or control the shared computer without pausing the agent. |
@@ -18,8 +24,8 @@ Saved work can continue after the browser closes. A queued message does not prom
 | [Pets](pets.md) | Create, import, preview, repair and explicitly select animated pets. |
 | [Voice input](voice-input.md) | Transcribe an utterance into an editable message draft. |
 | [Voice calls](voice-calls.md) | Have a separate spoken conversation with interruption and playback controls. |
-| [Workspace](workspace.md) | Browse memories, Spaces and files without automatically adding them to chat context. |
+| [Workspace](workspace.md) | Browse document hierarchies, memories and files; explicitly refresh saved changes. |
 | [Service status](service-status.md) | Distinguish storage access, inference readiness and model setup needs. |
-| [Runner availability](runner-availability.md) | Understand assignment capacity, queued work and recovery after a runner stops. |
+| [Runner availability](runner-availability.md) | Inspect and manage runner assignments, with capacity and recovery limits. |
 
 See [Install and use](../install-and-use.md), [Security and operator responsibility](../security.md) and [Performance tracing](../tracing.md) for shared expectations. [Tsuchi](../tsuchi/overview.md) covers storage management, and [Hikari](../hikari/overview.md) covers direct inference.

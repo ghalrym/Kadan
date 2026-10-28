@@ -49,4 +49,4 @@ The browser chooses the first enabled model, defaults to Ryan and uses Auto lang
 
 Speech is buffered into a complete WAV rather than incrementally played during synthesis. The history route is empty, and the playground retains clips and form edits in page memory only. Browser cancellation or navigation aborts the request and ignores late results while native cleanup finishes. Retry submits the current form as another inference.
 
-See [Text to speech](../../user-expectations/hikari/text-to-speech.md) for user expectations.
+See the user expectations for [text to speech](../../user-expectations/hikari/text-to-speech.md).

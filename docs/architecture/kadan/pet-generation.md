@@ -1,0 +1,13 @@
+# Pet generation references
+
+Kadan coordinates pet creation, Hikari runs image inference, and Tsuchi owns candidates, immutable artwork and provenance, leases and progress. See the user expectations for [pets](../../user-expectations/kadan/pets.md).
+
+Creation accepts `reference_mode: single_image | character_sheet`, defaulting to `single_image` when omitted, including in saved historical jobs. The mode is part of the creation UUID's idempotency contract and cannot change during updates. Revisions inherit it. Existing imports and generated pets retain their current manifests and selection behavior; no database migration is needed because Tsuchi stores job state as JSON.
+
+The sheet option generates its reference from the existing character description. Uploading reference artwork would require a separate input and persistence contract, so it is outside this option. Both modes use the existing durable worker and Hikari reference-conditioning endpoint. Single-image creation keeps its 74 steps. Sheet creation has 75: `character-sheet`, `base`, then the same 73 animation and look frames. Each reference step is serial, checkpointed and recovered through the existing pending-request and asset protocol.
+
+The sheet retains its complete canvas as reference artwork. It is never resized into a neutral animation cell, copied into idle frames, sliced into poses or included in atlas assembly. Kadan asks Hikari to derive a separate front-facing neutral base on the fixed pose canvas. Only that base supplies canonical idle endpoints and the manifest's base artwork. Every articulated pose uses the saved sheet directly with an independent 384×416 output canvas. Prompts distinguish design views from output poses and prohibit repeated figures, sheet layouts, grids and labels; camera and body size instructions refer to the output canvas rather than the sheet's individual figures.
+
+Sheet, base and pose steps retain their own raw, output and provenance assets. Source IDs identify the actual conditioning reference; canonical idle provenance identifies the neutral base. Frame repairs retain both references and all other saved frames. Neither reference can be replaced through frame repair. Cancellation, explicit resume, worker fencing and per-agent selection use the existing contracts. Kadan and Tsuchi must both understand the mode before sheet creation is used.
+
+Unit tests mock inference and exercise mode persistence, source routing, retries, recovery and atlas membership. Image checks establish structure only: they cannot prove one character, correct pose, identity consistency or better quality. Those claims require owner review of real generated artwork; no model inference is part of these checks.

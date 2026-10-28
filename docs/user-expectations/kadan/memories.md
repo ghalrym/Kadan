@@ -1,21 +1,13 @@
 # Agent memory
 
-Kadan is responsible for how agents manage and use their memory. Tsuchi stores the saved records. The intended experience below is separate from the currently implemented browsing and storage behavior.
+Kadan agents manage their own durable memories; Tsuchi stores the records. The agent decides what to retain and keeps that saved context useful for its work with the user. Users should be able to inspect what their agent retained without having to maintain its notes. Memories are separate from Workspace documents, which are work products users and agents work on.
 
-## Intended experience
+During text chat, an agent can list, search, read, create and update its own memories, or move an outdated memory to recoverable Trash. These tools are available without an agent computer. Their use depends on the model choosing them; storage does not provide automatic recall in every response or scheduled background curation. Voice calls have no memory tools.
 
-Each Kadan agent manages its own memory. The agent decides what to retain and keeps that saved context useful for its work with the user. Users should not need to maintain a collection of notes on the agent's behalf.
+Users can search and read the selected agent's saved memories in Workspace's separate **Memories** tab. Switching agents shows that agent's records. This view is read-only; **Open Tsuchi** opens the storage editor. **Refresh** checks saved changes. Opening a memory does not add it to the response's context; the agent must search or read the records it needs.
 
-Memories is a place for users to view what the selected agent has made and retained. It is separate from Workspace documents, which are work products users and agents work on. Switching agents should show that agent's memories.
+A loading or search failure must remain distinguishable from no memories. Failed saves must be reported, and conflicting edits require another read rather than silently replacing newer content. An interrupted write may already have happened: the agent must inspect the saved record before retrying. Asking an agent to remember something, or waiting for a reply, is not confirmation that it saved a memory.
 
-Agent-managed memory does not promise that every conversation is retained or that every saved memory is recalled in every response. This expectation does not establish automatic background curation or a schedule for updates.
+Agent-managed memory does not promise that every conversation is retained or that every saved memory is recalled. [Forgetting](forgetting-memories.md) removes a memory from active reads while preserving revisions and recovery. It does not erase chat history or already prepared response context. [Stopping chat work](stopping-chat-work.md) cannot undo a write already in progress.
 
-## Current behavior
-
-Kadan currently shows memories inside [Workspace](workspace.md). Users can search and read the selected agent's saved memories there. The view is read-only; **Open Tsuchi** opens the storage editor. Changes made there may require another search or reopening Workspace to appear.
-
-A loading or search error must be distinguishable from an empty collection. An unavailable view does not establish that memories are missing. Tsuchi reports save failures and conflicting edits; a draft or failed save is not a saved memory.
-
-Saving or opening a memory does not make the agent recall it. Kadan's current response flow does not automatically retrieve memories, and it does not yet provide the agent-managed memory experience described above. Waiting for a reply is not confirmation that a memory was saved. [Stopping chat work](stopping-chat-work.md) does not undo actions already taken.
-
-See [Tsuchi memories](../tsuchi/memories.md) for the current storage editor, search, revisions and trash behavior.
+See [Tsuchi memories](../tsuchi/memories.md) for editing, revisions and recovery, and [Memory tools](../../architecture/kadan/memories.md) for the storage boundary.

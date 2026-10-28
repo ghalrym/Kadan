@@ -4,7 +4,7 @@ Kadan lets users save text in an agent's chat without asking for a reply. Saving
 
 Choose **Save as note · no reply**. When Hikari is unavailable or no usable model is selected, the main action becomes **Save note**, and Enter saves a note. Making the model ready later does not answer old notes; send a new message when a reply is wanted.
 
-A confirmed note stays in the conversation and appears as an ordinary message. It can influence later replies within the agent's limited recent context, but it does not create a workspace Memory or guarantee future recall.
+A confirmed note stays in the conversation and appears as an ordinary message. It can influence later replies within the agent's limited recent context, but it does not create a saved [Memory](memories.md) or guarantee future recall.
 
 Saving a note does not stop work already in progress. See [Stopping chat work](stopping-chat-work.md).
 

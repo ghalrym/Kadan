@@ -1,6 +1,6 @@
 # Language-model lifecycle and context
 
-Hikari separates a model's saved settings from its current loaded state. This lets clients save a context preference without loading the model, or choose a different context for one load without replacing that preference. The user-facing expectations are in [Language-model loading and context](../../user-expectations/hikari/model-lifecycle.md).
+Hikari separates a model's saved settings from its current loaded state. This lets clients save a context preference without loading the model, or choose a different context for one load without replacing that preference. See the user expectations for [language-model loading and context](../../user-expectations/hikari/model-lifecycle.md).
 
 ## Loading and status
 
@@ -17,6 +17,10 @@ Explicit loading uses the same queue, preparation, and memory checks as inferenc
 The load endpoint returns HTTP 202, but that response does not guarantee that future prompts will fit in memory. Clients should read the reported model state rather than infer readiness from the response code or the selected tier.
 
 Status reports `unloaded`, `loading`, `ready`, `offloaded`, `unloading`, or `error`. It also distinguishes the configured context limit, the effective limit, and the checkpoint's supported maximum. These values are separate because a saved preference does not prove that a model has loaded with that setting.
+
+Readiness follows the connected workers' observed resident models. A budget grant alone does not establish residency: resizing can close an engine while leaving its worker permitted to load again. Confirmed release or loss of the last matching worker reports `unloaded` and no effective loaded context, while preserving the configured context observation. Another resident copy can still establish readiness using its own effective context. A settled or disconnected load cannot leave status stuck at `loading`. Starting another inference type does not itself establish that the language model was offloaded. This reporting does not change memory scheduling or retained conversation state.
+
+A failed or cancelled language request makes that worker's residency observation unknown: preparation cancellation may retain an engine, while execution failure may destroy it. Unknown observations cannot establish readiness or an effective context. When no confirmed resident copy remains, reporting uses the existing error state. A successful request or an authoritative worker snapshot resolves the residency uncertainty. A snapshot can confirm a resident model without recovering its effective context; that limit remains absent until observed again.
 
 ## Saved context and load overrides
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Activity,
   ChartNoAxesCombined,
@@ -56,8 +56,13 @@ export function App() {
     () => request<Agent[]>("/api/agents"),
     [agentsVersion],
   );
+  const switchAgent = (key: string) => {
+    setAgentKey(key);
+    localStorage.setItem("tsuchi-namespace", key);
+    window.history.replaceState(null, "", "/");
+  };
   const onCreated = (agent: Agent) => {
-    setAgentKey(agent.key);
+    switchAgent(agent.key);
     setAgentsVersion((value) => value + 1);
     setNewAgent(false);
   };
@@ -96,11 +101,7 @@ export function App() {
           agent={activeAgent}
           agents={agents.data}
           onNewAgent={() => setNewAgent(true)}
-          onSwitch={(key) => {
-            setAgentKey(key);
-            localStorage.setItem("tsuchi-namespace", key);
-            window.history.replaceState(null, "", "/");
-          }}
+          onSwitch={switchAgent}
         />
       )}
       {newAgent && (
@@ -125,6 +126,7 @@ function NamespaceApp({
   const [view, setView] = useState<View>("overview");
   const [refresh, setRefresh] = useState(0);
   const [editor, setEditor] = useState<Editor | null>(null);
+  const editorIntent = useRef(0);
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -142,62 +144,71 @@ function NamespaceApp({
     return () => window.clearInterval(timer);
   }, [view]);
   useEffect(() => {
+    const intent = ++editorIntent.current;
     const id = initialParameters.get("resource");
-    if (!id || initialParameters.get("agent") !== agent.key) return;
-    let active = true;
-    request<Resource>(
-      `${agentPath(agent.key)}/resources/${encodeURIComponent(id)}`,
-    )
-      .then((resource) => {
-        if (active) setEditor({ type: "resource", value: resource });
-      })
-      .catch((error) => {
-        if (active)
-          setError(
-            error instanceof Error ? error.message : "Unable to open resource.",
-          );
-      });
+    if (id && initialParameters.get("agent") === agent.key)
+      request<Resource>(
+        `${agentPath(agent.key)}/resources/${encodeURIComponent(id)}`,
+      )
+        .then((resource) => {
+          if (intent === editorIntent.current)
+            setEditor({ type: "resource", value: resource });
+        })
+        .catch((error) => {
+          if (intent === editorIntent.current)
+            setError(
+              error instanceof Error ? error.message : "Unable to open resource.",
+            );
+        });
     return () => {
-      active = false;
+      editorIntent.current++;
     };
   }, [agent.key]);
   const navigate = (next: View) => {
+    editorIntent.current++;
     setView(next);
     setMenuOpen(false);
   };
   const openResource = async (resource: Resource) => {
+    const intent = ++editorIntent.current;
     setError("");
     try {
-      setEditor({
-        type: "resource",
-        value: await request<Resource>(
-          `${agentPath(agent.key)}/resources/${resource.id}`,
-        ),
-      });
+      const value = await request<Resource>(
+        `${agentPath(agent.key)}/resources/${resource.id}`,
+      );
+      if (intent === editorIntent.current)
+        setEditor({ type: "resource", value });
     } catch (error) {
+      if (intent !== editorIntent.current) return;
       setError(
         error instanceof Error ? error.message : "Unable to open resource.",
       );
     }
   };
   const openAsset = async (asset: Asset) => {
+    const intent = ++editorIntent.current;
     setError("");
     try {
-      setEditor({
-        type: "asset",
-        value: await request<Asset>(
-          `${agentPath(agent.key)}/assets/${asset.id}`,
-        ),
-        imagesOnly: asset.is_image,
-      });
+      const value = await request<Asset>(
+        `${agentPath(agent.key)}/assets/${asset.id}`,
+      );
+      if (intent === editorIntent.current)
+        setEditor({ type: "asset", value, imagesOnly: asset.is_image });
     } catch (error) {
+      if (intent !== editorIntent.current) return;
       setError(
         error instanceof Error ? error.message : "Unable to open asset.",
       );
     }
   };
-  const createResource = (kind: Kind) =>
+  const createResource = (kind: Kind) => {
+    editorIntent.current++;
     setEditor({ type: "resource", value: kind });
+  };
+  const closeEditor = () => {
+    editorIntent.current++;
+    setEditor(null);
+  };
   const content = () => {
     if (view === "overview")
       return (
@@ -216,13 +227,14 @@ function NamespaceApp({
           images={view === "images"}
           refresh={refresh}
           onOpen={openAsset}
-          onNew={() =>
+          onNew={() => {
+            editorIntent.current++;
             setEditor({
               type: "asset",
               value: null,
               imagesOnly: view === "images",
-            })
-          }
+            });
+          }}
         />
       );
     if (view === "trash")
@@ -332,6 +344,8 @@ function NamespaceApp({
             onSubmit={(event) => {
               event.preventDefault();
               if (query.trim()) {
+                if (view === "search" && query.trim() === search)
+                  setRefresh((value) => value + 1);
                 setSearch(query.trim());
                 navigate("search");
               }
@@ -366,7 +380,7 @@ function NamespaceApp({
         <ResourceEditor
           agentKey={agent.key}
           initial={editor.value}
-          onClose={() => setEditor(null)}
+          onClose={closeEditor}
           onChanged={() => setRefresh((value) => value + 1)}
         />
       )}
@@ -375,7 +389,7 @@ function NamespaceApp({
           agentKey={agent.key}
           initial={editor.value}
           imagesOnly={editor.imagesOnly}
-          onClose={() => setEditor(null)}
+          onClose={closeEditor}
           onChanged={() => setRefresh((value) => value + 1)}
         />
       )}

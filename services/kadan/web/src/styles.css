@@ -693,6 +693,18 @@ main:focus {
   flex-direction: column;
   gap: 2px;
 }
+.jump-latest {
+  position: relative;
+  z-index: 3;
+  align-self: center;
+  flex-shrink: 0;
+  min-height: 44px;
+  max-width: calc(100% - 32px);
+  margin: -52px auto 8px;
+  background: var(--surface);
+  border-color: var(--line-strong);
+  font-size: 12px;
+}
 .earlier {
   align-self: center;
   margin-bottom: 12px;
@@ -793,9 +805,6 @@ main:focus {
   font-weight: 500;
   animation: fade 200ms;
 }
-.receipt.read {
-  color: var(--muted);
-}
 .tag {
   display: inline-flex;
   align-items: center;
@@ -870,6 +879,62 @@ main:focus {
   text-align: center;
 }
 
+.chat-activity {
+  flex-shrink: 0;
+  align-self: center;
+  width: calc(100% - 40px);
+  max-width: 760px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  background: var(--panel);
+  margin: 6px 20px;
+  font-size: 12px;
+}
+.chat-activity > summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  font-weight: 600;
+}
+.chat-activity > summary > span {
+  color: var(--muted);
+  font-weight: 400;
+  margin-left: 12px;
+}
+.activity-content {
+  max-height: min(45vh, 420px);
+  overflow-y: auto;
+  padding: 0 14px 12px;
+}
+.activity-content > * + * {
+  margin-top: 12px;
+}
+.activity-content h3 {
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.activity-content ul {
+  list-style: none;
+  padding: 0;
+}
+.activity-content li {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.activity-state {
+  color: var(--accent);
+}
+.activity-state.review {
+  color: var(--warn);
+}
+.activity-content time {
+  font-size: 11px;
+}
+
 /* Markdown */
 .markdown {
   overflow-wrap: anywhere;
@@ -937,6 +1002,25 @@ main:focus {
   margin-top: -64px;
   background: linear-gradient(transparent, var(--bg) 60px);
   width: min(760px, calc(100% - 32px));
+}
+.plan-prompt {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  font-size: 13px;
+}
+.plan-prompt > div {
+  flex: 1 1 280px;
+}
+.plan-prompt p {
+  margin: 4px 0 0;
+  color: var(--muted);
 }
 .attention {
   display: inline-flex;
@@ -1131,6 +1215,35 @@ dialog::backdrop {
   backdrop-filter: blur(6px);
   animation: fade 240ms var(--out);
 }
+.rename-agent,
+.runner-assignment {
+  overflow-y: auto;
+}
+.rename-agent form,
+.runner-assignment form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px;
+  overflow-wrap: anywhere;
+}
+.rename-agent .field-hint,
+.rename-agent .error,
+.runner-assignment p,
+.runner-assignment dl {
+  margin: 0;
+}
+.runner-assignment dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 16px;
+}
+.runner-assignment dt {
+  color: var(--muted);
+}
+.runner-assignment dd {
+  margin: 0;
+}
 .hatch form {
   position: relative;
   display: flex;
@@ -1187,6 +1300,69 @@ dialog::backdrop {
 }
 
 /* Workspace */
+.workspace-pane {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.workspace-pane[hidden] {
+  display: none;
+}
+.document-row {
+  min-height: 44px;
+  color: var(--muted);
+}
+.document-row strong {
+  color: var(--text);
+}
+.document-row.selected {
+  color: var(--accent);
+}
+.document-breadcrumbs,
+.document-breadcrumbs > span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.document-breadcrumbs {
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.document-breadcrumbs button {
+  min-height: 36px;
+  padding: 4px 6px;
+  font-size: inherit;
+}
+.document-breadcrumbs > span > span,
+.document-breadcrumbs button {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.document-breadcrumbs [aria-current] {
+  color: var(--text);
+}
+.document-parent {
+  max-width: 100%;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.document-parent span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace .detail-header h2,
+.workspace .child-row span {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.workspace .markdown {
+  max-width: 75ch;
+}
+
 .workspace {
   flex: 1;
   min-height: 0;
@@ -1636,8 +1812,17 @@ dialog::backdrop {
   .workspace.has-detail .resource-detail {
     display: block;
   }
-  .tabs button span {
-    display: none;
+  .workspace-toolbar {
+    flex-wrap: wrap;
+  }
+  .workspace .tabs button {
+    min-height: 44px;
+    padding: 4px 10px;
+  }
+  .workspace .document-breadcrumbs button,
+  .workspace .document-parent,
+  .workspace .child-row {
+    min-height: 44px;
   }
   .home-stage h2 {
     font-size: 22px;
@@ -2022,6 +2207,64 @@ dialog::backdrop {
 }
 .chat-split > .chat {
   min-width: 0;
+}
+/* Find opens in the pet's space so results stay readable in a narrow chat pane. */
+.conversation-find {
+  position: absolute;
+  top: 8px;
+  left: 16px;
+  z-index: 3;
+}
+.conversation-find button {
+  flex: 0 0 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 10px;
+}
+.conversation-find.is-open {
+  position: relative;
+  top: auto;
+  left: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 68px 8px 16px;
+}
+.conversation-find form {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.conversation-find .search-field {
+  flex: 1 0 100%;
+  min-width: 0;
+}
+.conversation-find input {
+  min-height: 44px;
+  width: 100%;
+}
+.find-count {
+  /* Wrap navigation below the count when the pane cannot fit both. */
+  flex: 1 1 120px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.chat.finding .messages {
+  mask-image: none;
+}
+.chat.finding .messages-inner {
+  padding-top: 16px;
+}
+.message.find-match {
+  border-radius: var(--r);
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
 }
 .computer-panel {
   position: relative;

@@ -46,6 +46,10 @@ class Storage:
                     id=job_id,
                     agent_key=KEY,
                     prompt=body["prompt"],
+                    reference_mode=body.get("reference_mode", "single_image"),
+                    total_steps=75
+                    if body.get("reference_mode") == "character_sheet"
+                    else 74,
                     version=1,
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
@@ -69,10 +73,10 @@ class Storage:
         return job.model_dump(mode="json")
 
 
-async def setup_running():
+async def setup_running(reference_mode="single_image"):
     services = Storage()
     pets = PetJobs(services)
-    job = await pets.create(KEY, PET_ID, "An ink-painted owl")
+    job = await pets.create(KEY, PET_ID, "An ink-painted owl", reference_mode)
     job = await pets.save(
         job,
         worker_id=pets.owner,
@@ -197,14 +201,17 @@ def test_cleanup_failure_retains_cancelling_instead_of_claiming_cancelled():
     asyncio.run(run())
 
 
-def test_pipeline_conditions_every_pose_on_same_base_and_never_selects(monkeypatch):
+@pytest.mark.parametrize("reference_mode", ["single_image", "character_sheet"])
+def test_pipeline_uses_selected_reference_and_never_selects(
+    monkeypatch, reference_mode
+):
     async def inline_thread(function, *args):
         return function(*args)
 
     monkeypatch.setattr("kadan.runner.pet_jobs.asyncio.to_thread", inline_thread)
 
     async def run():
-        pets, services, job = await setup_running()
+        pets, services, job = await setup_running(reference_mode)
         assets = {}
         sources = []
         seeds = []
@@ -241,37 +248,59 @@ def test_pipeline_conditions_every_pose_on_same_base_and_never_selects(monkeypat
             "kadan.runner.pet_jobs.prepare_base", lambda raw: b"canonical-base"
         )
         monkeypatch.setattr(
-            "kadan.runner.pet_jobs.prepare_frame", lambda raw, row, frame: PNG
+            "kadan.runner.pet_jobs.prepare_character_sheet",
+            lambda raw: b"character-sheet",
         )
         monkeypatch.setattr(
-            "kadan.runner.pet_jobs.assemble_atlas", lambda strips: b"webp-atlas"
+            "kadan.runner.pet_jobs.prepare_frame", lambda raw, row, frame: PNG
         )
+
+        def assemble(frames):
+            assert len(frames) == 73
+            assert "base" not in frames and "character-sheet" not in frames
+            return b"webp-atlas"
+
+        monkeypatch.setattr("kadan.runner.pet_jobs.assemble_atlas", assemble)
         monkeypatch.setattr(
             "kadan.runner.pet_jobs.validate_row", lambda row, frames: None
         )
         await asyncio.wait_for(pets.generate(job), timeout=5)
         saved = services.jobs[job.id]
         assert saved.status == "ready"
-        assert saved.completed_steps == 74
-        assert len(saved.steps) == 74
-        assert len(sources) == 72 and sources[0] is None
-        assert all(source == b"canonical-base" for source in sources[1:])
-        assert seeds == [None] + [1] * 71
+        sheet_mode = reference_mode == "character_sheet"
+        assert saved.completed_steps == saved.total_steps == (75 if sheet_mode else 74)
+        assert len(saved.steps) == saved.total_steps
+        assert len(sources) == (73 if sheet_mode else 72) and sources[0] is None
+        reference_bytes = b"character-sheet" if sheet_mode else b"canonical-base"
+        assert all(source == reference_bytes for source in sources[1:])
+        assert seeds == ([None] * (2 if sheet_mode else 1)) + [1] * 71
+        base = next(step for step in saved.steps if step.name == "base")
+        reference = saved.steps[0]
         for step in saved.steps:
             if step.name in {"idle/0", "idle/5"}:
                 assert step.method == "canonical"
                 assert assets[step.output_asset_id] == b"canonical-base"
                 provenance = json.loads(assets[step.provenance_asset_id])
                 assert json.loads(provenance["meta"])["source_request_id"] == str(
-                    saved.steps[0].request_id
+                    base.request_id
                 )
+                assert step.source_asset_id == base.output_asset_id
             else:
                 assert step.method == "generated"
+                if step.name != reference.name:
+                    assert step.source_asset_id == reference.output_asset_id
+                    if sheet_mode:
+                        assert "do not reproduce the sheet" in step.prompt
         assert all(step.strength is None for step in saved.steps)
         assert all(step.raw_asset_id in assets for step in saved.steps)
         assert all(step.provenance_asset_id in assets for step in saved.steps)
-        assert [step.name for step in saved.steps[:3]] == ["base", "idle/0", "idle/1"]
-        assert saved.manifest.base_asset_id == saved.steps[0].output_asset_id
+        expected_start = (
+            ["character-sheet", "base", "idle/0"]
+            if sheet_mode
+            else ["base", "idle/0", "idle/1"]
+        )
+        assert [step.name for step in saved.steps[:3]] == expected_start
+        assert saved.manifest.base_asset_id == base.output_asset_id
         assert assets[saved.manifest.atlas_asset_id] == b"webp-atlas"
         assert not any(call[2].endswith("/pet") for call in services.calls)
 
@@ -300,6 +329,41 @@ def test_saved_generation_reuses_exact_persisted_output():
         assert raw == PNG
         assert metadata.seeds == [42]
         assert metadata.model_id == IMAGE_MODEL
+
+    asyncio.run(run())
+
+
+def test_sheet_recovery_reuses_saved_generation_before_starting_base():
+    async def run():
+        pets, services, job = await setup_running("character_sheet")
+        request_id = uuid4()
+        job = await pets.save(
+            job,
+            worker_id=pets.owner,
+            pending_step_name="character-sheet",
+            pending_request_id=request_id,
+        )
+        generation = GeneratedImage(
+            model_id=IMAGE_MODEL,
+            seeds=[42],
+            images_base64=[base64.b64encode(PNG).decode()],
+            mime_type="image/png",
+        )
+        pets.saved_generation = AsyncMock(return_value=(PNG, generation))
+        pets.prepare_output = AsyncMock(return_value=b"saved-sheet")
+        pets.upload = AsyncMock()
+        pets.image = AsyncMock()
+        await pets.generate_frame(job, None, -1, ["character-sheet", "base"], True, 1)
+        pets.image.assert_not_awaited()
+        pets.saved_generation.assert_awaited_once_with(job, request_id)
+        pets.prepare_output.assert_awaited_once_with(job, PNG, None, -1)
+        saved = services.jobs[job.id]
+        assert [step.name for step in saved.steps] == ["character-sheet"]
+        assert saved.steps[0].request_id == request_id
+        assert saved.pending_request_id is None
+        assert saved.reference_mode == "character_sheet" and saved.total_steps == 75
+        assert pets.upload.await_count == 1
+        assert pets.upload.call_args.args[3] == b"saved-sheet"
 
     asyncio.run(run())
 
@@ -367,8 +431,9 @@ def test_frame_request_uses_untiled_reference_and_one_fixed_canvas():
 
 
 @pytest.mark.parametrize("cancel_phase", ["during_request", "after_output"])
+@pytest.mark.parametrize("reference_mode", ["single_image", "character_sheet"])
 def test_cancelled_frame_resumes_without_regenerating_completed_frames(
-    monkeypatch, cancel_phase
+    monkeypatch, cancel_phase, reference_mode
 ):
     async def inline_thread(function, *args):
         return function(*args)
@@ -376,13 +441,17 @@ def test_cancelled_frame_resumes_without_regenerating_completed_frames(
     monkeypatch.setattr("kadan.runner.pet_jobs.asyncio.to_thread", inline_thread)
     monkeypatch.setattr("kadan.runner.pet_jobs.prepare_base", lambda raw: b"base")
     monkeypatch.setattr(
+        "kadan.runner.pet_jobs.prepare_character_sheet", lambda raw: b"sheet"
+    )
+    monkeypatch.setattr(
         "kadan.runner.pet_jobs.prepare_frame", lambda raw, row, frame: PNG
     )
     monkeypatch.setattr("kadan.runner.pet_jobs.assemble_atlas", lambda frames: b"atlas")
     monkeypatch.setattr("kadan.runner.pet_jobs.validate_row", lambda row, frames: None)
 
     async def run():
-        pets, services, job = await setup_running()
+        pets, services, job = await setup_running(reference_mode)
+        extra = int(reference_mode == "character_sheet")
         assets = {}
         requests = []
         cancelled = False
@@ -413,7 +482,7 @@ def test_cancelled_frame_resumes_without_regenerating_completed_frames(
             nonlocal cancelled
             requests.append(request_id)
             if (
-                len(requests) == 3
+                len(requests) == 3 + extra
                 and cancel_phase == "during_request"
                 and not cancelled
             ):
@@ -431,7 +500,8 @@ def test_cancelled_frame_resumes_without_regenerating_completed_frames(
         await pets.process(job)
         stopped = services.jobs[job.id]
         assert stopped.status == "cancelled"
-        assert [step.name for step in stopped.steps] == ["base", "idle/0", "idle/1"]
+        expected = (["character-sheet"] if extra else []) + ["base", "idle/0", "idle/1"]
+        assert [step.name for step in stopped.steps] == expected
         saved_steps = deepcopy(stopped.steps)
         saved_bytes = {
             step.output_asset_id: assets[step.output_asset_id] for step in saved_steps
@@ -447,11 +517,12 @@ def test_cancelled_frame_resumes_without_regenerating_completed_frames(
         await pets.process(resumed)
         finished = services.jobs[job.id]
         assert finished.status == "ready"
-        assert finished.steps[:3] == saved_steps
+        assert finished.steps[: 3 + extra] == saved_steps
+        assert finished.reference_mode == reference_mode
         assert all(assets[asset_id] == data for asset_id, data in saved_bytes.items())
-        assert len(requests) == (73 if cancel_phase == "during_request" else 72)
+        assert len(requests) == (73 if cancel_phase == "during_request" else 72) + extra
         if cancel_phase == "after_output":
-            assert finished.steps[3].request_id == stopped.pending_request_id
+            assert finished.steps[3 + extra].request_id == stopped.pending_request_id
         assert all(
             requests.count(step.request_id) == 1
             for step in saved_steps

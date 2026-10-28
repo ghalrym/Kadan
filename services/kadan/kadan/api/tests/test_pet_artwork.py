@@ -9,9 +9,13 @@ from kadan.api.pet_artwork import (
     ROWS,
     SOURCE_CELL,
     assemble_atlas,
+    character_sheet_prompt,
     frame_name,
+    frame_prompt,
     prepare_base,
+    prepare_character_sheet,
     prepare_frame,
+    sheet_base_prompt,
     validate_row,
 )
 
@@ -52,6 +56,35 @@ def test_canonical_reference_has_transparent_margins_and_shared_floor():
     assert base.getpixel((0, 0))[3] == 0
     assert base.getchannel("A").getbbox()[3] == 368
     assert base.getpixel((192, 164)) == (*BACKGROUND, 255)
+
+
+def test_character_sheet_stays_a_reference_and_is_not_fitted_into_one_cell():
+    sheet = Image.new("RGB", (1024, 1024), BACKGROUND)
+    draw = ImageDraw.Draw(sheet)
+    for x in [100, 400, 700]:
+        draw.rectangle((x, 100, x + 80, 400), fill="blue")
+    prepared = Image.open(BytesIO(prepare_character_sheet(png(sheet))))
+    assert prepared.size == (1024, 1024)
+    assert prepared.convert("RGB").tobytes() == sheet.tobytes()
+    with pytest.raises(ValueError, match="dimensions"):
+        prepare_frame(png(prepared), ROWS[0], 0)
+
+
+def test_sheet_prompts_distinguish_reference_views_from_individual_output_poses():
+    assert "SAME character" in character_sheet_prompt("Ink owl")
+    for prompt in [
+        sheet_base_prompt("Ink owl"),
+        *(
+            frame_prompt("Ink owl", row, index, character_sheet=True)
+            for row in ROWS
+            for index in range(row.frame_count)
+        ),
+    ]:
+        assert "exactly ONE character in ONE pose" in prompt
+        assert "do not reproduce the sheet" in prompt
+        assert "384x416" in prompt
+        assert "Preserve the reference's body scale" not in prompt
+        assert "same standing level as the reference" not in prompt
 
 
 def test_frame_preserves_body_scale_position_and_airborne_height():

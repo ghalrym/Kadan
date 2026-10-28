@@ -2,12 +2,14 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+DownloadState = Literal[
+    "not_downloaded", "downloading", "cancelling", "cancelled", "failed", "complete"
+]
+
 
 class Checkpoint(BaseModel):
     id: str
-    status: Literal[
-        "not_downloaded", "downloading", "cancelling", "cancelled", "failed", "complete"
-    ]
+    status: DownloadState
     inference_available: bool
     # Tokens. The configured window, else the checkpoint's own.
     context_limit: int | None = None

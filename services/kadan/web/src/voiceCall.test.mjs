@@ -5,13 +5,13 @@ import { CallActivity, CallPlayback, VoiceCallSession, callUnavailable } from ".
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const originals = new Map(["window", "navigator", "AudioWorkletNode", "AudioContext", "WebSocket"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 const install = (key, value) => Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-let track, capture, context, socket, sources, states, errors;
+let track, capture, capturedTracks, context, socket, sources, states, errors;
 function fakeContext() {
   return {
     state: "running", sampleRate: 16000, currentTime: 0, destination: {}, closed: false,
     audioWorklet: { addModule: async () => {} },
     resume: async () => {}, close() { this.closed = true; return Promise.resolve(); },
-    createMediaStreamSource: () => ({ connect() {}, disconnect() {} }),
+    createMediaStreamSource: stream => ({ connect() { capturedTracks = stream.getAudioTracks().map(track => track.enabled); }, disconnect() {} }),
     decodeAudioData: async () => ({ duration: 0.1 }),
     createBufferSource() {
       const source = { buffer: null, starts: [], stops: 0, onended: null, connect() {}, disconnect() {}, start(time) { this.starts.push(time); }, stop() { this.stops++; } };
@@ -28,7 +28,7 @@ function message(event) { socket.onmessage({ data: JSON.stringify(event) }); }
 function session() { return new VoiceCallSession(state => states.push(state), error => errors.push(error)); }
 async function connected() {
   const call = session();
-  await call.start("Short spoken replies.");
+  await call.start("test", "selected-persona");
   socket.readyState = 1;
   socket.onopen();
   message({ type: "ready" });
@@ -36,7 +36,7 @@ async function connected() {
 }
 
 beforeEach(() => {
-  sources = []; states = []; errors = [];
+  sources = []; states = []; errors = []; capturedTracks = [];
   track = { enabled: true, stopped: false, onended: null, stop() { this.stopped = true; } };
   install("window", { isSecureContext: true, location: { href: "https://kadan.local/" } });
   install("navigator", { mediaDevices: { getUserMedia: async () => ({ getTracks: () => [track], getAudioTracks: () => [track] }) } });
@@ -104,7 +104,8 @@ test("stopping playback cancels all scheduled segments and invalidates queued en
 
 test("capture continues during playback and onset cancels old audio before sending new speech", async () => {
   const call = await connected();
-  assert.equal(socket.url, "wss://kadan.local/api/calls");
+  assert.equal(socket.url, "wss://kadan.local/api/agents/test/calls");
+  assert.deepEqual(socket.sent[0], { type: "start", persona_id: "selected-persona" });
   speech(); silence();
   assert.deepEqual(socket.sent.map(event => event.type), ["start", "interrupt", "utterance"]);
   assert.equal(socket.sent[2].turn, 1);
@@ -142,6 +143,34 @@ test("mute discards a partial utterance and keeps received playback usable", asy
   call.end();
 });
 
+for (const { name, mutes, enabled } of [
+  { name: "muting before microphone permission disables arriving tracks before capture connects", mutes: [true], enabled: false },
+  { name: "unmuted startup keeps arriving tracks enabled when capture connects", mutes: [], enabled: true },
+  { name: "muting then unmuting before microphone permission keeps arriving tracks enabled", mutes: [true, false], enabled: true },
+]) {
+  test(name, async () => {
+    let permit;
+    navigator.mediaDevices.getUserMedia = () => new Promise(done => { permit = done; });
+    const tracks = [track, { ...track }];
+    const call = session();
+    const starting = call.start("Hi");
+    await flush();
+    assert.deepEqual(states, [{ status: "Connecting…", muted: false }]);
+    for (const muted of mutes) call.setMuted(muted);
+    permit({ getTracks: () => tracks, getAudioTracks: () => tracks });
+    await starting;
+    try {
+      assert.deepEqual(capturedTracks, [enabled, enabled]);
+      assert.deepEqual(tracks.map(track => track.enabled), [enabled, enabled]);
+      assert.deepEqual(states, [
+        { status: "Connecting…", muted: false },
+        ...mutes.map(muted => ({ status: muted ? "Muted" : "Connecting…", muted })),
+      ]);
+      assert.deepEqual(errors, []);
+    } finally { call.end(); }
+  });
+}
+
 test("only completed playback is acknowledged; done waits for queued audio", async () => {
   const call = await connected();
   speech(); silence();
@@ -161,7 +190,7 @@ test("ending before permission resolves releases a late microphone without openi
   navigator.mediaDevices.getUserMedia = () => new Promise(done => { permit = done; });
   socket = null;
   const call = session();
-  const starting = call.start("Hi");
+  const starting = call.start("test", null);
   await flush();
   call.end();
   permit({ getTracks: () => [track], getAudioTracks: () => [track] });
@@ -176,7 +205,7 @@ test("ending before worklet loading resolves cannot attach capture afterwards", 
   install("AudioContext", function () { context = fakeContext(); context.audioWorklet.addModule = () => new Promise(done => { finishModule = done; }); return context; });
   capture = null;
   const call = session();
-  const starting = call.start("Hi");
+  const starting = call.start("test", null);
   await flush();
   call.end();
   finishModule();
@@ -203,7 +232,7 @@ test("browser-trusted HTTP origins can start calls over an unencrypted WebSocket
   window.location.href = "http://kadan.local/";
   assert.equal(callUnavailable(), null);
   const call = await connected();
-  assert.equal(socket.url, "ws://kadan.local/api/calls");
+  assert.equal(socket.url, "ws://kadan.local/api/agents/test/calls");
   call.end();
 });
 
@@ -212,7 +241,17 @@ test("untrusted origins and denied permissions return useful errors", async () =
   assert.match(callUnavailable(), /HTTPS or localhost/);
   window.isSecureContext = true;
   navigator.mediaDevices.getUserMedia = async () => { throw new Error("Permission denied"); };
-  await session().start("Hi");
+  await session().start("test", null);
   assert.equal(errors[0], "Permission denied");
   assert.equal(context.closed, true);
+});
+
+
+test("starting without an additional persona sends an explicit null selection", async () => {
+  const call = session();
+  await call.start("test", null);
+  socket.readyState = 1;
+  socket.onopen();
+  assert.deepEqual(socket.sent[0], { type: "start", persona_id: null });
+  call.end();
 });

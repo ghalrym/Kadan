@@ -13,17 +13,47 @@ An agent conversation separates durable work, model inference and visible messag
 
 Kadan opens the oldest active conversation in the agent's Tsuchi namespace. Additional stored conversations do not create a thread picker. Agent keys match `[a-z0-9][a-z0-9_-]{0,63}` and are permanent namespace identifiers; creating an agent stores no model state.
 
+Kadan proxies `GET /api/agents/{key}` and `PUT /api/agents/{key}` to Tsuchi for name reconciliation and renaming. The write accepts a normalized, nonblank `name` (at most 500 characters) and required `expected_name`, compared exactly with the current name inside one write transaction. A mismatch returns 409 unless the requested name is already saved, making a repeated successful request harmless. Only the name column changes; namespace keys and associated state remain intact. The browser retains the draft on failure and requires a reload before retrying. Successful saves update the roster name without changing selection or reloading the conversation.
+
 The runner includes at most 97 recent user and assistant messages, subject to the selected model's context budget and bound tool definitions. Older history remains in Tsuchi. This separates durable records from the bounded input to one run.
+
+Bound tool definitions consume the same model context budget as instructions and history. Additional tool definitions can make a small configured window too narrow even for a short task; context preparation then fails visibly before inference rather than silently omitting tools or instructions. Larger windows still trim older delivered turns first.
+
+The runner can search literal text and read older delivered user/assistant messages
+through conversation tools scoped to its owned run. Results follow the existing
+tool-result transcript path, retaining source roles, identities and timestamps as
+evidence. Each page bounds eligible messages scanned and returned content; message
+anchors require the source version, so changes reject continuation rather than
+silently mixing snapshots. Coverage and content cuts are explicit. The existing
+resource read fetches the full stored snapshot before these bounds are applied;
+there is no new index, endpoint or independent history store.
 
 Browser selection is local, and per-agent drafts use the tab's session storage. The outbox retains the original message identity, mode and persona for reconciliation and retry. Browser state is not a durable work queue.
 
-See [Agent conversations](../../user-expectations/kadan/agent-conversations.md) for the product behavior and [Persona instructions](personas.md) for instruction snapshots.
+The user expectations for [agent conversations](../../user-expectations/kadan/agent-conversations.md) describe the product behavior. See [Persona instructions](personas.md) for instruction snapshots.
 
 ## Model decisions and delivery
 
 The runner uses a bounded LangGraph loop around context preparation, inference and tool execution. Hikari supplies text completions; Kadan's adapter expresses tool definitions in the model's text format and parses the result into a structured command. Kadan validates the tool and its arguments before persisting and executing it. Keeping that boundary in Kadan gives the same tool behavior to every conversation entry point without adding agent orchestration to the inference service.
 
 Only the `send_message` tool delivers an agent message to the conversation. Completing inference, returning a tool result or finishing a run does not itself deliver a reply. This distinction prevents internal reasoning and command output from becoming user messages, and lets a run end silently when it has nothing further to communicate.
+
+## Conversation work snapshots
+
+The Kadan conversation-runs polling response projects validated Tsuchi work records
+into `AgentRunSummary` and `ImageJobSummary`. Run summaries contain identities,
+trigger message/job IDs, delivery receipts, status, error and creation/update times.
+Image summaries contain identities, prompt, status, error, delivery message ID and
+creation/update times. The conversation resource remains part of the snapshot.
+
+This narrows the polling response contract: internal transcripts, instructions,
+tool results, leases, ownership and image-upload coordination are omitted. Clients
+expecting these internal fields must update to the summary contract. Run
+creation and cancellation responses, runner access and Tsuchi records remain
+unchanged. Reads require an active conversation; records from another agent or
+conversation fail the snapshot rather than appearing as activity. Upstream failures
+remain errors instead of empty work lists. The snapshot records run state and chat
+delivery; it does not establish that external actions succeeded.
 
 ## Durable ownership and effects
 
@@ -33,6 +63,8 @@ These receipts do not make every external effect repeatable. The [agent computer
 
 Image generation is a separate durable job. Submission ends its initiating run instead of holding an agent turn open while Hikari works. A terminal image event queues another run in the same conversation, allowing ordinary messages to continue and the agent to deliver the eventual result. Idle conversations do not require model polling.
 
+Before uploading generated artwork, Kadan persists the job's pending upload outcome. Recovery fences the original Hikari request without resubmitting generation, then asks Tsuchi to resolve a pending upload. An unresolved outcome keeps the job active for later recovery, including cancellation. Lease expiry permits a new Kadan owner; it does not prove storage has stopped writing. After storage confirms success, Kadan verifies the deterministic asset's identity, PNG bytes and checksum before completing the job. Cancellation suppresses completion and delivery while retaining any saved artwork. Terminal events and image delivery continue to use the existing transactional event and delivery receipts. See [Image upload settlement](../tsuchi/image-uploads.md).
+
 Hikari's scheduling, model lifecycle and memory constraints are described in [Inference architecture](../hikari/inference.md); conversation ownership must remain independent of those execution policies.
 
 ## Shared instruction file
@@ -41,4 +73,4 @@ The human-maintained `services/kadan/AGENT.md` supplies base instructions. Conte
 
 The image includes `/app/AGENT.md`. Operators can bind-mount an edited file read-only there, or set `KADAN_AGENT_INSTRUCTION_FILE` to another readable file. Supply the same intended file to every runner. It is separate from memories and persona records, and changing it does not alter tool schemas, run limits, ownership or cancellation rules.
 
-See [Shared agent instructions](../../user-expectations/kadan/agent-instructions.md) for user expectations.
+See the user expectations for [shared agent instructions](../../user-expectations/kadan/agent-instructions.md).
