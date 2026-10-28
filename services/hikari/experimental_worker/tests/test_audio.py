@@ -4,7 +4,7 @@ import unittest
 import wave
 from contextlib import nullcontext
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from experimental_worker.audio import (
     MAX_CONTEXT_TOKENS,
@@ -37,8 +37,11 @@ class Inputs(dict):
 
 
 class Sequences:
+    def __init__(self, tokens=None):
+        self.tokens = [7] if tokens is None else tokens
+
     def __getitem__(self, item):
-        return [7]
+        return self.tokens
 
 
 class AudioAdapterTests(unittest.TestCase):
@@ -164,3 +167,93 @@ class AudioContextTests(unittest.TestCase):
             *({"role": "user", "text": "x" * 1500} for _ in range(16)),
         ]
         self.assertEqual(len(conversation({"mode": "reply", "messages": history})), 18)
+
+
+class AudioReplyCompletionTests(unittest.TestCase):
+    def fixture(self, ending):
+        model = Mock()
+        model.config.text_config.eos_token_id = 7
+        model.config.text_end_token_id = 8
+        codes = Mock()
+        codes.__getitem__ = Mock(return_value="audio-code-slice")
+        model.generate.return_value = SimpleNamespace(
+            sequences=Sequences([ending]), audio_codes=codes, audio_lengths=[2]
+        )
+        processor = Mock()
+        processor.apply_chat_template.return_value = Inputs(100)
+        processor.decode.return_value = "Hello<|text_end|><|audio_out|><|im_end|>"
+        return model, processor, Mock()
+
+    def task(self):
+        return {
+            "mode": "reply",
+            "messages": [
+                {"role": "system", "text": "Persona"},
+                {"role": "user", "text": "Hello"},
+            ],
+        }
+
+    def test_mixed_text_end_rejects_partial_audio_before_codec_or_publication(self):
+        model, processor, codec = self.fixture(8)
+        with self.assertRaisesRegex(ValueError, "before completing"):
+            generate(
+                self.task(),
+                model,
+                processor,
+                codec,
+                SimpleNamespace(no_grad=nullcontext),
+            )
+        processor.decode.assert_not_called()
+        codec.decode.assert_not_called()
+
+    def test_actual_turn_eos_decodes_buffered_reply_and_encodes_24khz_pcm(self):
+        model, processor, codec = self.fixture(7)
+        waveform = Mock()
+        samples = SimpleNamespace(size=2)
+        waveform.float.return_value.cpu.return_value.numpy.return_value.reshape.return_value = samples
+        codec.decode.return_value = SimpleNamespace(audio_values=[waveform])
+        array = Mock()
+        array.__mul__ = Mock(return_value=array)
+        array.astype.return_value.tobytes.return_value = b"\x00\x00\xff\x7f"
+        numpy = Mock()
+        numpy.isfinite.return_value.all.return_value = True
+        numpy.clip.return_value = array
+        # Numeric conversion is a fake boundary here; no tensor, model or codec
+        # execution occurs. The resulting WAV contract is inspected directly.
+        with patch.dict("sys.modules", {"numpy": numpy}):
+            result = generate(
+                self.task(),
+                model,
+                processor,
+                codec,
+                SimpleNamespace(no_grad=nullcontext),
+            )
+        self.assertEqual(result["text"], "Hello")
+        codec.decode.assert_called_once_with("audio-code-slice")
+        with wave.open(
+            io.BytesIO(base64.b64decode(result["audio_base64"])), "rb"
+        ) as source:
+            self.assertEqual(
+                (
+                    source.getframerate(),
+                    source.getnchannels(),
+                    source.getsampwidth(),
+                    source.getnframes(),
+                ),
+                (24000, 1, 2, 2),
+            )
+            self.assertEqual(source.readframes(2), b"\x00\x00\xff\x7f")
+
+    def test_transcription_text_end_remains_a_valid_text_only_terminal(self):
+        model, processor, codec = self.fixture(8)
+        processor.decode.return_value = "Hello<|text_end|>"
+        result = generate(
+            {"mode": "transcribe"},
+            model,
+            processor,
+            codec,
+            SimpleNamespace(no_grad=nullcontext),
+            "/tmp/utterance.wav",
+        )
+        self.assertEqual(result, {"text": "Hello"})
+        codec.decode.assert_not_called()
