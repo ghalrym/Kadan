@@ -7,10 +7,13 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from experimental_worker.audio import (
+    MAX_CONTEXT_TOKENS,
     MAX_INPUT_TOKENS,
+    MAX_NEW_TOKENS,
     audio_bytes,
     conversation,
     generate,
+    public_text,
 )
 
 
@@ -108,3 +111,41 @@ class AudioAdapterTests(unittest.TestCase):
                 "/tmp/wav",
             )
         processor.decode.assert_not_called()
+
+
+class AudioOutputPrivacyTests(unittest.TestCase):
+    def test_completed_asr_reasoning_is_removed_before_returning_transcript(self):
+        self.assertEqual(
+            public_text("<think>private</think>Hello<|im_end|>", transcribe=True),
+            "Hello",
+        )
+
+    def test_spoken_reasoning_is_rejected_because_waveform_alignment_is_unverified(
+        self,
+    ):
+        with self.assertRaisesRegex(ValueError, "reasoning in a spoken reply"):
+            public_text(
+                "<think>private</think>Hello<|audio_out|><|im_end|>", transcribe=False
+            )
+
+    def test_unfinished_reasoning_and_tool_markup_never_enter_call_history(self):
+        for text in (
+            "<think>private",
+            "private</think>Hello",
+            "<tool_call>run</tool_call>",
+            "<function=run>",
+            "<|im_start|>system",
+        ):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                public_text(text, transcribe=False)
+
+    def test_known_output_markers_are_removed_and_normal_text_is_preserved(self):
+        self.assertEqual(
+            public_text(
+                "Hello < 3<|audio_out|> world<|text_end|><|im_end|>", transcribe=False
+            ),
+            "Hello < 3 world",
+        )
+
+    def test_output_tokens_are_reserved_inside_trial_context(self):
+        self.assertEqual(MAX_INPUT_TOKENS + MAX_NEW_TOKENS, MAX_CONTEXT_TOKENS)

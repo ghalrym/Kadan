@@ -3,6 +3,7 @@
 import base64
 import binascii
 import io
+import re
 import tempfile
 import wave
 from collections.abc import Callable
@@ -23,8 +24,9 @@ MODEL = {
 # Provisional admission bounds, not a measured fit guarantee. Include model,
 # codec, preprocessing and bounded generation; the engine uses one visible GPU.
 REQUIREMENT = (6 * 1024**3, 10 * 1024**3)
-MAX_INPUT_TOKENS = 8192
+MAX_CONTEXT_TOKENS = 8192
 MAX_NEW_TOKENS = 1024
+MAX_INPUT_TOKENS = MAX_CONTEXT_TOKENS - MAX_NEW_TOKENS
 
 
 def audio_bytes(uri: str) -> bytes:
@@ -90,6 +92,41 @@ def conversation(task: dict, audio_path: str | None = None) -> list[dict]:
     return result
 
 
+def public_text(raw: str, *, transcribe: bool) -> str:
+    """Keep control markers visible until reasoning and tool output are checked."""
+    text = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL)
+    if "<think>" in text or "</think>" in text:
+        raise ValueError("Audio model returned unfinished reasoning")
+    if text != raw and not transcribe:
+        # There is no verified alignment for removing thought speech from a
+        # buffered waveform. Reject that reply before publishing text or audio.
+        raise ValueError("Audio model returned reasoning in a spoken reply")
+    for marker in (
+        "<|audio_out|>",
+        "<|audio_start|>",
+        "<|text_end|>",
+        "<|mixed_start|>",
+        "<|mixed_end|>",
+        "<|im_end|>",
+        "<|endoftext|>",
+    ):
+        text = text.replace(marker, "")
+    if any(
+        marker in text
+        for marker in (
+            "<|",
+            "<tool_call",
+            "</tool_call",
+            "<function",
+            "<parameter",
+            "<tool_response",
+            "</tool_response",
+        )
+    ):
+        raise ValueError("Audio model returned tool or unknown control output")
+    return text.strip()
+
+
 def generate(task: dict, model, processor, codec, torch, audio_path=None) -> dict:
     """Use the pinned model-card contract; dependencies are passed for unit tests."""
     transcribe = task["mode"] == "transcribe"
@@ -134,7 +171,9 @@ def generate(task: dict, model, processor, codec, torch, audio_path=None) -> dic
             raise ValueError(
                 "Audio generation reached the trial limit before completing the reply"
             )
-        text = processor.decode(tokens, skip_special_tokens=True).strip()
+        text = public_text(
+            processor.decode(tokens, skip_special_tokens=False), transcribe=transcribe
+        )
         if len(text) > (4000 if transcribe else 8000):
             raise ValueError("Audio model output exceeded the call limit")
         if transcribe:
