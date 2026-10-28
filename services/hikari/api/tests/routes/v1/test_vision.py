@@ -45,6 +45,8 @@ def test_valid_request_uses_vision_queue_and_validates_worker_result(monkeypatch
     monkeypatch.setattr(vision, "infer", await_queue)
     response = asyncio.run(vision.describe_screenshot(body, object()))
     submit.assert_awaited_once_with(body, feature="vision")
+    queued = submit.call_args.args[0]
+    assert queued.model_dump(exclude_unset=True)["model"] == "lfm3-vl-2b-bf16"
     assert response.text == "A dialog is visible."
     submit.return_value = {"model": "different-model", "text": "Wrong source"}
     with pytest.raises(HTTPException) as error:
