@@ -703,7 +703,9 @@ Run run(
             if (session.ready(view))
                 continue;
             std::vector<std::byte> raw(slice.stored_bytes);
-            session.upload_weight(view, raw);
+            auto source = session.allocate_upload(raw.size());
+            std::memcpy(source->bytes().data(), raw.data(), raw.size());
+            session.upload_weight(view, std::move(source));
         }
     };
     admit(false);
@@ -1112,7 +1114,9 @@ void chain() {
         for (const auto& slice : session.plan().weights) {
             auto view = session.weight(slice);
             std::vector<std::byte> raw(slice.stored_bytes);
-            session.upload_weight(view, raw);
+            auto source = session.allocate_upload(raw.size());
+            std::memcpy(source->bytes().data(), raw.data(), raw.size());
+            session.upload_weight(view, std::move(source));
         }
     };
     Launcher launcher(device, 0);

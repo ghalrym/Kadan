@@ -26,6 +26,12 @@ Generates video with audio using H3 FL2VA INT8 + Turbo: 480p or 768p, 16:9,
 - The finished MP4 returns inline in the result, because the worker may run on
   another machine. The API writes the file it serves.
 
+## Host upload ownership
+
+Resident weight staging owns its admitted host bytes and transfers that owner into the media session before enqueue. Activation inputs are copied into an admitted owner in cancellable one-MiB chunks before any upload is submitted. Successful synchronization or a confirmed cleanup drain releases the source and its host charge. The existing execution allowance covers the largest activation copy: denoiser scratch uses 380,684 bytes per token and the largest input uses 21,504, together below the 496,128-byte per-token bound. Fixed staging and metadata retain their separate envelope; no nominal RAM grant increases.
+
+An unconfirmed drain retains the complete session, including device operations/context, host upload source, RAM/VRAM charges and worker activity, through process lifetime. It cannot authorize idle/park or reuse. The quarantine root is initialized before submission and adds no allocation on the failure path. This retention is deliberate: static destruction cannot establish that a device stopped reading host memory. Worker restart is the recovery boundary. This upload-source change does not establish safe ownership of caller-provided download destinations after a failed drain; that remains a separate host-boundary limitation.
+
 ## Memory
 
 - **Minimum:** the RAM working stage for the largest clip the API accepts

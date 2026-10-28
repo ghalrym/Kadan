@@ -38,7 +38,7 @@ Models load on demand. A first request, a change of hardware tier, or returning 
 
 Models retained between requests unload after one hour without work, measured from the last request's completion. LFM conversation and screenshot executors instead release their models after each request. Operators can configure the retained-model idle period; see [inference architecture](../../architecture/hikari/inference.md). Idle expiry never interrupts active or queued requests. Explicit unloading and requests that need memory can release a model sooner. A later request reloads it; downloaded checkpoints and conversation history are unchanged.
 
-A queued request has been accepted, not completed. Hikari must not silently truncate chat history or reduce requested media settings to force a fit. Invalid inputs, unavailable checkpoints and execution failures must produce explicit errors rather than fabricated results. Cancellation must finish cleanup before the released resources are reused.
+A queued request has been accepted, not completed. Hikari must not silently truncate chat history or reduce requested media settings to force a fit. Invalid inputs, unavailable checkpoints and execution failures must produce explicit errors rather than fabricated results. Cancellation must finish cleanup before the released resources are reused. If a worker cannot confirm cleanup, its affected capacity stays unavailable and may require a worker restart. An uncertain operation is not automatically replayed.
 
 Concurrent throughput, model quality and physical memory fit require manual validation on the target machine. Hikari does not guarantee a fixed response time or that every combination of inference requests fits.
 
