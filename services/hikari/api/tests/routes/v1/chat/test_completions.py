@@ -19,38 +19,36 @@ class CompletionRequestTests(unittest.TestCase):
                     messages=[{"role": "user", field: "Hello", "meta": "context"}]
                 )
                 self.assertEqual(
-                    body.model_dump()["messages"],
+                    body.model_dump(exclude_unset=True)["messages"],
                     [{"role": "user", "text": "Hello", "meta": "context"}],
                 )
 
-    def test_unsupported_message_fields_are_rejected_instead_of_discarded(self):
+    def test_unknown_message_fields_and_json_encoded_tool_arguments_are_rejected(self):
         for field, value in (
+            ("function_call", {}),
+            ("name", "weather"),
+            ("refusal", "no"),
             (
                 "tool_calls",
                 [
                     {
-                        "id": "call_1",
+                        "id": "call_0",
                         "type": "function",
                         "function": {"name": "weather", "arguments": "{}"},
                     }
                 ],
             ),
-            ("function_call", {"name": "weather", "arguments": "{}"}),
-            ("tool_call_id", "call_1"),
-            ("name", "weather"),
-            ("refusal", "I cannot help."),
         ):
-            with self.subTest(field=field):
-                with self.assertRaises(ValidationError) as error:
-                    CompletionRequest(
-                        messages=[
-                            {"role": "assistant", "content": "Hello", field: value}
-                        ]
-                    )
-                self.assertEqual(error.exception.errors()[0]["type"], "extra_forbidden")
-                self.assertEqual(
-                    error.exception.errors()[0]["loc"], ("messages", 0, field)
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                CompletionRequest(
+                    messages=[{"role": "assistant", "content": "Hello", field: value}]
                 )
+
+    def test_structured_tools_are_supported_by_default(self):
+        request = CompletionRequest(
+            messages=[{"role": "user", "content": "Hello"}], tools=[]
+        )
+        self.assertEqual(request.model, "lfm3-1.7b-bf16")
 
     def test_ambiguous_text_and_content_are_rejected(self):
         with self.assertRaises(ValidationError):
@@ -62,7 +60,6 @@ class CompletionRequestTests(unittest.TestCase):
 
     def test_unsupported_top_level_controls_are_rejected(self):
         for field, value in (
-            ("tools", []),
             ("tool_choice", "auto"),
             ("reasoning_effort", "high"),
             ("stream_options", {"include_usage": True}),

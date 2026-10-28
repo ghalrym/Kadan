@@ -1,18 +1,16 @@
-import base64
 import asyncio
+import base64
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from api.pydantic_models.inference import ImageProgress
-from api.pydantic_models.inference_task import TierSelectionTask
-from api.pydantic_models.model_store import HardwareTier, ModelStoreStatus
+from api.pydantic_models.model_store import ModelStoreStatus
 from api.routes.v1.chat.completions import CompletionRequest
 from api.routes.v1.images.generations import ImageRequest
 from api.routes.v1.videos.generations import VideoGenerationRequest
-from api.services.inference_errors import InferenceFailure
-from api.services.video_jobs import VideoJobs
 from api.services.inference import InferenceService
 from api.services.inference_worker import InferenceJob, InferenceTask, WorkerEvent
+from api.services.video_jobs import VideoJobs
 
 
 class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
@@ -45,6 +43,12 @@ class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch("api.services.inference.video_jobs.store") as store,
+            patch(
+                "api.services.inference.asyncio.to_thread",
+                new=AsyncMock(
+                    side_effect=lambda fn, *args, **kwargs: fn(*args, **kwargs)
+                ),
+            ),
             patch("api.services.inference.video_jobs.update") as update,
         ):
             await service._complete(job)
@@ -75,69 +79,31 @@ class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 {"image": {}},
             )
 
-    async def test_video_omissions_use_selected_tier_defaults_in_job_and_worker(self):
-        for tier_id, duration, resolution in (
-            ("go", 5, "480p"),
-            ("plus", 8, "480p"),
-            ("pro", 5, "768p"),
+    async def test_video_omissions_use_fixed_defaults_in_job_and_worker(self):
+        service = InferenceService()
+        service.worker.models = ModelStoreStatus(models=[])
+
+        async def submit(request, **kwargs):
+            self.assertEqual(
+                (request.input.duration, request.input.resolution), (5, "480p")
+            )
+            job = InferenceJob(request, False)
+            job.result.set_result({})
+            return job
+
+        with (
+            patch.object(service.worker, "submit", side_effect=submit),
+            patch("api.services.inference.video_jobs", VideoJobs()),
         ):
-            with self.subTest(tier=tier_id):
-                service = InferenceService()
-                service.worker.models = ModelStoreStatus(
-                    models=[],
-                    selected_tier=tier_id,
-                    tiers=[
-                        HardwareTier(
-                            id=tier_id,
-                            name=tier_id,
-                            vram_gb=8,
-                            ram_gb=32,
-                            models={"llm": "language", "video": "h3-fl2va-int8-turbo"},
-                            video_defaults={
-                                "duration": duration,
-                                "resolution": resolution,
-                            },
-                        )
-                    ],
-                )
-                submitted = []
-
-                async def submit(request, **kwargs):
-                    submitted.append(request.model_dump(mode="json")["input"])
-                    job = InferenceJob(request, False)
-                    job.result.set_result({})
-                    return job
-
-                with (
-                    patch.object(service.worker, "submit", side_effect=submit),
-                    patch("api.services.inference.video_jobs", VideoJobs()),
-                ):
-                    job = await service.submit(
-                        VideoGenerationRequest(prompt="Scene"), feature="video"
-                    )
-                    await asyncio.gather(*service.tasks.values())
-                self.assertEqual(
-                    (job.duration, job.resolution), (f"{duration}s", resolution)
-                )
-                self.assertEqual(submitted[0]["duration"], duration)
-                self.assertEqual(submitted[0]["resolution"], resolution)
+            job = await service.submit(
+                VideoGenerationRequest(prompt="Scene"), feature="video"
+            )
+            await asyncio.gather(*service.tasks.values())
+        self.assertEqual((job.duration, job.resolution), ("5s", "480p"))
 
     async def test_video_defaults_preserve_each_explicit_clip_setting(self):
         service = InferenceService()
-        service.worker.models = ModelStoreStatus(
-            models=[],
-            selected_tier="go",
-            tiers=[
-                HardwareTier(
-                    id="go",
-                    name="Go",
-                    vram_gb=8,
-                    ram_gb=32,
-                    models={"llm": "language", "video": "h3-fl2va-int8-turbo"},
-                    video_defaults={"duration": 5, "resolution": "480p"},
-                )
-            ],
-        )
+        service.worker.models = ModelStoreStatus(models=[])
         for fields, expected in (
             ({"seconds": 15}, (15, "480p")),
             ({"resolution": "768p"}, (5, "768p")),
@@ -161,16 +127,6 @@ class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
                     VideoGenerationRequest(prompt="Scene", **fields), feature="video"
                 )
                 await asyncio.gather(*service.tasks.values())
-
-    async def test_video_without_selected_tier_rejects_before_submission(self):
-        service = InferenceService()
-        service.worker.models = ModelStoreStatus(models=[])
-        with patch.object(service.worker, "submit", new=AsyncMock()) as submit:
-            with self.assertRaisesRegex(InferenceFailure, "Choose a hardware tier"):
-                await service.submit(
-                    VideoGenerationRequest(prompt="Scene"), feature="video"
-                )
-        submit.assert_not_awaited()
 
     async def test_stream_relays_content_and_uses_worker_selected_model(self):
         service = InferenceService()
@@ -506,90 +462,20 @@ class ImageProgressTests(unittest.IsolatedAsyncioTestCase):
 
 
 class UnloadTests(unittest.IsolatedAsyncioTestCase):
-    def chat_job(self, service):
-        job = InferenceJob(InferenceTask(input={"feature": "llm"}), False)
-        service.worker.jobs[job.request.id] = job
-        return job
-
-    async def unload(self, service, **kwargs):
-        async def submit(request, **_):
-            job = InferenceJob(request, False)
-            job.result.set_result({})
-            return job
-
+    async def test_unload_cancels_only_lfm_language_work_then_releases_budget(self):
+        service = InferenceService()
+        language = InferenceJob(InferenceTask(input={"feature": "llm"}), False)
+        language.worker = "lfm3_llm"
+        image = InferenceJob(
+            InferenceTask(input={"feature": "image", "prompt": "keep"}), False
+        )
+        image.worker = "image"
+        service.worker.jobs = {language.request.id: language, image.request.id: image}
         with (
-            patch.object(service.worker, "submit", side_effect=submit) as worker_submit,
             patch.object(service, "cancel", new=AsyncMock()) as cancel,
+            patch.object(service.worker, "offload", new=AsyncMock()) as offload,
         ):
-            await service.unload(**kwargs)
-        self.assertEqual(worker_submit.call_args.args[0].operation, "unload")
-        return cancel
-
-    async def test_unload_returns_the_language_model_budget(self):
-        service = InferenceService()
-        with patch.object(service.worker, "offload", new=AsyncMock()) as offload:
-            await self.unload(service)
-        offload.assert_awaited_once_with("llm")
-
-    async def test_unload_cancels_running_chats_by_default(self):
-        service = InferenceService()
-        job = self.chat_job(service)
-        cancel = await self.unload(service)
-        cancel.assert_awaited_once_with(job.request.id)
-
-    async def test_unload_can_queue_behind_running_chats(self):
-        service = InferenceService()
-        self.chat_job(service)
-        cancel = await self.unload(service, cancel_llm=False)
-        cancel.assert_not_awaited()
-
-
-class TierSelectionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_tier_selection_unloads_only_another_tiers_model(self):
-        language_model = "qwen3.6-35b-a3b-q4-k-m"
-        for state, model_id, unloads in (
-            ("ready", "qwen3.8-flash-next-ud-iq3-xxs", True),
-            ("offloaded", "qwen3.8-flash-next-ud-iq3-xxs", True),
-            ("loading", "qwen3.8-flash-next-q3-k-xl", True),
-            ("ready", language_model, False),
-            ("unloaded", None, False),
-            ("error", "qwen3.8-flash-next-ud-iq3-xxs", False),
-        ):
-            service = InferenceService()
-            service.worker.models = ModelStoreStatus(
-                models=[],
-                tiers=[
-                    HardwareTier(
-                        id="go",
-                        name="Go",
-                        vram_gb=8,
-                        ram_gb=32,
-                        video_defaults={"duration": 5, "resolution": "480p"},
-                        models={
-                            "llm": language_model,
-                            "image": None,
-                            "video": None,
-                            "speech": None,
-                            "transcription": None,
-                            "formatting": None,
-                        },
-                    )
-                ],
-            )
-            service.state = state
-            service.model_id = model_id
-            with (
-                self.subTest(state=state, model_id=model_id),
-                patch.object(service, "submit", new=AsyncMock()) as submit,
-                patch.object(service, "unload", new=AsyncMock()) as unload,
-            ):
-                await service.select_tier("go")
-                submit.assert_awaited_once_with(
-                    TierSelectionTask(tier="go"),
-                    feature="tier_selection",
-                    operation="configure",
-                )
-                if unloads:
-                    unload.assert_awaited_once_with(cancel_llm=False)
-                else:
-                    unload.assert_not_awaited()
+            status = await service.unload()
+        cancel.assert_awaited_once_with(language.request.id)
+        offload.assert_awaited_once_with("lfm3_llm")
+        self.assertEqual(status["model_id"], "lfm3-1.7b-bf16")

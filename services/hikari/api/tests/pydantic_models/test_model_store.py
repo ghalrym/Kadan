@@ -2,28 +2,19 @@ import unittest
 
 from pydantic import ValidationError
 
-from api.pydantic_models.model_store import TierModels
+from api.pydantic_models.model_store import ModelAssignments, ModelStoreStatus
 
 
-class TierModelsTests(unittest.TestCase):
-    def test_language_model_is_required(self):
-        for assignments in ({}, {"llm": None}):
-            with (
-                self.subTest(assignments=assignments),
-                self.assertRaises(ValidationError),
-            ):
-                TierModels.model_validate(assignments)
+class FixedAssignmentsTests(unittest.TestCase):
+    def test_assignments_are_fixed_and_do_not_imply_checkpoint_availability(self):
+        status = ModelStoreStatus(models=[])
+        self.assertEqual(status.defaults.llm, "lfm3-1.7b-bf16")
+        self.assertEqual(status.defaults.speech, "lfm3-audio-2b-bf16")
+        self.assertEqual(status.defaults.image, "qwen-image-2.1-turbo")
+        self.assertEqual(status.models, [])
+        self.assertNotIn("tiers", status.model_dump())
 
-    def test_unassigned_modalities_serialize_as_null(self):
-        models = TierModels(llm="language-model")
-        self.assertEqual(
-            models.model_dump(),
-            {
-                "llm": "language-model",
-                "image": None,
-                "video": None,
-                "speech": None,
-                "transcription": None,
-                "formatting": None,
-            },
-        )
+    def test_alternative_models_cannot_change_the_fixed_stack(self):
+        for name, value in (("llm", "qwen"), ("speech", "qwen-tts"), ("image", None)):
+            with self.subTest(name=name), self.assertRaises(ValidationError):
+                ModelAssignments.model_validate({name: value})

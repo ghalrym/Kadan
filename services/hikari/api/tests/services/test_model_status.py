@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from api.pydantic_models.inference_task import InferenceTask, ModelContextTask
-from api.pydantic_models.model_store import HardwareTier, ModelStoreStatus
+from api.pydantic_models.model_store import ModelStoreStatus
 from api.services.inference import InferenceService
 from api.services.inference_errors import InferenceFailure
 from api.services.inference_worker import InferenceJob, WorkerEvent
@@ -220,40 +220,6 @@ class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
         await task
         self.assertIsNone(self.service.models_status().models[0].context_limit)
 
-    async def test_tier_download_queues_only_incomplete_checkpoints(self):
-        self.service.worker.models.tiers = [
-            HardwareTier(
-                id="go",
-                name="Go",
-                vram_gb=8,
-                ram_gb=32,
-                video_defaults={"duration": 5, "resolution": "480p"},
-                models={
-                    "llm": "small",
-                    "image": None,
-                    "video": None,
-                    "speech": None,
-                    "transcription": None,
-                    "formatting": "small",
-                },
-            )
-        ]
-        await self.service.download_tier("go", True)
-        jobs = list(self.service.worker.jobs.values())
-        self.assertEqual([job.request.input.model_id for job in jobs], ["small"])
-        self.assertTrue(jobs[0].request.input.license_acknowledged)
-        # A queued download is not queued twice.
-        await self.service.download_tier("go", True)
-        self.assertEqual(len(self.service.worker.jobs), 1)
-        self.service.worker.models.models[0].status = "complete"
-        self.service._observe(jobs[0], WorkerEvent(state="succeeded"))
-        jobs[0].result.set_result({})
-        await asyncio.gather(*self.service.tasks.values())
-        await self.service.download_tier("go", False)
-        self.assertFalse(self.service.worker.jobs)
-        with self.assertRaises(InferenceFailure):
-            await self.service.download_tier("plus", False)
-
     async def test_missing_worker_status_is_unavailable(self):
         self.service.worker.models = None
         with self.assertRaises(InferenceFailure):
@@ -270,7 +236,7 @@ class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
         state = self.service.models_status().models[0]
         self.assertEqual((state.status, state.error), ("failed", "Integrity failure"))
 
-    async def test_lost_download_completion_allows_incomplete_tier_to_resume(self):
+    async def test_lost_download_completion_allows_incomplete_model_to_resume(self):
         for active in ("downloading", "cancelling"):
             with self.subTest(status=active):
                 await self.service.download("small", True)
@@ -283,21 +249,11 @@ class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
 
                 # A replacement worker reports the retained, incomplete store.
                 self.service.worker.models = snapshot()
-                self.service.worker.models.tiers = [
-                    HardwareTier(
-                        id="go",
-                        name="Go",
-                        vram_gb=8,
-                        ram_gb=32,
-                        video_defaults={"duration": 5, "resolution": "480p"},
-                        models={"llm": "small"},
-                    )
-                ]
                 state = self.service.models_status().models[0]
                 self.assertEqual(
                     (state.status, state.error), ("failed", "Worker disconnected.")
                 )
-                await self.service.download_tier("go", True)
+                await self.service.download("small", True)
                 retry = next(iter(self.service.worker.jobs.values()))
                 self.assertNotEqual(retry.request.id, job.request.id)
                 self.assertEqual(
@@ -366,7 +322,6 @@ class ModelStatusTests(unittest.IsolatedAsyncioTestCase):
 class SettingsTaskTests(unittest.TestCase):
     def test_all_settings_tasks_round_trip(self):
         for body in (
-            {"feature": "tier_selection", "tier": "go"},
             {"feature": "model_context", "model_id": "small", "context_limit": None},
             {"feature": "whisper_selection", "model": "tiny.en"},
             {"feature": "whisper_formatting", "enabled": False},
