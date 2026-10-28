@@ -1,4 +1,9 @@
-import { getSettings, updateSettings } from './generated/sdk.gen'
+import {
+  downloadModelV1ModelsModelIdDownloadPost,
+  getSettings,
+  listModelsV1ModelsGet,
+  updateSettings,
+} from './generated/sdk.gen'
 import type {
   CheckpointStatus,
   SettingsResponse,
@@ -6,7 +11,7 @@ import type {
   TierSetting,
 } from './generated/types.gen'
 
-export type { SettingsResponse, TierModel, TierSetting }
+export type { CheckpointStatus, SettingsResponse, TierModel, TierSetting }
 export type TierId = TierSetting['id']
 export type DownloadState =
   | 'unassigned'
@@ -51,6 +56,30 @@ export async function chooseTier(
   })
   if (!result.response?.ok || !result.data) throw settingsError(result.response, result.error)
   return result.data
+}
+
+export function experimentalModels(models: CheckpointStatus[]): CheckpointStatus[] {
+  return models.filter((model) => model.id.startsWith('lfm3-'))
+}
+
+export async function fetchExperimentalModels(signal: AbortSignal): Promise<CheckpointStatus[]> {
+  const result = await listModelsV1ModelsGet({ signal })
+  if (!result.response?.ok || !result.data) throw settingsError(result.response, result.error)
+  return experimentalModels(result.data.models)
+}
+
+/** The dialog must obtain explicit acknowledgement before queuing any download. */
+export async function downloadExperimentalModel(
+  modelId: string,
+  acknowledged: boolean,
+  signal: AbortSignal,
+): Promise<CheckpointStatus[]> {
+  if (!acknowledged) throw new Error('Review and acknowledge the model license before downloading.')
+  const result = await downloadModelV1ModelsModelIdDownloadPost({
+    path: { model_id: modelId }, body: { license_acknowledged: true }, signal,
+  })
+  if (!result.response?.ok || !result.data) throw settingsError(result.response, result.error)
+  return experimentalModels(result.data.models)
 }
 
 /**
