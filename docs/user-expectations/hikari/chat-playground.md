@@ -2,7 +2,7 @@
 
 Hikari's Chat page lets users try text inference directly. Its conversation and draft exist only in the open page and disappear on navigation or reload. It does not run agent tools or save a Kadan conversation.
 
-Enter sends a message; Shift+Enter inserts a newline. One reply runs at a time using the model selected in Hikari Settings. Loading or downloading can delay it, and an unavailable model or failed acquisition produces an error.
+Enter sends a message; Shift+Enter inserts a newline. One reply runs at a time using the model selected in Hikari Settings by default. When the experimental LFM3 text worker is connected and its checkpoint is downloaded and available for inference, users can choose it explicitly on Chat. This choice affects only this page. Start a new chat to change models after sending a message; retries keep the same choice. Loading or downloading can delay replies, and an unavailable model or failed acquisition produces an error.
 
 The page shows text as it arrives. Conversation capacity depends on the model's context setting, not the displayed character count. Requests that do not fit must fail rather than silently drop old messages. A reply can also stop at its output limit.
 
