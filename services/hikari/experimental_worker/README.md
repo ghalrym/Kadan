@@ -1,23 +1,22 @@
 # LFM3 BF16 workers
 
-The opt-in conversation and screenshot workers use the existing Hikari API,
-queue, worker token and memory scheduler. Enable their profiles in the normal
-Compose project so Hikari and Kadan keep their usual URLs and saved conversations.
+The default conversation and screenshot workers use the existing Hikari API,
+queue, worker token and memory scheduler. They start without profiles in the normal
+Compose project, keeping Hikari and Kadan's usual URLs and saved conversations.
 Workers on one computer share that API's memory scheduler.
 
-These workers are an explicit exception to the native language worker's MoE
-policy. They do not select a hardware tier, replace native workers or accept a
+These workers follow Andrew's later direction to make LFM the default. They do
+not select a hardware tier, remove native workers or accept a
 model license. No model weights ship in the image. Each request loads the pinned
 checkpoint into a separate executor; cancellation joins that process before
 releasing memory. Replies are buffered, with no persistent model or prefix cache.
 
-## Enable in the existing stack
+## Update the existing stack
 
 Run from the normal checkout with its existing Compose project and environment.
-The following enables both workers. For conversation only, omit the vision
-profile, worker and vision flags. The former text and vision overlay files are
-replaced by these profiles in `compose.yaml`; service and model-volume names stay
-the same.
+The following updates both workers and their callers. `compose.yaml` defaults
+all four text/vision selection flags below to true; remove older false overrides
+when adopting the defaults. Service and model-volume names stay the same.
 
 ```sh
 export HIKARI_ENABLE_LFM3_TEXT=true
@@ -25,8 +24,7 @@ export HIKARI_ENABLE_LFM3_VISION=true
 export KADAN_EXPERIMENTAL_LFM3_TEXT=true
 export KADAN_EXPERIMENTAL_LFM3_VISION=true
 
-docker compose --profile lfm3-text --profile lfm3-vision \
-  up -d --build --no-deps \
+docker compose up -d --build --no-deps \
   hikari-api hikari-frontend kadan-api kadan-runner kadan-frontend \
   hikari-worker-lfm3-text hikari-worker-lfm3-vision
 ```
@@ -44,9 +42,9 @@ still require the user's approval.
 
 ## Check the selected path
 
-- In Hikari Chat, choose **LFM3 1.7B BF16 (experimental)** in **Model** before
-  sending. **Hikari Settings model** retains the native selection. Use **New
-  chat** to change models after starting a conversation or retry.
+- Hikari Chat shows **LFM3 1.7B BF16** and explicitly requests that checkpoint.
+  Retry and **New chat** keep it. Missing workers or downloads fail instead of
+  using the native model selected by a tier.
 - In the usual Kadan conversation, try a short reply and a harmless read-only
   action. Saved sessions, personas, tool permissions and durable action recovery
   remain authoritative. Compare a screenshot answer with **Watching** without

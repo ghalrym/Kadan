@@ -2,7 +2,7 @@
 
 Hikari's Settings lets users choose a hardware tier and download its models. A new installation has no selected tier. The suggestion does not select it or start downloads; users review the model licenses and confirm first.
 
-The saved tier determines which models and video defaults are used. Downloads can wait, fail or remain incomplete. A selected tier or completed download does not mean a model is loaded, or that every request will fit the machine.
+The saved tier supplies models for features still using tiers, including calls, and video defaults. Hikari Chat and Kadan text conversations use LFM separately. Downloads can wait, fail or remain incomplete. A selected tier or completed download does not mean a model is loaded, or that every request will fit the machine.
 
 The download dialog shows each model's progress. Percentages are estimates; the model's completed state confirms success. **Resume downloads** retries incomplete downloads without requiring completed models to be downloaded again.
 
@@ -12,6 +12,6 @@ Direct inference can also download a missing model, so the first request may tak
 
 Downloaded checkpoints persist in their model store across ordinary container restarts. Deleting that store loses them. Hikari verifies downloads before treating a checkpoint as complete; users must not modify completed checkpoints externally or share one store between independent installations. With [remote workers](remote-workers.md), model files reside on the computers serving the workloads.
 
-When an operator enables experimental LFM3 workers, Settings also shows their individual model downloads. Each model has its own license link, code notice, state and progress. Opening its dialog does not accept the license or start a download: users must check the acceptance box and confirm. These downloads do not change the selected hardware tier. A failed or timed-out request requires refreshing model state before retrying, because the download may already have started. Completed downloads confirm local acquisition, not a loaded model or successful inference.
+Settings also shows individual downloads for connected LFM3 workers. The standard deployment enables conversation and screenshot workers; their downloads are listed under **Experimental models** during the migration. Each model has its own license link, code notice, state and progress. Opening its dialog does not accept the license or start a download: users must check the acceptance box and confirm. These downloads do not change the selected hardware tier. A failed or timed-out request requires refreshing model state before retrying, because the download may already have started. Completed downloads confirm local acquisition, not a loaded model or successful inference.
 
 See [Model loading and context](model-lifecycle.md) for loaded-state behavior and [Settings architecture](../../architecture/hikari/model-settings.md) for download controls and saved settings.
