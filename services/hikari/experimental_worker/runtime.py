@@ -19,6 +19,7 @@ from experimental_worker.store import ModelStore
 GIB = 1024**3
 log = logging.getLogger(__name__)
 BACKENDS = {
+    "d1": ("d1_decision", "HIKARI_ENABLE_D1"),
     "text": ("lfm3_llm", "HIKARI_ENABLE_LFM3_TEXT"),
     "vision": ("lfm3_vision", "HIKARI_ENABLE_LFM3_VISION"),
     "audio": ("lfm3_audio", "HIKARI_ENABLE_LFM3_AUDIO"),
@@ -136,7 +137,13 @@ def execute_child(
             )
         emit({"state": "result", "result": result})
     except BaseException as error:
-        emit({"state": "error", "error": str(error) or type(error).__name__})
+        emit(
+            {
+                "state": "error",
+                "error": str(error) or type(error).__name__,
+                "status_code": getattr(error, "status_code", 502),
+            }
+        )
     finally:
         connection.close()
 
@@ -216,6 +223,24 @@ class Runtime:
                     }
                 )
                 return
+            if self.backend_name == "d1" and message["operation"] not in (
+                "download",
+                "configure",
+            ):
+                try:
+                    if message["operation"] != "generate":
+                        raise ValueError("d1 supports decision evaluation only.")
+                    self.backend.prepare_questions(task)
+                except ValueError as error:
+                    await self.send(
+                        {
+                            "id": request_id,
+                            "state": "rejected",
+                            "error": str(error),
+                            "status_code": 422,
+                        }
+                    )
+                    return
             try:
                 self.queue.put_nowait(message)
             except asyncio.QueueFull:
@@ -340,7 +365,7 @@ class Runtime:
             ),
         )
         self.child = process
-        result, error = None, None
+        result, error, error_status = None, None, 502
         started = False
         try:
             await event("preparing", model=self.backend.MODEL["id"])
@@ -378,6 +403,8 @@ class Runtime:
                         result, received_result = message["result"], True
                     elif state == "error":
                         error = message["error"]
+                        if message.get("status_code") == 422:
+                            error_status = 422
                     else:
                         await event(state, **message)
                 else:
@@ -408,7 +435,7 @@ class Runtime:
         if request_id in self.cancelled:
             await event("cancelled")
         elif error is not None:
-            await event("failed", error=error, status_code=502)
+            await event("failed", error=error, status_code=error_status)
         else:
             await event("succeeded", model=self.backend.MODEL["id"], result=result)
         if request["operation"] != "download":

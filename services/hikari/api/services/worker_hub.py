@@ -77,10 +77,12 @@ CHECKPOINT_WORKERS = {
 }
 
 EXPERIMENTAL_MODELS = {
+    "d1-2b-bf16": ("d1_decision", "HIKARI_ENABLE_D1"),
     "lfm3-1.7b-bf16": ("lfm3_llm", "HIKARI_ENABLE_LFM3_TEXT"),
     "lfm3-vl-2b-bf16": ("lfm3_vision", "HIKARI_ENABLE_LFM3_VISION"),
     "lfm3-audio-2b-bf16": ("lfm3_audio", "HIKARI_ENABLE_LFM3_AUDIO"),
 }
+EXPERIMENTAL_WORKER_KINDS = frozenset(kind for kind, _ in EXPERIMENTAL_MODELS.values())
 EXPERIMENTAL_FEATURES = {
     "vision": "lfm3-vl-2b-bf16",
     "audio_call": "lfm3-audio-2b-bf16",
@@ -154,6 +156,10 @@ def target_worker(request: InferenceTask) -> str | None:
     if request.operation in ("download", "configure"):
         return None
     model = requested_model(request) or EXPERIMENTAL_FEATURES.get(request.feature)
+    if model == "d1-2b-bf16" and request.feature != "decisions":
+        raise InferenceFailure(
+            "d1 supports structured decisions, not chat or generation.", 422
+        )
     experiment = experimental_worker(model)
     if experiment is not None:
         if request.operation in ("load", "unload"):
@@ -310,7 +316,7 @@ class WorkerHub:
         )
         known = {model.id for model in snapshot.models}
         for worker in self.workers.values():
-            if not worker.kind.startswith("lfm3_") or worker.models is None:
+            if worker.kind not in EXPERIMENTAL_WORKER_KINDS or worker.models is None:
                 continue
             for model in worker.models.models:
                 try:
@@ -402,7 +408,7 @@ class WorkerHub:
             last_used=time.monotonic(),
         )
         self.workers[worker.id] = worker
-        if self.primary is None and not worker.kind.startswith("lfm3_"):
+        if self.primary is None and worker.kind not in EXPERIMENTAL_WORKER_KINDS:
             self.primary = worker.id
         log.info("Worker %s connected on %s", worker.name, computer.name)
         try:
@@ -491,7 +497,7 @@ class WorkerHub:
                 (
                     current.id
                     for current in self.workers.values()
-                    if not current.kind.startswith("lfm3_")
+                    if current.kind not in EXPERIMENTAL_WORKER_KINDS
                 ),
                 None,
             )
@@ -553,7 +559,7 @@ class WorkerHub:
                     kind = CHECKPOINT_WORKERS.get(model.kind)
             targets, computers = [], set()
             for worker in self._ready(kind):
-                if kind is None and worker.kind.startswith("lfm3_"):
+                if kind is None and worker.kind in EXPERIMENTAL_WORKER_KINDS:
                     continue
                 if worker.computer.id not in computers:
                     computers.add(worker.computer.id)

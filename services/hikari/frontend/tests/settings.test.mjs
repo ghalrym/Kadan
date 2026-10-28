@@ -111,10 +111,10 @@ test('download recovery is available for failed or cancelled tiers but not activ
 
 test('experimental model discovery leaves native tier models out of individual downloads', async () => {
   const { api, calls } = await settingsApi({ ok: true }, { models: [
-    checkpoint('qwen-native'), checkpoint('lfm3-1.7b-bf16'), checkpoint('lfm3-vl-2b-bf16'), checkpoint('lfm3-audio-2b-bf16'),
+    checkpoint('qwen-native'), checkpoint('lfm3-1.7b-bf16'), checkpoint('lfm3-vl-2b-bf16'), checkpoint('lfm3-audio-2b-bf16'), checkpoint('d1-2b-bf16'), checkpoint('d1-unrecognized'),
   ] })
   const models = await api.fetchExperimentalModels(new AbortController().signal)
-  assert.deepEqual(models.map(model => model.id), ['lfm3-1.7b-bf16', 'lfm3-vl-2b-bf16', 'lfm3-audio-2b-bf16'])
+  assert.deepEqual(models.map(model => model.id), ['lfm3-1.7b-bf16', 'lfm3-vl-2b-bf16', 'lfm3-audio-2b-bf16', 'd1-2b-bf16'])
   assert.deepEqual(calls.map(call => call.name), ['listModelsV1ModelsGet'])
 })
 

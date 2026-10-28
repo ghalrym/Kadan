@@ -7,6 +7,7 @@ import type {
 
 export type Question = DecisionRequest['questions'][number]
 export type Answer = DecisionResponse['answers'][number]
+export type DecisionModel = NonNullable<DecisionRequest['model']>
 
 /** One problem to show the user; `question` is a zero-based index when it belongs to a card. */
 export type DecisionIssue = { message: string; question?: number }
@@ -37,13 +38,13 @@ const MAX_STATE = 8000
 
 /**
  * Mirror the API's structural request rules so obvious mistakes are shown on
- * the right card without a CPU round trip. The server stays authoritative and
+ * the right card before contacting the specialist. The server stays authoritative and
  * additionally enforces total size and tokenizer budgets.
  */
-export function validateDecisionRequest(state: string, questions: Question[]): DecisionIssue[] {
+export function validateDecisionRequest(state: string, questions: Question[], model: DecisionModel = 'laya'): DecisionIssue[] {
   const issues: DecisionIssue[] = []
   if (!state.trim()) issues.push({ message: 'Describe the state to evaluate.' })
-  else if (state.length > MAX_STATE) issues.push({ message: `State must be at most ${MAX_STATE.toLocaleString()} characters.` })
+  else if (model === 'laya' && state.length > MAX_STATE) issues.push({ message: `State must be at most ${MAX_STATE.toLocaleString()} characters.` })
   if (!questions.length) issues.push({ message: 'Add at least one question.' })
   if (questions.length > MAX_QUESTIONS) issues.push({ message: `Use at most ${MAX_QUESTIONS} questions.` })
   questions.forEach((question, index) => {
@@ -54,13 +55,16 @@ export function validateDecisionRequest(state: string, questions: Question[]): D
     if (!question.instructions.trim()) add('Instructions are required.')
     if (question.type === 'Choice') {
       if (!question.options.length) add('Add at least one option.')
+      if (model === 'd1-2b-bf16' && question.options.length > 64) add('D1 supports at most 64 options per question.')
       if (question.options.some((option) => !option.key.trim())) add('Every option needs a key.')
       const keys = question.options.map((option) => option.key).filter((key) => key.trim())
       const duplicate = keys.find((key, i) => keys.indexOf(key) < i)
       if (duplicate !== undefined) add(`Option key “${duplicate}” is used more than once.`)
     }
     if (question.type === 'Score') {
-      if (!question.levels.length) add('Add at least one rubric level.')
+      if (model === 'd1-2b-bf16') {
+        if (question.levels.length < 2 || question.levels.length > 10) add('D1 requires 2–10 rubric levels.')
+      } else if (!question.levels.length) add('Add at least one rubric level.')
       if (question.levels.some((level) => !level.trim())) add('Every rubric level needs a description.')
     }
   })
@@ -95,7 +99,7 @@ function validationIssues(detail: ValidationError[], questions: Question[]): Dec
 
 /**
  * Evaluate one request snapshot and return answers in question order.
- * The signal cancels the browser request (the CPU worker may still finish).
+ * The signal cancels the browser request (worker cleanup may still be pending).
  * Every failure, including network and malformed output, rejects with a
  * DecisionError; an abort rejects with the platform AbortError.
  */
@@ -103,13 +107,14 @@ export async function requestDecisions(
   state: string,
   questions: Question[],
   signal: AbortSignal,
+  model: DecisionModel = 'laya',
 ): Promise<Answer[]> {
-  const issues = validateDecisionRequest(state, questions)
+  const issues = validateDecisionRequest(state, questions, model)
   if (issues.length)
     throw new DecisionError('Check your inputs', 'Some fields need attention before evaluating.', { issues })
   let result: Awaited<ReturnType<typeof evaluateDecisions>>
   try {
-    result = await evaluateDecisions({ body: { state, questions }, signal })
+    result = await evaluateDecisions({ body: { state, questions, ...(model === 'laya' ? {} : { model }) }, signal })
   } catch (failure) {
     if (signal.aborted) throw failure
     throw new DecisionError('Cannot reach Hikari', 'The decisions API did not respond. Check that the backend is running, then retry.', { retryable: true })
@@ -126,7 +131,7 @@ export async function requestDecisions(
     if (status === 422)
       throw new DecisionError('Input too long', message ?? 'The state or a question exceeds the decision model’s token budget. Shorten it, then retry.')
     if (status === 503)
-      throw new DecisionError('Decision model unavailable', message ?? 'The CPU decision model could not be loaded. Retry in a moment.', { retryable: true })
+      throw new DecisionError('Decision model unavailable', message ?? 'The selected decision model could not be loaded. Retry in a moment.', { retryable: true })
     if (status === 409 || status === 429)
       throw new DecisionError('Decision model busy', message ?? 'Another evaluation is running. Wait for it to finish, then retry.', { retryable: true })
     if (status === 502)

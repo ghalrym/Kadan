@@ -724,6 +724,21 @@
       "DecisionRequest": {
         "additionalProperties": false,
         "properties": {
+          "model": {
+            "anyOf": [
+              {
+                "enum": [
+                  "laya",
+                  "d1-2b-bf16"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
           "questions": {
             "items": {
               "discriminator": {
@@ -752,7 +767,6 @@
             "type": "array"
           },
           "state": {
-            "maxLength": 8000,
             "minLength": 1,
             "title": "State",
             "type": "string"
@@ -3570,7 +3584,7 @@
         ]
       },
       "post": {
-        "description": "Queue typed CPU decisions, preserving validation and disconnect cleanup.",
+        "description": "Queue the selected specialist, preserving validation and disconnect cleanup.",
         "operationId": "evaluateDecisions",
         "requestBody": {
           "content": {

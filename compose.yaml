@@ -91,6 +91,7 @@ services:
       HIKARI_KV_CACHE_IDLE_SECONDS: ${HIKARI_KV_CACHE_IDLE_SECONDS:-3600}
       HIKARI_ENABLE_LFM3_TEXT: ${HIKARI_ENABLE_LFM3_TEXT:-true}
       HIKARI_ENABLE_LFM3_VISION: ${HIKARI_ENABLE_LFM3_VISION:-true}
+      HIKARI_ENABLE_D1: ${HIKARI_ENABLE_D1:-false}
       WATCHFILES_FORCE_POLLING: "true"
     depends_on:
       hikari-postgres:
@@ -127,6 +128,17 @@ services:
       HIKARI_ENABLE_LFM3_VISION: ${HIKARI_ENABLE_LFM3_VISION:-true}
     volumes:
       - lfm3_vision_models:/var/lib/kadan/models
+
+  # Opt-in d1 decision worker. Enabling it never acknowledges its model license.
+  hikari-worker-d1:
+    <<: *lfm3_worker
+    profiles: [d1]
+    environment:
+      <<: *lfm3_environment
+      HIKARI_EXPERIMENTAL_BACKEND: experimental_worker.d1
+      HIKARI_ENABLE_D1: ${HIKARI_ENABLE_D1:-false}
+    volumes:
+      - d1_models:/var/lib/kadan/models
 
   # Language worker: the tier's mixture-of-experts model for chat.
   hikari-worker-llm:
@@ -513,6 +525,7 @@ services:
       KADAN_RUNNER_ID: runner-2
 
 volumes:
+  d1_models:
   lfm3_text_models:
   lfm3_vision_models:
   sandbox_home:

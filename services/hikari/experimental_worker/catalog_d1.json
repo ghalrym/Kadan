@@ -1,0 +1,254 @@
+{
+  "id": "d1-2b-bf16",
+  "repo_id": "LiquidAI/d1-2B",
+  "revision": "cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41",
+  "license": "lfm1.0",
+  "license_url": "https://huggingface.co/LiquidAI/d1-2B/blob/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/LICENSE",
+  "license_notice": "Review the LFM Open License v1.0 before downloading. This opt-in decision worker executes the checkpoint's pinned custom Python code. Existing LFM downloads do not acknowledge this checkpoint.",
+  "estimated_bytes": 3854680877,
+  "kind": "decision",
+  "display_name": "d1 2B BF16 (experimental)",
+  "short_name": "d1",
+  "context_limit": 128000,
+  "architecture_context_limit": 128000,
+  "artifacts": [
+    {
+      "name": "LICENSE",
+      "size": 10574,
+      "digest": "25e731c697c4fe4c52ee654cedf7106a827748d2",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/LICENSE"
+    },
+    {
+      "name": "api.py",
+      "size": 11734,
+      "digest": "265c7ccddf1afbf029853b7bc71b9ece1f474271",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/api.py"
+    },
+    {
+      "name": "attention.py",
+      "size": 19450,
+      "digest": "e32bcb395c0f78d5504edc9965fbedbea4dc74de",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/attention.py"
+    },
+    {
+      "name": "box.py",
+      "size": 7747,
+      "digest": "557c2383a9f5283fa1f6af0b28ea3fadf1a3576a",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/box.py"
+    },
+    {
+      "name": "calibration.json",
+      "size": 4924,
+      "digest": "2f8209e2d018aa686b3b421db0e8e3ca2c68335e",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/calibration.json"
+    },
+    {
+      "name": "calibration.py",
+      "size": 2867,
+      "digest": "d073c97bb22912def140abc6992b6d72bec80768",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/calibration.py"
+    },
+    {
+      "name": "chat_template.jinja",
+      "size": 12748,
+      "digest": "621a9586b77a73ae2fbb0dec1f528263c14f8901",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/chat_template.jinja"
+    },
+    {
+      "name": "config.json",
+      "size": 2903,
+      "digest": "b931aa74238ea7f53329de2852031348073b87c8",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/config.json"
+    },
+    {
+      "name": "configuration_lfm3.py",
+      "size": 7136,
+      "digest": "b819fbc141cfc5fce395796ed11909566ae8dc06",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/configuration_lfm3.py"
+    },
+    {
+      "name": "configuration_lfm3_vl.py",
+      "size": 9892,
+      "digest": "94d3b91a89c7f6f3cb7e56b9a02e7e547bea11b5",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/configuration_lfm3_vl.py"
+    },
+    {
+      "name": "depthwise.py",
+      "size": 3119,
+      "digest": "e4e71ba9c7f1e8e5c33a67fc3b41bbc0477b6dc5",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/depthwise.py"
+    },
+    {
+      "name": "grid.py",
+      "size": 1714,
+      "digest": "6c0dffb4312df2ac08367fb22f89cf04454ae6e6",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/grid.py"
+    },
+    {
+      "name": "image_processing_lfm3_vl.py",
+      "size": 13085,
+      "digest": "c7d532fe5e6270c4f21f1dc8e60192750ff40860",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/image_processing_lfm3_vl.py"
+    },
+    {
+      "name": "integrations_lfm3.py",
+      "size": 8739,
+      "digest": "d94304387f0293940fc43301453d5150450b21d2",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/integrations_lfm3.py"
+    },
+    {
+      "name": "json_spans.py",
+      "size": 2060,
+      "digest": "6c1beb857264514e4254084892c8a071c8136b37",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/json_spans.py"
+    },
+    {
+      "name": "lfm3.py",
+      "size": 10067,
+      "digest": "f7a45dac91a3507f3c4112f32ef5fab7b10a06b0",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/lfm3.py"
+    },
+    {
+      "name": "media.py",
+      "size": 13064,
+      "digest": "b04bda21bb89e56289570a3f87f15f9283ae1d15",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/media.py"
+    },
+    {
+      "name": "model.safetensors",
+      "size": 3836417920,
+      "digest": "b5e573687315e82ea80f4f7dd8d76b5cec3b6ee97e3509fd0493cfebb203719f",
+      "algorithm": "sha256",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/model.safetensors"
+    },
+    {
+      "name": "modeling_d1.py",
+      "size": 3914,
+      "digest": "ac833b12e5dcccfd88b0c972a3a0c2fe8aea7cbf",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/modeling_d1.py"
+    },
+    {
+      "name": "modeling_d1_lfm3_vl.py",
+      "size": 369,
+      "digest": "9b04189d6998523dd31b5a300dd9ae6fef656e5f",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/modeling_d1_lfm3_vl.py"
+    },
+    {
+      "name": "modeling_lfm3.py",
+      "size": 43385,
+      "digest": "39c7bd1df17762c4d4dde4e099bf8b18725f41f9",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/modeling_lfm3.py"
+    },
+    {
+      "name": "modeling_lfm3_vl.py",
+      "size": 46052,
+      "digest": "645e76a12f9a68aa339d050ac20d925f70ef9137",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/modeling_lfm3_vl.py"
+    },
+    {
+      "name": "native_lfm3.py",
+      "size": 1268,
+      "digest": "b877755decf62a84f42c05a11b205ccc45611273",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/native_lfm3.py"
+    },
+    {
+      "name": "native_lfm3_vl.py",
+      "size": 1387,
+      "digest": "2af5214db0dc3f9b0536265f7082b3a1565bab53",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/native_lfm3_vl.py"
+    },
+    {
+      "name": "parsing.py",
+      "size": 16157,
+      "digest": "374585e9c1e04682e2c54b025913812c70da6e55",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/parsing.py"
+    },
+    {
+      "name": "pointer.py",
+      "size": 7700,
+      "digest": "32050b50c1dbf0b4174f2421bbe39ed088d9acfd",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/pointer.py"
+    },
+    {
+      "name": "processing_lfm3_vl.py",
+      "size": 13012,
+      "digest": "4ada79babf0080d4e16fae915253058cadf0a3cd",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/processing_lfm3_vl.py"
+    },
+    {
+      "name": "processor_config.json",
+      "size": 1254,
+      "digest": "95b03f77cb9ad9011e33cb17bed765cb393d219c",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/processor_config.json"
+    },
+    {
+      "name": "prompt.py",
+      "size": 34677,
+      "digest": "6b17f7219c1947d5b02f83e85a875e061e60adf2",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/prompt.py"
+    },
+    {
+      "name": "runner.py",
+      "size": 22405,
+      "digest": "99b29412db9813fc1855d6377e2c4c40cb8efc70",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/runner.py"
+    },
+    {
+      "name": "slots.py",
+      "size": 2463,
+      "digest": "1e679ec6811531261bcb2bccfd296840f878c9e9",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/slots.py"
+    },
+    {
+      "name": "tokenizer.json",
+      "size": 17908258,
+      "digest": "a39eed58008cbcbc09e5b629b81338a654269c64cd13348aaa6090f4db75c7e7",
+      "algorithm": "sha256",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/tokenizer.json"
+    },
+    {
+      "name": "tokenizer_config.json",
+      "size": 623,
+      "digest": "42a71ec485fb54bdaa97a7088ed4c548029fbd5a",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/tokenizer_config.json"
+    },
+    {
+      "name": "video_processing_lfm3_vl.py",
+      "size": 18210,
+      "digest": "ad34d7061b7c0ee31574fd06ab307781ba5a81ea",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/d1-2B/resolve/cfe5760ff5d5998f91d9ac56bd4b2dbd96996d41/video_processing_lfm3_vl.py"
+    }
+  ]
+}

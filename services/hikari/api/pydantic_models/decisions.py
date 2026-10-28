@@ -1,5 +1,8 @@
 from typing import Annotated, Literal
+
 from pydantic import BaseModel, ConfigDict, Field
+
+DecisionModel = Literal["laya", "d1-2b-bf16"]
 
 
 class ChoiceOption(BaseModel):
