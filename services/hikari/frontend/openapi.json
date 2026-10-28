@@ -809,11 +809,17 @@
             "type": "string"
           },
           "max_new_tokens": {
-            "default": 1024,
-            "maximum": 1024.0,
-            "minimum": 1.0,
-            "title": "Max New Tokens",
-            "type": "integer"
+            "anyOf": [
+              {
+                "exclusiveMaximum": 128000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max New Tokens"
           },
           "media_type": {
             "enum": [
@@ -830,7 +836,6 @@
             "type": "string"
           },
           "question": {
-            "maxLength": 4000,
             "minLength": 1,
             "title": "Question",
             "type": "string"
@@ -852,7 +857,6 @@
             "type": "string"
           },
           "text": {
-            "maxLength": 32000,
             "minLength": 1,
             "title": "Text",
             "type": "string"

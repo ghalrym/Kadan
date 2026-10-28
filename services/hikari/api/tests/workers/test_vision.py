@@ -3,15 +3,18 @@
 import base64
 import unittest
 
-from api.pydantic_models.inference_task import InferenceTask
 from experimental_worker.vision import (
     MAX_CONTEXT,
     MODEL,
     description,
     execute,
     image_bytes,
+    output_budget,
+    validate_completion,
     validate_context,
 )
+
+from api.pydantic_models.inference_task import InferenceTask
 
 
 class VisionWorkerTests(unittest.TestCase):
@@ -25,6 +28,23 @@ class VisionWorkerTests(unittest.TestCase):
         validate_context(126976, 1024)
         with self.assertRaisesRegex(ValueError, "no input was truncated"):
             validate_context(126977, 1024)
+
+    def test_omitted_budget_uses_every_remaining_token_and_explicit_caps_can_exceed_1024(
+        self,
+    ):
+        self.assertEqual(output_budget(100), 127900)
+        self.assertEqual(output_budget(100, 16384), 16384)
+        self.assertEqual(output_budget(127999), 1)
+        with self.assertRaises(ValueError):
+            output_budget(128000)
+        with self.assertRaises(ValueError):
+            output_budget(100, 127901)
+
+    def test_eos_at_the_exact_budget_is_complete_and_short_non_eos_is_not(self):
+        validate_completion(127900, 7, [7, 8])
+        for count, token in ((0, None), (2, 99)):
+            with self.assertRaisesRegex(ValueError, "terminal EOS"):
+                validate_completion(count, token, 7)
 
     def test_context_rejects_empty_prompt(self):
         with self.assertRaisesRegex(ValueError, "must contain tokens"):
@@ -97,7 +117,7 @@ class VisionWorkerTests(unittest.TestCase):
         self.assert_invalid_work(question=" ")
 
     def test_excessive_output_is_rejected_before_loading_runtime_dependencies(self):
-        self.assert_invalid_work(max_new_tokens=1025)
+        self.assert_invalid_work(max_new_tokens=128000)
 
     def test_boolean_output_is_rejected_before_loading_runtime_dependencies(self):
         self.assert_invalid_work(max_new_tokens=True)

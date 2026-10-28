@@ -6,13 +6,13 @@ from unittest.mock import Mock
 
 from experimental_worker.text import (
     CONTEXT_LIMIT,
-    MAX_NEW_TOKENS,
     MODEL_ID,
     execute,
+    finish_reason,
     generate_text,
     messages,
     reply_text,
-    validate_context,
+    output_budget,
 )
 
 
@@ -23,7 +23,7 @@ class TextTests(unittest.TestCase):
         tokens, mask = object(), object()
         model = SimpleNamespace(generate=Mock(return_value="output"))
         self.assertEqual(
-            generate_text(model, {"input_ids": tokens, "attention_mask": mask}),
+            generate_text(model, {"input_ids": tokens, "attention_mask": mask}, 254208),
             "output",
         )
         model.generate.assert_called_once()
@@ -35,6 +35,7 @@ class TextTests(unittest.TestCase):
         self.assertTrue(options["use_cache"])
         self.assertTrue(options["disable_compile"])
         self.assertEqual(options["logits_to_keep"], 1)
+        self.assertEqual(options["max_new_tokens"], 254208)
 
     def test_preserves_existing_rendered_tool_history(self):
         text = "<tool_response>\nSaved\n</tool_response>"
@@ -105,7 +106,20 @@ class TextTests(unittest.TestCase):
                     lambda _: None,
                 )
 
-    def test_full_supported_context_boundary_reserves_reply(self):
-        validate_context(CONTEXT_LIMIT - MAX_NEW_TOKENS)
-        with self.assertRaisesRegex(ValueError, "not truncated"):
-            validate_context(CONTEXT_LIMIT - MAX_NEW_TOKENS + 1)
+    def test_generation_can_use_all_context_after_the_complete_prompt(self):
+        self.assertEqual(output_budget(7936), 254208)
+        self.assertEqual(output_budget(CONTEXT_LIMIT - 1), 1)
+        self.assertEqual(output_budget(10, 32768), 32758)
+        for tokens in (CONTEXT_LIMIT, CONTEXT_LIMIT + 1):
+            with (
+                self.subTest(tokens=tokens),
+                self.assertRaisesRegex(ValueError, "not truncated"),
+            ):
+                output_budget(tokens)
+
+    def test_eos_at_the_output_boundary_is_complete(self):
+        self.assertEqual(finish_reason([4, 124900], 124900), "stop")
+        self.assertEqual(finish_reason([4, 124900], [124900, 124901]), "stop")
+        for tokens in ([4, 5], [], [4, 124899]):
+            with self.subTest(tokens=tokens):
+                self.assertEqual(finish_reason(tokens, 124900), "length")
