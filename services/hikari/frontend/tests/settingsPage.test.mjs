@@ -34,7 +34,7 @@ const card = (tree, id) => elements(tree).find(node => node.type?.name === 'Tier
 
 // Call SettingsPage directly with local hook state, JSX records and deferred API mocks.
 // No React tree, DOM, native dialog or service is mounted or invoked.
-async function page() {
+async function page(componentName = 'default') {
   const slots = [], effects = [], timers = new Map(), reads = [], changes = [], timeouts = []
   let cursor = 0, dirty = true, tree, mounted = true, updatesAfterUnmount = 0
   function request(calls, signal, tier) {
@@ -76,6 +76,12 @@ async function page() {
   const jsx = (type, props) => ({ type, props })
   const api = module({
     fetchSettings: signal => request(reads, signal),
+    fetchExperimentalModels: signal => request(reads, signal),
+    downloadExperimentalModel: (id, acknowledged, signal) => {
+      const pending = request(changes, signal, id)
+      changes.at(-1).acknowledged = acknowledged
+      return pending
+    },
     chooseTier: (tier, signal) => request(changes, signal, tier),
     downloadState: model => model.status,
     licenseNotices: tier => tier.models.map(({ model }) => model),
@@ -97,7 +103,7 @@ async function page() {
     for (let i = 0; i < 12; i++) {
       await Promise.resolve()
       if (dirty && mounted) {
-        dirty = false; cursor = 0; tree = component.namespace.default()
+        dirty = false; cursor = 0; tree = component.namespace[componentName]()
         effects.splice(0).forEach(run => run())
       }
     }
@@ -309,3 +315,100 @@ for (const pending of ['poll', 'mutation', 'refresh']) {
     assert.equal(view.updatesAfterUnmount, 0)
   })
 }
+
+
+const experimental = (status = 'not_downloaded') => [{
+  id: 'lfm3-1.7b-bf16', display_name: 'LFM3 1.7B BF16', status,
+  license: 'lfm1.0', license_notice: 'Pinned model-specific Python code will execute.',
+  license_url: 'https://huggingface.co/LiquidAI/LFM3-1.7B/blob/pinned/LICENSE',
+  downloaded_bytes: 0, total_bytes: 100, estimated_bytes: 100,
+}]
+
+async function experimentalPage() {
+  const view = await page('ExperimentalModelDownloads')
+  view.reads[0].resolve(experimental())
+  await view.flush()
+  return view
+}
+
+async function acknowledge(view) {
+  const checkbox = elements(modal(view.tree)).find(node => node.type === 'input')
+  assert.equal(checkbox.props.checked, false)
+  checkbox.props.onChange({ target: { checked: true } })
+  await view.flush()
+}
+
+test('no connected experimental models leaves tier-only settings unchanged', async () => {
+  const view = await page('ExperimentalModelDownloads')
+  view.reads[0].resolve([])
+  await view.flush()
+  assert.equal(view.tree, null)
+  assert.equal(view.changes.length, 0)
+  view.unmount()
+})
+
+test('opening a model license dialog never starts or accepts its download', async () => {
+  const view = await experimentalPage()
+  assert.match(content(view.tree), /Pinned model-specific Python code/)
+  await view.click('Download')
+  assert.match(content(modal(view.tree)), /LFM Open License v1.0/)
+  assert.equal(button(modal(view.tree), 'Accept and download').props.disabled, true)
+  button(modal(view.tree), 'Accept and download').props.onClick()
+  await view.flush()
+  assert.equal(view.changes.length, 0)
+  await acknowledge(view)
+  await view.click('Cancel', modal(view.tree))
+  await view.click('Download')
+  assert.equal(button(modal(view.tree), 'Accept and download').props.disabled, true)
+  assert.equal(view.changes.length, 0)
+  view.unmount()
+})
+
+test('explicit model acknowledgement downloads only that checkpoint and shows actual completion', async () => {
+  const view = await experimentalPage()
+  await view.click('Download')
+  await acknowledge(view)
+  await view.click('Accept and download', modal(view.tree))
+  assert.equal(view.changes.length, 1)
+  assert.equal(view.changes[0].tier, 'lfm3-1.7b-bf16')
+  assert.equal(view.changes[0].acknowledged, true)
+  view.changes[0].resolve(experimental('downloading'))
+  await view.flush()
+  assert.equal(modal(view.tree), undefined)
+  assert.match(content(view.tree), /Downloading/)
+  view.reads.at(-1).resolve(experimental('complete'))
+  await view.flush()
+  assert.equal(button(view.tree, 'Downloaded').props.disabled, true)
+  view.unmount()
+})
+
+test('uncertain individual download requires a state refresh without replaying acceptance', async () => {
+  const view = await experimentalPage()
+  await view.click('Download')
+  await acknowledge(view)
+  await view.click('Accept and download', modal(view.tree))
+  view.changes[0].reject(new Error('Download timed out'))
+  await view.flush()
+  assert.match(alert(modal(view.tree)), /may have started/)
+  assert.equal(button(modal(view.tree), 'Accept and download').props.disabled, true)
+  await view.click('Refresh models', modal(view.tree))
+  view.reads.at(-1).resolve(experimental('downloading'))
+  await view.flush()
+  assert.equal(view.changes.length, 1)
+  assert.equal(modal(view.tree), undefined)
+  assert.match(content(view.tree), /Downloading/)
+  view.unmount()
+})
+
+test('leaving settings aborts a pending individual request and ignores its late response', async () => {
+  const view = await experimentalPage()
+  await view.click('Download')
+  await acknowledge(view)
+  await view.click('Accept and download', modal(view.tree))
+  const pending = view.changes[0]
+  view.unmount()
+  assert.equal(pending.signal.aborted, true)
+  pending.resolve(experimental('complete'))
+  await view.flush()
+  assert.equal(view.updatesAfterUnmount, 0)
+})

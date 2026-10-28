@@ -8,6 +8,8 @@ Each agent has its own saved conversation. Drafts are kept separately in the cur
 
 Sending saves the message and queues work. Users can keep typing and send more messages while earlier work waits. Replies can be delayed by other work or model loading. The agent can finish work without sending a visible reply; errors and stopped work must remain visible.
 
+The opt-in LFM3 trial delivers a completed plain answer as an agent reply when the agent is permitted to reply. Empty output can still finish silently. Malformed tool output must fail visibly instead of appearing as a reply.
+
 **Sending…** means a message or note is awaiting save confirmation. **Delivered** means it was saved in the conversation; it does not confirm that the model has read it. A later reply may come from earlier work.
 
 While response work is pending, Kadan shows whether it is queued or waiting for a response. When Hikari reports a language-model download or load, Kadan shows that state. These indicators refresh periodically and can lag changes. A loaded model does not prove that this prompt is being processed: Kadan does not currently receive that stage, so it shows no prompt-processing claim or estimated percentage. Downloads remain explicit actions in Hikari Settings; a progress label does not start or retry work.

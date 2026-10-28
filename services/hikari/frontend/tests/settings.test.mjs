@@ -20,8 +20,9 @@ function tier(models) {
 
 async function settingsApi(response = { ok: true }, data = { tier: 'go', tiers: [] }, error = undefined) {
   const calls = []
-  const sdk = new SyntheticModule(['getSettings', 'updateSettings'], function () {
-    for (const name of ['getSettings', 'updateSettings'])
+  const names = ['getSettings', 'updateSettings', 'listModelsV1ModelsGet', 'downloadModelV1ModelsModelIdDownloadPost']
+  const sdk = new SyntheticModule(names, function () {
+    for (const name of names)
       this.setExport(name, async args => { calls.push({ name, args }); return { response, data, error } })
   })
   const source = await readFile(new URL('../src/api/settings.ts', import.meta.url), 'utf8')
@@ -105,4 +106,26 @@ test('download recovery is available for failed or cancelled tiers but not activ
     llm: checkpoint('language'),
     formatting: checkpoint('formatter', { status: 'downloading' }),
   })), false)
+})
+
+
+test('experimental model discovery leaves native tier models out of individual downloads', async () => {
+  const { api, calls } = await settingsApi({ ok: true }, { models: [
+    checkpoint('qwen-native'), checkpoint('lfm3-1.7b-bf16'), checkpoint('lfm3-vl-2b-bf16'), checkpoint('lfm3-audio-2b-bf16'),
+  ] })
+  const models = await api.fetchExperimentalModels(new AbortController().signal)
+  assert.deepEqual(models.map(model => model.id), ['lfm3-1.7b-bf16', 'lfm3-vl-2b-bf16', 'lfm3-audio-2b-bf16'])
+  assert.deepEqual(calls.map(call => call.name), ['listModelsV1ModelsGet'])
+})
+
+test('individual download cannot acknowledge a model license implicitly', async () => {
+  const { api, calls } = await settingsApi({ ok: true }, { models: [] })
+  const signal = new AbortController().signal
+  await assert.rejects(api.downloadExperimentalModel('lfm3-1.7b-bf16', false, signal), /acknowledge the model license/)
+  assert.equal(calls.length, 0)
+  await api.downloadExperimentalModel('lfm3-1.7b-bf16', true, signal)
+  assert.equal(calls[0].name, 'downloadModelV1ModelsModelIdDownloadPost')
+  assert.deepEqual(calls[0].args.path, { model_id: 'lfm3-1.7b-bf16' })
+  assert.deepEqual(calls[0].args.body, { license_acknowledged: true })
+  assert.equal(calls[0].args.signal, signal)
 })

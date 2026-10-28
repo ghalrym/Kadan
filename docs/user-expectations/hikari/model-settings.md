@@ -12,4 +12,6 @@ Direct inference can also download a missing model, so the first request may tak
 
 Downloaded checkpoints persist in their model store across ordinary container restarts. Deleting that store loses them. Hikari verifies downloads before treating a checkpoint as complete; users must not modify completed checkpoints externally or share one store between independent installations. With [remote workers](remote-workers.md), model files reside on the computers serving the workloads.
 
+When an operator enables experimental LFM3 workers, Settings also shows their individual model downloads. Each model has its own license link, code notice, state and progress. Opening its dialog does not accept the license or start a download: users must check the acceptance box and confirm. These downloads do not change the selected hardware tier. A failed or timed-out request requires refreshing model state before retrying, because the download may already have started. Completed downloads confirm local acquisition, not a loaded model or successful inference.
+
 See [Model loading and context](model-lifecycle.md) for loaded-state behavior and [Settings architecture](../../architecture/hikari/model-settings.md) for download controls and saved settings.

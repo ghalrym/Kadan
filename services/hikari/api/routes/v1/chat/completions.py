@@ -7,8 +7,21 @@ from uuid import uuid4
 import anyio
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
-from api.pydantic_models.chat import ChatMessage
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
+from api.pydantic_models.chat import (
+    ChatMessage,
+    Lfm3Message,
+    Lfm3Tool,
+    lfm3_messages,
+    require_lfm3_tools,
+)
 from api.services.inference import inference
 from api.services.inference_http import infer
 from api.services.inference_errors import InferenceFailure
@@ -23,7 +36,8 @@ class CompletionMessage(ChatMessage):
 
 class CompletionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    messages: list[CompletionMessage] = Field(min_length=1)
+    messages: list[CompletionMessage | Lfm3Message] = Field(min_length=1)
+    tools: list[Lfm3Tool] | None = Field(default=None, max_length=256)
     model: str | None = None
     stream: bool = False
     conversation_id: str | None = Field(
@@ -35,6 +49,37 @@ class CompletionRequest(BaseModel):
     reuse_prefix: bool = Field(
         default=True, description="Disable to compare against full prefill."
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def experimental_messages(cls, values):
+        if isinstance(values, dict) and values.get("model") != "lfm3-1.7b-bf16":
+            errors = []
+            if "tools" in values:
+                errors.append(
+                    {
+                        "type": "extra_forbidden",
+                        "loc": ("tools",),
+                        "input": values["tools"],
+                    }
+                )
+            rows = values.get("messages")
+            for index, row in enumerate(rows if isinstance(rows, list) else []):
+                try:
+                    CompletionMessage.model_validate(row)
+                except ValidationError as error:
+                    errors.extend(
+                        {**item, "loc": ("messages", index, *item["loc"])}
+                        for item in error.errors(include_url=False)
+                    )
+            if errors:
+                raise ValidationError.from_exception_data(cls.__name__, errors)
+        return lfm3_messages(values)
+
+    @model_validator(mode="after")
+    def experimental_tools_only(self):
+        require_lfm3_tools(self.model, self.messages, self.tools)
+        return self
 
 
 class AssistantMessage(BaseModel):
