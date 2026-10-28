@@ -19,6 +19,7 @@ export function chatRequest(messages: ConversationMessage[]) {
     throw new Error('Messages must not be blank.')
   }
   return {
+    model: 'lfm3-1.7b-bf16' as const,
     messages: messages.map(({ role, text }) => ({ role, text })),
   }
 }

@@ -225,7 +225,7 @@ test('unmount aborts model read and ignores late results', async () => {
   await view.flush()
   assert.equal(view.lateUpdates, 0)
 })
-test('default request leaves the fixed model choice with the server', async () => {
+test('request builder explicitly selects the fixed LFM conversation model', async () => {
   const source = await readFile(
     new URL('../src/api/chat.ts', import.meta.url),
     'utf8',
@@ -236,7 +236,7 @@ test('default request leaves the fixed model choice with the server', async () =
   })
   await module.evaluate()
   assert.equal(
-    'model' in module.namespace.chatRequest([{ role: 'user', text: 'Hello' }]),
-    false,
+    module.namespace.chatRequest([{ role: 'user', text: 'Hello' }]).model,
+    'lfm3-1.7b-bf16',
   )
 })

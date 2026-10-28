@@ -3,6 +3,13 @@ from pydantic import BaseModel, Field
 
 RequestType = Literal["LLM", "Image", "Video", "TTS", "STT", "Decision"]
 RequestStatus = Annotated[int, Field(ge=100, le=599)]
+# Observations retain retired public IDs without admitting them for new inference.
+ObservedLanguageModel = Literal[
+    "qwen3.6-35b-a3b-q4-k-m",
+    "qwen3.8-flash-next-ud-iq3-xxs",
+    "qwen3.8-flash-next-q3-k-xl",
+    "lfm3-1.7b-bf16",
+]
 
 
 class RequestRecord(BaseModel):
@@ -18,7 +25,7 @@ class RequestRecord(BaseModel):
     id: str
     time: str
     type: RequestType
-    model: str | None = None
+    model: ObservedLanguageModel | None = None
     status: RequestStatus
     latency: str
     latency_ms: float

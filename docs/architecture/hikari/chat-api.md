@@ -15,6 +15,6 @@ event followed by `[DONE]`, without a successful terminal choice.
 
 ## Playground state and retry
 
-The browser sends its full current conversation and receives SSE text. It retains messages and drafts only in page memory. This keeps direct inference separate from Kadan's durable run ownership. See the user expectations for [the chat playground](../../user-expectations/hikari/chat-playground.md).
+The browser explicitly sends `model: lfm3-1.7b-bf16` for every turn, retry and new conversation. It sends its full current conversation and receives SSE text. It retains messages and drafts only in page memory. This keeps direct inference separate from Kadan's durable run ownership. See the user expectations for [the chat playground](../../user-expectations/hikari/chat-playground.md).
 
 A malformed or incomplete stream is a failed turn. Cancel aborts the browser request, discards partial assistant text and retains the user turn for retry. Retry performs another inference rather than restoring an earlier response. Worker cleanup can outlast browser cancellation. Saved context and memory admission remain in [Model lifecycle](model-lifecycle.md) and [Inference architecture](inference.md).
