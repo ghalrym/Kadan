@@ -23,6 +23,9 @@ PRIORITY = {
     "formatting": 3,
     "image": 4,
     "video": 5,
+    "lfm3_llm": 1,
+    "lfm3_vision": 1,
+    "lfm3_audio": 1,
 }
 TOP_PRIORITY = min(PRIORITY.values())
 

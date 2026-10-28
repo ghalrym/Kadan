@@ -1,4 +1,6 @@
 **
+!experimental_worker/
+!experimental_worker/**
 !api/
 !api/**
 !inference_worker/
