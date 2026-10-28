@@ -85,6 +85,27 @@ def test_every_bound_tool_is_rendered_in_the_checkpoint_tool_format():
     assert seen[0]["messages"][1] == {"role": "user", "content": "Hello"}
 
 
+def test_lfm3_sends_structured_tools_and_true_tool_result_roles():
+    seen = []
+    async def run():
+        def respond(request):
+            seen.append(json.loads(request.content))
+            return httpx.Response(200, text=completed(call("finish")), headers={"content-type": "text/event-stream"})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            return await AgentInference(client, "http://hikari").call([
+                SystemMessage(content="Owned instructions"), HumanMessage(content="Read it"),
+                AIMessage(content="", tool_calls=[{"name": "file_read_file", "args": {"file": "/tmp/a"}, "id": "call_0"}]),
+                ToolMessage(content="Result", tool_call_id="call_0"),
+            ], "lfm3-1.7b-bf16", "test-conversation", TOOLS)
+    assert asyncio.run(run()) == ToolCommand(tool="finish")
+    body = seen[0]
+    assert body["messages"][0] == {"role": "system", "content": "Owned instructions"}
+    assert body["messages"][-1] == {"role": "tool", "content": "Result", "tool_call_id": "call_0"}
+    assert body["messages"][-2]["tool_calls"][0]["function"]["arguments"] == {"file": "/tmp/a"}
+    assert body["tools"] == [convert_to_openai_tool(tool) for tool in TOOLS]
+    assert not body["messages"][0]["content"].startswith(TOOLS_HEADER)
+
+
 @pytest.mark.parametrize(
     ("reply", "expected"),
     [
