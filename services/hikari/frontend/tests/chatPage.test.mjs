@@ -231,11 +231,10 @@ test('request builder sends explicit model only when selected', async () => {
     new URL('../src/api/chat.ts', import.meta.url),
     'utf8',
   )
-  const sdk = new SyntheticModule(['createCompletion'], function () {
-    this.setExport('createCompletion', () => {})
-  })
   const module = new SourceTextModule(stripTypeScriptTypes(source))
-  await module.link(() => sdk)
+  await module.link(() => {
+    throw new Error('Unexpected runtime dependency')
+  })
   await module.evaluate()
   const messages = [{ role: 'user', text: 'Hello' }]
   assert.equal('model' in module.namespace.chatRequest(messages), false)
