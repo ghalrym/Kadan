@@ -107,3 +107,29 @@ The official callbacks provide no reliable word-to-sample alignment, and their
 end callback also runs after errors or output limits. The trial therefore keeps
 speech behind final EOS/privacy validation and claims no earlier playback from
 this diagnostic.
+
+### Completed-script TTS manual comparison
+
+The separate sentence-TTS trial delivered three complete mono 24-kHz PCM16 WAVs
+for a generated utterance requesting a three-sentence arithmetic explanation.
+The normal answer prompt produced the correct text answer, 42. First audio
+arrived at 17.76 seconds and the final receipt at 22.83 seconds; the text-answer
+stage took 8.83 seconds and TTS took 6.98 seconds in total. This was slower than
+the same-utterance interleaved sample's 15.11-second buffered reply, which
+incorrectly answered 43. These individual samples establish neither general
+accuracy nor a latency improvement.
+
+An official direct-response prefill was also tried. It failed the unfinished
+reasoning check at 8.94 seconds, before any answer or audio was delivered. The
+normal working prompt was restored; the privacy parser was not relaxed.
+
+Interruption after the first completed TTS segment acknowledged cleanup in
+0.207 seconds with no late events in the bounded check. No played acknowledgement
+was sent for unheard audio. A subsequent ASR roundtrip of the three generated
+segments recognized the final result as 32 rather than the intended 42; this
+could be synthesis or recognition error and requires listening to resolve.
+A short mixed-mode generated reply separately roundtripped as the correct 42.
+No microphone was opened, sound played, or audible-playback barge-in verified.
+Sentence TTS remains default-off and was disabled after the comparison. The
+working normal-prompt implementation is retained for explicit trials of
+completed speech segments, not selected as a latency improvement.
