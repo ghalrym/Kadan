@@ -44,13 +44,14 @@ def call(name, **arguments):
     return render_tool_call(name, arguments)
 
 
-def invoke(stream, status=200, media_type="text/event-stream", seen=None):
+def invoke(stream, status=200, media_type="text/event-stream", seen=None,
+           model_id="selected-model", bound_tools=TOOLS, history=None):
     async def run():
         def respond(request):
             body = json.loads(request.content)
             if seen is not None:
                 seen.append(body)
-            assert body["model"] == "selected-model"
+            assert body["model"] == model_id
             assert body["stream"] is True
             assert body["conversation_id"] == "kadan:test:conversation"
             assert request.extensions["timeout"]["read"] is None
@@ -60,13 +61,49 @@ def invoke(stream, status=200, media_type="text/event-stream", seen=None):
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             return await AgentInference(client, "http://hikari").call(
-                [SystemMessage(content="Instructions"), HumanMessage(content="Hello")],
-                "selected-model",
+                history if history is not None else [SystemMessage(content="Instructions"), HumanMessage(content="Hello")],
+                model_id,
                 "kadan:test:conversation",
-                TOOLS,
+                bound_tools,
             )
 
     return asyncio.run(run())
+
+
+def test_lfm3_plain_answer_after_tool_uses_existing_reply_action():
+    history = [
+        SystemMessage(content="Instructions"), HumanMessage(content="What is on the screen?"),
+        AIMessage(content="", tool_calls=[{"name": "computer_look", "args": {"question": "Describe the screen"}, "id": "call_0"}]),
+        ToolMessage(content="Google search page", tool_call_id="call_0"),
+    ]
+    answer = 'One clearly visible word is **"Google"**.'
+    assert invoke(completed(answer), model_id="lfm3-1.7b-bf16", history=history) == ToolCommand(
+        tool="send_message", arguments={"content": answer, "end_run": True},
+    )
+
+
+def test_native_plain_answer_still_finishes_without_delivery():
+    assert invoke(completed("A plain answer")) == ToolCommand(tool="finish")
+
+
+@pytest.mark.parametrize("answer", ["", "   ", call("finish")])
+def test_lfm3_empty_answer_and_explicit_finish_remain_silent(answer):
+    assert invoke(completed(answer), model_id="lfm3-1.7b-bf16") == ToolCommand(tool="finish")
+
+
+def test_lfm3_plain_answer_cannot_create_unbound_reply_action():
+    assert invoke(completed("A plain answer"), model_id="lfm3-1.7b-bf16",
+                  bound_tools=[shell_exec_command]) == ToolCommand(tool="finish")
+
+
+@pytest.mark.parametrize("answer", [
+    "<tool_call>unfinished", "<function=send_message>unfinished", "<parameter=content>Hello",
+    "Answer </tool_call>", "<FUNCTION send_message>",
+])
+def test_lfm3_malformed_tool_output_is_not_published_as_plain_answer(answer):
+    with pytest.raises(ServiceError) as error:
+        invoke(completed(answer), model_id="lfm3-1.7b-bf16")
+    assert error.value.code == "invalid_command"
 
 
 def test_every_bound_tool_is_rendered_in_the_checkpoint_tool_format():

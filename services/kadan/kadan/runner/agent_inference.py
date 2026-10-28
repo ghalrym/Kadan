@@ -63,6 +63,7 @@ TOOL_CALL = re.compile(
     re.DOTALL,
 )
 PARAMETER = re.compile(r"<parameter=([^>\s]+)>\n?(.*?)\n?</parameter>", re.DOTALL)
+TOOL_MARKUP = re.compile(r"</?(?:tool_call|function|parameter|tool_response)(?:[=>\s]|$)", re.IGNORECASE)
 
 
 class ToolCommand(BaseModel):
@@ -424,6 +425,15 @@ class AgentInference:
         ).bind_tools(tools)
         response = await model.ainvoke(messages)
         if not response.tool_calls:
+            if model_id == "lfm3-1.7b-bf16" and response.content.strip():
+                if TOOL_MARKUP.search(response.content):
+                    raise ServiceError(
+                        "The agent returned an invalid tool command.", 502, "invalid_command"
+                    )
+                if any(tool.name == "send_message" for tool in tools):
+                    return ToolCommand(tool="send_message", arguments={
+                        "content": response.content.strip(), "end_run": True,
+                    })
             # Not responding is allowed: a reply without a tool call ends the run.
             logger.info("Agent reply had no tool call: %r", response.content[:2000])
             return ToolCommand(tool="finish")
