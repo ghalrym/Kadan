@@ -384,7 +384,7 @@ class HikariChatModel(BaseChatModel):
                         reason = choice.get("finish_reason")
                         if not isinstance(text, str) or finished:
                             raise ValueError("Invalid or post-terminal delta")
-                        if reason is not None and reason != "stop":
+                        if reason not in (None, "stop", "length"):
                             raise ValueError("Incomplete inference")
                     except (ValueError, KeyError, TypeError) as error:
                         raise ServiceError(
@@ -392,6 +392,12 @@ class HikariChatModel(BaseChatModel):
                             502,
                             "invalid_stream",
                         ) from error
+                    if reason == "length":
+                        raise ServiceError(
+                            "Hikari reached the model's output limit before completing the agent response.",
+                            502,
+                            "response_limit",
+                        )
                     length += len(text)
                     if length > MAX_COMMAND_CHARACTERS:
                         raise ServiceError(

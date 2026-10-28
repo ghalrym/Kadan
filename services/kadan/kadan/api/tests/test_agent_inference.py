@@ -436,7 +436,6 @@ def test_finite_command_arguments_and_nan_text_survive_checkpoint():
         chunk(finish="stop"),
         "data: [DONE]\n\n",
         chunk(finish="stop") + "data: [DONE]",
-        chunk(finish="length") + "data: [DONE]\n\n",
         chunk(finish="tool_calls") + "data: [DONE]\n\n",
         chunk(finish="stop") + chunk("more") + "data: [DONE]\n\n",
         'data: {"choices": []}\n\n',
@@ -448,6 +447,21 @@ def test_incomplete_or_invalid_stream_cannot_execute_even_a_valid_command(ending
     with pytest.raises(ServiceError) as error:
         invoke(chunk(call("finish")) + ending)
     assert error.value.code in {"incomplete_stream", "invalid_stream"}
+
+
+@pytest.mark.parametrize("model_id", ["selected-model", "lfm3-1.7b-bf16"])
+@pytest.mark.parametrize(
+    "reply", [call("finish"), "42", "<tool_call>\n<function=send_message>"]
+)
+def test_output_limit_is_reported_without_returning_a_command(model_id, reply):
+    stream = chunk(reply) + chunk(finish="length") + "data: [DONE]\n\n"
+    with pytest.raises(ServiceError) as error:
+        invoke(stream, model_id=model_id)
+    assert error.value.code == "response_limit"
+    assert error.value.status == 502
+    assert str(error.value) == (
+        "Hikari reached the model's output limit before completing the agent response."
+    )
 
 
 def test_command_size_is_bounded_across_deltas():

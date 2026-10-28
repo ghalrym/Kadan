@@ -18,6 +18,8 @@ Saved history survives navigation and service recovery. **Show earlier messages*
 
 Each response has a limit of 24 commands and a bounded context for instructions, recent messages and action results. Reaching either limit fails that response visibly rather than continuing indefinitely. Saved history and messages already delivered remain. Sending a new message starts new work and does not guarantee completion of the earlier task. A saved message can also wait for [runner availability](runner-availability.md).
 
+If Hikari reaches the model's output limit before completing an agent response, Kadan reports that limit and does not execute a command from the incomplete response. Actions completed earlier in the run remain completed.
+
 After a send error, **Reload** checks what was saved. **Retry** under **Unsent message** keeps the original submission and persona. Resolve or discard it before sending another message. Closing the tab does not cancel saved work; use [Stopping chat work](stopping-chat-work.md).
 
 Trashing or restoring conversations in Tsuchi can change which chat opens after refreshing Kadan. Unsent submissions remain with their original conversation in the current browser tab and reappear if that conversation is reopened. The agent's ordinary draft remains available across this change.
