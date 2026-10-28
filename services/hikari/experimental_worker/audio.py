@@ -13,6 +13,12 @@ from pathlib import Path
 from experimental_worker.audio_stream_probe import create_probe
 from experimental_worker.call_history import append_call_history
 from experimental_worker.speech_segments import speech_scripts
+from experimental_worker.speech_voice import (
+    DEFAULT_GENDER,
+    DEFAULT_LANGUAGE,
+    GENDERS,
+    LANGUAGES,
+)
 
 MODEL = {
     "id": "lfm3-audio-2b-bf16",
@@ -71,12 +77,18 @@ def conversation(task: dict, audio_path: str | None = None) -> list[dict]:
         ]
     if task.get("mode") == "tts":
         script = task.get("script")
-        if not isinstance(script, str) or not script.strip() or len(script) > 240:
-            raise ValueError("TTS needs one bounded known script")
+        if not isinstance(script, str) or not script.strip():
+            raise ValueError("TTS needs one nonempty known script")
+        language = task.get("language", DEFAULT_LANGUAGE)
+        gender = task.get("gender", DEFAULT_GENDER)
+        if language not in LANGUAGES or gender not in GENDERS:
+            raise ValueError(
+                "Select a supported LFM3 speech language and female or male voice"
+            )
         return [
             {
                 "role": "system",
-                "content": "Perform TTS in American English using a female voice.",
+                "content": f"Perform TTS in {language} using a {gender} voice.",
             },
             {"role": "user", "content": script},
             {"role": "assistant", "content": "<|audio_start|>"},
@@ -379,14 +391,17 @@ def sentence_reply(messages, model, processor, codec, torch, emit):
 def execute(
     task: dict, operation: str, model_path: str, emit: Callable[[dict], None]
 ) -> dict:
+    public_speech = task.get("feature") == "tts"
     if (
         operation != "generate"
-        or task.get("feature") != "audio_call"
+        or task.get("feature") not in ("audio_call", "tts")
         or task.get("model_id", MODEL["id"]) != MODEL["id"]
     ):
         raise ValueError(
             "The audio worker only serves explicitly selected audio-call turns"
         )
+    if public_speech:
+        task = {**task, "mode": "tts"}
     mode = task.get("mode")
     streaming_probe = task.get("codec_streaming_probe", False)
     sentence_tts = task.get("sentence_tts", False)
@@ -483,6 +498,15 @@ def execute(
     else:
         result = generate(task, model, processor, codec, torch)
     torch.cuda.synchronize()
+    if public_speech:
+        language = task.get("language", DEFAULT_LANGUAGE)
+        gender = task.get("gender", DEFAULT_GENDER)
+        result.update(
+            voice=f"{gender.title()} · {language}",
+            meta="LFM3 Audio BF16 · WAV 24 kHz",
+            time=f"{result['sample_count'] / 24000:.2f}s",
+            mime_type="audio/wav",
+        )
     result["timing"] = {
         **result.get("timing", {}),
         "audio_import_seconds": imported - started,
