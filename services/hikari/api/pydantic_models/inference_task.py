@@ -5,7 +5,13 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
-from api.pydantic_models.chat import ChatMessage
+from api.pydantic_models.chat import (
+    ChatMessage,
+    Lfm3Message,
+    Lfm3Tool,
+    lfm3_messages,
+    require_lfm3_tools,
+)
 from api.pydantic_models.decisions import DecisionQuestion
 from api.pydantic_models.inference import Operation
 from api.pydantic_models.model_store import TierId
@@ -17,13 +23,24 @@ class TaskInput(BaseModel):
 
 class ChatTask(TaskInput):
     feature: Literal["llm"] = "llm"
-    messages: list[ChatMessage] = Field(default_factory=list)
+    messages: list[ChatMessage | Lfm3Message] = Field(default_factory=list)
+    tools: list[Lfm3Tool] | None = Field(default=None, max_length=256)
     model: str | None = None
     model_id: str | None = None
     context_limit: int | None = None
     stream: bool = False
     conversation_id: str | None = None
     reuse_prefix: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def experimental_messages(cls, values):
+        return lfm3_messages(values)
+
+    @model_validator(mode="after")
+    def experimental_tools_only(self):
+        require_lfm3_tools(self.model_id or self.model, self.messages, self.tools)
+        return self
 
 
 # One GGUF mixture-of-experts language model per hardware tier.

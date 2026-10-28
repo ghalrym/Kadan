@@ -1,12 +1,15 @@
 """Pure formatting and validation tests; never load or run a model."""
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from experimental_worker.text import (
     CONTEXT_LIMIT,
     MAX_NEW_TOKENS,
     MODEL_ID,
     execute,
+    generate_text,
     messages,
     reply_text,
     validate_context,
@@ -14,6 +17,25 @@ from experimental_worker.text import (
 
 
 class TextTests(unittest.TestCase):
+    def test_full_context_prefill_is_delegated_without_slicing_or_duplicate_decode(
+        self,
+    ):
+        tokens, mask = object(), object()
+        model = SimpleNamespace(generate=Mock(return_value="output"))
+        self.assertEqual(
+            generate_text(model, {"input_ids": tokens, "attention_mask": mask}),
+            "output",
+        )
+        model.generate.assert_called_once()
+        options = model.generate.call_args.kwargs
+        self.assertIs(options["input_ids"], tokens)
+        self.assertIs(options["attention_mask"], mask)
+        self.assertEqual(options["prefill_chunk_size"], 512)
+        self.assertEqual(options["cache_implementation"], "dynamic")
+        self.assertTrue(options["use_cache"])
+        self.assertTrue(options["disable_compile"])
+        self.assertEqual(options["logits_to_keep"], 1)
+
     def test_preserves_existing_rendered_tool_history(self):
         text = "<tool_response>\nSaved\n</tool_response>"
         self.assertEqual(
