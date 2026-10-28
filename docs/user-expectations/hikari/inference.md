@@ -18,6 +18,8 @@ This trial loads the model for each request and returns the completed reply thro
 
 Requests for different inference types can execute concurrently when the hardware has enough memory. Accepting several requests does not promise that they all start immediately. When their combined requirements exceed available memory, some requests wait while others run.
 
+A worker container's memory limit constrains its own work. It must not reduce the physical memory available to other workers on the same computer; their combined allocations must still fit the computer's available memory.
+
 When requests compete for memory, Hikari uses this priority order, highest first:
 
 1. Chat and decisions.
