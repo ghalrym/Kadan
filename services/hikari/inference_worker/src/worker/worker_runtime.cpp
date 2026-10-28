@@ -111,9 +111,14 @@ public:
             }
         std::ifstream limit_file("/sys/fs/cgroup/memory.max");
         const auto physical_ram_total = ram_total;
+        Json ram_limit = nullptr;
         std::string limit;
-        if (limit_file >> limit && limit != "max")
-            ram_total = std::min<Bytes>(ram_total, std::stoull(limit));
+        if (limit_file >> limit && limit != "max") {
+            const auto maximum = std::stoull(limit);
+            ram_total = std::min<Bytes>(ram_total, maximum);
+            constexpr Bytes host_margin = 1024ULL * 1024 * 1024;
+            ram_limit = maximum > host_margin ? maximum - host_margin : 0;
+        }
         const auto free = probe();
         Json devices = Json::array();
         for (unsigned index = 0; index < devices_; ++index) {
@@ -142,6 +147,7 @@ public:
             {"name", label},
             {"ram_total", ram_total},
             {"ram_free", free[0]},
+            {"ram_limit", ram_limit},
             {"physical_ram_total", physical_ram_total},
             {"physical_ram_free", probe(false)[0]},
             {"disk_total", Bytes(disk.f_blocks) * disk.f_frsize},

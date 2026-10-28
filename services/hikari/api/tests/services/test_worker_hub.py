@@ -68,6 +68,7 @@ def hello(
     protocol=4,
     ram_free=64,
     physical_ram_free=None,
+    ram_limit=...,
 ):
     return {
         "state": "hello",
@@ -80,6 +81,11 @@ def hello(
             "name": "box-" + computer,
             "ram_total": 68 * GIB,
             "ram_free": ram_free * GIB,
+            **(
+                {"ram_limit": None if ram_limit is None else ram_limit * GIB}
+                if ram_limit is not ...
+                else {}
+            ),
             **(
                 {"physical_ram_free": physical_ram_free * GIB}
                 if physical_ram_free is not None
@@ -262,6 +268,7 @@ class RegistrationTests(HubTestCase):
                         computer="-".join(order),
                         ram_free=23 if kind == "lfm3_llm" else 400,
                         physical_ram_free=400,
+                        ram_limit=23 if kind == "lfm3_llm" else None,
                         gpus=(("GPU-a", 23), ("GPU-b", 23)),
                         replies={
                             "load": ok,
@@ -273,7 +280,7 @@ class RegistrationTests(HubTestCase):
                 ledger = video.computer.ledger
                 self.assertEqual(ledger.capacity, [400 * GIB, 23 * GIB, 23 * GIB])
                 self.assertEqual(language.slot.host_limit, 23 * GIB)
-                self.assertEqual(video.slot.host_limit, 400 * GIB)
+                self.assertIsNone(video.slot.host_limit)
                 video.slot.pending = 1
                 video.slot.requirement = Requirement(
                     "h3", (117 * GIB, 3 * GIB), (117 * GIB, 3 * GIB)
@@ -1616,11 +1623,64 @@ class ModelIdleTests(HubTestCase):
 
 
 class SchedulingTests(HubTestCase):
+    async def test_uncapped_reconnect_can_reclaim_ram_after_low_free_snapshot(self):
+        _, picture = await self.connect(
+            "image", physical_ram_free=400, ram_free=400, ram_limit=None
+        )
+        old_video, _ = await self.connect(
+            "video", physical_ram_free=400, ram_free=400, ram_limit=None
+        )
+        await old_video.close()
+        await self.settle()
+        picture.slot.loaded = True
+        picture.slot.busy = True
+        picture.slot.budget = [350 * GIB, 0]
+        picture.slot.requirement = Requirement(
+            "resident", (350 * GIB, 0), (350 * GIB, 0)
+        )
+        socket, video = await self.connect(
+            "video",
+            physical_ram_free=49,
+            ram_free=49,
+            ram_limit=None,
+            replies={"load": ok, "requirement": needs((117, 3), (117, 3))},
+        )
+        job = await self.hub.submit(
+            InferenceTask(input={"feature": "video", "prompt": "red ball"})
+        )
+        await self.hub._schedule(video.computer)
+        self.assertEqual(video.computer.ledger.capacity[0], 400 * GIB)
+        self.assertIsNone(video.slot.host_limit)
+        self.assertFalse(socket.commands("cancel"))
+        self.assertFalse(socket.commands("load"))
+        self.assertEqual(video.slot.pending, 1)
+        self.assertFalse(job.result.done())
+        # Confirmed release makes the ledger capacity available again.
+        picture.slot.loaded = False
+        picture.slot.busy = False
+        picture.slot.budget = [0, 0]
+        await self.hub._schedule(video.computer)
+        self.assertEqual(socket.commands("load")[-1]["budget"][0], 117 * GIB)
+        self.assertTrue(video.slot.loaded)
+
+    async def test_container_ceiling_is_not_transient_free_ram(self):
+        socket, worker = await self.connect(
+            "lfm3_llm",
+            physical_ram_free=400,
+            ram_free=2,
+            ram_limit=23,
+            replies={"requirement": needs((16, 1), (100, 1)), "load": ok},
+        )
+        await self.hub.submit(chat())
+        await self.hub._schedule(worker.computer)
+        self.assertEqual(socket.commands("load")[-1]["budget"][0], 23 * GIB)
+
     async def test_worker_ram_limit_rejects_work_even_when_physical_host_fits(self):
         socket, worker = await self.connect(
             "lfm3_llm",
             ram_free=23,
             physical_ram_free=400,
+            ram_limit=23,
             replies={"requirement": needs((24, 1), (24, 1)), "load": ok},
         )
         job = await self.hub.submit(chat())

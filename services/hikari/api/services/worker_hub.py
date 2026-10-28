@@ -401,7 +401,7 @@ class WorkerHub:
             name=worker.id,
             kind=worker.kind,
             devices=worker.devices,
-            host_limit=info["ram_free"],
+            host_limit=info.get("ram_limit", info["ram_free"]),
             budget=[0] * len(computer.ledger.capacity),
             # A reconnect has no completion history; allow a full idle period.
             last_used=time.monotonic(),

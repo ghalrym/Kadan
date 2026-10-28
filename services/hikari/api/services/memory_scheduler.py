@@ -72,7 +72,7 @@ class WorkerSlot:
     releasing: bool = False
     releasing_since: float = 0.0
     full_duplex: bool = False
-    # This container's initial RAM headroom, independent of physical capacity.
+    # This container's RAM ceiling, independent of current physical free RAM.
     host_limit: int | None = None
 
     @property
@@ -110,7 +110,7 @@ class MachineLedger:
                     name=name,
                     kind=name,
                     budget=[0] * len(capacity),
-                    host_limit=machine["ram_free"],
+                    host_limit=machine.get("ram_limit", machine["ram_free"]),
                 )
                 for name in workers
                 if name in PRIORITY

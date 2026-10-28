@@ -33,10 +33,12 @@ def machine() -> dict:
         mem[name.rstrip(":")] = int(amount) * 1024
     total, free = mem["MemTotal"], mem["MemAvailable"]
     physical_total, physical_free = total, free
+    ram_limit = None
     limit = Path("/sys/fs/cgroup/memory.max")
     current = Path("/sys/fs/cgroup/memory.current")
     if limit.exists() and limit.read_text().strip() != "max":
         maximum = int(limit.read_text())
+        ram_limit = max(0, maximum - GIB)
         total = min(total, maximum)
         free = min(free, max(0, maximum - int(current.read_text())))
     rows = list(
@@ -59,6 +61,7 @@ def machine() -> dict:
         "name": os.getenv("HIKARI_WORKER_MACHINE", "computer-" + boot[:8]),
         "ram_total": total,
         "ram_free": max(0, free - GIB),
+        "ram_limit": ram_limit,
         "physical_ram_total": physical_total,
         "physical_ram_free": max(0, physical_free - GIB),
         # This trial uses one whole GPU; the hub must not pool several GPUs.

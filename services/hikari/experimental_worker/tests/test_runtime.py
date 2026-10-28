@@ -10,15 +10,22 @@ from experimental_worker.runtime import GIB, Runtime, machine
 
 class MachineTests(unittest.TestCase):
     def test_physical_ram_and_container_headroom_are_reported_separately(self):
-        for limit, expected in ((str(24 * GIB), 22 * GIB), ("max", 399 * GIB)):
-            with self.subTest(limit=limit):
+        cases = (
+            (str(24 * GIB), 400, 1, 22 * GIB, 23 * GIB),
+            ("max", 400, 1, 399 * GIB, None),
+            (str(24 * GIB), 2, 1, GIB, 23 * GIB),
+            (str(24 * GIB), 400, 20, 3 * GIB, 23 * GIB),
+            (str(GIB // 2), 400, 1, 0, 0),
+        )
+        for limit, available, current, expected_free, expected_limit in cases:
+            with self.subTest(limit=limit, available=available, current=current):
                 files = {
                     "/proc/meminfo": (
                         f"MemTotal: {440 * GIB // 1024} kB\n"
-                        f"MemAvailable: {400 * GIB // 1024} kB\n"
+                        f"MemAvailable: {available * GIB // 1024} kB\n"
                     ),
                     "/sys/fs/cgroup/memory.max": limit,
-                    "/sys/fs/cgroup/memory.current": str(GIB),
+                    "/sys/fs/cgroup/memory.current": str(current * GIB),
                     "/proc/sys/kernel/random/boot_id": "test-boot",
                 }
                 with (
@@ -35,12 +42,13 @@ class MachineTests(unittest.TestCase):
                     info = machine()
                 self.assertEqual(info["id"], "test-boot")
                 self.assertEqual(info["devices"][0]["uuid"], "GPU-test")
-                self.assertEqual(info["ram_free"], expected)
+                self.assertEqual(info["ram_free"], expected_free)
+                self.assertEqual(info["ram_limit"], expected_limit)
                 self.assertEqual(
-                    info["ram_total"], (24 if limit != "max" else 440) * GIB
+                    info["ram_total"], int(limit) if limit != "max" else 440 * GIB
                 )
                 self.assertEqual(info["physical_ram_total"], 440 * GIB)
-                self.assertEqual(info["physical_ram_free"], 399 * GIB)
+                self.assertEqual(info["physical_ram_free"], (available - 1) * GIB)
 
 
 class Socket:
