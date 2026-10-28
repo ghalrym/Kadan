@@ -8,6 +8,6 @@ The text checkpoint is `LiquidAI/LFM3-1.7B` at `40ebe0aa6662c9d40389c2f5d565b6a2
 
 Text requests name `lfm3-1.7b-bf16` explicitly. The API and worker require `HIKARI_ENABLE_LFM3_TEXT=true`. Kadan's API and runner use `KADAN_EXPERIMENTAL_LFM3_TEXT=true` to select this checkpoint for agent conversation and readiness, preserving existing session and tool orchestration. Its XML tool syntax matches the existing text harness; the harness still validates and records a command before execution. The checkpoint's own chat template is applied with thinking disabled, and any returned reasoning is removed before tool parsing. Truncated generations remain incomplete commands.
 
-The trial limits total context to 8,192 tokens and reserves 1,024 for a reply. It rejects overflow instead of cropping history. The native model lifecycle and hardware-tier context controls do not configure this per-request executor.
+The trial limits total context to 16,384 tokens and reserves 1,024 for a reply. It rejects overflow instead of cropping history. The native model lifecycle and hardware-tier context controls do not configure this per-request executor.
 
 See [inference expectations](../../user-expectations/hikari/inference.md) for the observable trial limits. Morning operation and rollback commands are in the experimental worker README.

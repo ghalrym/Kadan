@@ -1,44 +1,76 @@
 """Pure formatting and validation tests; never load or run a model."""
 
-import pytest
+import unittest
 
 from experimental_worker.text import MODEL_ID, execute, messages, reply_text
 
 
-def test_preserves_existing_rendered_tool_history():
-    text = "<tool_response>\nSaved\n</tool_response>"
-    assert messages({"messages": [{"role": "user", "text": text}]}) == [
-        {"role": "user", "content": text}
-    ]
-
-
-@pytest.mark.parametrize(
-    "rows", [[], [{"role": "tool", "text": "x"}], [{"role": "user", "text": ""}]]
-)
-def test_rejects_unsupported_history_without_inference(rows):
-    with pytest.raises(ValueError):
-        messages({"messages": rows})
-
-
-def test_private_reasoning_is_removed_before_tool_parsing():
-    assert (
-        reply_text("<think>private</think>\n<tool_call>call</tool_call>")
-        == "<tool_call>call</tool_call>"
-    )
-
-
-def test_unfinished_reasoning_is_an_error():
-    with pytest.raises(ValueError, match="unfinished"):
-        reply_text("<think>not finished")
-
-
-def test_native_model_is_never_substituted():
-    with pytest.raises(ValueError, match="only the explicit"):
-        execute(
-            {"model": "native", "messages": []}, "completion", "/unused", lambda _: None
+class TextTests(unittest.TestCase):
+    def test_preserves_existing_rendered_tool_history(self):
+        text = "<tool_response>\nSaved\n</tool_response>"
+        self.assertEqual(
+            messages({"messages": [{"role": "user", "text": text}]}),
+            [{"role": "user", "content": text}],
         )
 
+    def test_rejects_unsupported_history_without_inference(self):
+        for rows in (
+            [],
+            [{"role": "tool", "text": "x"}],
+            [{"role": "user", "text": ""}],
+        ):
+            with self.subTest(rows=rows), self.assertRaises(ValueError):
+                messages({"messages": rows})
 
-def test_manual_load_does_not_claim_residency():
-    with pytest.raises(ValueError, match="generation only"):
-        execute({"model": MODEL_ID}, "load", "/unused", lambda _: None)
+    def test_private_reasoning_is_removed_before_tool_parsing(self):
+        self.assertEqual(
+            reply_text("<think>private</think>\n<tool_call>call</tool_call>"),
+            "<tool_call>call</tool_call>",
+        )
+
+    def test_unfinished_reasoning_is_an_error(self):
+        for text in (
+            "<think>not finished",
+            "<think>closed</think>answer<think>unfinished",
+        ):
+            with (
+                self.subTest(text=text),
+                self.assertRaisesRegex(ValueError, "unfinished"),
+            ):
+                reply_text(text)
+
+    def test_terminal_markers_do_not_change_tool_xml(self):
+        self.assertEqual(
+            reply_text("<function=finish></function><|im_end|>\n"),
+            "<function=finish></function>",
+        )
+
+    def test_native_model_is_never_substituted(self):
+        with self.assertRaisesRegex(ValueError, "only the explicit"):
+            execute(
+                {"model": "native", "messages": []},
+                "completion",
+                "/unused",
+                lambda _: None,
+            )
+
+    def test_manual_load_does_not_claim_residency(self):
+        with self.assertRaisesRegex(ValueError, "generation only"):
+            execute({"model": MODEL_ID}, "load", "/unused", lambda _: None)
+
+    def test_invalid_context_is_rejected_before_dependencies(self):
+        for limit in (0, False, 20000):
+            with (
+                self.subTest(limit=limit),
+                self.assertRaisesRegex(ValueError, "context"),
+            ):
+                execute(
+                    {
+                        "model": MODEL_ID,
+                        "messages": [{"role": "user", "text": "Hello"}],
+                        "context_limit": limit,
+                    },
+                    "completion",
+                    "/unused",
+                    lambda _: None,
+                )

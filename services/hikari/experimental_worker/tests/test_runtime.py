@@ -23,15 +23,25 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        env = patch.dict("os.environ", {"HIKARI_ENABLE_LFM3_TEXT": "true", "KADAN_MODEL_DIR": self.directory.name})
+        env = patch.dict(
+            "os.environ",
+            {"HIKARI_ENABLE_LFM3_TEXT": "true", "KADAN_MODEL_DIR": self.directory.name},
+        )
         env.start()
         self.addCleanup(env.stop)
-        self.runtime = Runtime("text", {"devices": [{"uuid": "GPU-test", "vram_total": 24 * 1024**3}]})
+        self.runtime = Runtime(
+            "text", {"devices": [{"uuid": "GPU-test", "vram_total": 24 * 1024**3}]}
+        )
         self.runtime.socket = Socket()
 
     def request(self, **fields):
-        return {"id": "a" * 32, "command": "submit", "operation": "completion",
-                "input": {"feature": "llm", "model": "lfm3-1.7b-bf16"}, **fields}
+        return {
+            "id": "a" * 32,
+            "command": "submit",
+            "operation": "completion",
+            "input": {"feature": "llm", "model": "lfm3-1.7b-bf16"},
+            **fields,
+        }
 
     async def test_unselected_model_does_not_enter_queue(self):
         await self.runtime.handle(self.request(input={"feature": "llm"}))
@@ -55,18 +65,24 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         process.kill = process.terminate
         process.join = lambda *args: setattr(process, "joined", True)
         pipe = SimpleNamespace(poll=lambda: False, close=lambda: None)
-        context = SimpleNamespace(Pipe=lambda **kwargs: (pipe, pipe), Process=lambda **kwargs: process)
+        context = SimpleNamespace(
+            Pipe=lambda **kwargs: (pipe, pipe), Process=lambda **kwargs: process
+        )
+
         def observe(message):
             if message["state"] == "running":
                 runtime.cancelled.add("a" * 32)
             if message["state"] in ("worker", "cancelled"):
                 self.assertTrue(process.joined)
                 self.assertFalse(process.live)
+
         runtime.socket.on_send = observe
         with patch("multiprocessing.get_context", return_value=context):
             await runtime.run_job(self.request())
         self.assertEqual(runtime.budget, [0, 0])
-        self.assertIn("cancelled", [message["state"] for message in runtime.socket.messages])
+        self.assertIn(
+            "cancelled", [message["state"] for message in runtime.socket.messages]
+        )
 
     async def test_requirement_keeps_whole_model_on_one_gpu(self):
         await self.runtime.handle({"id": "req", "command": "requirement"})

@@ -81,7 +81,10 @@ EXPERIMENTAL_MODELS = {
     "lfm3-vl-2b-bf16": ("lfm3_vision", "HIKARI_ENABLE_LFM3_VISION"),
     "lfm3-audio-2b-bf16": ("lfm3_audio", "HIKARI_ENABLE_LFM3_AUDIO"),
 }
-EXPERIMENTAL_FEATURES = {"vision": "lfm3-vl-2b-bf16", "audio_call": "lfm3-audio-2b-bf16"}
+EXPERIMENTAL_FEATURES = {
+    "vision": "lfm3-vl-2b-bf16",
+    "audio_call": "lfm3-audio-2b-bf16",
+}
 
 
 def experimental_worker(model: str | None) -> str | None:
@@ -91,6 +94,7 @@ def experimental_worker(model: str | None) -> str | None:
     if os.getenv(flag, "").lower() not in ("1", "true", "yes"):
         raise InferenceFailure(f"Experimental model requires {flag}=true.", 409)
     return kind
+
 
 # Jobs that have not started executing can move to another worker.
 REQUEUEABLE = (JobState.QUEUED, JobState.PREPARING, JobState.WAITING)
@@ -153,7 +157,10 @@ def target_worker(request: InferenceTask) -> str | None:
     experiment = experimental_worker(model)
     if experiment is not None:
         if request.operation in ("load", "unload"):
-            raise InferenceFailure("Experimental models load per request; manual residency is unavailable.", 422)
+            raise InferenceFailure(
+                "Experimental models load per request; manual residency is unavailable.",
+                422,
+            )
         return experiment
     return FEATURE_WORKERS[request.feature]
 
@@ -294,7 +301,11 @@ class WorkerHub:
         """Append opt-in checkpoints without replacing the native tier or defaults."""
         primary = self.workers.get(self.primary or "")
         base = primary.models if primary is not None else None
-        snapshot = base.model_copy(deep=True) if base is not None else ModelStoreStatus(models=[])
+        snapshot = (
+            base.model_copy(deep=True)
+            if base is not None
+            else ModelStoreStatus(models=[])
+        )
         known = {model.id for model in snapshot.models}
         for worker in self.workers.values():
             if not worker.kind.startswith("lfm3_") or worker.models is None:
@@ -467,8 +478,14 @@ class WorkerHub:
         if not computer.ledger.workers:
             self.computers.pop(computer.id, None)
         if self.primary == worker.id:
-            self.primary = next((current.id for current in self.workers.values()
-                                 if not current.kind.startswith("lfm3_")), None)
+            self.primary = next(
+                (
+                    current.id
+                    for current in self.workers.values()
+                    if not current.kind.startswith("lfm3_")
+                ),
+                None,
+            )
         self._refresh_models()
         for future in worker.controls.values():
             if not future.done():

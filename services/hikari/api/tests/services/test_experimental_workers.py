@@ -22,14 +22,18 @@ class ExperimentalRoutingTests(unittest.TestCase):
             self.assertEqual(target_worker(request), "lfm3_llm")
 
     def test_advisory_load_cannot_claim_residency(self):
-        request = InferenceTask(operation="load", input={"feature": "llm", "model": "lfm3-1.7b-bf16"})
+        request = InferenceTask(
+            operation="load", input={"feature": "llm", "model": "lfm3-1.7b-bf16"}
+        )
         with patch.dict("os.environ", {"HIKARI_ENABLE_LFM3_TEXT": "true"}):
             with self.assertRaisesRegex(InferenceFailure, "per request"):
                 target_worker(request)
 
     def test_native_primary_settings_survive_catalog_refresh(self):
         hub = WorkerHub()
-        native = ModelStoreStatus(models=[], selected_tier="plus", selected_model_id="native-moe")
+        native = ModelStoreStatus(
+            models=[], selected_tier="plus", selected_model_id="native-moe"
+        )
         hub.primary = "native"
         hub.workers = {"native": SimpleNamespace(models=native, kind="llm")}
         hub._refresh_models()

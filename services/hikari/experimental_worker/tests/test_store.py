@@ -13,20 +13,28 @@ class ModelStoreTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.metadata = {
-            "id": "lfm3-test", "repo_id": "LiquidAI/Test", "revision": "abc",
-            "license": "test", "license_url": "https://example.test/license",
-            "kind": "llm", "context_limit": 8192,
+            "id": "lfm3-test",
+            "repo_id": "LiquidAI/Test",
+            "revision": "abc",
+            "license": "test",
+            "license_url": "https://example.test/license",
+            "kind": "llm",
+            "context_limit": 8192,
         }
         self.content = b"checkpoint unit fixture"
         self.artifact = {
-            "name": "config.json", "size": len(self.content),
-            "algorithm": "sha256", "digest": hashlib.sha256(self.content).hexdigest(),
+            "name": "config.json",
+            "size": len(self.content),
+            "algorithm": "sha256",
+            "digest": hashlib.sha256(self.content).hexdigest(),
             "url": "https://huggingface.co/LiquidAI/Test/resolve/abc/config.json",
         }
 
     def store(self, **artifact_fields):
         artifact = {**self.artifact, **artifact_fields}
-        return ModelStore(Path(self.directory.name), self.metadata, {"artifacts": [artifact]})
+        return ModelStore(
+            Path(self.directory.name), self.metadata, {"artifacts": [artifact]}
+        )
 
     def test_acknowledgement_precedes_all_network_work(self):
         with patch("urllib.request.urlopen") as network:
@@ -53,7 +61,9 @@ class ModelStoreTests(unittest.TestCase):
         self.assertFalse(store.marker.exists())
 
     def test_plain_git_blob_hash_includes_its_header(self):
-        digest = hashlib.sha1(f"blob {len(self.content)}\0".encode() + self.content).hexdigest()
+        digest = hashlib.sha1(
+            f"blob {len(self.content)}\0".encode() + self.content
+        ).hexdigest()
         store = self.store(algorithm="git-sha1", digest=digest)
         with patch("urllib.request.urlopen", return_value=io.BytesIO(self.content)):
             store.download(True, lambda _: None)
@@ -61,6 +71,8 @@ class ModelStoreTests(unittest.TestCase):
 
     def test_mutable_or_traversal_paths_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "pinned revision"):
-            self.store(url="https://huggingface.co/LiquidAI/Test/resolve/main/config.json")
+            self.store(
+                url="https://huggingface.co/LiquidAI/Test/resolve/main/config.json"
+            )
         with self.assertRaisesRegex(ValueError, "artifact path"):
             self.store(name="../config.json")

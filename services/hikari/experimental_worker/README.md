@@ -12,7 +12,7 @@ releasing memory. There is no persistent model or prefix cache in this trial.
 Replies are buffered before delivery over the existing SSE chat interface.
 
 The trial reserves 8 GiB host memory and 8 GiB on one GPU for text, bounds total
-context to 8,192 tokens, and reserves 1,024 tokens for output. Prompt overflow
+context to 16,384 tokens, and reserves 1,024 tokens for output. Prompt overflow
 fails without truncating history. Physical fit, speed, conversation quality and
 tool reliability require a manual target-machine trial. A unit-test pass, build,
 connected worker or completed download does not establish inference success.
