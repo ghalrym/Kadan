@@ -1,22 +1,28 @@
 import { createCompletion } from './generated/sdk.gen'
 import type { CacheUsage, ChatMessage } from './generated/types.gen'
 
-export type ConversationMessage = Pick<ChatMessage, 'role' | 'text' | 'meta'> & {
+export type ConversationMessage = Pick<
+  ChatMessage,
+  'role' | 'text' | 'meta'
+> & {
   cache?: CacheUsage
 }
 
 /**
- * Build the API conversation without selecting a model or imposing product length caps.
+ * Build the API conversation with an optional explicit playground model.
  * Rejects empty/blank turns and drops display-only metadata; the input is not mutated.
  */
-export function chatRequest(messages: ConversationMessage[]) {
+export function chatRequest(messages: ConversationMessage[], model?: string) {
   if (!messages.length) {
     throw new Error('Enter a message before sending.')
   }
   if (messages.some(({ text }) => !text.trim())) {
     throw new Error('Messages must not be blank.')
   }
-  return { messages: messages.map(({ role, text }) => ({ role, text })) }
+  return {
+    messages: messages.map(({ role, text }) => ({ role, text })),
+    ...(model ? { model } : {}),
+  }
 }
 
 /**
@@ -28,7 +34,10 @@ export async function requestChat(
   messages: ConversationMessage[],
   signal: AbortSignal,
 ): Promise<ConversationMessage> {
-  const result = await createCompletion({ body: chatRequest(messages), signal })
+  const result = await createCompletion({
+    body: chatRequest(messages),
+    signal,
+  })
   if (!result.response?.ok) {
     const status = result.response?.status
     if (status === 503)
@@ -68,7 +77,10 @@ export async function requestChat(
   ) {
     throw new Error('The API returned an invalid chat response. Please retry.')
   }
-  return { ...message, ...(result.data?.cache ? { cache: result.data.cache } : {}) }
+  return {
+    ...message,
+    ...(result.data?.cache ? { cache: result.data.cache } : {}),
+  }
 }
 
 /** Read SSE incrementally; an EOF without the terminal chunk and [DONE] is a failure. */
@@ -77,6 +89,7 @@ export async function streamChat(
   signal: AbortSignal,
   onText: (text: string) => void,
   conversationId?: string,
+  model?: string,
 ): Promise<ConversationMessage> {
   const response = await fetch('/v1/chat/completions', {
     method: 'POST',
@@ -85,7 +98,7 @@ export async function streamChat(
       Accept: 'text/event-stream',
     },
     body: JSON.stringify({
-      ...chatRequest(messages),
+      ...chatRequest(messages, model),
       stream: true,
       conversation_id: conversationId,
     }),

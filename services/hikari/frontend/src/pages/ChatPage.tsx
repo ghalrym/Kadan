@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { streamChat, type ConversationMessage } from '../api/chat'
+import { fetchExperimentalModels, type CheckpointStatus } from '../api/settings'
 
 /** Keep tab-local conversation history and one cancellable request with explicit retry. */
 export default function ChatPage() {
@@ -11,10 +12,35 @@ export default function ChatPage() {
     ConversationMessage[] | null
   >(null)
   const [notice, setNotice] = useState('')
+  const [models, setModels] = useState<CheckpointStatus[]>([])
+  const [model, setModel] = useState('')
+  const [modelError, setModelError] = useState(false)
   const active = useRef<AbortController | null>(null)
   const activeConversation = useRef<ConversationMessage[]>([])
   const conversationId = useRef<string | null>(null)
   const historyEnd = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void fetchExperimentalModels(controller.signal).then(
+      (available) => {
+        if (!controller.signal.aborted)
+          setModels(
+            available.filter(
+              (item) =>
+                item.id === 'lfm3-1.7b-bf16' &&
+                item.kind === 'llm' &&
+                item.status === 'complete' &&
+                item.inference_available,
+            ),
+          )
+      },
+      () => {
+        if (!controller.signal.aborted) setModelError(true)
+      },
+    )
+    return () => controller.abort()
+  }, [])
 
   useEffect(
     () => () => {
@@ -56,6 +82,7 @@ export default function ChatPage() {
             setMessages([...conversation, { role: 'assistant', text }])
         },
         conversationId.current,
+        model || undefined,
       )
       if (active.current !== controller || controller.signal.aborted) return
       setMessages([...conversation, message])
@@ -99,6 +126,30 @@ export default function ChatPage() {
 
   return (
     <div className="chat-page">
+      <div className="row">
+        <label htmlFor="chat-model">Model</label>
+        <select
+          id="chat-model"
+          value={model}
+          disabled={pending || messages.length > 0 || !!retryMessages}
+          onChange={(event) => setModel(event.target.value)}
+        >
+          <option value="">Hikari Settings model</option>
+          {models.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.display_name ?? 'LFM3 1.7B BF16 (experimental)'}
+            </option>
+          ))}
+        </select>
+        {(messages.length > 0 || retryMessages) && (
+          <span className="faint">New chat to change model.</span>
+        )}
+        {modelError && (
+          <span role="status" className="faint">
+            Trial models unavailable. Reopen Chat after checking Settings.
+          </span>
+        )}
+      </div>
       <div
         className="chat-history"
         role="log"
@@ -109,7 +160,8 @@ export default function ChatPage() {
           {messages.length === 0 && (
             <p className="muted">
               Send a message to test the chat API. Conversation history stays in
-              this browser tab; the backend determines the response and model.
+              this browser tab. Choose a downloaded trial model above, or use
+              the model selected in Settings.
             </p>
           )}
           {messages.map((message, index) => (
@@ -183,6 +235,8 @@ export default function ChatPage() {
                 setError(null)
                 setRetryMessages(null)
                 setNotice('')
+                conversationId.current = null
+                activeConversation.current = []
               }}
             >
               New chat
@@ -207,8 +261,8 @@ export default function ChatPage() {
           </div>
           <p id="chat-input-help" className="faint">
             {draft.length} characters · Enter to send, Shift+Enter for a new
-            line. The loaded model’s configured token context determines
-            conversation capacity.
+            line. The selected model’s token context determines conversation
+            capacity.
           </p>
         </form>
       </div>
