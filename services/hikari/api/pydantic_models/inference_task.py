@@ -5,7 +5,13 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
-from api.pydantic_models.chat import ChatMessage, Lfm3Message, Lfm3Tool, lfm3_messages, require_lfm3_tools
+from api.pydantic_models.chat import (
+    ChatMessage,
+    Lfm3Message,
+    Lfm3Tool,
+    lfm3_messages,
+    require_lfm3_tools,
+)
 from api.pydantic_models.decisions import DecisionQuestion
 from api.pydantic_models.inference import Operation
 from api.pydantic_models.model_store import TierId

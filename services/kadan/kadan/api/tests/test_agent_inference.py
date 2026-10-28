@@ -44,8 +44,15 @@ def call(name, **arguments):
     return render_tool_call(name, arguments)
 
 
-def invoke(stream, status=200, media_type="text/event-stream", seen=None,
-           model_id="selected-model", bound_tools=TOOLS, history=None):
+def invoke(
+    stream,
+    status=200,
+    media_type="text/event-stream",
+    seen=None,
+    model_id="selected-model",
+    bound_tools=TOOLS,
+    history=None,
+):
     async def run():
         def respond(request):
             body = json.loads(request.content)
@@ -61,7 +68,12 @@ def invoke(stream, status=200, media_type="text/event-stream", seen=None,
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             return await AgentInference(client, "http://hikari").call(
-                history if history is not None else [SystemMessage(content="Instructions"), HumanMessage(content="Hello")],
+                history
+                if history is not None
+                else [
+                    SystemMessage(content="Instructions"),
+                    HumanMessage(content="Hello"),
+                ],
                 model_id,
                 "kadan:test:conversation",
                 bound_tools,
@@ -72,13 +84,26 @@ def invoke(stream, status=200, media_type="text/event-stream", seen=None,
 
 def test_lfm3_plain_answer_after_tool_uses_existing_reply_action():
     history = [
-        SystemMessage(content="Instructions"), HumanMessage(content="What is on the screen?"),
-        AIMessage(content="", tool_calls=[{"name": "computer_look", "args": {"question": "Describe the screen"}, "id": "call_0"}]),
+        SystemMessage(content="Instructions"),
+        HumanMessage(content="What is on the screen?"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "computer_look",
+                    "args": {"question": "Describe the screen"},
+                    "id": "call_0",
+                }
+            ],
+        ),
         ToolMessage(content="Google search page", tool_call_id="call_0"),
     ]
     answer = 'One clearly visible word is **"Google"**.'
-    assert invoke(completed(answer), model_id="lfm3-1.7b-bf16", history=history) == ToolCommand(
-        tool="send_message", arguments={"content": answer, "end_run": True},
+    assert invoke(
+        completed(answer), model_id="lfm3-1.7b-bf16", history=history
+    ) == ToolCommand(
+        tool="send_message",
+        arguments={"content": answer, "end_run": True},
     )
 
 
@@ -88,18 +113,29 @@ def test_native_plain_answer_still_finishes_without_delivery():
 
 @pytest.mark.parametrize("answer", ["", "   ", call("finish")])
 def test_lfm3_empty_answer_and_explicit_finish_remain_silent(answer):
-    assert invoke(completed(answer), model_id="lfm3-1.7b-bf16") == ToolCommand(tool="finish")
+    assert invoke(completed(answer), model_id="lfm3-1.7b-bf16") == ToolCommand(
+        tool="finish"
+    )
 
 
 def test_lfm3_plain_answer_cannot_create_unbound_reply_action():
-    assert invoke(completed("A plain answer"), model_id="lfm3-1.7b-bf16",
-                  bound_tools=[shell_exec_command]) == ToolCommand(tool="finish")
+    assert invoke(
+        completed("A plain answer"),
+        model_id="lfm3-1.7b-bf16",
+        bound_tools=[shell_exec_command],
+    ) == ToolCommand(tool="finish")
 
 
-@pytest.mark.parametrize("answer", [
-    "<tool_call>unfinished", "<function=send_message>unfinished", "<parameter=content>Hello",
-    "Answer </tool_call>", "<FUNCTION send_message>",
-])
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "<tool_call>unfinished",
+        "<function=send_message>unfinished",
+        "<parameter=content>Hello",
+        "Answer </tool_call>",
+        "<FUNCTION send_message>",
+    ],
+)
 def test_lfm3_malformed_tool_output_is_not_published_as_plain_answer(answer):
     with pytest.raises(ServiceError) as error:
         invoke(completed(answer), model_id="lfm3-1.7b-bf16")
@@ -124,21 +160,49 @@ def test_every_bound_tool_is_rendered_in_the_checkpoint_tool_format():
 
 def test_lfm3_sends_structured_tools_and_true_tool_result_roles():
     seen = []
+
     async def run():
         def respond(request):
             seen.append(json.loads(request.content))
-            return httpx.Response(200, text=completed(call("finish")), headers={"content-type": "text/event-stream"})
+            return httpx.Response(
+                200,
+                text=completed(call("finish")),
+                headers={"content-type": "text/event-stream"},
+            )
+
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            return await AgentInference(client, "http://hikari").call([
-                SystemMessage(content="Owned instructions"), HumanMessage(content="Read it"),
-                AIMessage(content="", tool_calls=[{"name": "file_read_file", "args": {"file": "/tmp/a"}, "id": "call_0"}]),
-                ToolMessage(content="Result", tool_call_id="call_0"),
-            ], "lfm3-1.7b-bf16", "test-conversation", TOOLS)
+            return await AgentInference(client, "http://hikari").call(
+                [
+                    SystemMessage(content="Owned instructions"),
+                    HumanMessage(content="Read it"),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "file_read_file",
+                                "args": {"file": "/tmp/a"},
+                                "id": "call_0",
+                            }
+                        ],
+                    ),
+                    ToolMessage(content="Result", tool_call_id="call_0"),
+                ],
+                "lfm3-1.7b-bf16",
+                "test-conversation",
+                TOOLS,
+            )
+
     assert asyncio.run(run()) == ToolCommand(tool="finish")
     body = seen[0]
     assert body["messages"][0] == {"role": "system", "content": "Owned instructions"}
-    assert body["messages"][-1] == {"role": "tool", "content": "Result", "tool_call_id": "call_0"}
-    assert body["messages"][-2]["tool_calls"][0]["function"]["arguments"] == {"file": "/tmp/a"}
+    assert body["messages"][-1] == {
+        "role": "tool",
+        "content": "Result",
+        "tool_call_id": "call_0",
+    }
+    assert body["messages"][-2]["tool_calls"][0]["function"]["arguments"] == {
+        "file": "/tmp/a"
+    }
     assert body["tools"] == [convert_to_openai_tool(tool) for tool in TOOLS]
     assert not body["messages"][0]["content"].startswith(TOOLS_HEADER)
 

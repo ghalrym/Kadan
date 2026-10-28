@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from experimental_worker.runtime import Runtime
 
@@ -109,3 +109,30 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict("os.environ", {"HIKARI_ENABLE_LFM3_TEXT": "false"}):
             with self.assertRaisesRegex(ValueError, "requires HIKARI_ENABLE_LFM3_TEXT"):
                 Runtime("text")
+
+    async def test_reconnect_discards_stale_work_and_requires_a_fresh_grant(self):
+        runtime = self.runtime
+        calls = 0
+
+        async def session():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                runtime.budget = list(runtime.backend.REQUIREMENT)
+                runtime.queue.put_nowait(self.request())
+                runtime.cancelled.add("stale")
+                runtime.granted.set()
+                raise OSError("API restarted")
+            self.assertEqual(runtime.budget, [0, 0])
+            self.assertTrue(runtime.queue.empty())
+            self.assertFalse(runtime.cancelled)
+            self.assertFalse(runtime.granted.is_set())
+            self.assertIsNone(runtime.socket)
+            raise asyncio.CancelledError()
+
+        runtime.serve_session = session
+        with patch("asyncio.sleep", new_callable=AsyncMock) as pause:
+            with self.assertRaises(asyncio.CancelledError):
+                await runtime.serve()
+        self.assertEqual(calls, 2)
+        pause.assert_awaited_once_with(1)

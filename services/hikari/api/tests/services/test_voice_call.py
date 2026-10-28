@@ -141,7 +141,10 @@ class VoiceCallTests(unittest.IsolatedAsyncioTestCase):
         )
         chat = service.open_chat_stream.call_args.args[0]
         self.assertEqual(chat.model, "chat")
-        self.assertNotIn("tools", chat.model_dump())
+        self.assertIsNone(chat.tools)
+        # The experimental task schema has an optional tools field, but native
+        # calls never set it and queue serialization must still omit it.
+        self.assertNotIn("tools", chat.model_dump(exclude_unset=True))
         events = [entry.args[0] for entry in call.send.call_args_list]
         self.assertEqual(
             [event["segment"] for event in events if event["type"] == "audio"], [0, 1]

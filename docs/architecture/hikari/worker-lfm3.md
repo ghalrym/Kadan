@@ -2,7 +2,7 @@
 
 Andrew's requested BF16 evaluation is an explicit exception to the production MoE-only language design. Separate opt-in worker kinds use the existing Hikari queue, worker authentication, per-computer memory ledger and model download endpoints. They do not enter hardware tiers or the native C++ executors. Existing language, image and video workers remain available.
 
-Each inference runs in a spawned Python executor after its worker receives a memory grant. Cancellation terminates and joins that executor before reporting cleanup. The initial experiment loads on every request and retains no CUDA model or conversation-prefix state between requests. Fixed conservative resource reservations and bounded input/context sizes make admission reviewable, but actual memory fit and speed remain unverified until the owner runs the trial.
+Each inference runs in a spawned Python executor after its worker receives a memory grant. Cancellation terminates and joins that executor before reporting cleanup. The initial experiment loads on every request and retains no CUDA model or conversation-prefix state between requests. Fixed conservative resource reservations and bounded input/context sizes make admission reviewable, but memory fit and speed still depend on the target hardware and request.
 
 The text checkpoint is `LiquidAI/LFM3-1.7B` at `40ebe0aa6662c9d40389c2f5d565b6a2c6aebacd`, with BF16 weights and checkpoint custom code. The artifact manifest pins sizes and content hashes, including code, tokenizer, config and license. Loading uses only the verified local snapshot; it cannot resolve a mutable upstream branch or download a replacement during inference. The user must review and acknowledge the LFM Open License v1.0 through the existing download flow. Enabling a container does not acknowledge it.
 
@@ -13,3 +13,25 @@ The trial limits total context to 262,144 tokens and reserves 1,024 for a reply.
 Generation uses Transformers 5.21's supported `prefill_chunk_size=512` with a dynamic hybrid cache, caching enabled and compilation disabled. The checkpoint delegates its prefill to that implementation, which carries the convolution, sliding and full-attention cache between chunks, slices the cumulative attention mask and absolute positions, and uses the final chunk's logits for the first generated token. The complete prompt is passed once to `generate`; the application does not slice away history or prefill tokens twice. This bounds each SDPA mask's query axis rather than allocating one full-window square mask. Efficient CUDA attention kernels are required; math-attention fallback is disabled because its score allocation can exceed the grant. Cache growth and physical fit still require target-machine validation and can fail explicitly.
 
 See [inference expectations](../../user-expectations/hikari/inference.md) for the observable trial limits. Morning operation and rollback commands are in the experimental worker README.
+
+## Manual trial evidence
+
+An owner-authorized BF16 trial on one RTX 3090 completed a real Kadan reply and
+read-only screenshot delegation. Short coordinator requests generated 20–48
+tokens in 1.61–2.21 seconds including prefill, with cold executor times of
+6.41–7.00 seconds. These counts include model control tokens; they are not
+decode-only throughput or a general tool-quality evaluation.
+
+A separate capacity probe submitted exactly 261,120 prompt tokens with the
+1,024-token reply reservation. It returned both boundary markers, generated
+90 tokens and finished in 100.43 seconds including cold loading. Peak CUDA
+allocation was 8.61 GiB, reservation 18.65 GiB, and sampled device use
+19,352 MiB, within the 20 GiB grant. This establishes one full-window fit and
+marker retrieval, not general long-context quality or simultaneous full-window
+capacity. Oversized input was separately rejected without truncation.
+
+Executor measurements report elapsed time, peak RSS and CUDA allocation and
+reservation. Generation timing excludes model loading but includes prefill.
+They do not include prompt or reply content. Workers reconnect with capped
+backoff after transport loss, refresh resource identity and do not replay
+unconfirmed work. Additive Compose workers restart unless explicitly stopped.
