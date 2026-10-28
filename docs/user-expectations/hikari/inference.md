@@ -8,6 +8,12 @@ Hikari can run the selected language checkpoint even when the complete model is 
 
 Using system memory or disk can make responses slower. Available memory, CPU speed, storage speed and GPU transfer speed all affect performance. A hardware tier is a starting configuration, not a guarantee of response speed or of fitting every context length.
 
+### Experimental LFM3 conversation trial
+
+Operators can explicitly enable a separate LFM3 1.7B BF16 conversation worker for evaluation. It is disabled by default and does not replace a hardware tier's language model. Requests must select the experimental model explicitly; unavailable workers and incomplete user-approved downloads produce an error, with no substitution.
+
+This trial loads the model for each request and returns the completed reply through the existing chat interface. It has an 8,192-token total context, including a reserved reply of up to 1,024 tokens; oversized prompts fail without truncating history. It does not retain a conversation prefix or support manual preloading. Model quality, latency and physical fit require owner validation on the target computer; a connected worker or downloaded checkpoint does not prove successful inference.
+
 ## Multiple inference types at once
 
 Requests for different inference types can execute concurrently when the hardware has enough memory. Accepting several requests does not promise that they all start immediately. When their combined requirements exceed available memory, some requests wait while others run.

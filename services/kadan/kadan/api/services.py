@@ -9,6 +9,7 @@ from .config import ServiceError, Settings
 from .pet_client import PetClient
 from .pydantic_models.inference import (
     HikariModelLifecycle,
+    HikariModels,
     HikariSettings,
 )
 from .pydantic_models.resources import Message, Resource, ResourceKind
@@ -204,6 +205,33 @@ class LocalServices:
     async def inference_status(self) -> InferenceState:
         settings_url = self.settings.hikari_browser_url + "/settings"
         try:
+            if self.settings.experimental_lfm3_text:
+                catalog = HikariModels.model_validate(
+                    await self.json_request("Hikari", "GET", "/v1/models")
+                )
+                model = next(
+                    (item for item in catalog.models if item.id == "lfm3-1.7b-bf16"),
+                    None,
+                )
+                if model is None or not model.inference_available:
+                    return InferenceState(
+                        state="unavailable",
+                        model_id="lfm3-1.7b-bf16",
+                        settings_url=settings_url,
+                        message="The experimental LFM3 conversation worker is unavailable. Check the enabled Hikari worker.",
+                    )
+                return InferenceState(
+                    state="ready" if model.status == "complete" else "model_required",
+                    model_id=model.id,
+                    download_state=model.status,
+                    context_limit=model.context_limit,
+                    settings_url=settings_url,
+                    message=(
+                        "Experimental LFM3 BF16 is downloaded; each request loads its own model."
+                        if model.status == "complete"
+                        else "Experimental LFM3 requires a user-approved download before chat."
+                    ),
+                )
             value = HikariSettings.model_validate(
                 await self.json_request("Hikari", "GET", "/v1/settings")
             )

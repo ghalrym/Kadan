@@ -75,6 +75,7 @@ From the repository root, generate the API schema, then the frontend client:
 The project exists to run mixture-of-experts models larger than the GPU by tiering routed experts across VRAM, RAM and disk (the Strata/FreeToken approach). In short:
 
 - Every hardware tier's language model must be a mixture-of-experts checkpoint. Never add a dense language model to the catalog or a tier.
+- Andrew has explicitly authorized an opt-in LFM3 BF16 experiment with separate conversation, screenshot-understanding and audio workers. These dense checkpoints belong only to the experimental workers' catalogs, never hardware tiers or the native inference path. Keep the experiment disabled by default and preserve existing workers for side-by-side trials. This exception does not relax the production MoE design.
 - Only routed experts move between VRAM, RAM and disk; every non-expert matrix stays pinned in VRAM.
 - Decode-time projections go through the batched `GgufWeights::project` / `dense_gguf_batch` path with packed weights decoded in-kernel; do not reintroduce per-matrix blocking device calls or F32 weight expansion on the decode path.
 - Routed experts held in host RAM run on the host (ggml-cpu kernels) concurrently with the device batch, split against PCIe streaming by measured rates; do not route them over PCIe by default.

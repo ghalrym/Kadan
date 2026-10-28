@@ -164,6 +164,68 @@ def test_readiness_uses_actual_selected_language_checkpoint(settings, state):
     assert boundary.requests == [("GET", "/v1/settings")]
 
 
+@pytest.mark.parametrize(
+    ("models", "expected"),
+    [
+        ([], "unavailable"),
+        (
+            [{"id": "native", "status": "complete", "inference_available": True}],
+            "unavailable",
+        ),
+        (
+            [
+                {
+                    "id": "lfm3-1.7b-bf16",
+                    "status": "not_downloaded",
+                    "inference_available": True,
+                }
+            ],
+            "model_required",
+        ),
+        (
+            [
+                {
+                    "id": "lfm3-1.7b-bf16",
+                    "status": "complete",
+                    "inference_available": False,
+                }
+            ],
+            "unavailable",
+        ),
+        (
+            [
+                {
+                    "id": "lfm3-1.7b-bf16",
+                    "status": "complete",
+                    "inference_available": True,
+                    "context_limit": 8192,
+                }
+            ],
+            "ready",
+        ),
+    ],
+)
+def test_explicit_lfm3_trial_requires_its_own_downloaded_worker(models, expected):
+    async def check():
+        def boundary(request):
+            assert request.method == "GET"
+            assert request.url.path == "/v1/models"
+            return httpx.Response(200, json={"models": models})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(boundary)) as client:
+            service = LocalServices(
+                client, Settings(experimental_lfm3_text=True, _env_file=None)
+            )
+            status = await service.inference_status()
+            assert status.state == expected
+            assert status.model_id == "lfm3-1.7b-bf16"
+            if expected == "ready":
+                assert status.context_limit == 8192
+                assert status.tier is None
+
+    asyncio.run(check())
+
+
 def test_unavailable_services_return_actionable_status():
     def offline(request):
         raise httpx.ConnectError("offline", request=request)

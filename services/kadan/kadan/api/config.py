@@ -12,6 +12,7 @@ class Settings(BaseSettings):
 
     tsuchi_url: str = "http://127.0.0.1:8620"
     hikari_url: str = "http://127.0.0.1:8088"
+    experimental_lfm3_text: bool = False
     tsuchi_browser_url: str = "http://127.0.0.1:8620"
     hikari_browser_url: str = "http://127.0.0.1:8088"
     # The agent's AIO sandbox computer. Unset leaves the agent without one.
