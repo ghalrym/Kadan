@@ -172,7 +172,10 @@ def generate(task: dict, model, processor, codec, torch, audio_path=None) -> dic
         tokens = output.sequences[0, count:]
         eos = model.config.text_config.eos_token_id
         endings = set(eos if isinstance(eos, (list, tuple)) else [eos])
-        endings.add(model.config.text_end_token_id)
+        # In mixed output, text_end starts the audio tail; only an actual
+        # turn EOS proves that the buffered speech finished before the cap.
+        if transcribe:
+            endings.add(model.config.text_end_token_id)
         if not len(tokens) or int(tokens[-1]) not in endings:
             raise ValueError(
                 "Audio generation reached the trial limit before completing the reply"
