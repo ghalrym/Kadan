@@ -11,10 +11,23 @@ When every runner is full, excess registered agents and their queued work wait i
 durable storage. Idle owners keep their slots; stopping a process does not free them.
 Each process registers a fresh session UUID and renews a 60-second infrastructure
 ownership lease. After expiry, a replacement with the same stable runner ID can
-claim ownership and recover expired work. A concurrent live process with that ID
-cannot take over. Ownership and run claims fence stale sessions before durable
-state-changing work. Lease renewal performs no agent inference or Decisions API
-calls; periodic agent wakes and the future agent heartbeat are deferred.
+claim ownership and recover expired work. Ordinary registration by a different
+session is rejected while the current lease is live; the stock runner uses this
+path. Lease renewal performs no agent inference or Decisions API calls; periodic
+agent wakes and the future agent heartbeat are deferred.
+
+For a deliberate live handoff, inspect `GET /api/runners`, then register the
+replacement with `PUT /api/runners/{runner_id}`: supply its new `worker_id` and
+the current session's `worker_id` as `expected_worker_id`. While the lease is live,
+a mismatched expected session is rejected. After expiry, replacement does not
+require the expected-session field. Registration retains the agent assignments
+and rejects capacity below their count.
+
+Changing the owner atomically expires its assigned running conversation leases
+while preserving their transcripts. Storage rejects the old session's subsequent
+worker-owned run updates and new message delivery. This does not stop the old process,
+cancel actions already in progress or undo their external effects. Recovery is
+not seamless continuation: inspect unconfirmed computer actions before retrying.
 
 A different runner does not automatically inherit a stopped runner’s agents.
 Inspect `GET /api/runners`, then explicitly move an agent with
@@ -25,6 +38,8 @@ claim it. Reassignment compares the expected owner atomically, checks destinatio
 capacity and fences earlier ownership. A capacity reduction below the number of
 existing assignments is rejected; explicitly move agents before reducing it.
 Assignments are durable across process restarts; they are not queue leases.
+
+Kadan's assignment dialog derives the current owner from the runner roster and sends that observed owner as `expected_runner_id`. Roster snapshots refresh explicitly and after confirmed writes; mutation failures block another write until a fresh read succeeds. A release is not represented optimistically as an unassigned agent because another runner can claim it before the next read. The browser offers only destinations with free capacity and an unexpired heartbeat in its snapshot, rechecking expiry at submission. Tsuchi remains responsible for atomic ownership and capacity checks.
 
 Keep IDs unique and stable. The root `compose.yaml` provides a second explicit service behind the
 `runners` profile with ID `runner-2`; do not scale identical copies of `runner-1`.

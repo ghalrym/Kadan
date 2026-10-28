@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Plus } from "lucide-react";
 import { json, request } from "./api";
 import { ErrorNotice } from "./components";
@@ -14,6 +14,13 @@ export function AgentForm({
   const [keyEdited, setKeyEdited] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const active = useRef(false);
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+    };
+  }, []);
   return (
     <form
       className="agent-form"
@@ -22,20 +29,20 @@ export function AgentForm({
         setBusy(true);
         setError("");
         try {
-          onCreated(
-            await request<Agent>(
-              "/api/agents",
-              json("POST", { name: name.trim(), key }),
-            ),
+          const agent = await request<Agent>(
+            "/api/agents",
+            json("POST", { name: name.trim(), key }),
           );
+          if (active.current) onCreated(agent);
         } catch (error) {
+          if (!active.current) return;
           setError(
             error instanceof Error
               ? error.message
               : "Unable to create namespace.",
           );
         } finally {
-          setBusy(false);
+          if (active.current) setBusy(false);
         }
       }}
     >

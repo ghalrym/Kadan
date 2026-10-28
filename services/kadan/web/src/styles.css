@@ -793,9 +793,6 @@ main:focus {
   font-weight: 500;
   animation: fade 200ms;
 }
-.receipt.read {
-  color: var(--muted);
-}
 .tag {
   display: inline-flex;
   align-items: center;
@@ -937,6 +934,25 @@ main:focus {
   margin-top: -64px;
   background: linear-gradient(transparent, var(--bg) 60px);
   width: min(760px, calc(100% - 32px));
+}
+.plan-prompt {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  font-size: 13px;
+}
+.plan-prompt > div {
+  flex: 1 1 280px;
+}
+.plan-prompt p {
+  margin: 4px 0 0;
+  color: var(--muted);
 }
 .attention {
   display: inline-flex;
@@ -1130,6 +1146,35 @@ dialog::backdrop {
   background: var(--overlay);
   backdrop-filter: blur(6px);
   animation: fade 240ms var(--out);
+}
+.rename-agent,
+.runner-assignment {
+  overflow-y: auto;
+}
+.rename-agent form,
+.runner-assignment form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px;
+  overflow-wrap: anywhere;
+}
+.rename-agent .field-hint,
+.rename-agent .error,
+.runner-assignment p,
+.runner-assignment dl {
+  margin: 0;
+}
+.runner-assignment dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 16px;
+}
+.runner-assignment dt {
+  color: var(--muted);
+}
+.runner-assignment dd {
+  margin: 0;
 }
 .hatch form {
   position: relative;

@@ -80,6 +80,90 @@ class LocalServices:
         )
         return parse_resource(value)
 
+    async def agent_persona(self, key: str) -> Resource | None:
+        value = await self.json_request("Tsuchi", "GET", f"/api/agents/{key}/persona")
+        if value is None:
+            return None
+        persona = parse_resource(value)
+        require_active(persona, ResourceKind.PERSONA)
+        if persona.agent_key != key:
+            raise ServiceError("Tsuchi returned a persona for another agent.", 502)
+        return persona
+
+    async def call_instruction(self, key: str, persona_id: UUID | None) -> str:
+        instruction = (
+            "You are the user's agent. Have a spoken conversation. "
+            "Keep replies short. You have no tools."
+        )
+        owned = await self.agent_persona(key)
+        if owned is not None:
+            instruction += "\nYour saved persona:\n" + owned.markdown
+        if persona_id is not None and (owned is None or persona_id != owned.id):
+            selected = await self.resource(key, persona_id)
+            if (
+                selected.agent_key != key
+                or selected.kind != ResourceKind.PERSONA
+                or selected.deleted_at is not None
+            ):
+                raise ServiceError("The selected persona is no longer available.", 409)
+            instruction += "\nSelected persona:\n" + selected.markdown
+        if len(instruction) > 8000:
+            raise ServiceError(
+                "Voice call instructions exceed the 8,000-character limit. "
+                "Shorten the saved persona or remove the additional selection.",
+                422,
+            )
+        return instruction
+
+    async def list_resource_kinds(
+        self,
+        key: str,
+        kinds: tuple[ResourceKind, ...],
+        *,
+        q: str = "",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Resource]:
+        values = await self.json_request(
+            "Tsuchi",
+            "GET",
+            f"/api/agents/{key}/resources",
+            params={
+                "kinds": [kind.value for kind in kinds],
+                "q": q,
+                "limit": limit,
+                "offset": offset,
+                "trash": "false",
+            },
+        )
+        if not isinstance(values, list):
+            raise ServiceError(
+                "Tsuchi returned an invalid collection.", 502, "invalid_response"
+            )
+        resources = [parse_resource(value) for value in values]
+        if any(
+            resource.agent_key != key
+            or resource.kind not in kinds
+            or resource.deleted_at is not None
+            for resource in resources
+        ):
+            raise ServiceError(
+                "Tsuchi returned an invalid collection.", 502, "invalid_response"
+            )
+        return resources
+
+    async def resource_of_kinds(
+        self, key: str, resource_id: UUID, kinds: tuple[ResourceKind, ...]
+    ) -> Resource:
+        resource = await self.resource(key, resource_id)
+        if resource.agent_key != key or resource.id != resource_id:
+            raise ServiceError(
+                "Tsuchi returned an invalid resource.", 502, "invalid_response"
+            )
+        if resource.kind not in kinds or resource.deleted_at is not None:
+            raise ServiceError("Record not found in this collection.", 404, "not_found")
+        return resource
+
     async def chain(self, key: str) -> Resource:
         # Tsuchi assigns resource IDs, so serialize first use to create one chain.
         async with self.chain_locks.setdefault(key, asyncio.Lock()):
@@ -157,6 +241,7 @@ class LocalServices:
                     state="model_required",
                     tier=tier,
                     model_id=model.id,
+                    download_state=status,
                     context_limit=model.context_limit
                     or model.architecture_context_limit,
                     settings_url=settings_url,
@@ -167,6 +252,7 @@ class LocalServices:
                     state="unavailable",
                     tier=tier,
                     model_id=model.id,
+                    download_state=status,
                     context_limit=model.context_limit
                     or model.architecture_context_limit,
                     settings_url=settings_url,
@@ -176,6 +262,7 @@ class LocalServices:
                 state="ready",
                 tier=tier,
                 model_id=model.id,
+                download_state=status,
                 context_limit=model.context_limit or model.architecture_context_limit,
                 settings_url=settings_url,
                 message="The selected language model is downloaded. Hikari loads it when chat starts.",

@@ -31,16 +31,26 @@ from ..api.pydantic_models.agent_runs import (
     ImageJob,
     RunMessage,
 )
-from ..api.pydantic_models.resources import Message, ResourceKind
+from ..api.pydantic_models.resources import Message, Resource, ResourceKind
 from ..api.run_client import RunClient
+from ..api.services import parse_resource
 from .agent_inference import (
     AgentInference,
     ToolCommand,
     parse_command,
     tool_characters,
 )
-from .tools import ALL_TOOLS, CONVERSATION_TOOLS, TOOLS_BY_NAME
+from .memories import AgentMemories
+from .tools import (
+    ALL_TOOLS,
+    CONVERSATION_TOOLS,
+    MEMORY_TOOLS,
+    PERSONA_TOOLS,
+    TOOLS_BY_NAME,
+)
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
+from .tools.persona import UpdatePersonaArguments
+from .tools.workspace import CreateWorkspaceDocumentArguments
 
 if TYPE_CHECKING:
     from ..api.services import LocalServices
@@ -117,12 +127,13 @@ def validate(command: ToolCommand, tools: list[StructuredTool]) -> None:
 class RunConversation:
     """The conversation tools' view of one run, at the step being executed."""
 
-    def __init__(self, runs: AgentRuns, run: AgentRun):
+    def __init__(self, runs: AgentRuns, run: AgentRun, replayed: bool = False):
         self.runs = runs
         self.run = run
         self.action_id = uuid5(run.id, f"command:{len(run.transcript)}")
         self.end_run = False
         self.finished = False
+        self.replayed = replayed
 
     async def send_message(self, args: SendMessageArguments) -> dict:
         message = Message(id=self.action_id, role="assistant", content=args.content)
@@ -171,6 +182,74 @@ class RunConversation:
 
     async def finish(self) -> None:
         self.finished = True
+
+    async def read_persona(self) -> dict:
+        persona = await self.runs.services.agent_persona(self.run.agent_key)
+        return {
+            "persona": persona.model_dump(
+                mode="json", include={"id", "title", "markdown", "version"}
+            )
+            if persona
+            else None
+        }
+
+    async def update_persona(self, args: UpdatePersonaArguments) -> dict:
+        # Stop or loss of the lease must fence a write that has not started yet.
+        await self.runs.owned(self.run)
+        value = await self.runs.services.json_request(
+            "Tsuchi",
+            "PUT",
+            f"/api/agents/{self.run.agent_key}/persona",
+            json=args.model_dump(mode="json"),
+        )
+        persona = Resource.model_validate(value)
+        if (
+            persona.agent_key != self.run.agent_key
+            or persona.kind != ResourceKind.PERSONA
+            or persona.deleted_at
+        ):
+            raise ServiceError("Tsuchi returned an invalid saved persona.", 502)
+        return {
+            "persona": persona.model_dump(
+                mode="json", include={"id", "title", "markdown", "version"}
+            )
+        }
+
+    async def create_workspace_document(
+        self, args: CreateWorkspaceDocumentArguments
+    ) -> dict:
+        result = {"tool": "create_workspace_document"}
+        # Resource creation has no idempotency key. A saved command without a
+        # result may already have created its document before a runner restart.
+        if self.replayed:
+            return {
+                **result,
+                "error": "The runner restarted before document creation reported "
+                "a result. It may have been saved; check Workspace before retrying.",
+            }
+        async with self.runs.lock:
+            await self.runs.owned(self.run)
+            try:
+                document = parse_resource(
+                    await self.runs.services.json_request(
+                        "Tsuchi",
+                        "POST",
+                        f"/api/agents/{self.run.agent_key}/resources",
+                        json={"kind": "space", **args.model_dump(mode="json")},
+                    )
+                )
+            except ServiceError as error:
+                message = str(error)
+                if error.status >= 500:
+                    message += " The document may have been saved; check Workspace before retrying."
+                return {**result, "error": message}
+        return {
+            **result,
+            "document_id": str(document.id),
+            "title": document.title,
+            "parent_id": str(document.parent_id) if document.parent_id else None,
+            "version": document.version,
+        }
 
 
 class RunState(BaseModel):
@@ -285,13 +364,23 @@ class AgentRuns(RunClient):
     async def context(
         self, run: AgentRun, limit: int | None = None
     ) -> list[RunMessage]:
-        instructions = await asyncio.to_thread(
-            Path(self.services.settings.agent_instruction_file).read_text
-        )
+        instruction_file = Path(self.services.settings.agent_instruction_file)
+        try:
+            instructions = await asyncio.to_thread(instruction_file.read_text)
+        except UnicodeError as error:
+            raise ServiceError(
+                f"The shared agent instructions file {instruction_file} could not "
+                "be decoded. Check its text encoding."
+            ) from error
         conversation = await self.services.resource(run.agent_key, run.conversation_id)
         if conversation.kind != ResourceKind.CONVERSATION or conversation.deleted_at:
             raise ServiceError("The conversation is no longer available.", 409)
-        if run.persona_id:
+        owned_persona = await self.services.agent_persona(run.agent_key)
+        if owned_persona:
+            instructions += "\nYour saved persona:\n" + owned_persona.markdown
+        if run.persona_id and (
+            owned_persona is None or run.persona_id != owned_persona.id
+        ):
             persona = await self.services.resource(run.agent_key, run.persona_id)
             if persona.kind != ResourceKind.PERSONA or persona.deleted_at:
                 raise ServiceError("The selected persona is no longer available.", 409)
@@ -350,6 +439,7 @@ class AgentRuns(RunClient):
                 "Agent instructions and event exceed the context limit.", 422
             )
         history = []
+        trigger_in_history = False
         for message in reversed(conversation.messages):
             if message.role not in {"user", "assistant"}:
                 continue
@@ -363,10 +453,10 @@ class AgentRuns(RunClient):
             if len(text) > budget or len(history) >= 97:
                 break
             history.append(RunMessage(role=message.role, content=text))
+            if message.id == run.trigger_message_id and message.role == "user":
+                trigger_in_history = True
             budget -= len(text)
-        if run.trigger_message_id and not any(
-            str(run.trigger_message_id) in item.content for item in history
-        ):
+        if run.trigger_message_id and not trigger_in_history:
             raise ServiceError(
                 "The triggering message is outside the agent context window.", 422
             )
@@ -464,17 +554,38 @@ class AgentRuns(RunClient):
 
     def bound_tools(self) -> list[StructuredTool]:
         """All tools; the computer's only when one is configured."""
-        return ALL_TOOLS if self.services.sandbox.configured else CONVERSATION_TOOLS
+        return (
+            ALL_TOOLS
+            if self.services.sandbox.configured
+            else [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]
+        )
 
     @traced("kadan.agent_runs.invoke_tool")
     async def invoke_tool(self, state: RunState) -> dict:
         command = state.command
         assert command is not None
-        run = state.run
+        run = await self.owned(state.run)
         tool = TOOLS_BY_NAME.get(command.tool)
-        conversation = RunConversation(self, run)
+        conversation = RunConversation(self, run, state.replayed)
         if tool is None:
             result = {"tool": command.tool, "error": "This tool no longer exists."}
+        elif tool in PERSONA_TOOLS:
+            if state.replayed and command.tool == "update_persona":
+                result = {
+                    "error": "The runner restarted before this persona save reported "
+                    "a result. It may or may not have saved; read_persona before retrying."
+                }
+            else:
+                try:
+                    result = await tool.ainvoke(
+                        command.arguments,
+                        config={"configurable": {"conversation": conversation}},
+                    )
+                except (ServiceError, ValidationError) as error:
+                    result = {"error": str(error)}
+
+        elif tool in MEMORY_TOOLS:
+            result = await self.use_memory(tool, command, run, state.replayed)
         elif tool in CONVERSATION_TOOLS:
             result = await tool.ainvoke(
                 command.arguments,
@@ -494,6 +605,30 @@ class AgentRuns(RunClient):
                 run, command.tool, result, conversation.end_run
             )
         return {"run": run, "command": None, "replayed": False}
+
+    async def use_memory(
+        self, tool: StructuredTool, command: ToolCommand, run: AgentRun, replayed: bool
+    ) -> dict:
+        if replayed and tool.metadata["method"] != "GET":
+            return {
+                "error": "The runner restarted before this memory write reported "
+                "a result. It may or may not have saved; read or search your memories "
+                "before retrying. For forget_memory, use read_memory with "
+                "include_trashed to check its trash state."
+            }
+        try:
+            return await tool.ainvoke(
+                command.arguments,
+                config={
+                    "configurable": {
+                        "memories": AgentMemories(
+                            self.services, run.agent_key, lambda: self.owned(run)
+                        )
+                    }
+                },
+            )
+        except (ServiceError, ValidationError) as error:
+            return {"error": str(error)}
 
     async def use_computer(
         self, tool: StructuredTool, command: ToolCommand, replayed: bool

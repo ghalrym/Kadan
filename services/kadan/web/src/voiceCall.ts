@@ -118,7 +118,7 @@ export class VoiceCallSession {
     if (!this.closed && this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(event));
   }
 
-  async start(instruction: string): Promise<void> {
+  async start(agentKey: string, personaId: string | null): Promise<void> {
     try {
       const unavailable = callUnavailable();
       if (unavailable) throw new Error(unavailable);
@@ -130,6 +130,7 @@ export class VoiceCallSession {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
       if (this.closed) { stream.getTracks().forEach((track) => track.stop()); return; }
       this.stream = stream;
+      stream.getAudioTracks().forEach((track) => { track.enabled = !this.muted; });
       stream.getAudioTracks()[0].onended = () => this.end("The microphone disconnected. Start a new call.");
       this.activity = new CallActivity(this.context.sampleRate);
       this.player = new CallPlayback(this.context);
@@ -143,10 +144,10 @@ export class VoiceCallSession {
       this.context.onstatechange = () => {
         if (!this.closed && this.context?.state !== "running") this.end("Audio was suspended. Start a new call.");
       };
-      const url = new URL("/api/calls", window.location.href);
+      const url = new URL(`/api/agents/${encodeURIComponent(agentKey)}/calls`, window.location.href);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       this.socket = new WebSocket(url);
-      this.socket.onopen = () => this.send({ type: "start", instruction });
+      this.socket.onopen = () => this.send({ type: "start", persona_id: personaId });
       this.socket.onmessage = (event) => this.message(event.data);
       this.socket.onerror = () => this.end("Could not connect the call. Try again.");
       this.socket.onclose = () => this.end("The call disconnected. Start a new call.");

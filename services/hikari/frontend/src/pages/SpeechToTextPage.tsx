@@ -28,6 +28,9 @@ export default function SpeechToTextPage() {
   const [error, setError] = useState('')
   const [elapsed, setElapsed] = useState(0)
   const [copied, setCopied] = useState(false)
+  const [copyError, setCopyError] = useState('')
+  const copyGeneration = useRef(0)
+  const copyTimer = useRef<number | undefined>(undefined)
   const recorder = useRef<MediaRecorder | null>(null)
   const stream = useRef<MediaStream | null>(null)
   const controller = useRef<AbortController | null>(null)
@@ -39,6 +42,7 @@ export default function SpeechToTextPage() {
     mounted.current = true
     return () => {
       mounted.current = false
+      window.clearTimeout(copyTimer.current)
       controller.current?.abort()
       if (recorder.current?.state === 'recording') recorder.current.stop()
       stream.current?.getTracks().forEach((track) => track.stop())
@@ -62,13 +66,16 @@ export default function SpeechToTextPage() {
     [clipUrl],
   )
 
-  useEffect(() => {
-    if (!copied) return
-    const timer = window.setTimeout(() => setCopied(false), 1500)
-    return () => window.clearTimeout(timer)
-  }, [copied])
+  function clearCopyFeedback() {
+    copyGeneration.current++
+    window.clearTimeout(copyTimer.current)
+    copyTimer.current = undefined
+    setCopied(false)
+    setCopyError('')
+  }
 
   function selectClip(next: Blob | null, length = 0) {
+    clearCopyFeedback()
     setClip(next)
     setClipUrl(next ? URL.createObjectURL(next) : '')
     setDuration(length)
@@ -128,6 +135,7 @@ export default function SpeechToTextPage() {
 
   async function submit() {
     if (!clip || busy || recording) return
+    clearCopyFeedback()
     setPhase('transcribing')
     setError('')
     const abort = new AbortController()
@@ -136,7 +144,10 @@ export default function SpeechToTextPage() {
       const audio = await recordingToWav(clip)
       if (abort.signal.aborted) return
       const transcript = await requestTranscription(audio, abort.signal)
-      if (!abort.signal.aborted) setText(transcript)
+      if (!abort.signal.aborted) {
+        clearCopyFeedback()
+        setText(transcript)
+      }
     } catch (reason) {
       if (!abort.signal.aborted)
         setError(
@@ -158,11 +169,21 @@ export default function SpeechToTextPage() {
 
   async function copy() {
     if (!text?.text) return
+    clearCopyFeedback()
+    const generation = copyGeneration.current
     try {
       await navigator.clipboard.writeText(text.text)
+      if (!mounted.current || generation !== copyGeneration.current) return
       setCopied(true)
+      copyTimer.current = window.setTimeout(() => {
+        if (mounted.current && generation === copyGeneration.current) {
+          copyTimer.current = undefined
+          setCopied(false)
+        }
+      }, 1500)
     } catch {
-      setError('Could not copy to the clipboard.')
+      if (mounted.current && generation === copyGeneration.current)
+        setCopyError('Could not copy to the clipboard.')
     }
   }
 
@@ -297,6 +318,11 @@ export default function SpeechToTextPage() {
                 <p role="alert" className="recording-error">
                   Formatting failed: {text.formatting_error} Raw transcription
                   shown.
+                </p>
+              )}
+              {copyError && (
+                <p role="alert" className="recording-error">
+                  {copyError}
                 </p>
               )}
               <p

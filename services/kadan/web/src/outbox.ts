@@ -5,6 +5,11 @@ export interface PendingMessage {
   persona: string;
 }
 
+export function chatStorageKeys(agentKey: string, conversationId: string) {
+  const draft = `kadan.draft.${agentKey}`;
+  return { draft, pending: `${draft}.${conversationId}.pending` };
+}
+
 export function readPending(raw: string | null): PendingMessage | null {
   try {
     const value = JSON.parse(raw || "null");
@@ -14,6 +19,18 @@ export function readPending(raw: string | null): PendingMessage | null {
   } catch {
     return null;
   }
+}
+
+export function copyPendingToDraft(draft: string, pending: PendingMessage): string {
+  const text = draft ? `${draft}\n${pending.content}` : pending.content;
+  if (text.length > 16000) {
+    throw new Error("The copied text would exceed the message limit. Shorten the draft before copying.");
+  }
+  return text;
+}
+
+export function discardUnassignedPending(storage: Pick<Storage, "removeItem">, agentKey: string) {
+  storage.removeItem(`kadan.draft.${agentKey}.pending`);
 }
 
 export function queueSend(pending: PendingMessage | null, next: PendingMessage): PendingMessage {
