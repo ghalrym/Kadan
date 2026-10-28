@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   chooseTier,
   downloadState,
+  downloadExperimentalModel,
+  fetchExperimentalModels,
   fetchSettings,
   licenseNotices,
   tierCanDownload,
@@ -9,6 +11,7 @@ import {
   tierDownloading,
   tierProgress,
   type SettingsResponse,
+  type CheckpointStatus,
   type TierModel,
   type TierSetting,
 } from '../api/settings'
@@ -210,6 +213,150 @@ function DownloadProgress({ tier }: { tier: TierSetting }) {
       })}
     </ul>
   )
+}
+
+/** Individual opt-in models are discovered from connected experimental workers. */
+export function ExperimentalModelDownloads() {
+  const [models, setModels] = useState<CheckpointStatus[]>([])
+  const [confirmModel, setConfirmModel] = useState<CheckpointStatus | null>(null)
+  const [acknowledged, setAcknowledged] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [needsRefresh, setNeedsRefresh] = useState(false)
+  const [refresh, setRefresh] = useState(0)
+  const action = useRef<AbortController | null>(null)
+  const version = useRef(0)
+  useEffect(() => () => action.current?.abort(), [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout>
+    async function poll() {
+      const readingVersion = version.current
+      try {
+        if (!action.current) {
+          const next = await fetchExperimentalModels(controller.signal)
+          if (!controller.signal.aborted && !action.current && readingVersion === version.current) {
+            setModels(next)
+            if (next.length) timer = setTimeout(poll, 1500)
+          }
+        } else timer = setTimeout(poll, 1500)
+      } catch (failure) {
+        if (!controller.signal.aborted && readingVersion === version.current) {
+          setError(failure instanceof Error ? failure.message : 'Could not load experimental models.')
+        }
+      }
+    }
+    void poll()
+    return () => { controller.abort(); clearTimeout(timer) }
+  }, [refresh])
+
+  async function refreshModels() {
+    if (action.current) return
+    const controller = new AbortController()
+    action.current = controller
+    version.current++
+    setSubmitting(true)
+    try {
+      const next = await fetchExperimentalModels(AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]))
+      if (!controller.signal.aborted) {
+        setModels(next)
+        setError('')
+        setNeedsRefresh(false)
+        setConfirmModel(null)
+        setAcknowledged(false)
+        setRefresh((value) => value + 1)
+      }
+    } catch (failure) {
+      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : 'Could not refresh models.')
+    } finally {
+      action.current = null
+      if (!controller.signal.aborted) setSubmitting(false)
+    }
+  }
+
+  async function download() {
+    if (!confirmModel || !acknowledged || action.current || needsRefresh) return
+    const current = models.find((model) => model.id === confirmModel.id)
+    if (!current || ['complete', 'downloading', 'cancelling'].includes(current.status)) return
+    const controller = new AbortController()
+    action.current = controller
+    version.current++
+    setSubmitting(true)
+    setError('')
+    try {
+      const next = await downloadExperimentalModel(confirmModel.id, acknowledged,
+        AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]))
+      if (!controller.signal.aborted) {
+        setModels(next)
+        setConfirmModel(null)
+        setAcknowledged(false)
+        setRefresh((value) => value + 1)
+      }
+    } catch (failure) {
+      if (!controller.signal.aborted) {
+        setError(failure instanceof Error ? failure.message : 'Could not start model download.')
+        setNeedsRefresh(true)
+      }
+    } finally {
+      action.current = null
+      if (!controller.signal.aborted) setSubmitting(false)
+    }
+  }
+
+  if (!models.length && !error) return null
+  const confirmed = models.find((model) => model.id === confirmModel?.id)
+  const confirmedUnavailable = !confirmed || ['complete', 'downloading', 'cancelling'].includes(confirmed.status)
+  const errorPanel = error && <div role="alert" className="error-panel">
+    <p>{error}</p>
+    {needsRefresh && <p>The download may have started. Refresh models before trying again.</p>}
+    <button className="button" type="button" disabled={submitting} onClick={() => void refreshModels()}>Refresh models</button>
+  </div>
+  return <section className="experimental-models stack" aria-labelledby="experimental-models-title">
+    <h2 id="experimental-models-title">Experimental models</h2>
+    {errorPanel}
+    <ul className="tier-downloads">
+      {models.map((model) => {
+        const state = downloadState(model)
+        const size = model.total_bytes || model.estimated_bytes
+        const active = model.status === 'downloading' || model.status === 'cancelling'
+        const name = model.display_name ?? model.id
+        return <li key={model.id} className={`tier-download tier-download--${state}`}>
+          <div className="tier-download-heading">
+            <strong>{name}</strong>
+            <span className="mono tier-download-status">{model.status === 'cancelling' ? 'Cancelling' : stateLabels[state]}</span>
+          </div>
+          <p>{model.license_notice || 'This download includes pinned model-specific Python code.'}</p>
+          <div className="experimental-model-actions">
+            {model.license_url && <a href={model.license_url} target="_blank" rel="noreferrer">{model.license === 'lfm1.0' ? 'LFM Open License v1.0' : model.license}</a>}
+            <span className="mono muted">{gigabytes(model.downloaded_bytes)} / {gigabytes(size)}</span>
+            <button id={`${model.id}-download`} className="button" type="button"
+              aria-label={`Download ${name}`} disabled={submitting || active || model.status === 'complete' || needsRefresh}
+              onClick={() => { setAcknowledged(false); setConfirmModel(model) }}>
+              {model.status === 'complete' ? 'Downloaded' : active ? 'Downloading…' : model.status === 'failed' || model.status === 'cancelled' ? 'Retry download' : 'Download'}
+            </button>
+          </div>
+          {active && <progress className="progress" aria-label={`${name} download progress`} max={size || 1} value={model.total_bytes ? model.downloaded_bytes : undefined} />}
+          {model.error && <p className="error" role="alert">{model.error}</p>}
+        </li>
+      })}
+    </ul>
+    {confirmModel && <Modal title={`Download ${confirmModel.display_name ?? confirmModel.id}?`}
+      close={() => !submitting && setConfirmModel(null)} returnFocusId={`${confirmModel.id}-download`}>
+      <p className="tier-dialog-notice">{confirmModel.license_notice || 'This download includes pinned model-specific Python code.'}{' '}
+        {confirmModel.license_url && <a href={confirmModel.license_url} target="_blank" rel="noreferrer">LFM Open License v1.0</a>}
+      </p>
+      <label className="experimental-license-choice"><input type="checkbox" checked={acknowledged} disabled={submitting}
+        onChange={(event) => setAcknowledged(event.target.checked)} />I have reviewed and accept this model’s license.</label>
+      {errorPanel}
+      <div className="tier-dialog-actions">
+        <button className="button" type="button" autoFocus disabled={submitting} onClick={() => setConfirmModel(null)}>Cancel</button>
+        <button className="button button--primary" type="button" disabled={!acknowledged || submitting || needsRefresh || confirmedUnavailable} onClick={() => void download()}>
+          {submitting ? 'Starting…' : 'Accept and download'}
+        </button>
+      </div>
+    </Modal>}
+  </section>
 }
 
 /**
@@ -418,6 +565,7 @@ export default function SettingsPage() {
             ))}
           </div>
         )}
+        <ExperimentalModelDownloads />
       </div>
     </div>
   )

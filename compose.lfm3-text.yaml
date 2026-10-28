@@ -1,0 +1,42 @@
+# Additive experiment. Enabling a profile never accepts a model license.
+services:
+  hikari-api:
+    environment:
+      HIKARI_ENABLE_LFM3_TEXT: ${HIKARI_ENABLE_LFM3_TEXT:-false}
+
+  kadan-api:
+    environment:
+      KADAN_EXPERIMENTAL_LFM3_TEXT: ${KADAN_EXPERIMENTAL_LFM3_TEXT:-false}
+
+  kadan-runner:
+    environment:
+      KADAN_EXPERIMENTAL_LFM3_TEXT: ${KADAN_EXPERIMENTAL_LFM3_TEXT:-false}
+
+  hikari-worker-lfm3-text:
+    profiles: [lfm3-text]
+    build:
+      context: ./services/hikari
+      dockerfile: experimental_worker/Dockerfile
+    init: true
+    restart: unless-stopped
+    environment:
+      HIKARI_API_URL: ${HIKARI_API_URL:-ws://hikari-api:8000/v1/workers}
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-insecure-api-key}
+      HIKARI_EXPERIMENTAL_BACKEND: experimental_worker.text
+      HIKARI_ENABLE_LFM3_TEXT: ${HIKARI_ENABLE_LFM3_TEXT:-false}
+      KADAN_MODEL_DIR: /var/lib/kadan/models
+    volumes:
+      - lfm3_text_models:/var/lib/kadan/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      hikari-api:
+        condition: service_healthy
+
+volumes:
+  lfm3_text_models:

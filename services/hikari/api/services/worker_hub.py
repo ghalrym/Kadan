@@ -72,7 +72,29 @@ CHECKPOINT_WORKERS = {
     "formatting": "formatting",
     "image": "image",
     "video": "video",
+    "vision": "lfm3_vision",
+    "audio": "lfm3_audio",
 }
+
+EXPERIMENTAL_MODELS = {
+    "lfm3-1.7b-bf16": ("lfm3_llm", "HIKARI_ENABLE_LFM3_TEXT"),
+    "lfm3-vl-2b-bf16": ("lfm3_vision", "HIKARI_ENABLE_LFM3_VISION"),
+    "lfm3-audio-2b-bf16": ("lfm3_audio", "HIKARI_ENABLE_LFM3_AUDIO"),
+}
+EXPERIMENTAL_FEATURES = {
+    "vision": "lfm3-vl-2b-bf16",
+    "audio_call": "lfm3-audio-2b-bf16",
+}
+
+
+def experimental_worker(model: str | None) -> str | None:
+    if model not in EXPERIMENTAL_MODELS:
+        return None
+    kind, flag = EXPERIMENTAL_MODELS[model]
+    if os.getenv(flag, "").lower() not in ("1", "true", "yes"):
+        raise InferenceFailure(f"Experimental model requires {flag}=true.", 409)
+    return kind
+
 
 # Jobs that have not started executing can move to another worker.
 REQUEUEABLE = (JobState.QUEUED, JobState.PREPARING, JobState.WAITING)
@@ -131,6 +153,15 @@ def target_worker(request: InferenceTask) -> str | None:
     """The worker type for a job; None for store work (settings, downloads)."""
     if request.operation in ("download", "configure"):
         return None
+    model = requested_model(request) or EXPERIMENTAL_FEATURES.get(request.feature)
+    experiment = experimental_worker(model)
+    if experiment is not None:
+        if request.operation in ("load", "unload"):
+            raise InferenceFailure(
+                "Experimental models load per request; manual residency is unavailable.",
+                422,
+            )
+        return experiment
     return FEATURE_WORKERS[request.feature]
 
 
@@ -266,6 +297,29 @@ class WorkerHub:
         self.closing = False
         self.calls: dict[str, frozenset[str]] = {}
 
+    def _refresh_models(self):
+        """Append opt-in checkpoints without replacing the native tier or defaults."""
+        primary = self.workers.get(self.primary or "")
+        base = primary.models if primary is not None else None
+        snapshot = (
+            base.model_copy(deep=True)
+            if base is not None
+            else ModelStoreStatus(models=[])
+        )
+        known = {model.id for model in snapshot.models}
+        for worker in self.workers.values():
+            if not worker.kind.startswith("lfm3_") or worker.models is None:
+                continue
+            for model in worker.models.models:
+                try:
+                    kind = experimental_worker(model.id)
+                except InferenceFailure:
+                    continue
+                if kind == worker.kind and model.id not in known:
+                    snapshot.models.append(model.model_copy(deep=True))
+                    known.add(model.id)
+        self.models = snapshot if base is not None or snapshot.models else None
+
     @contextmanager
     def full_duplex(self, models: frozenset[str]):
         """Keep call participants at equal priority until their last call ends.
@@ -322,7 +376,16 @@ class WorkerHub:
             info = hello["machine"]
             computer = self.computers.get(info["id"]) or Computer(info)
             worker = Worker(websocket, hello, computer)
-        except (TimeoutError, ValueError, KeyError, TypeError) as error:
+            for model, (kind, _) in EXPERIMENTAL_MODELS.items():
+                if worker.kind == kind:
+                    experimental_worker(model)
+        except (
+            TimeoutError,
+            ValueError,
+            KeyError,
+            TypeError,
+            InferenceFailure,
+        ) as error:
             log.warning("Rejected worker: %s", error)
             await websocket.close(code=1008)
             return
@@ -336,7 +399,7 @@ class WorkerHub:
             last_used=time.monotonic(),
         )
         self.workers[worker.id] = worker
-        if self.primary is None:
+        if self.primary is None and not worker.kind.startswith("lfm3_"):
             self.primary = worker.id
         log.info("Worker %s connected on %s", worker.name, computer.name)
         try:
@@ -361,8 +424,7 @@ class WorkerHub:
                 worker.slot.requirement = None
                 self.wake.set()
             worker.models = models
-            if worker.id == self.primary:
-                self.models = worker.models
+            self._refresh_models()
             return
         if state == "ready":
             # Routable only once its settings match the primary's.
@@ -422,9 +484,15 @@ class WorkerHub:
         if not computer.ledger.workers:
             self.computers.pop(computer.id, None)
         if self.primary == worker.id:
-            self.primary = next(iter(self.workers), None)
-            primary = self.workers.get(self.primary or "")
-            self.models = primary.models if primary is not None else None
+            self.primary = next(
+                (
+                    current.id
+                    for current in self.workers.values()
+                    if not current.kind.startswith("lfm3_")
+                ),
+                None,
+            )
+        self._refresh_models()
         for future in worker.controls.values():
             if not future.done():
                 future.set_exception(InferenceFailure("Worker disconnected.", 503))
@@ -472,14 +540,18 @@ class WorkerHub:
     def _store_targets(self, request: InferenceTask) -> list[Worker]:
         """Settings go to every worker; a download to one worker of its type per computer."""
         if request.operation == "configure":
-            targets = self._ready()
+            model = requested_model(request)
+            kind = experimental_worker(model)
+            targets = self._ready(kind) if kind else self._ready()
         else:
-            kind = None
+            kind = experimental_worker(request.input.model_id)
             for model in self.models.models if self.models is not None else []:
-                if model.id == request.input.model_id:
+                if model.id == request.input.model_id and kind is None:
                     kind = CHECKPOINT_WORKERS.get(model.kind)
             targets, computers = [], set()
             for worker in self._ready(kind):
+                if kind is None and worker.kind.startswith("lfm3_"):
+                    continue
                 if worker.computer.id not in computers:
                     computers.add(worker.computer.id)
                     targets.append(worker)
@@ -677,7 +749,11 @@ class WorkerHub:
             job.identified.set()
         if job.request.feature == "llm" and event.context is not None:
             job.context = event.context
-        if job.request.feature == "llm" and event.state == "succeeded":
+        if (
+            worker.kind == "llm"
+            and job.request.feature == "llm"
+            and event.state == "succeeded"
+        ):
             worker.resident_model = (
                 None if job.request.operation == "unload" else job.model
             )
@@ -687,7 +763,11 @@ class WorkerHub:
             worker.residency_known = (
                 job.request.operation == "unload" or job.model is not None
             )
-        elif job.request.feature == "llm" and event.state in ("failed", "cancelled"):
+        elif (
+            worker.kind == "llm"
+            and job.request.feature == "llm"
+            and event.state in ("failed", "cancelled")
+        ):
             # Preparation cancellation can leave an old engine resident, while
             # execution failure can destroy it without a control snapshot.
             worker.residency_known = False

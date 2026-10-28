@@ -31,6 +31,10 @@ class HikariSettings(BaseModel):
     tiers: list[HardwareTier]
 
 
+class HikariModels(BaseModel):
+    models: list[Checkpoint]
+
+
 class HikariModelLifecycle(BaseModel):
     state: Literal["unloaded", "loading", "ready", "offloaded", "unloading", "error"]
     model_id: str | None = None

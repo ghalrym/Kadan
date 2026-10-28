@@ -1,8 +1,10 @@
 """Hikari chat with LangChain tool binding over its text-only stream.
 
-Hikari accepts only text messages, so `bind_tools` renders the tool definitions
+Native Hikari accepts only text messages, so `bind_tools` renders the tool definitions
 into the system message in the Qwen checkpoint's own tool format and parses
 `<tool_call>` blocks in the reply back into LangChain tool calls.
+The explicit LFM3 trial instead sends structured tools and tool-role history to
+its checkpoint's own chat template; the same parser and action owner apply.
 """
 
 import json
@@ -61,6 +63,9 @@ TOOL_CALL = re.compile(
     re.DOTALL,
 )
 PARAMETER = re.compile(r"<parameter=([^>\s]+)>\n?(.*?)\n?</parameter>", re.DOTALL)
+TOOL_MARKUP = re.compile(
+    r"</?(?:tool_call|function|parameter|tool_response)(?:[=>\s]|$)", re.IGNORECASE
+)
 
 
 class ToolCommand(BaseModel):
@@ -263,6 +268,47 @@ class HikariChatModel(BaseChatModel):
                 wire.insert(0, {"role": "system", "content": section})
         return wire
 
+    @staticmethod
+    def _lfm3_wire_messages(messages: list[BaseMessage]) -> list[dict]:
+        wire = []
+        for message in messages:
+            if not isinstance(message.content, str):
+                raise TypeError("The LFM3 text trial accepts only text content")
+            if isinstance(message, ToolMessage):
+                wire.append(
+                    {
+                        "role": "tool",
+                        "content": message.content,
+                        "tool_call_id": message.tool_call_id,
+                    }
+                )
+            elif isinstance(message, AIMessage):
+                if message.invalid_tool_calls:
+                    raise ValueError("Hikari cannot replay invalid tool calls")
+                row = {"role": "assistant", "content": message.content}
+                if message.tool_calls:
+                    row["tool_calls"] = [
+                        {
+                            "id": call["id"],
+                            "type": "function",
+                            "function": {
+                                "name": call["name"],
+                                "arguments": call["args"],
+                            },
+                        }
+                        for call in message.tool_calls
+                    ]
+                wire.append(row)
+            elif isinstance(message, SystemMessage):
+                wire.append({"role": "system", "content": message.content})
+            elif isinstance(message, HumanMessage):
+                wire.append({"role": "user", "content": message.content})
+            else:
+                raise TypeError(
+                    "Hikari accepts system, user, assistant and tool messages"
+                )
+        return wire
+
     def _generate(
         self,
         messages: list[BaseMessage],
@@ -288,12 +334,16 @@ class HikariChatModel(BaseChatModel):
         length = 0
         finished = False
         done = False
+        experimental = self.model_id == "lfm3-1.7b-bf16"
         try:
             async with self.client.stream(
                 "POST",
                 self.hikari_url + "/v1/chat/completions",
                 json={
-                    "messages": self._wire_messages(messages, tools),
+                    "messages": self._lfm3_wire_messages(messages)
+                    if experimental
+                    else self._wire_messages(messages, tools),
+                    **({"tools": list(tools)} if experimental else {}),
                     "model": self.model_id,
                     "stream": True,
                     "conversation_id": self.conversation_key,
@@ -392,6 +442,21 @@ class AgentInference:
         ).bind_tools(tools)
         response = await model.ainvoke(messages)
         if not response.tool_calls:
+            if model_id == "lfm3-1.7b-bf16" and response.content.strip():
+                if TOOL_MARKUP.search(response.content):
+                    raise ServiceError(
+                        "The agent returned an invalid tool command.",
+                        502,
+                        "invalid_command",
+                    )
+                if any(tool.name == "send_message" for tool in tools):
+                    return ToolCommand(
+                        tool="send_message",
+                        arguments={
+                            "content": response.content.strip(),
+                            "end_run": True,
+                        },
+                    )
             # Not responding is allowed: a reply without a tool call ends the run.
             logger.info("Agent reply had no tool call: %r", response.content[:2000])
             return ToolCommand(tool="finish")

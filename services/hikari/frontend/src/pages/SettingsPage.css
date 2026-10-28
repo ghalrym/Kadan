@@ -69,3 +69,12 @@
 .tier-download--queued .progress, .tier-download--not_downloaded .progress { --meter-color: #4a4f58; }
 .tier-download--queued .tier-download-status { color: var(--muted); }
 .tier-download--unassigned { opacity: .6; }
+
+.experimental-models { margin-top: 24px; }
+.experimental-models h2 { font-size: 20px; }
+.experimental-models .tier-download > p { font-size: 13px; overflow-wrap: anywhere; }
+.experimental-model-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 13px; }
+.experimental-model-actions a { color: var(--accent); text-decoration: underline; }
+.experimental-model-actions .button { margin-left: auto; min-height: 44px; }
+.experimental-license-choice { display: flex; align-items: flex-start; gap: 8px; margin-top: 16px; font-size: 13px; }
+.experimental-license-choice input { margin-top: 3px; }
