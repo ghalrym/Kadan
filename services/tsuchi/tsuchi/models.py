@@ -52,6 +52,27 @@ class AgentRename(Model):
 class Agent(AgentInput):
     created_at: datetime
     selected_pet_id: UUID | None = None
+    persona_id: UUID | None = None
+
+
+class OwnedPersonaUpdate(Model):
+    title: str = Field(min_length=1, max_length=200)
+    markdown: str = Field(min_length=1, max_length=16000)
+    expected_version: int | None = Field(ge=1)
+
+    @field_validator("title")
+    @classmethod
+    def nonblank_title(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Title cannot be blank")
+        return value.strip()
+
+    @field_validator("markdown")
+    @classmethod
+    def nonblank_markdown(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Persona cannot be blank")
+        return value
 
 
 class Runner(Model):
