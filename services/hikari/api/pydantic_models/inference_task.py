@@ -139,11 +139,16 @@ class AudioCallTask(TaskInput):
     model_id: Literal["lfm3-audio-2b-bf16"] = "lfm3-audio-2b-bf16"
     mode: Literal["transcribe", "reply", "turn"]
     codec_streaming_probe: bool = Field(default=False, strict=True)
+    sentence_tts: bool = Field(default=False, strict=True)
     audio: str | None = Field(default=None, max_length=900_000)
     messages: list[ChatMessage] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_turn(self):
+        if self.sentence_tts and (self.mode != "turn" or self.codec_streaming_probe):
+            raise ValueError(
+                "Sentence TTS requires a complete turn without the private codec probe"
+            )
         if self.codec_streaming_probe and self.mode != "turn":
             raise ValueError("The private codec probe requires a complete audio turn")
         if self.mode == "transcribe":

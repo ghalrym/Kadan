@@ -773,6 +773,27 @@ class WorkerHub:
             worker.residency_known = False
             worker.resident_model = None
             worker.resident_context = {}
+        if event.state in ("audio_answer", "audio_segment"):
+            if (
+                job.request.feature != "audio_call"
+                or job.request.input.mode != "turn"
+                or not job.request.input.sentence_tts
+                or job.events is None
+            ):
+                job.stream_error = "Unexpected sentence TTS event."
+                asyncio.create_task(self.cancel(event.id))
+            elif job.stream_error is None:
+                try:
+                    payload = (
+                        {"type": "answer", "text": event.answer}
+                        if event.state == "audio_answer"
+                        else {"type": "segment", **event.audio_segment.model_dump()}
+                    )
+                    job.events.put_nowait(payload)
+                except asyncio.QueueFull:
+                    job.stream_error = "Audio turn consumer is too slow."
+                    asyncio.create_task(self.cancel(event.id))
+            return
         if event.state == "audio_transcript":
             if (
                 job.request.feature != "audio_call"
