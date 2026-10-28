@@ -12,4 +12,6 @@ The owned persona remains a normal persona record in Tsuchi, where users can ins
 
 Kadan hides the standalone **Personas** editor from normal navigation. Users can inspect and edit saved records in [Tsuchi](../tsuchi/personas.md). **Persona for next response** adds the selected named persona to the agent's owned persona. This selection resets when chat opens. Saving a note does not apply it. Choosing **No persona** removes this additional selection; the agent's owned persona and shared instructions still apply. Selecting the owned persona itself does not include it twice.
 
+A persona adds instructions; it does not change the selected model or clear saved conversation history. Choosing **No persona** leaves earlier messages in the conversation. All instructions remain subject to the model's context and ability to follow them.
+
 Tsuchi reports save conflicts without silently replacing newer changes. Unsaved editor drafts can be lost when the page reloads. See [Tsuchi personas](../tsuchi/personas.md) for storage controls and [Persona instructions](../../architecture/kadan/personas.md) for the persistence and response contract.

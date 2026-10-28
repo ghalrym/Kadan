@@ -1,6 +1,6 @@
 # Agent memory
 
-Kadan agents manage their own durable memories; Tsuchi stores the records. Users should be able to inspect what their agent retained without having to maintain its notes. Memories are separate from Workspace documents, which are work products users and agents work on.
+Kadan agents manage their own durable memories; Tsuchi stores the records. The agent decides what to retain and keeps that saved context useful for its work with the user. Users should be able to inspect what their agent retained without having to maintain its notes. Memories are separate from Workspace documents, which are work products users and agents work on.
 
 During text chat, an agent can list, search, read, create and update its own memories, or move an outdated memory to recoverable Trash. These tools are available without an agent computer. Their use depends on the model choosing them; storage does not provide automatic recall in every response or scheduled background curation. Voice calls have no memory tools.
 
