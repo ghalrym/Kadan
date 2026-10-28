@@ -56,6 +56,7 @@ def test_call_resolves_persona_before_connecting_and_relays_after_sending_start(
     assert json.loads(upstream.send.call_args.args[0]) == {
         "type": "start",
         "instruction": "Saved persona instructions.",
+        "backend": "lfm3",
     }
     relay.assert_awaited_once_with(browser, upstream)
     # The generic relay owns closure after handoff.
@@ -84,6 +85,12 @@ def test_unavailable_hikari_closes_call_with_actionable_error(monkeypatch, send_
     "message",
     [
         {"type": "websocket.receive", "text": "not json"},
+        {
+            "type": "websocket.receive",
+            "text": json.dumps(
+                {"type": "start", "persona_id": None, "backend": "native"}
+            ),
+        },
         {"type": "websocket.receive", "bytes": b"audio"},
         {"type": "websocket.receive", "text": json.dumps({"type": "end"})},
         {
@@ -221,7 +228,7 @@ def test_failed_upstream_cleanup_still_closes_browser(monkeypatch):
     browser.close.assert_awaited_once_with(1013)
 
 
-def test_experimental_audio_opt_in_keeps_persona_authority_and_existing_relay(
+def test_explicit_lfm_audio_keeps_persona_authority_and_existing_relay(
     monkeypatch,
 ):
     browser = socket()

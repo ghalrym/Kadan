@@ -61,7 +61,7 @@ test("a disabled call does not start a session or report an availability error",
 });
 
 
-test("native readiness still blocks the ordinary call but does not select LFM3 implicitly", () => {
-  useVoiceCall("test", null, false, true).start();
-  assert.deepEqual(state, [null, false, ""]);
+test("call startup reports browser capability errors without a chat-model gate", () => {
+  useVoiceCall("test", null, false).start();
+  assert.deepEqual(state, [null, false, "This browser does not support voice calls."]);
 });

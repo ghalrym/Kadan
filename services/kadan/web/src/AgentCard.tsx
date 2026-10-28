@@ -20,14 +20,13 @@ interface Props {
   presence: string;
   onClose: () => void;
   callDisabled: boolean;
-  experimentalCallDisabled: boolean;
   callTitle: string;
-  onCall: (backend?: "native" | "lfm3") => void;
+  onCall: () => void;
   onOpenComputer: () => void;
 }
 
 /** The agent's contact card, opened from its pet: presence, calling and its computer. */
-export default function AgentCard({ agentName, sheet, mood, presence, onClose, callDisabled, experimentalCallDisabled, callTitle, onCall, onOpenComputer }: Props) {
+export default function AgentCard({ agentName, sheet, mood, presence, onClose, callDisabled, callTitle, onCall, onOpenComputer }: Props) {
   const card = useRef<HTMLDivElement>(null);
   const [computer, setComputer] = useState<ComputerStatus | null>(null);
   const [frame, setFrame] = useState(0);
@@ -83,10 +82,6 @@ export default function AgentCard({ agentName, sheet, mood, presence, onClose, c
           <Phone size={18} />
           Call
         </button>
-        {(import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_ENABLE_LFM3_AUDIO === "true" &&
-          <button disabled={experimentalCallDisabled} title="Experimental buffered LFM3 speech; requires the audio worker and approved download" onClick={() => onCall("lfm3")}>
-            <Phone size={18} />Try LFM3 call
-          </button>}
       </div>
       <section className="agent-card-computers" aria-labelledby="agent-card-computers">
         <h3 id="agent-card-computers">Computers</h3>
