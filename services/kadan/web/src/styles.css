@@ -1131,6 +1131,35 @@ dialog::backdrop {
   backdrop-filter: blur(6px);
   animation: fade 240ms var(--out);
 }
+.rename-agent,
+.runner-assignment {
+  overflow-y: auto;
+}
+.rename-agent form,
+.runner-assignment form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px;
+  overflow-wrap: anywhere;
+}
+.rename-agent .field-hint,
+.rename-agent .error,
+.runner-assignment p,
+.runner-assignment dl {
+  margin: 0;
+}
+.runner-assignment dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 16px;
+}
+.runner-assignment dt {
+  color: var(--muted);
+}
+.runner-assignment dd {
+  margin: 0;
+}
 .hatch form {
   position: relative;
   display: flex;

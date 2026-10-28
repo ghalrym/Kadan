@@ -37,6 +37,18 @@ class AgentInput(Model):
         return value.strip()
 
 
+class AgentRename(Model):
+    name: Title
+    expected_name: Title
+
+    @field_validator("name")
+    @classmethod
+    def nonblank_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Name cannot be blank")
+        return value.strip()
+
+
 class Agent(AgentInput):
     created_at: datetime
     selected_pet_id: UUID | None = None

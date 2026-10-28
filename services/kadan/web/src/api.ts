@@ -35,7 +35,7 @@ export async function api<T>(
       response.status,
     );
   }
-  return response.json();
+  return response.status === 204 ? undefined : response.json();
 }
 
 export const agentPath = (key: string) => `/agents/${encodeURIComponent(key)}`;
