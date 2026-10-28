@@ -89,8 +89,6 @@ services:
       HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-insecure-api-key}
       HIKARI_MODEL_IDLE_SECONDS: ${HIKARI_MODEL_IDLE_SECONDS:-3600}
       HIKARI_KV_CACHE_IDLE_SECONDS: ${HIKARI_KV_CACHE_IDLE_SECONDS:-3600}
-      HIKARI_ENABLE_LFM3_TEXT: ${HIKARI_ENABLE_LFM3_TEXT:-false}
-      HIKARI_ENABLE_LFM3_VISION: ${HIKARI_ENABLE_LFM3_VISION:-false}
       WATCHFILES_FORCE_POLLING: "true"
     depends_on:
       hikari-postgres:
@@ -109,55 +107,31 @@ services:
       - ./services/hikari/api:/app/api
       - ./services/hikari/bin:/app/bin
 
-  # Optional BF16 experiment; these checkpoints never enter hardware tiers.
+  # One LFM stack; weights remain explicit, user-approved downloads.
   hikari-worker-lfm3-text:
     <<: *lfm3_worker
-    profiles: [lfm3-text]
     environment:
       <<: *lfm3_environment
       HIKARI_EXPERIMENTAL_BACKEND: experimental_worker.text
-      HIKARI_ENABLE_LFM3_TEXT: ${HIKARI_ENABLE_LFM3_TEXT:-false}
     volumes:
       - lfm3_text_models:/var/lib/kadan/models
 
   hikari-worker-lfm3-vision:
     <<: *lfm3_worker
-    profiles: [lfm3-vision]
     environment:
       <<: *lfm3_environment
       HIKARI_EXPERIMENTAL_BACKEND: experimental_worker.vision
-      HIKARI_ENABLE_LFM3_VISION: ${HIKARI_ENABLE_LFM3_VISION:-false}
     volumes:
       - lfm3_vision_models:/var/lib/kadan/models
 
   # Language worker: the tier's mixture-of-experts model for chat.
-  hikari-worker-llm:
-    build:
-      context: ./services/hikari
-      dockerfile: inference_worker/workers/llm/Dockerfile
-    command: [python, bin/hikari.py, run, worker, llm]
-    init: true
-    restart: unless-stopped
+  hikari-worker-lfm3-audio:
+    <<: *lfm3_worker
     environment:
-      HIKARI_API_URL: ${HIKARI_API_URL:-ws://hikari-api:8000/v1/workers}
-      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-insecure-api-key}
-      KADAN_MODEL_DIR: /var/lib/kadan/models
+      <<: *lfm3_environment
+      HIKARI_EXPERIMENTAL_BACKEND: experimental_worker.audio
     volumes:
-      - model_data:/var/lib/kadan/models
-      - ./services/hikari/bin:/app/bin
-      - ./services/hikari/inference_worker:/src/inference_worker
-      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
-      - hikari_worker_llm_build:/build
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    depends_on:
-      hikari-api:
-        condition: service_healthy
+      - lfm3_audio_model_data:/var/lib/kadan/models
 
   # Decisions worker: Laya on the CPU.
   hikari-worker-decision:
@@ -183,34 +157,6 @@ services:
         condition: service_healthy
 
   # Speech synthesis worker.
-  hikari-worker-tts:
-    build:
-      context: ./services/hikari
-      dockerfile: inference_worker/workers/tts/Dockerfile
-    command: [python, bin/hikari.py, run, worker, tts]
-    init: true
-    restart: unless-stopped
-    environment:
-      HIKARI_API_URL: ${HIKARI_API_URL:-ws://hikari-api:8000/v1/workers}
-      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-insecure-api-key}
-      KADAN_MODEL_DIR: /var/lib/kadan/models
-    volumes:
-      - model_data:/var/lib/kadan/models
-      - ./services/hikari/bin:/app/bin
-      - ./services/hikari/inference_worker:/src/inference_worker
-      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
-      - hikari_worker_tts_build:/build
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    depends_on:
-      hikari-api:
-        condition: service_healthy
-
   # Transcription worker: native Whisper.
   hikari-worker-speech:
     build:
@@ -241,28 +187,6 @@ services:
         condition: service_healthy
 
   # Transcript formatting worker: S1-mini on the CPU.
-  hikari-worker-formatting:
-    build:
-      context: ./services/hikari
-      dockerfile: inference_worker/workers/formatting/Dockerfile
-    command: [python, bin/hikari.py, run, worker, formatting]
-    init: true
-    restart: unless-stopped
-    environment:
-      HIKARI_API_URL: ${HIKARI_API_URL:-ws://hikari-api:8000/v1/workers}
-      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-insecure-api-key}
-      KADAN_MODEL_DIR: /var/lib/kadan/models
-    volumes:
-      - model_data:/var/lib/kadan/models
-      - ./services/hikari/bin:/app/bin
-      - ./services/hikari/inference_worker:/src/inference_worker
-      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
-      - hikari_worker_formatting_build:/build
-    # CPU only: no GPU reservation.
-    depends_on:
-      hikari-api:
-        condition: service_healthy
-
   # Image worker: Qwen Image.
   hikari-worker-image:
     build:
@@ -410,8 +334,6 @@ services:
       KADAN_HIKARI_URL: http://hikari-api:8000
       KADAN_TSUCHI_BROWSER_URL: http://127.0.0.1:${TSUCHI_PORT:-8620}
       KADAN_HIKARI_BROWSER_URL: http://127.0.0.1:${HIKARI_FRONTEND_PORT:-8088}
-      KADAN_EXPERIMENTAL_LFM3_TEXT: ${KADAN_EXPERIMENTAL_LFM3_TEXT:-false}
-      KADAN_EXPERIMENTAL_LFM3_VISION: ${KADAN_EXPERIMENTAL_LFM3_VISION:-false}
       KADAN_SANDBOX_URL: http://kadan-sandbox:8080
       KADAN_SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:-insecure-api-key}
     depends_on:
@@ -445,8 +367,6 @@ services:
       KADAN_TSUCHI_URL: http://tsuchi-api:8000
       KADAN_HIKARI_URL: http://hikari-api:8000
       KADAN_RUNNER_ID: ${KADAN_RUNNER_ID:-runner-1}
-      KADAN_EXPERIMENTAL_LFM3_TEXT: ${KADAN_EXPERIMENTAL_LFM3_TEXT:-false}
-      KADAN_EXPERIMENTAL_LFM3_VISION: ${KADAN_EXPERIMENTAL_LFM3_VISION:-false}
       KADAN_RUNNER_CAPACITY: ${KADAN_RUNNER_CAPACITY:-5}
       KADAN_SANDBOX_URL: http://kadan-sandbox:8080
       KADAN_SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:-insecure-api-key}
@@ -515,6 +435,7 @@ services:
       KADAN_RUNNER_ID: runner-2
 
 volumes:
+  lfm3_audio_model_data:
   lfm3_text_models:
   lfm3_vision_models:
   sandbox_home:
@@ -527,10 +448,7 @@ volumes:
     name: ${TSUCHI_DATA_VOLUME:-tsuchi_tsuchi_data}
   tsuchi_frontend_node_modules:
   kadan_frontend_node_modules:
-  hikari_worker_llm_build:
   hikari_worker_decision_build:
-  hikari_worker_tts_build:
   hikari_worker_speech_build:
-  hikari_worker_formatting_build:
   hikari_worker_image_build:
   hikari_worker_video_build:
