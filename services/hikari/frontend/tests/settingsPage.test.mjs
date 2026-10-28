@@ -93,7 +93,7 @@ async function page(componentName = 'default') {
   const modules = {
     react, 'react/jsx-runtime': module({ jsx, jsxs: jsx, Fragment: 'fragment' }),
     '../api/settings': api,
-    '../data/tiers': module({ tierCopy: { go: {}, pro: {} }, modalityLabels: {} }),
+    '../data/tiers': module({ tierCopy: { go: {}, pro: {} }, modalityLabels: { llm: { label: 'Language', short: 'Chat' } } }),
     './SettingsPage.css': module({}),
   }
   const component = new SourceTextModule(outputText, { context })
@@ -412,3 +412,37 @@ test('leaving settings aborts a pending individual request and ignores its late 
   await view.flush()
   assert.equal(view.updatesAfterUnmount, 0)
 })
+
+for (const [label, overrides, total, progress] of [
+  ['verified completion', { status: 'complete', downloaded_bytes: 3_100_000_000, total_bytes: 3_100_000_000, estimated_bytes: 9_000_000_000 }, '3.1 GB', '3.1 GB'],
+  ['catalog estimate', { status: 'not_downloaded', downloaded_bytes: 0, total_bytes: 0, estimated_bytes: 9_000_000_000 }, '9.0 GB (estimated)', '0.0 GB / 9.0 GB (estimated)'],
+  ['unknown size', { status: 'not_downloaded', downloaded_bytes: 0, total_bytes: 0, estimated_bytes: 0 }, 'Size unknown', 'Size unknown'],
+  ['active observed total', { status: 'downloading', downloaded_bytes: 1_000_000_000, total_bytes: 2_000_000_000, estimated_bytes: 9_000_000_000 }, '2.0 GB', '1.0 GB / 2.0 GB'],
+]) {
+  test(`tier tooltip and progress distinguish ${label}`, async () => {
+    const view = await page()
+    const settings = saved('go', overrides.status)
+    Object.assign(settings.tiers[0].models[0].model, overrides)
+    view.reads[0].resolve(settings)
+    await view.flush()
+    const tier = card(view.tree, 'go')
+    const modelName = elements(tier.type(tier.props)).find(node => node.type?.name === 'ModelName')
+    const tooltip = elements(modelName.type(modelName.props)).find(node => node.props?.role === 'tooltip')
+    assert.ok(content(tooltip).includes(total), content(tooltip))
+    await view.open()
+    const downloads = elements(modal(view.tree)).find(node => node.type?.name === 'DownloadProgress')
+    const sizes = elements(downloads.type(downloads.props)).filter(node => node.type === 'span' && node.props?.className === 'mono faint')
+    assert.equal(content(sizes[0]), progress)
+    view.unmount()
+  })
+
+  test(`individual LFM download distinguishes ${label}`, async () => {
+    const view = await page('ExperimentalModelDownloads')
+    view.reads[0].resolve([{ ...experimental()[0], ...overrides }])
+    await view.flush()
+    const sizes = elements(view.tree).filter(node => node.type === 'span' && node.props?.className === 'mono muted')
+    const expected = overrides.status === 'complete' ? `${total} / ${total}` : progress
+    assert.equal(content(sizes[0]), expected)
+    view.unmount()
+  })
+}

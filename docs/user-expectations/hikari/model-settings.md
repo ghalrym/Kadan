@@ -6,6 +6,8 @@ The saved tier supplies models for features still using tiers, including calls, 
 
 The download dialog shows each model's progress. Percentages are estimates; the model's completed state confirms success. **Resume downloads** retries incomplete downloads without requiring completed models to be downloaded again.
 
+Download sizes use verified checkpoint totals when available. Catalog estimates are labelled **estimated**; unavailable sizes say **Size unknown**. Completed native checkpoints retain their verified totals across ordinary worker restarts. These sizes describe downloaded model files, rather than loaded memory or generated files.
+
 **Continue in background**, closing the dialog or leaving Settings keeps downloads running. Tier selection is disabled while its downloads are active. **View downloads** reopens progress. After a failed or timed-out settings change, refresh the saved state before retrying.
 
 Direct inference can also download a missing model, so the first request may take longer or fail during acquisition. Changing tiers can unload the previous language model after earlier chat work finishes. It does not delete downloaded models or save playground conversations.
