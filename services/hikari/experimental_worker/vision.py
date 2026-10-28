@@ -10,10 +10,21 @@ from pathlib import Path
 
 MODEL = json.loads(Path(__file__).with_name("catalog_vision.json").read_text())
 # Provisional conservative admission bounds; physical fit still requires a trial.
-REQUIREMENT = (4 * 1024**3, 8 * 1024**3)
+REQUIREMENT = (8 * 1024**3, 16 * 1024**3)
 MAX_IMAGE_BYTES = 2 * 1024**2
 MAX_PIXELS = 4_194_304
-MAX_CONTEXT = 8192
+MAX_CONTEXT = 128000
+
+
+def validate_context(prompt_tokens: int, output_tokens: int) -> None:
+    """Keep the full prompt and reserved reply inside the checkpoint's limit."""
+    if prompt_tokens < 1 or output_tokens < 1:
+        raise ValueError("Screenshot input and output must contain tokens.")
+    if prompt_tokens + output_tokens > MAX_CONTEXT:
+        raise ValueError(
+            "Screenshot, question and reserved reply exceed the model's "
+            "128000-token context; no input was truncated."
+        )
 
 
 def description(text: str) -> str:
@@ -89,6 +100,7 @@ def execute(
         device_map="cuda:0",
         trust_remote_code=True,
         local_files_only=True,
+        attn_implementation="sdpa",
     ).eval()
     processor = AutoProcessor.from_pretrained(
         model_path, trust_remote_code=True, local_files_only=True
@@ -111,10 +123,7 @@ def execute(
         enable_thinking=False,
     ).to(model.device)
     prompt_tokens = inputs["input_ids"].shape[1]
-    if prompt_tokens + tokens > MAX_CONTEXT:
-        raise ValueError(
-            "Screenshot and question exceed the experimental 8192-token context."
-        )
+    validate_context(prompt_tokens, tokens)
     emit({"state": "running", "model": MODEL["id"]})
     with torch.inference_mode():
         outputs = model.generate(
@@ -125,6 +134,7 @@ def execute(
             top_k=50,
             repetition_penalty=1.1,
             max_new_tokens=tokens,
+            logits_to_keep=1,
         )
     generated = outputs[:, prompt_tokens:]
     if generated.shape[1] >= tokens:

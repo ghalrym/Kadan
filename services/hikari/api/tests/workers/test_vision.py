@@ -5,7 +5,33 @@ import base64
 import pytest
 
 from api.pydantic_models.inference_task import InferenceTask
-from experimental_worker.vision import MODEL, description, execute, image_bytes
+from experimental_worker.vision import (
+    MAX_CONTEXT,
+    MODEL,
+    description,
+    execute,
+    image_bytes,
+    validate_context,
+)
+
+
+def test_context_uses_exact_checkpoint_maximum_and_reserves_output_without_truncation():
+    assert (
+        MAX_CONTEXT
+        == MODEL["context_limit"]
+        == MODEL["architecture_context_limit"]
+        == 128000
+    )
+    validate_context(8000, 1024)
+    validate_context(126976, 1024)
+    with pytest.raises(ValueError, match="no input was truncated"):
+        validate_context(126977, 1024)
+
+
+@pytest.mark.parametrize("prompt, output", [(0, 1024), (1, 0), (-1, 1024)])
+def test_context_requires_positive_prompt_and_reply_tokens(prompt, output):
+    with pytest.raises(ValueError, match="must contain tokens"):
+        validate_context(prompt, output)
 
 
 def test_binary_screenshot_is_recovered_without_interpreting_paths_or_urls():
