@@ -19,6 +19,7 @@ services:
       context: ./services/hikari
       dockerfile: experimental_worker/Dockerfile
     init: true
+    restart: unless-stopped
     environment:
       HIKARI_API_URL: ${HIKARI_API_URL:-ws://hikari-api:8000/v1/workers}
       HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-insecure-api-key}
