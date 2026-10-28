@@ -5,6 +5,7 @@ import binascii
 import io
 import re
 import tempfile
+import time
 import wave
 from collections.abc import Callable
 from pathlib import Path
@@ -227,9 +228,11 @@ def execute(
         conversation(task)
     # Optional inference dependencies must be imported only in the spawned job
     # process. Native Hikari and its API never load the experimental runtime.
+    started = time.perf_counter()
     import torch
     from transformers import AutoModelForMultimodalLM, AutoProcessor
 
+    imported = time.perf_counter()
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
         raise ValueError("The BF16 audio trial needs a CUDA GPU supporting BF16")
     path = str(Path(model_path).resolve())
@@ -240,13 +243,26 @@ def execute(
         trust_remote_code=True,
         local_files_only=True,
     ).eval()
+    torch.cuda.synchronize()
+    loaded = time.perf_counter()
     processor = AutoProcessor.from_pretrained(
         path, trust_remote_code=True, local_files_only=True
     )
     codec = processor.audio_tokenizer.to(device="cuda:0").eval()
+    torch.cuda.synchronize()
+    prepared = time.perf_counter()
     if task.get("mode") == "transcribe":
         with tempfile.TemporaryDirectory(prefix="lfm3-audio-") as directory:
             audio_path = Path(directory) / "utterance.wav"
             audio_path.write_bytes(data)
-            return generate(task, model, processor, codec, torch, str(audio_path))
-    return generate(task, model, processor, codec, torch)
+            result = generate(task, model, processor, codec, torch, str(audio_path))
+    else:
+        result = generate(task, model, processor, codec, torch)
+    torch.cuda.synchronize()
+    result["timing"] = {
+        "audio_import_seconds": imported - started,
+        "model_load_seconds": loaded - imported,
+        "processor_load_seconds": prepared - loaded,
+        "audio_operation_seconds": time.perf_counter() - prepared,
+    }
+    return result
