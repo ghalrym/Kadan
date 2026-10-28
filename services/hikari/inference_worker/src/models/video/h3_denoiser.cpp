@@ -948,7 +948,10 @@ std::optional<MediaPlanError> prepare(
                 timing->phase(PreparePhase::staging_allocation);
             }
             Admission staging(resources, slice.stored_bytes);
-            std::vector<std::uint8_t> raw(slice.stored_bytes);
+            // Every byte is read before validation/upload; avoid an extra zero fill.
+            auto storage =
+                std::make_unique_for_overwrite<std::uint8_t[]>(slice.stored_bytes);
+            const std::span raw(storage.get(), slice.stored_bytes);
             if (timing)
                 timing->phase(PreparePhase::checkpoint_read);
             const auto offset = slice.first_row * columns * width;
