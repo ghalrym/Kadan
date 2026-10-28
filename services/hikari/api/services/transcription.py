@@ -43,7 +43,10 @@ def formatting_task(text: str) -> ChatTask:
             {"role": "system", "text": FORMAT_INSTRUCTIONS},
             {"role": "user", "text": '{"transcript":"hello this is a test"}'},
             {"role": "assistant", "text": '{"text":"Hello, this is a test."}'},
-            {"role": "user", "text": json.dumps({"transcript": text}, ensure_ascii=False)},
+            {
+                "role": "user",
+                "text": json.dumps({"transcript": text}, ensure_ascii=False),
+            },
         ],
         reuse_prefix=False,
     )

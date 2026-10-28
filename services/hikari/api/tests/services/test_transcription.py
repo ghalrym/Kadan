@@ -30,9 +30,16 @@ class TranscriptionSequenceTests(unittest.IsolatedAsyncioTestCase):
             "punctuation, capitalization, and obvious transcription errors while "
             "preserving the original meaning and language."
         )
-        with patch.object(transcription.inference, "submit", new=AsyncMock(side_effect=[
-            raw, {"text": reply, "model": "lfm3-1.7b-bf16", "finish_reason": "stop"},
-        ])):
+        with patch.object(
+            transcription.inference,
+            "submit",
+            new=AsyncMock(
+                side_effect=[
+                    raw,
+                    {"text": reply, "model": "lfm3-1.7b-bf16", "finish_reason": "stop"},
+                ]
+            ),
+        ):
             result = await transcription.transcribe(TranscriptionTask(audio="unit"))
         self.assertEqual(result["text"], raw["raw_text"])
         self.assertEqual(result["raw_text"], raw["raw_text"])
@@ -71,7 +78,9 @@ class TranscriptionSequenceTests(unittest.IsolatedAsyncioTestCase):
             ) as submit:
                 result = await transcription.transcribe(body)
             formatter = submit.await_args_list[1].args[0]
-            self.assertEqual(json.loads(formatter.messages[-1].text), {"transcript": raw["raw_text"]})
+            self.assertEqual(
+                json.loads(formatter.messages[-1].text), {"transcript": raw["raw_text"]}
+            )
             self.assertEqual(formatter.model, "lfm3-1.7b-bf16")
             self.assertFalse(formatter.reuse_prefix)
             self.assertEqual(
@@ -170,19 +179,26 @@ class FormattingContractTests(unittest.TestCase):
 
     def test_only_the_formatted_string_is_returned_from_valid_json(self):
         self.assertEqual(
-            transcription.formatted_text(self.output(' {"text":"Hello, this is an LFM speech test."}\n')),
+            transcription.formatted_text(
+                self.output(' {"text":"Hello, this is an LFM speech test."}\n')
+            ),
             "Hello, this is an LFM speech test.",
         )
 
     def test_noncompliant_envelopes_are_not_successful_transcripts(self):
         for reply in (
-            'Please provide a transcript.',
+            "Please provide a transcript.",
             '```json\n{"text":"Hello."}\n```',
             '{"text":"Hello.","note":"Done"}',
             '{"text":"first","text":"second"}',
-            '{"text":4}', '{"text":true}', '{"text":null}',
-            '{"text":"   "}', '{"text":{"text":"nested"}}',
-            '[{"text":"Hello."}]', '"Hello."', '{}',
+            '{"text":4}',
+            '{"text":true}',
+            '{"text":null}',
+            '{"text":"   "}',
+            '{"text":{"text":"nested"}}',
+            '[{"text":"Hello."}]',
+            '"Hello."',
+            "{}",
             '{"text":"Hello."}{"text":"More."}',
         ):
             with self.subTest(reply=reply), self.assertRaises(InferenceFailure):
