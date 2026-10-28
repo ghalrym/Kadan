@@ -13,6 +13,7 @@ class MachineTests(unittest.TestCase):
         cases = (
             (str(24 * GIB), 400, 1, 22 * GIB, 23 * GIB),
             ("max", 400, 1, 399 * GIB, None),
+            (None, 400, 1, 399 * GIB, None),
             (str(24 * GIB), 2, 1, GIB, 23 * GIB),
             (str(24 * GIB), 400, 20, 3 * GIB, 23 * GIB),
             (str(GIB // 2), 400, 1, 0, 0),
@@ -24,16 +25,17 @@ class MachineTests(unittest.TestCase):
                         f"MemTotal: {440 * GIB // 1024} kB\n"
                         f"MemAvailable: {available * GIB // 1024} kB\n"
                     ),
-                    "/sys/fs/cgroup/memory.max": limit,
-                    "/sys/fs/cgroup/memory.current": str(current * GIB),
                     "/proc/sys/kernel/random/boot_id": "test-boot",
                 }
+                if limit is not None:
+                    files["/sys/fs/cgroup/memory.max"] = limit
+                    files["/sys/fs/cgroup/memory.current"] = str(current * GIB)
                 with (
                     patch(
                         "pathlib.Path.read_text",
                         new=lambda path, files=files: files[str(path)],
                     ),
-                    patch("pathlib.Path.exists", return_value=True),
+                    patch("pathlib.Path.exists", new=lambda path: str(path) in files),
                     patch(
                         "subprocess.check_output", return_value="GPU-test,24576,24000\n"
                     ),
@@ -45,7 +47,8 @@ class MachineTests(unittest.TestCase):
                 self.assertEqual(info["ram_free"], expected_free)
                 self.assertEqual(info["ram_limit"], expected_limit)
                 self.assertEqual(
-                    info["ram_total"], int(limit) if limit != "max" else 440 * GIB
+                    info["ram_total"],
+                    int(limit) if limit not in (None, "max") else 440 * GIB
                 )
                 self.assertEqual(info["physical_ram_total"], 440 * GIB)
                 self.assertEqual(info["physical_ram_free"], (available - 1) * GIB)
