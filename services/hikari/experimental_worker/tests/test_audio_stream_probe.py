@@ -4,7 +4,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from experimental_worker.audio import generate
+from experimental_worker.audio import AudioDurationGuard, generate
 from experimental_worker.audio_stream_probe import PrivateCodecProbe
 from experimental_worker.tests import test_audio as audio_tests
 
@@ -213,7 +213,7 @@ class ProbeCompletionGateTests(unittest.TestCase):
         probe.finish.assert_not_called()
         codec.decode.assert_not_called()
 
-    def test_flag_off_does_not_create_or_supply_streamer(self):
+    def test_flag_off_does_not_create_private_decoder_but_keeps_duration_guard(self):
         model, processor, codec = self.fixture(8)
         with (
             patch("experimental_worker.audio.create_probe") as create,
@@ -221,7 +221,9 @@ class ProbeCompletionGateTests(unittest.TestCase):
         ):
             generate(self.task(), model, processor, codec, TORCH)
         create.assert_not_called()
-        self.assertNotIn("audio_streamer", model.generate.call_args.kwargs)
+        self.assertIsInstance(
+            model.generate.call_args.kwargs["audio_streamer"], AudioDurationGuard
+        )
 
     def test_successful_probe_returns_the_original_offline_waveform(self):
         model, processor, codec = self.fixture(7)

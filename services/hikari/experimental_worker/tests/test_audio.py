@@ -9,7 +9,6 @@ from unittest.mock import Mock, patch
 from experimental_worker.audio import (
     MAX_CONTEXT_TOKENS,
     MAX_INPUT_TOKENS,
-    MAX_NEW_TOKENS,
     audio_bytes,
     conversation,
     execute,
@@ -96,6 +95,9 @@ class AudioAdapterTests(unittest.TestCase):
             "/tmp/wav",
         )
         self.assertEqual(result, {"text": "Hello"})
+        self.assertEqual(
+            model.generate.call_args.kwargs["max_new_tokens"], MAX_CONTEXT_TOKENS - 100
+        )
         self.assertTrue(model.generate.call_args.kwargs["suppress_audio_out"])
         self.assertTrue(model.generate.call_args.kwargs["suppress_mixed"])
 
@@ -152,15 +154,16 @@ class AudioOutputPrivacyTests(unittest.TestCase):
             "Hello < 3 world",
         )
 
-    def test_output_tokens_are_reserved_inside_trial_context(self):
-        self.assertEqual(MAX_INPUT_TOKENS + MAX_NEW_TOKENS, MAX_CONTEXT_TOKENS)
+    def test_output_uses_the_full_remaining_model_context(self):
+        self.assertEqual(MAX_INPUT_TOKENS + 1, MAX_CONTEXT_TOKENS)
+        self.assertEqual(validate_context(100), MAX_CONTEXT_TOKENS - 100)
 
 
 class AudioContextTests(unittest.TestCase):
     def test_released_maximum_context_includes_reserved_reply_at_exact_boundary(self):
-        validate_context(32768 - MAX_NEW_TOKENS)
+        self.assertEqual(validate_context(32767), 1)
         with self.assertRaisesRegex(ValueError, "32768-token"):
-            validate_context(32768 - MAX_NEW_TOKENS + 1)
+            validate_context(32768)
 
     def test_history_has_no_extra_character_or_turn_cap_below_model_context(self):
         history = [

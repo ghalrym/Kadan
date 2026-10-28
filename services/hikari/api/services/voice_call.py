@@ -110,7 +110,10 @@ class VoiceCall:
         self.history[:] = [
             ChatMessage.model_validate(message)
             for message in append_call_history(
-                [message.model_dump() for message in self.history], role, text
+                [message.model_dump() for message in self.history],
+                role,
+                text,
+                model_bounded=self.models.backend == "lfm3",
             )
         ]
 
@@ -223,10 +226,6 @@ class VoiceCall:
                     if turn != self.turn:
                         return
                     transcript = event["text"].strip()
-                    if len(transcript) > 4000:
-                        raise InferenceFailure(
-                            "Recognized utterance exceeded the call limit.", 502
-                        )
                     self.remember("user", transcript)
                     if transcript:
                         await self.emit(turn, type="transcript", text=transcript)
@@ -234,7 +233,7 @@ class VoiceCall:
                     if not sentence_tts or not transcript or answer is not None:
                         raise InferenceFailure("Unexpected public audio answer.", 502)
                     answer = event["text"].strip()
-                    if not answer or len(answer) > 8000:
+                    if not answer:
                         raise InferenceFailure("Invalid public audio answer.", 502)
                     expected_scripts = speech_scripts(answer)
                 elif event["type"] == "segment":
@@ -298,7 +297,7 @@ class VoiceCall:
 
     async def publish_audio_reply(self, result: dict, turn: int):
         reply, audio_base64 = result.get("text", "").strip(), result.get("audio_base64")
-        if not reply or len(reply) > 8000 or not audio_base64:
+        if not reply or not audio_base64:
             raise InferenceFailure(
                 "Experimental audio worker returned an incomplete reply.", 502
             )
@@ -332,8 +331,6 @@ class VoiceCall:
         if not text:
             await self.emit(turn, type="done")
             return
-        if len(text) > 4000:
-            raise InferenceFailure("Recognized utterance exceeded the call limit.", 502)
         self.remember("user", text)
         await self.emit(turn, type="transcript", text=text)
         result = await self.inference.submit(

@@ -31,8 +31,9 @@ MODEL = {
 # codec, preprocessing and bounded generation; the engine uses one visible GPU.
 REQUIREMENT = (8 * 1024**3, 16 * 1024**3)
 MAX_CONTEXT_TOKENS = 32768
-MAX_NEW_TOKENS = 1024
-MAX_INPUT_TOKENS = MAX_CONTEXT_TOKENS - MAX_NEW_TOKENS
+MAX_INPUT_TOKENS = MAX_CONTEXT_TOKENS - 1
+MAX_AUDIO_SAMPLES = 60 * 24000
+CODEC_FRAME_SAMPLES = 1920
 
 
 def audio_bytes(uri: str) -> bytes:
@@ -143,16 +144,43 @@ def public_text(raw: str, *, transcribe: bool) -> str:
     return text.strip()
 
 
-def validate_context(input_tokens: int, output_tokens: int = MAX_NEW_TOKENS) -> None:
-    """Reserve reply space within the released audio model's 32K context."""
+def validate_context(input_tokens: int, output_tokens: int | None = None) -> int:
+    """Use all remaining released context unless a smaller output is requested."""
+    if output_tokens is None:
+        output_tokens = MAX_CONTEXT_TOKENS - input_tokens
     if (
-        input_tokens < 1
+        type(input_tokens) is not int
+        or type(output_tokens) is not int
+        or input_tokens < 1
         or output_tokens < 1
         or input_tokens + output_tokens > MAX_CONTEXT_TOKENS
     ):
         raise ValueError(
             "Audio call exceeds the 32768-token model context; start a new call"
         )
+    return output_tokens
+
+
+class AudioDurationGuard:
+    """Stop non-EOS speech frames before decoding could exceed call memory bounds."""
+
+    def __init__(self, max_samples: int):
+        self.maximum_frames = max_samples // CODEC_FRAME_SAMPLES
+        self.frames = 0
+        if self.maximum_frames < 1:
+            raise ValueError(
+                "No speech duration remains within this call turn's sixty-second limit"
+            )
+
+    def put(self, frame):
+        if self.frames >= self.maximum_frames:
+            raise ValueError(
+                "Audio generation exceeded the call turn's sixty-second speech limit"
+            )
+        self.frames += 1
+
+    def end(self):
+        pass
 
 
 def generate(
@@ -164,6 +192,7 @@ def generate(
     audio_path=None,
     *,
     codec_streaming_probe=False,
+    max_audio_samples=MAX_AUDIO_SAMPLES,
     emit=None,
 ) -> dict:
     """Use the pinned model-card contract; dependencies are passed for unit tests."""
@@ -184,7 +213,7 @@ def generate(
         return_tensors="pt",
     ).to("cuda:0")
     count = inputs["input_ids"].shape[1]
-    validate_context(count)
+    budget = validate_context(count)
     sampling = (
         {"suppress_mixed": True, "suppress_audio_out": True}
         if transcribe or answer
@@ -197,12 +226,23 @@ def generate(
         }
     )
     probe = create_probe(codec, torch, emit) if codec_streaming_probe else None
+    audio_streamer = (
+        probe
+        if probe is not None
+        else (
+            AudioDurationGuard(max_audio_samples)
+            if not (transcribe or answer)
+            else None
+        )
+    )
     with torch.no_grad():
         output = model.generate(
             **inputs,
-            max_new_tokens=MAX_NEW_TOKENS,
+            max_new_tokens=budget,
             return_dict_in_generate=True,
-            **({"audio_streamer": probe} if probe is not None else {}),
+            **(
+                {"audio_streamer": audio_streamer} if audio_streamer is not None else {}
+            ),
             **({"generation_mode": "text"} if answer else {}),
             **sampling,
         )
@@ -235,8 +275,6 @@ def generate(
                     "TTS returned unexpected public text or control markers"
                 )
         text = public_text(decoded, transcribe=transcribe or answer)
-        if len(text) > (4000 if transcribe else 8000):
-            raise ValueError("Audio model output exceeded the call limit")
         if transcribe or answer:
             if answer and not text:
                 raise ValueError("Audio model returned no public answer")
@@ -249,6 +287,10 @@ def generate(
             or int(output.audio_lengths[0]) <= 0
         ):
             raise ValueError("Audio model did not return the required speech output")
+        if int(output.audio_lengths[0]) * CODEC_FRAME_SAMPLES > max_audio_samples:
+            raise ValueError(
+                "Audio output exceeds the call turn's sixty-second speech limit"
+            )
         waveform = codec.decode(
             output.audio_codes[:1, :, : int(output.audio_lengths[0])]
         ).audio_values[0]
@@ -257,7 +299,7 @@ def generate(
     # import optional inference libraries or initialize CUDA.
     import numpy as np
 
-    if not np.isfinite(samples).all() or not 1 <= samples.size <= 60 * 24000:
+    if not np.isfinite(samples).all() or not 1 <= samples.size <= max_audio_samples:
         raise ValueError("Audio model returned invalid or oversized speech")
     probe_timing = probe.finish(samples) if probe is not None else None
     buffer = io.BytesIO()
@@ -289,7 +331,12 @@ def sentence_reply(messages, model, processor, codec, torch, emit):
     for index, script in enumerate(scripts):
         segment_started = time.perf_counter()
         result = generate(
-            {"mode": "tts", "script": script}, model, processor, codec, torch
+            {"mode": "tts", "script": script},
+            model,
+            processor,
+            codec,
+            torch,
+            max_audio_samples=MAX_AUDIO_SAMPLES - total_samples,
         )
         torch.cuda.synchronize()
         segment_finished = time.perf_counter()
@@ -400,7 +447,9 @@ def execute(
             # later failure or interruption does not erase the user's utterance.
             emit({"state": "audio_transcript", "transcript": transcript})
             if transcript:
-                history = append_call_history(task["messages"][1:], "user", transcript)
+                history = append_call_history(
+                    task["messages"][1:], "user", transcript, model_bounded=True
+                )
                 reply_started = time.perf_counter()
                 if sentence_tts:
                     result = sentence_reply(
