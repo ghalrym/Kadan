@@ -42,3 +42,26 @@ was blocked by the client, so no audible-quality or played-acknowledgement claim
 is made and no played acknowledgement was sent. The test does not establish
 full-duplex inference or interruption during audible playback. Native call
 behavior was covered by unit tests, not a new live native-model call.
+
+### Single-executor comparison
+
+A follow-up of the same generated utterance measured 14.30 seconds on the
+original two-executor path. ASR used 2.59 seconds importing the backend,
+0.75 loading the model, 0.66 preparing the processor/codec and 1.42 in the
+audio operation. Reply repeated that setup, then spent 2.20 seconds in its
+audio operation. Initial PyTorch setup is included separately in total
+executor time. This identified repeated setup as the main short-turn cost.
+
+With the default-off single-turn flag enabled only in the isolated trial,
+the correct transcript arrived at 6.57 seconds and the correct buffered text
+and WAV at 8.83 seconds. One executor spent 1.43 seconds in ASR and 2.00 in
+reply, sharing its 2.58-second backend import, 0.75-second model load and
+0.66-second processor setup. Peak RSS was 4.54 GiB and CUDA allocation
+3.84 GiB. This is one observed comparison, about 38% faster; sampling and
+reply duration can change latency. It remains slow for live calls.
+
+No microphone was opened or sound played overnight. A separate loopback-only
+frontend passed HTTP and API-proxy checks, but the browser independently
+blocked localhost navigation with ERR_BLOCKED_BY_CLIENT. No policy, extension,
+certificate or network setting was changed to bypass that block. A saved
+no-autoplay WAV player provides a user-driven morning listening option.
