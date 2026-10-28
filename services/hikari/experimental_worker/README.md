@@ -70,11 +70,13 @@ protocol; it makes no claim of full-duplex model inference.
 
 ## Combined morning checkout
 
-The review drafts are [conversation/core #468](https://github.com/ghalrym/Kadan/pull/468),
+The changes are [conversation/core #468](https://github.com/ghalrym/Kadan/pull/468),
 [vision #469](https://github.com/ghalrym/Kadan/pull/469), and
-[audio #470](https://github.com/ghalrym/Kadan/pull/470). Vision and audio independently
-target the core branch. `ai-reed/lfm3-morning-trial` combines all three for the
-owner's manual evaluation; it does not merge any PR into master.
+[audio #470](https://github.com/ghalrym/Kadan/pull/470). Core and vision have merged
+after real BF16 tests, independent review and green CI. Audio remains draft
+because its measured 15.6-second turn latency and microphone/playback validation
+need further work. `ai-reed/lfm3-morning-trial` combines the merged features and
+audio draft for the owner's manual evaluation.
 
 | Worker | Supported total context | Provisional RAM / one GPU |
 | --- | ---: | ---: |
