@@ -5,7 +5,42 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from experimental_worker.runtime import Runtime
+from experimental_worker.runtime import GIB, Runtime, machine
+
+
+class MachineTests(unittest.TestCase):
+    def test_physical_ram_and_container_headroom_are_reported_separately(self):
+        for limit, expected in ((str(24 * GIB), 22 * GIB), ("max", 399 * GIB)):
+            with self.subTest(limit=limit):
+                files = {
+                    "/proc/meminfo": (
+                        f"MemTotal: {440 * GIB // 1024} kB\n"
+                        f"MemAvailable: {400 * GIB // 1024} kB\n"
+                    ),
+                    "/sys/fs/cgroup/memory.max": limit,
+                    "/sys/fs/cgroup/memory.current": str(GIB),
+                    "/proc/sys/kernel/random/boot_id": "test-boot",
+                }
+                with (
+                    patch(
+                        "pathlib.Path.read_text",
+                        new=lambda path, files=files: files[str(path)],
+                    ),
+                    patch("pathlib.Path.exists", return_value=True),
+                    patch(
+                        "subprocess.check_output", return_value="GPU-test,24576,24000\n"
+                    ),
+                    patch.dict("os.environ", {"HIKARI_EXPERIMENTAL_GPU": "0"}),
+                ):
+                    info = machine()
+                self.assertEqual(info["id"], "test-boot")
+                self.assertEqual(info["devices"][0]["uuid"], "GPU-test")
+                self.assertEqual(info["ram_free"], expected)
+                self.assertEqual(
+                    info["ram_total"], (24 if limit != "max" else 440) * GIB
+                )
+                self.assertEqual(info["physical_ram_total"], 440 * GIB)
+                self.assertEqual(info["physical_ram_free"], 399 * GIB)
 
 
 class Socket:

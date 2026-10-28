@@ -8,6 +8,8 @@ LFM conversation, vision and audio run in separate Python worker containers. Eac
 
 Native decision, transcription, image and video workers retain their existing specialist engines. Their allocations can span supported devices, but each physical GPU remains an independent capacity. Workers on one computer share one ledger, identified by kernel boot ID and GPU UUID; workers on other computers use separate resources. A budget grant permits loading and does not establish that an engine is resident or that every request fits.
 
+Worker registration separates `physical_ram_free` from `ram_free`: the former initializes the computer's shared capacity, while the latter bounds that container's host grant. Both probes retain their existing headroom margins. Cgroup limits apply to the reporting worker, not every worker sharing its boot ID. Admission and idle growth respect both the shared ledger and the individual ceiling. Older registrations without the physical field conservatively initialize shared capacity from `ram_free`; later registrations never inflate an existing ledger.
+
 ## Scheduling and residency
 
 Active priorities are LFM conversation, screenshot understanding, speech and transcript formatting together with decisions; then native transcription; then images; then video. A higher-priority request waits for active lower-priority work when necessary rather than interrupting it. Lower-priority idle allocations are reclaimed first, with release acknowledged before the ledger credits memory. An idle worker with no queued work can also yield to a lower-priority request.

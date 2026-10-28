@@ -51,7 +51,7 @@ public:
             dlclose(library_);
     }
 
-    Footprint probe() const {
+    Footprint probe(bool container_limit = true) const {
         Footprint available(devices_ + 1);
         std::ifstream meminfo("/proc/meminfo");
         std::string line;
@@ -66,7 +66,8 @@ public:
             current_file("/sys/fs/cgroup/memory.current");
         std::string limit;
         Bytes current = 0;
-        if (limit_file >> limit && current_file >> current && limit != "max") {
+        if (container_limit && limit_file >> limit && current_file >> current
+            && limit != "max") {
             const auto maximum = std::stoull(limit);
             available[0] = std::min<Bytes>(
                 available[0], maximum > current ? maximum - current : 0
@@ -109,6 +110,7 @@ public:
                 break;
             }
         std::ifstream limit_file("/sys/fs/cgroup/memory.max");
+        const auto physical_ram_total = ram_total;
         std::string limit;
         if (limit_file >> limit && limit != "max")
             ram_total = std::min<Bytes>(ram_total, std::stoull(limit));
@@ -140,6 +142,8 @@ public:
             {"name", label},
             {"ram_total", ram_total},
             {"ram_free", free[0]},
+            {"physical_ram_total", physical_ram_total},
+            {"physical_ram_free", probe(false)[0]},
             {"disk_total", Bytes(disk.f_blocks) * disk.f_frsize},
             {"disk_free", Bytes(disk.f_bavail) * disk.f_frsize},
             {"devices", devices}

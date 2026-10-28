@@ -12,6 +12,8 @@ The conversation model's 262,144-token context is shared by input and output. Re
 
 Requests for different inference types can execute concurrently when the hardware has enough memory. Accepting several requests does not promise that they all start immediately. When their combined requirements exceed available memory, some requests wait while others run.
 
+A worker container's memory limit constrains its own work. It must not reduce the physical memory available to other workers on the same computer; their combined allocations must still fit the computer's available memory.
+
 When requests compete for memory, Hikari uses this priority order, highest first:
 
 1. LFM conversation, screenshot understanding, speech and transcript formatting, plus decisions.
