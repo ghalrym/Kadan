@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 from typing import Annotated, Literal
 
 import anyio
@@ -17,7 +16,7 @@ router = APIRouter(prefix="/v1/audio/calls", tags=["Audio"])
 class CallStart(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["start"]
-    backend: Literal["native", "lfm3"] = "native"
+    backend: Literal["lfm3"] = "lfm3"
     instruction: str = Field(
         default="Have a spoken conversation. Keep replies short. You have no tools.",
         min_length=1,
@@ -65,19 +64,13 @@ async def voice_call(socket: WebSocket):
         start = CallStart.model_validate(
             await asyncio.wait_for(socket.receive_json(), 15)
         )
-        if start.backend == "lfm3" and os.getenv(
-            "HIKARI_ENABLE_LFM3_AUDIO", ""
-        ).lower() not in ("1", "true", "yes"):
-            raise InferenceFailure(
-                "The LFM3 audio trial is disabled on this Hikari API.", 422
-            )
-        models = CallModels.selected(inference.models_status(), start.backend)
+        models = CallModels.selected(inference.models_status())
 
         async def receive():
             return call_event.validate_python(await socket.receive_json())
 
-        # The connection owns residency and cleanup, including cancellation of
-        # transcription, streamed text and buffered Qwen segments on disconnect.
+        # The connection owns the audio model's residency hint and cancellation
+        # cleanup; only fully played segments can enter the next turn's history.
         with inference.worker.full_duplex(models.participants()):
             await VoiceCall(inference, models, start.instruction, socket.send_json).run(
                 receive
