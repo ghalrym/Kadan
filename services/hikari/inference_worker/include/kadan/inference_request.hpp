@@ -131,7 +131,7 @@ struct TranscriptionFormattingRequest {
 
 struct VideoRequest {
     std::string prompt, model = "h3-fl2va-int8-turbo", aspect = "16:9";
-    unsigned short_edge = 768, duration = 8;
+    unsigned short_edge = 480, duration = 5;
     bool resolution_supplied = false, duration_supplied = false;
     std::uint64_t seed = 42;
     video::H3GenerationPaths paths;
@@ -140,10 +140,6 @@ struct VideoRequest {
 struct DownloadRequest {
     std::string model;
     bool license_acknowledged = false;
-};
-
-struct TierSelectionRequest {
-    std::string tier;
 };
 
 struct ContextRequest {
@@ -168,7 +164,6 @@ using TaskInput = std::variant<
     TranscriptionFormattingRequest,
     VideoRequest,
     DownloadRequest,
-    TierSelectionRequest,
     ContextRequest,
     WhisperSelectionRequest,
     WhisperFormattingRequest>;

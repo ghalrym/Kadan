@@ -379,34 +379,6 @@ CatalogEntry CatalogEntry::parse(const Json& value) {
     return entry;
 }
 
-HardwareTier HardwareTier::parse(const Json& value) {
-    HardwareTier tier{
-        value.at("id"),
-        value.at("name"),
-        value.at("vram_gb"),
-        value.at("ram_gb"),
-        {value.at("video_defaults").at("duration"),
-         value.at("video_defaults").at("resolution")},
-        {}
-    };
-    preparation_check(
-        tier.video_defaults.duration >= 1 && tier.video_defaults.duration <= 15
-            && (tier.video_defaults.resolution == "480p"
-                || tier.video_defaults.resolution == "768p"),
-        "Invalid hardware tier video defaults"
-    );
-    preparation_check(
-        value.at("models").is_object() && value.at("models").size() == 6,
-        "Invalid hardware tier models"
-    );
-    for (const auto& [kind, model] : value.at("models").items())
-        tier.models.emplace(
-            kind,
-            model.is_null() ? std::nullopt : std::optional(model.get<std::string>())
-        );
-    return tier;
-}
-
 ModelStore::ModelStore(
     fs::path root, fs::path data, Fetch fetch, DownloadProgress progress
 )
@@ -422,20 +394,7 @@ ModelStore::ModelStore(
         );
         catalog_.push_back(std::move(model));
     }
-    std::set<std::string> tier_ids;
-    for (const auto& value : document.value("tiers", Json::array())) {
-        auto tier = HardwareTier::parse(value);
-        preparation_check(tier_ids.insert(tier.id).second, "Duplicate hardware tier");
-        for (const auto& [kind, model] : tier.models)
-            preparation_check(
-                !model || entry(*model).kind == kind,
-                "Hardware tier model kind mismatch"
-            );
-        preparation_check(
-            tier.models.at("llm").has_value(), "Hardware tier has no LLM"
-        );
-        tiers_.push_back(std::move(tier));
-    }
+
 }
 
 const CatalogEntry& ModelStore::entry(const std::string& model) const {
@@ -826,39 +785,8 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
     return destination;
 }
 
-std::optional<std::string> ModelStore::tier() const {
-    if (!fs::is_regular_file(root_ / "tier.json"))
-        return std::nullopt;
-    auto id = read_document(root_ / "tier.json").at("tier").get<std::string>();
-    hardware_tier(id);
-    return id;
-}
-
-const HardwareTier& ModelStore::hardware_tier(const std::string& id) const {
-    for (const auto& tier : tiers_)
-        if (tier.id == id)
-            return tier;
-    throw RequestError("Unknown hardware tier: " + id, 422);
-}
-
-void ModelStore::select_tier(const std::string& id) {
-    hardware_tier(id);
-    fs::create_directories(root_);
-    StoreLock lock(root_ / ".settings.lock");
-    atomic_document(root_ / "tier.json", {{"tier", id}});
-}
-
 std::string ModelStore::selected() const {
-    std::optional<std::string> id;
-    try {
-        id = tier();
-    } catch (const std::exception&) {
-    }
-    if (!id)
-        throw RequestError(
-            "Choose a hardware tier in Settings before submitting a request.", 422
-        );
-    return *hardware_tier(*id).models.at("llm");
+    throw RequestError("Language inference belongs to the LFM3 worker.", 422);
 }
 
 std::string ModelStore::whisper_model(const std::string& name) const {
@@ -874,14 +802,7 @@ std::string ModelStore::whisper_model(const std::string& name) const {
 }
 
 std::string ModelStore::whisper_selected() const {
-    if (fs::is_regular_file(root_ / "whisper-selection.json")) {
-        const auto model = read_document(root_ / "whisper-selection.json")
-                               .at("model")
-                               .get<std::string>();
-        return whisper_model(model);
-    }
-    // Every hardware tier downloads Whisper medium for transcription.
-    return whisper_model("medium");
+    return "medium";
 }
 
 Json ModelStore::context(const std::string& model) const {
@@ -980,38 +901,10 @@ Json ModelStore::status() const {
         }
         models.push_back(std::move(model));
     }
-    Json selection = nullptr, whisper = nullptr, tier = nullptr;
-    try {
-        selection = selected();
-        tier = *this->tier();
-    } catch (const RequestError&) {
-    }
-    try {
-        whisper = whisper_selected();
-    } catch (const RequestError&) {
-    }
-    Json tiers = Json::array();
-    for (const auto& item : tiers_) {
-        Json assigned = Json::object();
-        for (const auto& [kind, model] : item.models)
-            assigned[kind] = model ? Json(*model) : Json(nullptr);
-        tiers.push_back(
-            {{"id", item.id},
-             {"name", item.name},
-             {"vram_gb", item.vram_gb},
-             {"ram_gb", item.ram_gb},
-             {"video_defaults",
-              {{"duration", item.video_defaults.duration},
-               {"resolution", item.video_defaults.resolution}}},
-             {"models", assigned}}
-        );
-    }
     return {
         {"models", models},
-        {"tiers", tiers},
-        {"selected_tier", tier},
-        {"selected_model_id", selection},
-        {"selected_whisper", whisper},
+        {"selected_model_id", "lfm3-1.7b-bf16"},
+        {"selected_whisper", whisper_selected()},
         {"whisper_formatting", whisper_formatting()}
     };
 }

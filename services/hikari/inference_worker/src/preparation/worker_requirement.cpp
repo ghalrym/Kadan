@@ -19,28 +19,21 @@ constexpr Bytes decision_envelope = 3 * gib;
 constexpr std::size_t max_prompt_bytes = 32000;
 
 std::string default_model(Workload workload, const ModelStore& store) {
-    const auto tier_model = [&](const char* modality) {
-        const auto tier = store.tier();
-        preparation_check(bool(tier), "Choose a hardware tier first.", 409);
-        const auto& model = store.hardware_tier(*tier).models.at(modality);
-        preparation_check(bool(model), "The selected tier has no such model.", 409);
-        return *model;
-    };
     switch (workload) {
     case Workload::llm:
         return store.selected();
     case Workload::decision:
         return "laya";
     case Workload::formatting:
-        return "superwhisper-s1-mini";
+        throw RequestError("Transcript formatting belongs to the LFM3 worker.", 422);
     case Workload::speech:
         return "whisper-" + store.whisper_selected();
     case Workload::image:
         return "qwen-image-2.1-turbo";
     case Workload::tts:
-        return tier_model("speech");
+        throw RequestError("Speech synthesis belongs to the LFM3 Audio worker.", 422);
     case Workload::video:
-        return tier_model("video");
+        return "h3-fl2va-int8-turbo";
     }
     throw std::invalid_argument("workload");
 }

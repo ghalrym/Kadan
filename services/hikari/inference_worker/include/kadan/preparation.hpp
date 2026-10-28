@@ -71,21 +71,6 @@ struct CatalogEntry {
     static CatalogEntry parse(const Json& value);
 };
 
-struct VideoDefaults {
-    unsigned duration;
-    std::string resolution;
-};
-
-// A hardware tier fixes one checkpoint per modality (null when unassigned).
-struct HardwareTier {
-    std::string id, name;
-    unsigned vram_gb, ram_gb;
-    VideoDefaults video_defaults;
-    std::map<std::string, std::optional<std::string>> models;
-
-    static HardwareTier parse(const Json& value);
-};
-
 class ModelStore {
 public:
     using Fetch = std::function<std::int64_t(
@@ -102,11 +87,8 @@ public:
     );
     const CatalogEntry& entry(const std::string& model) const;
     fs::path acquire(const std::string& model, const std::atomic_bool& cancel);
-    // The language model of the selected hardware tier.
+    // Native chat is retired; language inference belongs to the LFM worker.
     std::string selected() const;
-    std::optional<std::string> tier() const;
-    const HardwareTier& hardware_tier(const std::string& id) const;
-    void select_tier(const std::string& id);
     std::string whisper_selected() const;
     std::string whisper_model(const std::string& name) const;
     Json context(const std::string& model) const;
@@ -138,7 +120,6 @@ private:
     manifest(const CatalogEntry& entry, const std::atomic_bool& cancel) const;
     fs::path root_, data_;
     std::vector<CatalogEntry> catalog_;
-    std::vector<HardwareTier> tiers_;
     std::vector<std::string> assets_;
     Fetch fetch_;
     DownloadProgress progress_;
@@ -228,9 +209,6 @@ void prepare_input(
 );
 void prepare_input(
     DownloadRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
-);
-void prepare_input(
-    TierSelectionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
     ContextRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
