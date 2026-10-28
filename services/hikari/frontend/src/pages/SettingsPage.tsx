@@ -324,14 +324,16 @@ export function ModelDownloads() {
             return (
               <li
                 key={id}
-                className={`model-download model-download--${state}`}
+                className={`model-download model-download--${model?.status === 'cancelled' ? 'cancelled' : state}`}
               >
                 <div className="model-download-heading">
                   <strong>{name}</strong>
                   <span className="mono model-download-status">
                     {model?.status === 'cancelling'
                       ? 'Cancelling'
-                      : stateLabels[state]}
+                      : model?.status === 'cancelled'
+                        ? 'Cancelled'
+                        : stateLabels[state]}
                   </span>
                 </div>
                 <p className="muted">{uses.join(' · ')}</p>

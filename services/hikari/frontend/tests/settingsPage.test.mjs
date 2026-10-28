@@ -303,6 +303,10 @@ test('cancelling a download targets its model without claiming completion', asyn
   view.changes[0].resolve([textModel('cancelling')])
   await view.flush()
   assert.equal(button(view.tree, 'Cancelling…').props.disabled, true)
+  view.reads.at(-1).resolve(saved([textModel('cancelled')]))
+  await view.flush()
+  assert.match(content(view.tree), /Cancelled/)
+  assert.ok(button(view.tree, 'Retry download'))
   view.unmount()
 })
 
