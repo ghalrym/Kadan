@@ -67,6 +67,12 @@ class AudioCallTests(unittest.IsolatedAsyncioTestCase):
         await call.respond("wav", 1)
         tasks = [entry.args[0] for entry in submit.call_args_list]
         self.assertEqual([task.mode for task in tasks], ["transcribe", "reply"])
+        # InferenceService excludes unset defaults at the queue boundary. Both
+        # stages must still carry the explicitly selected model to the worker.
+        self.assertEqual(
+            [task.model_dump(exclude_unset=True).get("model_id") for task in tasks],
+            ["lfm3-audio-2b-bf16", "lfm3-audio-2b-bf16"],
+        )
         self.assertEqual(tasks[1].messages[0].text, "Saved persona. No tools.")
         self.assertEqual([message.role for message in call.history], ["user"])
         events = [entry.args[0] for entry in call.send.call_args_list]

@@ -197,7 +197,8 @@ class VoiceCall:
 
     async def respond_audio(self, audio: str, turn: int):
         transcript = await self.inference.submit(
-            AudioCallTask(mode="transcribe", audio=audio), feature="audio_call"
+            AudioCallTask(mode="transcribe", audio=audio, model_id=self.models.llm),
+            feature="audio_call",
         )
         text = transcript["text"].strip()
         if not text:
@@ -210,6 +211,7 @@ class VoiceCall:
         result = await self.inference.submit(
             AudioCallTask(
                 mode="reply",
+                model_id=self.models.llm,
                 messages=[
                     ChatMessage(role="system", text=self.instruction),
                     *self.history,
