@@ -8,10 +8,10 @@ export type ConversationMessage = Pick<
 }
 
 /**
- * Build the API conversation with an optional explicit playground model.
+ * Build the API conversation for Hikari's fixed conversation model.
  * Rejects empty/blank turns and drops display-only metadata; the input is not mutated.
  */
-export function chatRequest(messages: ConversationMessage[], model?: string) {
+export function chatRequest(messages: ConversationMessage[]) {
   if (!messages.length) {
     throw new Error('Enter a message before sending.')
   }
@@ -20,7 +20,6 @@ export function chatRequest(messages: ConversationMessage[], model?: string) {
   }
   return {
     messages: messages.map(({ role, text }) => ({ role, text })),
-    ...(model ? { model } : {}),
   }
 }
 
@@ -30,7 +29,6 @@ export async function streamChat(
   signal: AbortSignal,
   onText: (text: string) => void,
   conversationId?: string,
-  model?: string,
 ): Promise<ConversationMessage> {
   const response = await fetch('/v1/chat/completions', {
     method: 'POST',
@@ -39,7 +37,7 @@ export async function streamChat(
       Accept: 'text/event-stream',
     },
     body: JSON.stringify({
-      ...chatRequest(messages, model),
+      ...chatRequest(messages),
       stream: true,
       conversation_id: conversationId,
     }),
