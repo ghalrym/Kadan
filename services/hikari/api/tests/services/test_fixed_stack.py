@@ -1,4 +1,5 @@
 import unittest
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -223,7 +224,7 @@ class LfmFormattingTests(unittest.IsolatedAsyncioTestCase):
                 side_effect=[
                     raw,
                     {
-                        "text": "Hello there.",
+                        "text": '{"text":"Hello there."}',
                         "model": "lfm3-1.7b-bf16",
                         "finish_reason": "stop",
                     },
@@ -233,7 +234,7 @@ class LfmFormattingTests(unittest.IsolatedAsyncioTestCase):
             result = await transcription.transcribe(TranscriptionTask(audio="unit"))
         task = submit.await_args_list[1].args[0]
         self.assertEqual(task.model, "lfm3-1.7b-bf16")
-        self.assertEqual(task.messages[-1].text, raw["raw_text"])
+        self.assertEqual(json.loads(task.messages[-1].text), {"transcript": raw["raw_text"]})
         self.assertEqual(
             submit.await_args_list[1].kwargs,
             {"feature": "llm", "operation": "completion"},
