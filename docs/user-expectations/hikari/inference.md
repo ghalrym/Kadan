@@ -12,7 +12,7 @@ Using system memory or disk can make responses slower. Available memory, CPU spe
 
 Operators can explicitly enable a separate LFM3 1.7B BF16 conversation worker for evaluation. It is disabled by default and does not replace a hardware tier's language model. Requests must select the experimental model explicitly; unavailable workers and incomplete user-approved downloads produce an error, with no substitution.
 
-This trial loads the model for each request and returns the completed reply through the existing chat interface. It has an 16,384-token total context, including a reserved reply of up to 1,024 tokens; oversized prompts fail without truncating history. It does not retain a conversation prefix or support manual preloading. Model quality, latency and physical fit require owner validation on the target computer; a connected worker or downloaded checkpoint does not prove successful inference.
+This trial loads the model for each request and returns the completed reply through the existing chat interface. It has an 262,144-token total context, including a reserved reply of up to 1,024 tokens; oversized prompts fail without truncating history. It does not retain a conversation prefix or support manual preloading. Model quality, latency and physical fit require owner validation on the target computer; a connected worker or downloaded checkpoint does not prove successful inference.
 
 ## Multiple inference types at once
 

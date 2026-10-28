@@ -2,7 +2,15 @@
 
 import unittest
 
-from experimental_worker.text import MODEL_ID, execute, messages, reply_text
+from experimental_worker.text import (
+    CONTEXT_LIMIT,
+    MAX_NEW_TOKENS,
+    MODEL_ID,
+    execute,
+    messages,
+    reply_text,
+    validate_context,
+)
 
 
 class TextTests(unittest.TestCase):
@@ -59,7 +67,7 @@ class TextTests(unittest.TestCase):
             execute({"model": MODEL_ID}, "load", "/unused", lambda _: None)
 
     def test_invalid_context_is_rejected_before_dependencies(self):
-        for limit in (0, False, 20000):
+        for limit in (0, False, CONTEXT_LIMIT + 1):
             with (
                 self.subTest(limit=limit),
                 self.assertRaisesRegex(ValueError, "context"),
@@ -74,3 +82,8 @@ class TextTests(unittest.TestCase):
                     "/unused",
                     lambda _: None,
                 )
+
+    def test_full_supported_context_boundary_reserves_reply(self):
+        validate_context(CONTEXT_LIMIT - MAX_NEW_TOKENS)
+        with self.assertRaisesRegex(ValueError, "not truncated"):
+            validate_context(CONTEXT_LIMIT - MAX_NEW_TOKENS + 1)

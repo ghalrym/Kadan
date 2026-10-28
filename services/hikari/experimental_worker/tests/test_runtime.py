@@ -92,12 +92,16 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_grant_arriving_during_wait_event_is_not_lost(self):
         runtime = self.runtime
         runtime.store.complete = lambda: True
+
         def grant(message):
             if message["state"] == "waiting_for_resources":
                 runtime.budget = list(runtime.backend.REQUIREMENT)
                 runtime.granted.set()
+
         runtime.socket.on_send = grant
-        with patch("multiprocessing.get_context", side_effect=RuntimeError("grant observed")):
+        with patch(
+            "multiprocessing.get_context", side_effect=RuntimeError("grant observed")
+        ):
             with self.assertRaisesRegex(RuntimeError, "grant observed"):
                 await asyncio.wait_for(runtime.run_job(self.request()), 0.1)
 

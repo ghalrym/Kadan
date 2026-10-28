@@ -4,10 +4,12 @@ from collections.abc import Callable
 
 MODEL_ID = "lfm3-1.7b-bf16"
 REVISION = "40ebe0aa6662c9d40389c2f5d565b6a2c6aebacd"
-CONTEXT_LIMIT = 16384
+CONTEXT_LIMIT = 262144
 MAX_NEW_TOKENS = 1024
 GIB = 1024**3
-REQUIREMENT = (8 * GIB, 8 * GIB)
+# A provisional reservation for the full advertised window, not a measured fit.
+# Short prompts also reserve it: the hub never grants an unaccounted long prefill.
+REQUIREMENT = (16 * GIB, 20 * GIB)
 MODEL = {
     "id": MODEL_ID,
     "repo_id": "LiquidAI/LFM3-1.7B",
@@ -36,8 +38,6 @@ def messages(task: dict) -> list[dict[str, str]]:
         if not isinstance(content, str) or not content:
             raise ValueError("LFM3 requires nonempty text messages.")
         result.append({"role": message["role"], "content": content})
-    if sum(len(row["content"]) for row in result) > 128_000:
-        raise ValueError("LFM3 text exceeds the experimental input limit.")
     return result
 
 
@@ -56,6 +56,15 @@ def reply_text(text: str) -> str:
     return text.strip()
 
 
+def validate_context(prompt_tokens: int, context: int = CONTEXT_LIMIT) -> None:
+    if type(context) is not int or not MAX_NEW_TOKENS < context <= CONTEXT_LIMIT:
+        raise ValueError("LFM3 context must be between 1025 and 262144 tokens.")
+    if prompt_tokens + MAX_NEW_TOKENS > context:
+        raise ValueError(
+            "LFM3 prompt and reserved reply exceed the supported context; history was not truncated."
+        )
+
+
 def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict:
     if operation not in ("generate", "completion"):
         raise ValueError(
@@ -66,8 +75,7 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
     conversation = messages(task)
     context = task.get("context_limit")
     context = CONTEXT_LIMIT if context is None else context
-    if type(context) is not int or not MAX_NEW_TOKENS < context <= CONTEXT_LIMIT:
-        raise ValueError("LFM3 trial context must be between 1025 and 16384 tokens.")
+    validate_context(0, context)
 
     # Inference dependencies and checkpoint code belong exclusively to the spawned
     # executor: importing them in the transport would retain CUDA allocations.
@@ -88,10 +96,7 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
         return_tensors="pt",
     )
     prompt_tokens = inputs["input_ids"].shape[-1]
-    if prompt_tokens + MAX_NEW_TOKENS > context:
-        raise ValueError(
-            "LFM3 prompt and reserved reply exceed the trial context; history was not truncated."
-        )
+    validate_context(prompt_tokens, context)
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         local_files_only=True,
@@ -109,6 +114,7 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
             temperature=0.1,
             top_k=50,
             repetition_penalty=1.1,
+            logits_to_keep=1,
         )
     generated = output[0, prompt_tokens:]
     # Preserve reasoning and tool delimiters until parsing; some tokenizer builds

@@ -179,7 +179,17 @@ def lint_cpp(
 def api() -> None:
     """Run isolated API unit tests."""
     run([sys.executable, "-m", "unittest", "discover", "-s", "api/tests", "-v"])
-    run([sys.executable, "-m", "unittest", "discover", "-s", "experimental_worker/tests", "-v"])
+    run(
+        [
+            sys.executable,
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "experimental_worker/tests",
+            "-v",
+        ]
+    )
 
 
 @app.command("frontend-lint")

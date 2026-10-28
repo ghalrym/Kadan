@@ -198,7 +198,7 @@ def test_readiness_uses_actual_selected_language_checkpoint(settings, state):
                     "id": "lfm3-1.7b-bf16",
                     "status": "complete",
                     "inference_available": True,
-                    "context_limit": 16384,
+                    "context_limit": 262144,
                 }
             ],
             "ready",
@@ -220,7 +220,7 @@ def test_explicit_lfm3_trial_requires_its_own_downloaded_worker(models, expected
             assert status.state == expected
             assert status.model_id == "lfm3-1.7b-bf16"
             if expected == "ready":
-                assert status.context_limit == 16384
+                assert status.context_limit == 262144
                 assert status.tier is None
 
     asyncio.run(check())
