@@ -52,6 +52,7 @@ from .tools import (
     MEMORY_TOOLS,
     PERSONA_TOOLS,
     TOOLS_BY_NAME,
+    VISION_TOOLS,
 )
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
 from .tools.persona import UpdatePersonaArguments
@@ -584,11 +585,11 @@ class AgentRuns(RunClient):
 
     def bound_tools(self) -> list[StructuredTool]:
         """All tools; the computer's only when one is configured."""
-        return (
-            ALL_TOOLS
-            if self.services.sandbox.configured
-            else [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]
-        )
+        if not self.services.sandbox.configured:
+            return [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]
+        if getattr(self.services.settings, "experimental_lfm3_vision", False):
+            return [*ALL_TOOLS, *VISION_TOOLS]
+        return ALL_TOOLS
 
     @traced("kadan.agent_runs.invoke_tool")
     async def invoke_tool(self, state: RunState) -> dict:

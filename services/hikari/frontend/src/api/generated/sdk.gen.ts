@@ -24,6 +24,9 @@ import type {
   CreateCompletionData,
   CreateCompletionErrors,
   CreateCompletionResponses,
+  DescribeScreenshotData,
+  DescribeScreenshotErrors,
+  DescribeScreenshotResponses,
   DownloadModelV1ModelsModelIdDownloadPostData,
   DownloadModelV1ModelsModelIdDownloadPostErrors,
   DownloadModelV1ModelsModelIdDownloadPostResponses,
@@ -688,3 +691,26 @@ export const getVideoContent = <ThrowOnError extends boolean = false>(
     GetVideoContentErrors,
     ThrowOnError
   >({ url: '/v1/videos/{video_id}/content', ...options })
+
+/**
+ * Describe Screenshot
+ */
+export const describeScreenshot = <ThrowOnError extends boolean = false>(
+  options: Options<DescribeScreenshotData, ThrowOnError>,
+): RequestResult<
+  DescribeScreenshotResponses,
+  DescribeScreenshotErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    DescribeScreenshotResponses,
+    DescribeScreenshotErrors,
+    ThrowOnError
+  >({
+    url: '/v1/vision/describe',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })

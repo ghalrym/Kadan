@@ -20,6 +20,7 @@ from . import (
     shell,
     skills,
     util,
+    vision,
     workspace,
 )
 
@@ -46,4 +47,5 @@ COMPUTER_TOOLS: list[StructuredTool] = [
     *util.TOOLS,
 ]
 ALL_TOOLS = [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS, *COMPUTER_TOOLS]
-TOOLS_BY_NAME = {tool.name: tool for tool in ALL_TOOLS}
+VISION_TOOLS: list[StructuredTool] = vision.TOOLS
+TOOLS_BY_NAME = {tool.name: tool for tool in [*ALL_TOOLS, *VISION_TOOLS]}
