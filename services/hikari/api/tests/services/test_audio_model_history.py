@@ -12,7 +12,7 @@ class AudioModelHistoryTests(unittest.TestCase):
         self,
     ):
         call = VoiceCall(
-            None, CallModels.selected(audio_snapshot(), "lfm3"), "Persona", AsyncMock()
+            None, CallModels.selected(audio_snapshot()), "Persona", AsyncMock()
         )
         text = "x" * 20000
         call.remember("user", text)

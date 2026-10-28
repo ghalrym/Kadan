@@ -36,7 +36,7 @@ class CallRouteTests(unittest.IsolatedAsyncioTestCase):
 
         @contextmanager
         def residency(models):
-            self.assertEqual(len(models), 3)
+            self.assertEqual(models, frozenset(("lfm3-audio-2b-bf16",)))
             events.append("start")
             try:
                 yield
