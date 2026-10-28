@@ -90,6 +90,13 @@ export class CallPlayback {
 
 export type CallState = { status: string; muted: boolean };
 
+const STARTUP_STAGES = {
+  audio: { status: "Starting audio…", error: "Browser audio did not start within 20 seconds. Click Call to try again." },
+  microphone: { status: "Waiting for microphone…", error: "Microphone access timed out. Check the browser microphone prompt and selected input, then try again." },
+  capture: { status: "Preparing microphone…", error: "Microphone setup timed out. Start a new call to try again." },
+  server: { status: "Connecting to call…", error: "Call connection timed out. Check Kadan and Hikari, then try again." },
+};
+
 export class VoiceCallSession {
   private closed = false;
   private ready = false;
@@ -105,10 +112,14 @@ export class VoiceCallSession {
   private activity: CallActivity | null = null;
   private socket: WebSocket | null = null;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private startupStage: keyof typeof STARTUP_STAGES = "audio";
+  private ended: Promise<void>;
+  private finishStartup!: () => void;
   private update: (state: CallState) => void;
   private done: (error?: string) => void;
   constructor(update: (state: CallState) => void, done: (error?: string) => void) {
     this.update = update; this.done = done;
+    this.ended = new Promise(resolve => { this.finishStartup = resolve; });
   }
   private state(status: string) {
     this.phase = status;
@@ -118,23 +129,40 @@ export class VoiceCallSession {
     if (!this.closed && this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(event));
   }
 
+  private starting(stage: keyof typeof STARTUP_STAGES) {
+    this.startupStage = stage;
+    this.state(STARTUP_STAGES[stage].status);
+  }
+
   async start(agentKey: string, personaId: string | null): Promise<void> {
+    if (this.closed) return;
     try {
       const unavailable = callUnavailable();
       if (unavailable) throw new Error(unavailable);
-      this.state("Connecting…");
+      // One deadline includes browser setup and the server's ready message.
+      this.timer = setTimeout(() => this.end(STARTUP_STAGES[this.startupStage].error), 20000);
+      this.starting("audio");
       // Create and resume inside the start gesture, before permission/network waits.
       this.context = new AudioContext();
-      await this.context.resume();
+      await Promise.race([this.context.resume(), this.ended]);
       if (this.closed) return;
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
-      if (this.closed) { stream.getTracks().forEach((track) => track.stop()); return; }
+      this.starting("microphone");
+      // Browser permission cannot be aborted. Stop a grant arriving after this
+      // session ended, even though startup no longer waits for that promise.
+      const permission = navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } }).then(stream => {
+        if (this.closed) { stream.getTracks().forEach(track => track.stop()); return; }
+        return stream;
+      });
+      const stream = await Promise.race([permission, this.ended]);
+      if (this.closed) { stream?.getTracks().forEach(track => track.stop()); return; }
+      if (!stream) return;
       this.stream = stream;
       stream.getAudioTracks().forEach((track) => { track.enabled = !this.muted; });
       stream.getAudioTracks()[0].onended = () => this.end("The microphone disconnected. Start a new call.");
       this.activity = new CallActivity(this.context.sampleRate);
       this.player = new CallPlayback(this.context);
-      await this.context.audioWorklet.addModule(new URL("./voiceCapture.worklet.js", import.meta.url));
+      this.starting("capture");
+      await Promise.race([this.context.audioWorklet.addModule(new URL("./voiceCapture.worklet.js", import.meta.url)), this.ended]);
       if (this.closed) return;
       this.capture = new AudioWorkletNode(this.context, "call-capture");
       this.capture.port.onmessage = (event: MessageEvent<Float32Array>) => this.frame(event.data);
@@ -146,12 +174,12 @@ export class VoiceCallSession {
       };
       const url = new URL(`/api/agents/${encodeURIComponent(agentKey)}/calls`, window.location.href);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      this.starting("server");
       this.socket = new WebSocket(url);
       this.socket.onopen = () => this.send({ type: "start", persona_id: personaId, backend: "lfm3" });
       this.socket.onmessage = (event) => this.message(event.data);
       this.socket.onerror = () => this.end("Could not connect the call. Try again.");
       this.socket.onclose = () => this.end("The call disconnected. Start a new call.");
-      this.timer = setTimeout(() => this.end("Call connection timed out. Try again."), 20000);
     } catch (error) {
       this.end(error instanceof Error ? error.message : "Could not start the call.");
     }
@@ -208,6 +236,7 @@ export class VoiceCallSession {
     this.send({ type: "end" });
     this.closed = true; this.ready = false; this.turn++;
     clearTimeout(this.timer);
+    this.finishStartup();
     this.player?.stop();
     if (this.capture) { this.capture.port.onmessage = null; this.capture.disconnect(); this.capture.port.close(); }
     this.source?.disconnect();
