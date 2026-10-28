@@ -1232,6 +1232,69 @@ dialog::backdrop {
 }
 
 /* Workspace */
+.workspace-pane {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.workspace-pane[hidden] {
+  display: none;
+}
+.document-row {
+  min-height: 44px;
+  color: var(--muted);
+}
+.document-row strong {
+  color: var(--text);
+}
+.document-row.selected {
+  color: var(--accent);
+}
+.document-breadcrumbs,
+.document-breadcrumbs > span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.document-breadcrumbs {
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.document-breadcrumbs button {
+  min-height: 36px;
+  padding: 4px 6px;
+  font-size: inherit;
+}
+.document-breadcrumbs > span > span,
+.document-breadcrumbs button {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.document-breadcrumbs [aria-current] {
+  color: var(--text);
+}
+.document-parent {
+  max-width: 100%;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.document-parent span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace .detail-header h2,
+.workspace .child-row span {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.workspace .markdown {
+  max-width: 75ch;
+}
+
 .workspace {
   flex: 1;
   min-height: 0;
@@ -1681,8 +1744,17 @@ dialog::backdrop {
   .workspace.has-detail .resource-detail {
     display: block;
   }
-  .tabs button span {
-    display: none;
+  .workspace-toolbar {
+    flex-wrap: wrap;
+  }
+  .workspace .tabs button {
+    min-height: 44px;
+    padding: 4px 10px;
+  }
+  .workspace .document-breadcrumbs button,
+  .workspace .document-parent,
+  .workspace .child-row {
+    min-height: 44px;
   }
   .home-stage h2 {
     font-size: 22px;

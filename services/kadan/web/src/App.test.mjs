@@ -107,11 +107,13 @@ test("agent navigation offers Messages and Workspace without a standalone Person
   buttons.at(-1).props.onClick();
   view.render();
   assert.equal(view.findAll(node => node.type === "Workspace").length, 1);
+  assert.equal(view.findAll(node => node.props?.className === "workspace-pane")[0].props.hidden, false);
   assert.equal(view.findAll(node => node.type === "Chat").length, 0);
   buttons.at(-2).props.onClick();
   view.render();
   assert.equal(view.findAll(node => node.type === "Chat").length, 1);
-  assert.equal(view.findAll(node => node.type === "Workspace").length, 0);
+  assert.equal(view.findAll(node => node.type === "Workspace").length, 1);
+  assert.equal(view.findAll(node => node.props?.className === "workspace-pane")[0].props.hidden, true);
 });
 
 test("hiding the editor preserves agent-scoped persona loading for chat", async () => {
