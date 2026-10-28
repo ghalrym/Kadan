@@ -36,8 +36,10 @@ shared Compose network, and lets the owner watch or take over that computer from
 
 The default deployment supplies one sandbox for all agents. Agent card labels do not establish separate execution environments. Kadan relays the viewer connection; Watching disables viewer input, while Take control enables it without pausing the runner or acquiring an exclusive lock. Disconnecting only closes that viewer.
 
+The web viewer tracks its held keys through noVNC's public `sendKey` method, only while connected and controlling. It sends their releases before enabling `viewOnly` or disconnecting on close. This ordering matters in noVNC 1.7.0: setting `viewOnly` disables sending before keyboard ungrab emits releases. Public connect/disconnect events bound key ownership to that client; an unexpected disconnect discards tracking without assuming remote cleanup.
+
 Tool results are bounded before entering the transcript, with binary results described by size. A timeout does not prove the sandbox rejected an operation. Recovery must inspect uncertain effects rather than replaying state changes.
 
 Certain stalled-browser reads may restart the browser and retry once, reporting the reset to the agent. This can discard tabs and page state. Other uncertain browser operations require inspection. Viewer reconnection does not invoke that recovery.
 
-See [Viewing and controlling the computer](../../user-expectations/kadan/computer.md) for user expectations.
+See the privately provided expectations for viewing and controlling the computer.

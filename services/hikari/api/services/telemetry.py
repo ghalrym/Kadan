@@ -116,11 +116,15 @@ def summarize(body, size, complete):
     messages = value.get("messages")
     if isinstance(messages, list):
         parts.append(f"{len(messages)} messages")
-        chars = sum(
-            len(m.get("text", ""))
-            for m in messages
-            if isinstance(m, dict) and isinstance(m.get("text"), str)
-        )
+        chars = 0
+        for message in messages:
+            if not isinstance(message, dict) or (
+                "text" in message and "content" in message
+            ):
+                continue
+            text = message.get("text", message.get("content"))
+            if isinstance(text, str):
+                chars += len(text)
         parts.append(f"{chars} message characters")
     for key in ("prompt", "text", "input", "instruction", "state"):
         if isinstance(value.get(key), str):

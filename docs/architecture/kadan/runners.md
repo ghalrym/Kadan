@@ -11,10 +11,23 @@ When every runner is full, excess registered agents and their queued work wait i
 durable storage. Idle owners keep their slots; stopping a process does not free them.
 Each process registers a fresh session UUID and renews a 60-second infrastructure
 ownership lease. After expiry, a replacement with the same stable runner ID can
-claim ownership and recover expired work. A concurrent live process with that ID
-cannot take over. Ownership and run claims fence stale sessions before durable
-state-changing work. Lease renewal performs no agent inference or Decisions API
-calls; periodic agent wakes and the future agent heartbeat are deferred.
+claim ownership and recover expired work. Ordinary registration by a different
+session is rejected while the current lease is live; the stock runner uses this
+path. Lease renewal performs no agent inference or Decisions API calls; periodic
+agent wakes and the future agent heartbeat are deferred.
+
+For a deliberate live handoff, inspect `GET /api/runners`, then register the
+replacement with `PUT /api/runners/{runner_id}`: supply its new `worker_id` and
+the current session's `worker_id` as `expected_worker_id`. While the lease is live,
+a mismatched expected session is rejected. After expiry, replacement does not
+require the expected-session field. Registration retains the agent assignments
+and rejects capacity below their count.
+
+Changing the owner atomically expires its assigned running conversation leases
+while preserving their transcripts. Storage rejects the old session's subsequent
+worker-owned run updates and new message delivery. This does not stop the old process,
+cancel actions already in progress or undo their external effects. Recovery is
+not seamless continuation: inspect unconfirmed computer actions before retrying.
 
 A different runner does not automatically inherit a stopped runner’s agents.
 Inspect `GET /api/runners`, then explicitly move an agent with

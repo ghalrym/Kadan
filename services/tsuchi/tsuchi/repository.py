@@ -27,6 +27,7 @@ from .models import (
     OwnedPersonaUpdate,
     PetJob,
     PetManifest,
+    PetReferenceMode,
     PetRejection,
     PetState,
     Resource,
@@ -44,7 +45,9 @@ from .models import (
 
 def search_expression(query: str) -> str:
     """Treat punctuation and FTS operators as text, never SQL/FTS syntax."""
-    tokens = re.findall(r"\w+", query, flags=re.UNICODE)[:30]
+    tokens = re.findall(r"\w+", query, flags=re.UNICODE)
+    if len(tokens) > 30:
+        raise StorageError("Resource searches cannot exceed 30 words.", 422)
     return " AND ".join(f'"{token}"*' for token in tokens)
 
 
@@ -474,7 +477,10 @@ class Repository:
                 (
                     AgentRun.model_validate_json(row[0])
                     for row in db.execute(
-                        "SELECT data FROM agent_runs WHERE status IN ('queued', 'running')"
+                        "SELECT r.data FROM agent_runs r JOIN resources c "
+                        "ON c.id = r.conversation_id AND c.agent_key = r.agent_key "
+                        "WHERE r.status IN ('queued', 'running') "
+                        "AND c.kind = 'conversation' AND c.deleted = 0"
                     )
                 ),
                 key=lambda run: (run.created_at, run.id),
@@ -795,7 +801,16 @@ class Repository:
                     raise StorageError(
                         "Image job lease must expire within five minutes", 409
                     )
+            if value.upload_status != current.upload_status and not (
+                current.upload_status == "not_started"
+                and value.upload_status == "pending"
+                and current.status == value.status == "running"
+                and not claiming
+            ):
+                raise StorageError("Only storage can settle an image upload", 409)
             if value.status == "completed":
+                if value.asset_id != uuid5(job_id, "image"):
+                    raise StorageError("Image artwork identity cannot change", 409)
                 asset = self._asset(db, key, value.asset_id)
                 if asset.deleted_at or not asset.is_image:
                     raise StorageError(
@@ -812,6 +827,23 @@ class Repository:
             self._save_image_job(db, updated)
             if updated.status in terminal:
                 self._image_event(db, updated)
+            return updated
+
+    def fail_image_upload(self, key: str, job_id: UUID) -> ImageJob:
+        # FileStorage holds the upload's file lock: no old request may register
+        # artwork after this transaction closes its persisted upload gate.
+        with self.connect(write=True) as db:
+            job = self._image_job(db, key, job_id)
+            if job.upload_status != "pending":
+                return job
+            updated = job.model_copy(
+                update={
+                    "upload_status": "failed",
+                    "version": job.version + 1,
+                    "updated_at": utc_now(),
+                }
+            )
+            self._save_image_job(db, updated)
             return updated
 
     def cancel_image_job(self, key: str, job_id: UUID) -> ImageJob:
@@ -953,13 +985,36 @@ class Repository:
             ),
         )
 
-    def create_pet(self, key: str, pet_id: UUID, prompt: str) -> PetJob:
+    @staticmethod
+    def _require_no_other_active_pet(
+        db: sqlite3.Connection, key: str, pet_id: UUID
+    ) -> None:
+        if db.execute(
+            "SELECT 1 FROM pet_jobs WHERE agent_key = ? AND id != ? "
+            "AND status IN ('queued', 'running', 'cancelling') LIMIT 1",
+            (key, str(pet_id)),
+        ).fetchone():
+            raise StorageError(
+                "Another pet creation or repair is active for this agent. "
+                "Wait for it to finish or cancel it first.",
+                409,
+            )
+
+    def create_pet(
+        self,
+        key: str,
+        pet_id: UUID,
+        prompt: str,
+        reference_mode: PetReferenceMode = "single_image",
+    ) -> PetJob:
         now = utc_now()
         pet = PetJob(
             id=pet_id,
             trace_parent=carrier().get("traceparent"),
             agent_key=key,
             prompt=prompt,
+            reference_mode=reference_mode,
+            total_steps=75 if reference_mode == "character_sheet" else 74,
             version=1,
             created_at=now,
             updated_at=now,
@@ -971,9 +1026,15 @@ class Repository:
             ).fetchone()
             if row is not None:
                 current = PetJob.model_validate_json(row[0])
-                if current.agent_key == key and current.prompt == prompt:
+                if (
+                    current.agent_key == key
+                    and current.prompt == prompt
+                    and current.origin == "generated"
+                    and current.reference_mode == reference_mode
+                ):
                     return current
                 raise StorageError("This pet job ID is already in use", 409)
+            self._require_no_other_active_pet(db, key, pet_id)
             self._save_pet(db, pet)
         return pet
 
@@ -1028,10 +1089,10 @@ class Repository:
         if (
             not frame_names
             or len(set(frame_names)) != len(frame_names)
-            or "base" in frame_names
+            or any(name in {"base", "character-sheet"} for name in frame_names)
         ):
             raise StorageError(
-                "Choose distinct completed frames to repair; the base cannot be replaced"
+                "Choose distinct completed frames to repair; references cannot be replaced"
             )
         with self.connect(write=True) as db:
             self._agent(db, key)
@@ -1063,6 +1124,7 @@ class Repository:
                 ):
                     return current
                 raise StorageError("This pet job ID is already in use", 409)
+            self._require_no_other_active_pet(db, key, revision_id)
             now = utc_now()
             steps = [step for step in source.steps if step.name not in rejected_names]
             revision = PetJob(
@@ -1070,6 +1132,8 @@ class Repository:
                 trace_parent=carrier().get("traceparent"),
                 agent_key=key,
                 prompt=source.prompt,
+                reference_mode=source.reference_mode,
+                total_steps=source.total_steps,
                 parent_pet_id=source.id,
                 rejections=rejections,
                 steps=steps,
@@ -1157,11 +1221,15 @@ class Repository:
             }
             if value.status not in transitions[current.status]:
                 raise StorageError("Invalid pet job state transition", 409)
+            if value.status == "queued":
+                self._require_no_other_active_pet(db, key, pet_id)
             updated_steps = {step.name: step for step in value.steps}
             if any(updated_steps.get(step.name) != step for step in current.steps):
                 raise StorageError("Completed pet steps are immutable", 409)
             if (
                 value.origin != current.origin
+                or value.reference_mode != current.reference_mode
+                or value.total_steps != current.total_steps
                 or value.parent_pet_id != current.parent_pet_id
                 or value.rejections != current.rejections
             ):
@@ -1335,6 +1403,8 @@ class Repository:
         trash: bool = False,
         limit: int = 100,
         offset: int = 0,
+        *,
+        kinds: list[ResourceKind] | None = None,
     ) -> list[Resource]:
         with self.connect() as db:
             self._agent(db, key)
@@ -1342,6 +1412,12 @@ class Repository:
             if kind:
                 clauses.append("r.kind = ?")
                 params.append(kind.value)
+            if kinds is not None:
+                if not kinds:
+                    return []
+                placeholders = ", ".join("?" for _ in kinds)
+                clauses.append(f"r.kind IN ({placeholders})")
+                params.extend(kind.value for kind in kinds)
             expression = search_expression(query)
             if query.strip() and not expression:
                 return []
@@ -1663,9 +1739,18 @@ class Repository:
             ),
         )
 
-    def create_asset(self, asset: Asset) -> Asset:
+    def create_asset(self, asset: Asset, image_job_id: UUID | None = None) -> Asset:
         with self.connect(write=True) as db:
             self._agent(db, asset.agent_key)
+            job = None
+            if image_job_id is not None:
+                job = self._image_job(db, asset.agent_key, image_job_id)
+                if job.upload_status not in {"pending", "completed"}:
+                    raise StorageError("This image upload is closed", 409)
+                if asset.id != uuid5(job.id, "image") or not asset.is_image:
+                    raise StorageError(
+                        "Image uploads require their reserved artwork", 409
+                    )
             row = db.execute(
                 "SELECT data FROM assets WHERE id = ?", (str(asset.id),)
             ).fetchone()
@@ -1686,12 +1771,29 @@ class Repository:
                     getattr(current, field) == getattr(asset, field)
                     for field in replay_fields
                 ):
-                    return current
-                raise StorageError("This asset ID is already in use", 409)
-            self._save_asset(db, asset)
-            self._activity(
-                db, asset.agent_key, "uploaded", "asset", str(asset.id), asset.title
-            )
+                    asset = current
+                else:
+                    raise StorageError("This asset ID is already in use", 409)
+            else:
+                if job is not None and job.upload_status == "completed":
+                    raise StorageError(
+                        "Completed image artwork cannot be recreated", 409
+                    )
+                self._save_asset(db, asset)
+                self._activity(
+                    db, asset.agent_key, "uploaded", "asset", str(asset.id), asset.title
+                )
+            if job is not None and job.upload_status == "pending":
+                self._save_image_job(
+                    db,
+                    job.model_copy(
+                        update={
+                            "upload_status": "completed",
+                            "version": job.version + 1,
+                            "updated_at": utc_now(),
+                        }
+                    ),
+                )
         return asset
 
     def update_asset(

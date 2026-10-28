@@ -5,12 +5,29 @@ from uuid import UUID
 
 import pytest
 from fastapi import Request
+from pydantic import ValidationError
 
 from kadan.api.config import ServiceError
 from kadan.api.pet_import import ImportedPet
 from kadan.api.routes.agents import pets
 
 PET_ID = UUID("10000000-0000-4000-8000-00000000000a")
+
+
+@pytest.mark.parametrize("mode", ["single_image", "character_sheet"])
+def test_create_passes_reference_choice_to_durable_job(mode):
+    create = AsyncMock(return_value=sentinel.saved_pet)
+    req = request(AsyncMock())
+    req.app.state.services.pets.create = create
+    value = pets.CreatePet(id=PET_ID, prompt="Fox", reference_mode=mode)
+    assert asyncio.run(pets.create_pet("andrew", value, req)) is sentinel.saved_pet
+    create.assert_awaited_once_with("andrew", PET_ID, "Fox", mode)
+
+
+def test_create_defaults_to_single_image_and_rejects_unknown_mode():
+    assert pets.CreatePet(id=PET_ID, prompt="Fox").reference_mode == "single_image"
+    with pytest.raises(ValidationError):
+        pets.CreatePet(id=PET_ID, prompt="Fox", reference_mode="unknown")
 
 
 def request(import_atlas):

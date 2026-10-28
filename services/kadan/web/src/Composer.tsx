@@ -14,14 +14,14 @@ function attention(status: Status | null) {
   if (status.tsuchi.state !== "ready")
     return { label: "Storage offline", detail: status.tsuchi.message, href: status.tsuchi.browser_url };
   const hikari = status.hikari;
-  if (hikari.state === "ready") return null;
+  if (hikari.state === "ready" || hikari.state === "tier_required") return null;
   return {
     label:
-      hikari.state === "tier_required"
-        ? "Choose a tier · notes only"
-        : hikari.state === "model_required"
-          ? "Download a model · notes only"
-          : "Hikari offline · notes only",
+      hikari.state === "model_required"
+        ? hikari.download_state === "downloading"
+          ? "Downloading model · notes only"
+          : "Download a model · notes only"
+        : "Hikari offline · notes only",
     detail: hikari.message,
     href: hikari.settings_url,
   };
@@ -71,6 +71,7 @@ export default function Composer({
   const draft = useRef({ value, onChange });
   draft.current = { value, onChange };
   const ready = readiness(status);
+  const planRequired = ready.storage && status?.hikari.state === "tier_required";
   const issue = attention(status);
   const empty = !value.trim();
   const callActive = voiceCall.active;
@@ -112,6 +113,20 @@ export default function Composer({
     <div className="composer-wrap">
       {voiceError && <p role="alert">{voiceError}</p>}
       {voice && <p role="status">{voice === "requesting" ? "Waiting for microphone permission…" : voice === "recording" ? "Recording · up to 20 seconds. Stop to transcribe." : "Transcribing…"}</p>}
+      {planRequired && (
+        <div className="plan-prompt" role="status">
+          <div>
+            <strong>Select a plan to enable replies</strong>
+            <p>Choose a hardware tier in Hikari Settings. You can keep writing or save a note while you decide.</p>
+          </div>
+          {status.hikari.settings_url && (
+            <a className="button" href={status.hikari.settings_url} target="_blank" rel="noreferrer">
+              Select a plan <ArrowUpRight size={13} />
+              <span className="sr-only"> in Hikari Settings (opens in a new tab)</span>
+            </a>
+          )}
+        </div>
+      )}
       {issue && (
         <a
           className="attention"

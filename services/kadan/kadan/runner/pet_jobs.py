@@ -21,10 +21,13 @@ from ..api.pet_artwork import (
     PetRow,
     assemble_atlas,
     base_prompt,
+    character_sheet_prompt,
     frame_name,
     frame_prompt,
     prepare_base,
+    prepare_character_sheet,
     prepare_frame,
+    sheet_base_prompt,
     validate_row,
 )
 from ..api.pet_client import PetClient
@@ -46,6 +49,14 @@ LEASE_RENEWAL_SECONDS = 10
 MAX_IMAGE_BYTES = 20 * 1024**2
 IMAGE_MODEL = "qwen-image-2.1-turbo"
 MAX_PENDING_FRAMES = 32
+
+
+def step_name(row: PetRow | None, frame: int) -> str:
+    return (
+        frame_name(row, frame)
+        if row is not None
+        else ("character-sheet" if frame == -1 else "base")
+    )
 
 
 class PetJobs(PetClient):
@@ -329,7 +340,9 @@ class PetJobs(PetClient):
         self, job: PetJob, raw: bytes, row: PetRow | None, frame: int
     ) -> bytes:
         if row is None:
-            return await asyncio.to_thread(prepare_base, raw)
+            return await asyncio.to_thread(
+                prepare_character_sheet if frame == -1 else prepare_base, raw
+            )
         output = await asyncio.to_thread(prepare_frame, raw, row, frame)
         if row.name == "idle" and frame in {0, 5}:
             # These poses are the canonical neutral artwork, validated but unaltered.
@@ -363,16 +376,25 @@ class PetJobs(PetClient):
         recover: bool,
         batch_collection_target: int,
     ) -> int | None:
-        name = frame_name(row, frame) if row is not None else "base"
+        name = step_name(row, frame)
         canonical = name in {"idle/0", "idle/5"}
-        prompt = (
-            "Reuse the canonical neutral artwork without altering its pose."
-            if canonical
-            else frame_prompt(job.prompt, row, frame)
-            if row is not None
-            else base_prompt(job.prompt)
+        sheet_mode = job.reference_mode == "character_sheet"
+        base = next((step for step in job.steps if step.name == "base"), None)
+        if canonical:
+            prompt = "Reuse the canonical neutral artwork without altering its pose."
+        elif row is not None:
+            prompt = frame_prompt(job.prompt, row, frame, character_sheet=sheet_mode)
+        elif name == "character-sheet":
+            prompt = character_sheet_prompt(job.prompt)
+        else:
+            prompt = (
+                sheet_base_prompt(job.prompt) if sheet_mode else base_prompt(job.prompt)
+            )
+        reference_name = "base" if canonical or not sheet_mode else "character-sheet"
+        reference = next(
+            (step for step in job.steps if step.name == reference_name), None
         )
-        source_id = job.steps[0].output_asset_id if row is not None else None
+        source_id = reference.output_asset_id if reference is not None else None
         source = (
             await self.content(job.agent_key, source_id)
             if source_id is not None
@@ -420,15 +442,15 @@ class PetJobs(PetClient):
         else:
             if canonical:
                 generation = GeneratedImage(
-                    model_id=job.steps[0].model_id,
-                    seeds=[job.steps[0].seed or 0],
+                    model_id=base.model_id,
+                    seeds=[base.seed or 0],
                     images_base64=[base64.b64encode(source).decode()],
                     mime_type="image/png",
                     meta=json.dumps(
                         {
                             "method": "canonical",
                             "source_asset_id": str(source_id),
-                            "source_request_id": str(job.steps[0].request_id),
+                            "source_request_id": str(base.request_id),
                         }
                     ),
                 )
@@ -457,7 +479,7 @@ class PetJobs(PetClient):
         step = PetStep(
             name=name,
             method="canonical" if canonical else "generated",
-            source_asset_id=source_id if row else uuid5(request_id, "raw"),
+            source_asset_id=source_id or uuid5(request_id, "raw"),
             output_asset_id=output_id,
             raw_asset_id=uuid5(request_id, "raw"),
             provenance_asset_id=uuid5(request_id, "provenance"),
@@ -496,10 +518,15 @@ class PetJobs(PetClient):
     @traced("kadan.pet_jobs.generate")
     async def generate(self, job: PetJob) -> None:
         frames = [(row, frame) for row in ROWS for frame in range(row.frame_count)]
-        items = [(None, 0), *frames]
-        order = ["base", *(frame_name(row, frame) for row, frame in frames)]
-        # Base generation has a different canvas and no reference conditioning.
-        # Earn a reference-frame measurement before growing that producer window.
+        references = (
+            [(None, -1), (None, 0)]
+            if job.reference_mode == "character_sheet"
+            else [(None, 0)]
+        )
+        items = [*references, *frames]
+        order = [step_name(row, frame) for row, frame in items]
+        # Generate references serially. Earn a pose measurement before growing
+        # the independent frame producer window.
         capacity = 1
         while True:
             job = await self.owned_job(job)
@@ -518,14 +545,18 @@ class PetJobs(PetClient):
                 remaining = [
                     (row, frame)
                     for row, frame in remaining
-                    if (frame_name(row, frame) if row is not None else "base")
-                    in previous
+                    if step_name(row, frame) in previous
                 ]
             cohort_limit = len(previous) if previous else capacity
             cohort = []
             for row, frame in remaining:
-                name = frame_name(row, frame) if row is not None else "base"
-                independent = name not in {"base", "idle/0", "idle/5"}
+                name = step_name(row, frame)
+                independent = name not in {
+                    "character-sheet",
+                    "base",
+                    "idle/0",
+                    "idle/5",
+                }
                 if cohort and not independent:
                     break
                 cohort.append((row, frame))
@@ -533,7 +564,7 @@ class PetJobs(PetClient):
                     break
             pending = []
             for row, frame in cohort:
-                name = frame_name(row, frame) if row is not None else "base"
+                name = step_name(row, frame)
                 seed = job.steps[0].seed if row is not None else None
                 rejection = next(
                     (
@@ -561,7 +592,7 @@ class PetJobs(PetClient):
                 stage=(
                     f"Generating {first_row.name} frame {first_frame + 1}/{first_row.frame_count}"
                     if first_row is not None
-                    else "Generating base"
+                    else f"Generating {step_name(first_row, first_frame).replace('-', ' ')}"
                 ),
                 **self.pending_state(pending),
             )
@@ -573,8 +604,7 @@ class PetJobs(PetClient):
                         row,
                         frame,
                         order,
-                        (frame_name(row, frame) if row is not None else "base")
-                        in previous,
+                        step_name(row, frame) in previous,
                         cohort_size,
                     )
                 )
@@ -603,14 +633,17 @@ class PetJobs(PetClient):
         job = await self.owned_update(job, stage="Validating and assembling animation")
         frames = {
             step.name: await self.content(job.agent_key, step.output_asset_id)
-            for step in job.steps[1:]
+            for step in job.steps
+            if "/" in step.name
         }
         atlas = await asyncio.to_thread(assemble_atlas, frames)
         atlas_id = uuid5(job.id, "atlas")
         await self.upload(job, atlas_id, "atlas", atlas, "image/webp")
         manifest = PetManifest(
             atlas_asset_id=atlas_id,
-            base_asset_id=job.steps[0].output_asset_id,
+            base_asset_id=next(
+                step.output_asset_id for step in job.steps if step.name == "base"
+            ),
             animations=[
                 {"name": row.name, "row": row.index, "durations": list(row.durations)}
                 for row in ROWS[:9]

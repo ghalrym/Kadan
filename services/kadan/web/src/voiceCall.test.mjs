@@ -5,13 +5,13 @@ import { CallActivity, CallPlayback, VoiceCallSession, callUnavailable } from ".
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const originals = new Map(["window", "navigator", "AudioWorkletNode", "AudioContext", "WebSocket"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 const install = (key, value) => Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-let track, capture, context, socket, sources, states, errors;
+let track, capture, capturedTracks, context, socket, sources, states, errors;
 function fakeContext() {
   return {
     state: "running", sampleRate: 16000, currentTime: 0, destination: {}, closed: false,
     audioWorklet: { addModule: async () => {} },
     resume: async () => {}, close() { this.closed = true; return Promise.resolve(); },
-    createMediaStreamSource: () => ({ connect() {}, disconnect() {} }),
+    createMediaStreamSource: stream => ({ connect() { capturedTracks = stream.getAudioTracks().map(track => track.enabled); }, disconnect() {} }),
     decodeAudioData: async () => ({ duration: 0.1 }),
     createBufferSource() {
       const source = { buffer: null, starts: [], stops: 0, onended: null, connect() {}, disconnect() {}, start(time) { this.starts.push(time); }, stop() { this.stops++; } };
@@ -36,7 +36,7 @@ async function connected() {
 }
 
 beforeEach(() => {
-  sources = []; states = []; errors = [];
+  sources = []; states = []; errors = []; capturedTracks = [];
   track = { enabled: true, stopped: false, onended: null, stop() { this.stopped = true; } };
   install("window", { isSecureContext: true, location: { href: "https://kadan.local/" } });
   install("navigator", { mediaDevices: { getUserMedia: async () => ({ getTracks: () => [track], getAudioTracks: () => [track] }) } });
@@ -142,6 +142,34 @@ test("mute discards a partial utterance and keeps received playback usable", asy
   assert.equal(socket.sent.at(-1).turn, 2);
   call.end();
 });
+
+for (const { name, mutes, enabled } of [
+  { name: "muting before microphone permission disables arriving tracks before capture connects", mutes: [true], enabled: false },
+  { name: "unmuted startup keeps arriving tracks enabled when capture connects", mutes: [], enabled: true },
+  { name: "muting then unmuting before microphone permission keeps arriving tracks enabled", mutes: [true, false], enabled: true },
+]) {
+  test(name, async () => {
+    let permit;
+    navigator.mediaDevices.getUserMedia = () => new Promise(done => { permit = done; });
+    const tracks = [track, { ...track }];
+    const call = session();
+    const starting = call.start("Hi");
+    await flush();
+    assert.deepEqual(states, [{ status: "Connecting…", muted: false }]);
+    for (const muted of mutes) call.setMuted(muted);
+    permit({ getTracks: () => tracks, getAudioTracks: () => tracks });
+    await starting;
+    try {
+      assert.deepEqual(capturedTracks, [enabled, enabled]);
+      assert.deepEqual(tracks.map(track => track.enabled), [enabled, enabled]);
+      assert.deepEqual(states, [
+        { status: "Connecting…", muted: false },
+        ...mutes.map(muted => ({ status: muted ? "Muted" : "Connecting…", muted })),
+      ]);
+      assert.deepEqual(errors, []);
+    } finally { call.end(); }
+  });
+}
 
 test("only completed playback is acknowledged; done waits for queued audio", async () => {
   const call = await connected();

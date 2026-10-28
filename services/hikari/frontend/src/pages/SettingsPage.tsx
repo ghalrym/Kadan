@@ -219,11 +219,14 @@ function DownloadProgress({ tier }: { tier: TierSetting }) {
 export default function SettingsPage() {
   const [settings, setSettings] = useState<SettingsResponse | null>(null)
   const [error, setError] = useState('')
+  const [actionError, setActionError] = useState('')
+  const [needsRefresh, setNeedsRefresh] = useState(false)
   const [confirmTier, setConfirmTier] = useState<TierSetting | null>(null)
   const [progressOpen, setProgressOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [refresh, setRefresh] = useState(0)
   const action = useRef<AbortController | null>(null)
+  const settingsVersion = useRef(0)
   useEffect(() => () => action.current?.abort(), [])
 
   const currentTier = settings?.tier ?? null
@@ -235,14 +238,17 @@ export default function SettingsPage() {
     let timer: ReturnType<typeof setTimeout>
     // Poll serially; a pending tier change owns the next snapshot.
     async function poll() {
+      const version = settingsVersion.current
       try {
-        const next = await fetchSettings(controller.signal)
-        if (!controller.signal.aborted && !action.current) {
-          setSettings(next)
-          setError('')
+        if (!action.current) {
+          const next = await fetchSettings(controller.signal)
+          if (!controller.signal.aborted && !action.current && version === settingsVersion.current) {
+            setSettings(next)
+            setError('')
+          }
         }
       } catch (failure) {
-        if (!controller.signal.aborted)
+        if (!controller.signal.aborted && !action.current && version === settingsVersion.current)
           setError(failure instanceof Error ? failure.message : 'Could not load settings')
       }
       if (!controller.signal.aborted && (downloading || progressOpen))
@@ -255,12 +261,38 @@ export default function SettingsPage() {
     }
   }, [downloading, progressOpen, refresh])
 
-  async function confirm(tier: TierSetting) {
+  async function refreshSavedSettings() {
     if (action.current) return
     const controller = new AbortController()
     action.current = controller
+    settingsVersion.current++
     setSubmitting(true)
     setError('')
+    try {
+      const next = await fetchSettings(
+        AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]),
+      )
+      if (!controller.signal.aborted) {
+        setSettings(next)
+        setNeedsRefresh(false)
+      }
+    } catch (failure) {
+      if (!controller.signal.aborted)
+        setError(failure instanceof Error ? failure.message : 'Could not load settings')
+    } finally {
+      action.current = null
+      if (!controller.signal.aborted) setSubmitting(false)
+    }
+  }
+
+  async function confirm(tier: TierSetting) {
+    if (action.current || needsRefresh) return
+    const controller = new AbortController()
+    action.current = controller
+    settingsVersion.current++
+    setSubmitting(true)
+    setError('')
+    setActionError('')
     try {
       const next = await chooseTier(
         tier.id,
@@ -273,7 +305,8 @@ export default function SettingsPage() {
       }
     } catch (failure) {
       if (!controller.signal.aborted) {
-        setError(failure instanceof Error ? failure.message : 'Could not change tier')
+        setActionError(failure instanceof Error ? failure.message : 'Could not change tier')
+        setNeedsRefresh(true)
         setConfirmTier(null)
       }
     } finally {
@@ -283,6 +316,24 @@ export default function SettingsPage() {
   }
 
   const notices = confirmTier ? licenseNotices(confirmTier) : []
+  const errorPanel = (actionError || error) && (
+    <div role="alert" className="error-panel tier-alert">
+      <div>
+        {actionError && <p>{actionError}</p>}
+        {needsRefresh && <p>The change may have been saved. Refresh saved state before trying again.</p>}
+        {error && <p>{error}</p>}
+      </div>
+      {needsRefresh ? (
+        <button type="button" className="button" disabled={submitting} onClick={() => void refreshSavedSettings()}>
+          {submitting ? 'Refreshing…' : 'Refresh saved state'}
+        </button>
+      ) : error && (
+        <button type="button" className="button" disabled={submitting} onClick={() => setRefresh((value) => value + 1)}>
+          Retry
+        </button>
+      )}
+    </div>
+  )
 
   return (
     <div className="scroll-page">
@@ -304,11 +355,12 @@ export default function SettingsPage() {
               )}
             </p>
           ))}
+          {errorPanel}
           <div className="tier-dialog-actions">
             <button type="button" className="button" autoFocus disabled={submitting} onClick={() => setConfirmTier(null)}>
               No
             </button>
-            <button type="button" className="button button--primary" disabled={submitting} onClick={() => void confirm(confirmTier)}>
+            <button type="button" className="button button--primary" disabled={submitting || needsRefresh} onClick={() => void confirm(confirmTier)}>
               {submitting ? 'Starting…' : notices.length ? 'Accept and download' : 'Yes, download'}
             </button>
           </div>
@@ -327,9 +379,10 @@ export default function SettingsPage() {
           returnFocusId={`${selected.id}-action`}
         >
           <DownloadProgress tier={selected} />
+          {errorPanel}
           <div className="tier-dialog-actions">
             {tierCanDownload(selected) && (
-              <button type="button" className="button" disabled={submitting} onClick={() => void confirm(selected)}>
+              <button type="button" className="button" disabled={submitting || needsRefresh} onClick={() => void confirm(selected)}>
                 Resume downloads
               </button>
             )}
@@ -348,14 +401,7 @@ export default function SettingsPage() {
           <h1>Choose your tier</h1>
           <p className="muted">Pick the one that matches your GPU and RAM.</p>
         </header>
-        {error && (
-          <div role="alert" className="error-panel tier-alert">
-            <span>{error}</span>
-            <button type="button" className="button" onClick={() => setRefresh((value) => value + 1)}>
-              Retry
-            </button>
-          </div>
-        )}
+        {errorPanel}
         {!settings && !error && <p role="status" className="muted">Loading tiers…</p>}
         {settings && (
           <div className="tier-cards">
@@ -365,7 +411,7 @@ export default function SettingsPage() {
                 tier={tier}
                 current={tier.id === currentTier}
                 highlighted={currentTier ? tier.id === currentTier : tierCopy[tier.id].recommended}
-                disabled={submitting || downloading}
+                disabled={submitting || downloading || needsRefresh}
                 choose={() => setConfirmTier(tier)}
                 showProgress={() => setProgressOpen(true)}
               />

@@ -173,6 +173,25 @@ def test_unavailable_services_return_actionable_status():
     assert "local service is running" in status.hikari.message
 
 
+@pytest.mark.parametrize(
+    "download",
+    ["not_downloaded", "downloading", "cancelling", "cancelled", "failed", "complete"],
+)
+def test_status_preserves_the_selected_models_reported_download_state(download):
+    boundary = Boundary(settings=ready_settings(status=download))
+
+    def transport(request):
+        if request.url.path == "/model-lifecycle":
+            return httpx.Response(200, json={"state": "unloaded"})
+        return boundary(request)
+
+    status = run(transport, lambda service: service.status())
+    assert status.hikari.download_state == download
+    assert status.hikari.state == (
+        "ready" if download == "complete" else "model_required"
+    )
+
+
 def test_note_persists_without_contacting_hikari():
     boundary = Boundary()
     result = run(

@@ -72,6 +72,7 @@ class InferenceService:
         self.context = {}
         self.progress: InferenceProgress | None = None
         self.downloads: dict[str, DownloadObservation] = {}
+        self._download_admissions: set[str] = set()
 
     async def start(self):
         await self.worker.start()
@@ -85,16 +86,48 @@ class InferenceService:
 
     def status(self):
         memory = self.worker.memory
-        return dict(
-            state=self.state,
-            model_id=self.model_id,
-            error=self.error,
-            memory=memory.model_dump() if memory is not None else None,
-            max_output_tokens=256,
-            configured_context_limit=self.context.get("configured"),
-            effective_context_limit=self.context.get("effective"),
-            supported_context_limit=self.context.get("supported"),
+        state, model_id = self.state, self.model_id
+        error = self.error
+        context = {} if state == "error" else self.context
+        loading = any(
+            job.request.feature == "llm"
+            and job.model == model_id
+            and job.state in ("loading", "running", "waiting_for_resources")
+            and not job.result.done()
+            and any(worker_id in self.worker.workers for worker_id in job.machines)
+            for job in self.worker.jobs.values()
         )
+        if state in ("ready", "offloaded") or (state == "loading" and not loading):
+            resident = next(
+                (
+                    worker
+                    for worker in self.worker.workers.values()
+                    if worker.kind == "llm"
+                    and worker.residency_known
+                    and worker.resident_model == model_id
+                    and model_id is not None
+                ),
+                None,
+            )
+            state = "ready" if resident is not None else "unloaded"
+            model_id = resident.resident_model if resident is not None else None
+            context = resident.resident_context if resident is not None else {}
+            if resident is None and any(
+                worker.kind == "llm" and not worker.residency_known
+                for worker in self.worker.workers.values()
+            ):
+                state, model_id = "error", self.model_id
+                error = "Language-model residency is unconfirmed after a failed or cancelled request."
+        return {
+            "state": state,
+            "model_id": model_id,
+            "error": error,
+            "memory": memory.model_dump() if memory is not None else None,
+            "max_output_tokens": 256,
+            "configured_context_limit": self.context.get("configured"),
+            "effective_context_limit": context.get("effective"),
+            "supported_context_limit": self.context.get("supported"),
+        }
 
     def models_status(self) -> ModelStoreStatus:
         if self.worker.models is None:
@@ -108,16 +141,16 @@ class InferenceService:
         return snapshot
 
     async def download(self, model_id: str, license_acknowledged: bool):
-        for job in self.worker.jobs.values():
-            if (
-                job.request.feature == "models"
-                and job.request.input.model_id == model_id
-                and not job.result.done()
-            ):
-                raise InferenceFailure(
-                    "A download is already queued for this model.", 409
-                )
-        self.downloads[model_id] = DownloadObservation()
+        if model_id in self._download_admissions or any(
+            job.request.feature == "models"
+            and job.request.input.model_id == model_id
+            and not job.result.done()
+            for job in self.worker.jobs.values()
+        ):
+            raise InferenceFailure("A download is already queued for this model.", 409)
+        observation = DownloadObservation()
+        self.downloads[model_id] = observation
+        self._download_admissions.add(model_id)
         try:
             _, completion = await self._submit(
                 DownloadTask(
@@ -131,7 +164,20 @@ class InferenceService:
                 status="failed", error="Download was not queued"
             )
             raise
-        completion.add_done_callback(self._background_finished)
+        finally:
+            self._download_admissions.discard(model_id)
+
+        def finished(task):
+            error = None if task.cancelled() else task.exception()
+            # Keep a late failure attached to this download, not a newer retry.
+            if error is not None and observation.status in (
+                "downloading",
+                "cancelling",
+            ):
+                observation.status, observation.error = "failed", str(error)
+            self._background_finished(task)
+
+        completion.add_done_callback(finished)
         return self.models_status()
 
     async def cancel_download(self, model_id: str):
@@ -169,7 +215,7 @@ class InferenceService:
         if job.request.operation == "configure":
             return
         feature = job.request.feature
-        if event.context is not None:
+        if feature == "llm" and event.context is not None:
             self.context = event.context
         if feature == "llm" and event.model is not None:
             self.model_id = event.model
@@ -215,15 +261,12 @@ class InferenceService:
             job.progress = None
             if self.progress and self.progress.job_id == job.request.id:
                 self.progress = None
-        if event.state == "loading":
-            if feature == "llm":
-                self.model_id, self.state, self.error = (
-                    event.model or self.model_id,
-                    "loading",
-                    None,
-                )
-            elif self.state == "ready":
-                self.state = "offloaded"
+        if event.state == "loading" and feature == "llm":
+            self.model_id, self.state, self.error = (
+                event.model or self.model_id,
+                "loading",
+                None,
+            )
         if feature == "llm":
             if event.state == "succeeded":
                 self.state = (
@@ -335,6 +378,7 @@ class InferenceService:
 
     @traced("kadan.inference.wait_and_deliver")
     async def _complete(self, job):
+        failure = None
         try:
             result = await asyncio.shield(job.result)
             with span("kadan.result.delivery"):
@@ -350,6 +394,9 @@ class InferenceService:
                 if job.request.operation in ("load", "unload"):
                     return self.status()
                 return result
+        except (Exception, asyncio.CancelledError) as error:
+            failure = error
+            raise
         finally:
             try:
                 if not job.result.done():
@@ -360,6 +407,19 @@ class InferenceService:
                 if self.progress and self.progress.job_id == job.request.id:
                     self.progress = None
                 self.worker.jobs.pop(job.request.id, None)
+                if failure is not None and job.result.done():
+                    self._finish_video_error(job, failure)
+
+    @staticmethod
+    def _finish_video_error(job, error):
+        if job.request.feature != "video":
+            return
+        cancelled = isinstance(error, asyncio.CancelledError) or (
+            isinstance(error, InferenceFailure) and error.status_code == 499
+        )
+        video_jobs.finish_error(
+            job.request.id, cancelled=cancelled, error=None if cancelled else str(error)
+        )
 
     async def cancel(self, job_id):
         if job_id not in self.worker.jobs:
@@ -379,6 +439,9 @@ class InferenceService:
                     )
             finally:
                 self.worker.jobs.pop(job_id, None)
+                if job.result.done():
+                    error = None if job.result.cancelled() else job.result.exception()
+                    self._finish_video_error(job, error or asyncio.CancelledError())
 
     def tier(self, tier: TierId) -> HardwareTier:
         for candidate in self.models_status().tiers:

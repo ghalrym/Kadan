@@ -1,7 +1,9 @@
 import io
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from datetime import timedelta
+from threading import Barrier
 from unittest.mock import MagicMock, Mock
 from uuid import uuid4
 
@@ -79,8 +81,16 @@ def claim(repository, pet):
     )
 
 
-def ready_pet(repository):
-    pet = claim(repository, repository.create_pet("alpha", uuid4(), "Watercolor fox"))
+def ready_pet(repository, reference_mode="single_image"):
+    pet = claim(
+        repository,
+        repository.create_pet("alpha", uuid4(), "Watercolor fox", reference_mode),
+    )
+    names = (
+        ("character-sheet", *PET_STEP_NAMES)
+        if reference_mode == "character_sheet"
+        else PET_STEP_NAMES
+    )
     steps = [
         PetStep(
             name=name,
@@ -95,7 +105,7 @@ def ready_pet(repository):
             model_id="local-edit",
             seed=42,
         )
-        for name in PET_STEP_NAMES
+        for name in names
     ]
     for completed in range(1, len(steps) + 1):
         pet = repository.update_pet(
@@ -107,7 +117,9 @@ def ready_pet(repository):
         )
     manifest = PetManifest(
         atlas_asset_id=artwork(repository).id,
-        base_asset_id=steps[0].output_asset_id,
+        base_asset_id=next(
+            step.output_asset_id for step in steps if step.name == "base"
+        ),
         animations=[
             PetAnimation(name=name, row=row, durations=[100] * 8)
             for row, name in enumerate(PET_ANIMATIONS)
@@ -121,7 +133,7 @@ def ready_pet(repository):
             status="ready",
             stage="ready",
             steps=steps,
-            completed_steps=len(PET_STEP_NAMES),
+            completed_steps=len(steps),
             manifest=manifest,
             owner_id=None,
             lease_expires_at=None,
@@ -158,8 +170,185 @@ def test_creation_idempotent_and_scoped(repository):
     assert repository.selected_pet("alpha") is None
 
 
-def test_ready_pet_persists_and_exports_without_auto_activation(repository):
-    pet = ready_pet(repository)
+@pytest.mark.parametrize("status", ["queued", "running", "cancelling"])
+def test_pet_exclusivity_rejects_competing_creation(repository, status):
+    current = repository.create_pet("alpha", uuid4(), "First pet")
+    if status != "queued":
+        current = claim(repository, current)
+    if status == "cancelling":
+        current = repository.update_pet(
+            "alpha",
+            current.id,
+            state(current, status="cancelling", cancel_requested=True),
+            current.version,
+        )
+    with pytest.raises(StorageError, match="Another pet") as raised:
+        repository.create_pet("alpha", uuid4(), "Second pet")
+    assert raised.value.status_code == 409
+    assert repository.list_pets("alpha") == [current]
+
+
+def test_pet_exclusivity_serializes_two_tab_creations(repository):
+    barrier = Barrier(2)
+
+    def create(pet_id):
+        # Each tab reaches storage through its own repository connection.
+        other = Repository(repository.data_dir)
+        barrier.wait(timeout=5)
+        try:
+            return other.create_pet("alpha", pet_id, "Fox")
+        except StorageError as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as threads:
+        results = list(threads.map(create, [uuid4(), uuid4()]))
+    saved = [result for result in results if isinstance(result, PetJob)]
+    errors = [result for result in results if isinstance(result, StorageError)]
+    assert len(saved) == len(errors) == 1
+    assert errors[0].status_code == 409
+    assert repository.list_pets("alpha") == saved
+    assert repository.selected_pet("alpha") is None
+
+
+def test_pet_exclusivity_blocks_creation_and_repair_against_each_other(repository):
+    original = ready_pet(repository)
+    repository.select_pet("alpha", original.id)
+    creation = repository.create_pet("alpha", uuid4(), "Another pet")
+    revision_id = uuid4()
+    with pytest.raises(StorageError, match="Another pet"):
+        repository.revise_pet(
+            "alpha", original.id, revision_id, original.version, ["idle/2"], "Clipped"
+        )
+    creation = repository.update_pet(
+        "alpha",
+        creation.id,
+        state(creation, status="cancelled", cancel_requested=True),
+        creation.version,
+    )
+    revision = repository.revise_pet(
+        "alpha", original.id, revision_id, original.version, ["idle/2"], "Clipped"
+    )
+    with pytest.raises(StorageError, match="Another pet"):
+        repository.create_pet("alpha", uuid4(), "Third pet")
+    assert repository.get_pet("alpha", creation.id) == creation
+    assert repository.get_pet("alpha", original.id) == original
+    assert repository.get_pet("alpha", revision.id) == revision
+    assert repository.selected_pet("alpha") == original
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled", "interrupted"])
+def test_pet_exclusivity_blocks_resume_while_repair_is_active(repository, status):
+    original = ready_pet(repository)
+    stopped = claim(repository, repository.create_pet("alpha", uuid4(), "Fox"))
+    stopped = repository.update_pet(
+        "alpha",
+        stopped.id,
+        state(
+            stopped,
+            status=status,
+            cancel_requested=status == "cancelled",
+            owner_id=None,
+            lease_expires_at=None,
+        ),
+        stopped.version,
+        stopped.owner_id,
+    )
+    revision = repository.revise_pet(
+        "alpha", original.id, uuid4(), original.version, ["idle/2"], "Clipped"
+    )
+    with pytest.raises(StorageError, match="Another pet") as raised:
+        repository.update_pet(
+            "alpha",
+            stopped.id,
+            state(stopped, status="queued", cancel_requested=False),
+            stopped.version,
+        )
+    assert raised.value.status_code == 409
+    assert repository.get_pet("alpha", stopped.id) == stopped
+    assert repository.get_pet("alpha", revision.id) == revision
+
+
+def test_pet_exclusivity_is_scoped_to_agent_and_releases_stopped_slot(repository):
+    alpha = repository.create_pet("alpha", uuid4(), "Fox")
+    beta = repository.create_pet("beta", uuid4(), "Owl")
+    beta = repository.update_pet(
+        "beta",
+        beta.id,
+        state(beta, status="cancelled", cancel_requested=True),
+        beta.version,
+    )
+    resumed = repository.update_pet(
+        "beta",
+        beta.id,
+        state(beta, status="queued", cancel_requested=False),
+        beta.version,
+    )
+    assert resumed.status == "queued"
+    assert repository.get_pet("alpha", alpha.id) == alpha
+
+
+def test_pet_exclusivity_preserves_exact_retries_and_existing_active_updates(
+    repository,
+):
+    original = ready_pet(repository)
+    revision_id = uuid4()
+    revision = repository.revise_pet(
+        "alpha", original.id, revision_id, original.version, ["idle/2"], "Clipped"
+    )
+    # Old storage can already contain multiple active jobs. They must still finish.
+    legacy = PetJob(
+        id=uuid4(),
+        agent_key="alpha",
+        prompt="Legacy job",
+        version=1,
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    with repository.connect(write=True) as db:
+        repository._save_pet(db, legacy)
+    assert repository.create_pet("alpha", legacy.id, legacy.prompt) == legacy
+    assert (
+        repository.revise_pet(
+            "alpha", original.id, revision_id, original.version, ["idle/2"], "Clipped"
+        )
+        == revision
+    )
+    with pytest.raises(StorageError, match="already in use"):
+        repository.create_pet("alpha", legacy.id, "Changed prompt")
+    with pytest.raises(StorageError, match="already in use"):
+        repository.revise_pet(
+            "alpha",
+            original.id,
+            revision_id,
+            original.version,
+            ["idle/2"],
+            "Changed reason",
+        )
+    running = claim(repository, revision)
+    running = repository.update_pet(
+        "alpha",
+        running.id,
+        state(running, stage="Working"),
+        running.version,
+        running.owner_id,
+    )
+    stopped = repository.update_pet(
+        "alpha",
+        running.id,
+        state(running, status="failed", owner_id=None, lease_expires_at=None),
+        running.version,
+        running.owner_id,
+    )
+    assert stopped.steps == revision.steps
+    assert stopped.status == "failed"
+    assert repository.get_pet("alpha", legacy.id) == legacy
+
+
+@pytest.mark.parametrize("reference_mode", ["single_image", "character_sheet"])
+def test_ready_pet_persists_and_exports_without_auto_activation(
+    repository, reference_mode
+):
+    pet = ready_pet(repository, reference_mode)
     assert repository.selected_pet("alpha") is None
     reloaded = Repository(repository.data_dir)
     assert reloaded.get_pet("alpha", pet.id) == pet
@@ -169,6 +358,88 @@ def test_ready_pet_persists_and_exports_without_auto_activation(repository):
     assert pet.asset_references() <= {asset.id for asset in exported.assets}
     assert reloaded.select_pet("alpha", pet.id) == pet
     assert reloaded.get_agent("alpha").selected_pet_id == pet.id
+
+
+def test_reference_mode_is_immutable_and_part_of_creation_identity(repository):
+    pet = repository.create_pet("alpha", uuid4(), "Fox", "character_sheet")
+    assert pet.total_steps == 75
+    assert repository.create_pet("alpha", pet.id, "Fox", "character_sheet") == pet
+    with pytest.raises(StorageError, match="already in use"):
+        repository.create_pet("alpha", pet.id, "Fox")
+    pet = claim(repository, pet)
+    with pytest.raises(StorageError, match="immutable"):
+        repository.update_pet(
+            "alpha",
+            pet.id,
+            state(pet, reference_mode="single_image", total_steps=74),
+            pet.version,
+            pet.owner_id,
+        )
+
+
+def test_old_saved_pet_state_keeps_single_image_semantics(repository):
+    pet = ready_pet(repository)
+    legacy = pet.model_dump()
+    del legacy["reference_mode"]
+    restored = PetJob.model_validate(legacy)
+    assert restored.reference_mode == "single_image"
+    assert restored.total_steps == 74
+    assert restored.steps == pet.steps and restored.manifest == pet.manifest
+
+
+def test_sheet_progress_requires_its_own_order_and_separate_neutral_base(repository):
+    sheet = generation_step(repository, "character-sheet")
+    base = generation_step(repository, "base")
+    neutral = generation_step(repository, "idle/0").model_copy(
+        update={
+            "method": "canonical",
+            "source_asset_id": base.output_asset_id,
+        }
+    )
+    valid = PetState(
+        reference_mode="character_sheet",
+        total_steps=75,
+        steps=[sheet, base, neutral],
+        completed_steps=3,
+    )
+    assert {sheet.output_asset_id, base.output_asset_id} <= valid.asset_references()
+    for steps in [
+        [base],
+        [sheet, neutral],
+        [
+            sheet,
+            base,
+            neutral.model_copy(update={"source_asset_id": sheet.output_asset_id}),
+        ],
+    ]:
+        with pytest.raises(ValidationError):
+            PetState(
+                reference_mode="character_sheet",
+                total_steps=75,
+                steps=steps,
+                completed_steps=len(steps),
+            )
+    with pytest.raises(ValidationError):
+        PetState(steps=[sheet], completed_steps=1)
+    with pytest.raises(ValidationError):
+        PetState(reference_mode="character_sheet")
+    with pytest.raises(ValidationError, match="cohort"):
+        PetState(
+            reference_mode="character_sheet",
+            total_steps=75,
+            pending_step_name="character-sheet",
+            pending_request_id=uuid4(),
+            additional_pending_frames=[{"name": "base", "request_id": uuid4()}],
+        )
+
+
+def test_sheet_and_base_cannot_be_replaced_by_frame_repair(repository):
+    pet = ready_pet(repository, "character_sheet")
+    for name in ["character-sheet", "base"]:
+        with pytest.raises(StorageError, match="references"):
+            repository.revise_pet(
+                "alpha", pet.id, uuid4(), pet.version, [name], "Change it"
+            )
 
 
 def test_selection_requires_ready_same_agent_and_generation_preserves_selection(
@@ -680,8 +951,11 @@ def test_cancellation_and_expired_recovery_cannot_change_pending_seed(
     assert interrupted.pending_request_id == pet.pending_request_id
 
 
-def test_revision_keeps_other_frames_history_and_selected_original(repository):
-    original = ready_pet(repository)
+@pytest.mark.parametrize("reference_mode", ["single_image", "character_sheet"])
+def test_revision_keeps_other_frames_history_and_selected_original(
+    repository, reference_mode
+):
+    original = ready_pet(repository, reference_mode)
     repository.select_pet("alpha", original.id)
     revision_id = uuid4()
     repaired = repository.revise_pet(
@@ -693,6 +967,8 @@ def test_revision_keeps_other_frames_history_and_selected_original(repository):
         "Clipped artwork",
     )
     assert repaired.status == "queued"
+    assert repaired.reference_mode == original.reference_mode
+    assert repaired.total_steps == original.total_steps
     assert repaired.parent_pet_id == original.id
     assert repaired.manifest is None
     assert repaired.pending_request_id is None
@@ -745,8 +1021,13 @@ def test_revision_keeps_other_frames_history_and_selected_original(repository):
         active.owner_id,
     )
     replacement = generation_step(repository, "idle/2")
+    order = (
+        ("character-sheet", *PET_STEP_NAMES)
+        if reference_mode == "character_sheet"
+        else PET_STEP_NAMES
+    )
     completed = sorted(
-        [*active.steps, replacement], key=lambda step: PET_STEP_NAMES.index(step.name)
+        [*active.steps, replacement], key=lambda step: order.index(step.name)
     )
     active = repository.update_pet(
         "alpha",
@@ -754,7 +1035,7 @@ def test_revision_keeps_other_frames_history_and_selected_original(repository):
         state(
             active,
             steps=completed,
-            completed_steps=73,
+            completed_steps=len(completed),
             pending_step_name=None,
             pending_request_id=None,
             pending_seed=None,
@@ -762,7 +1043,7 @@ def test_revision_keeps_other_frames_history_and_selected_original(repository):
         active.version,
         active.owner_id,
     )
-    assert active.steps[3] == replacement
+    assert next(step for step in active.steps if step.name == "idle/2") == replacement
     assert all(step in active.steps for step in repaired.steps)
     assert active.rejections == repaired.rejections
     with repository.connect() as db:

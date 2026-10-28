@@ -3,6 +3,8 @@ from typing import Literal
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
+from ..pydantic_models.inference import DownloadState
+
 router = APIRouter()
 
 
@@ -17,6 +19,7 @@ class InferenceState(BaseModel):
     message: str
     tier: str | None = None
     model_id: str | None = None
+    download_state: DownloadState | None = None
     # The selected language model's context window in tokens, when Hikari reports it.
     context_limit: int | None = None
     # Whether the language model is resident; null when Hikari did not report it.

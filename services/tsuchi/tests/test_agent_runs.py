@@ -1,5 +1,5 @@
 from datetime import timedelta
-from uuid import uuid4
+from uuid import uuid4, uuid5
 
 import pytest
 from pydantic import ValidationError
@@ -9,7 +9,9 @@ from tsuchi.models import (
     AgentRunState,
     Asset,
     ConversationContent,
+    ImageJob,
     ImageJobState,
+    MarkdownContent,
     Message,
     RunMessage,
     utc_now,
@@ -105,11 +107,11 @@ def claim_image(repository, job, owner=None):
     )
 
 
-def image_asset(repository, key="alpha", is_image=True):
+def image_asset(repository, key="alpha", is_image=True, asset_id=None):
     now = utc_now()
     return repository.create_asset(
         Asset(
-            id=uuid4(),
+            id=asset_id or uuid4(),
             agent_key=key,
             title="Fox",
             filename="fox.png",
@@ -124,7 +126,8 @@ def image_asset(repository, key="alpha", is_image=True):
     )
 
 
-def complete_image(repository, job):
+def complete_image(repository, job, asset=None):
+    asset = asset or image_asset(repository, asset_id=uuid5(job.id, "image"))
     return repository.update_image_job(
         "alpha",
         job.id,
@@ -133,7 +136,7 @@ def complete_image(repository, job):
             status="completed",
             owner_id=None,
             lease_expires_at=None,
-            asset_id=image_asset(repository).id,
+            asset_id=asset.id,
         ),
         job.version,
         job.owner_id,
@@ -188,6 +191,59 @@ def test_enqueue_conflict_does_not_append_or_create_run(repository):
         repository.create_run("alpha", resource.id, message(), resource.version)
     assert len(repository.get_resource("alpha", resource.id).messages) == 1
     assert repository.active_runs() == []
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "cancelled"])
+def test_trashed_conversation_runs_leave_dispatch_until_restored(repository, status):
+    older = enqueue(repository)
+    if status == "running":
+        older = claim(repository, older)
+        older = repository.update_run(
+            "alpha",
+            older.id,
+            run_state(
+                older,
+                transcript=[RunMessage(role="assistant", content="Saved command")],
+            ),
+            older.version,
+            older.owner_id,
+        )
+    elif status == "cancelled":
+        older = repository.cancel_run("alpha", older.id)
+    resource = repository.get_resource("alpha", older.conversation_id)
+    trashed = repository.trash_resource("alpha", resource.id, resource.version)
+    newer = enqueue(repository)
+
+    assert repository.active_runs() == [newer]
+    assert repository.get_run("alpha", older.id) == older
+    repository.restore_resource("alpha", resource.id, trashed.version)
+    assert repository.active_runs() == (
+        [newer] if status == "cancelled" else [older, newer]
+    )
+    assert repository.get_run("alpha", older.id) == older
+
+
+@pytest.mark.parametrize("parent", ["other_agent", "memory"])
+def test_dispatch_requires_an_active_conversation_in_the_run_namespace(
+    repository, parent
+):
+    run = enqueue(repository)
+    invalid_parent = (
+        conversation(repository, "beta")
+        if parent == "other_agent"
+        else repository.create_resource(
+            "alpha", MarkdownContent(kind="memory", title="Not a conversation")
+        )
+    )
+    invalid = run.model_copy(update={"conversation_id": invalid_parent.id})
+    # Represent an invalid stored reference; normal enqueue rejects these parents.
+    with repository.connect(write=True) as db:
+        db.execute(
+            "UPDATE agent_runs SET conversation_id = ?, data = ? WHERE id = ?",
+            (str(invalid_parent.id), invalid.model_dump_json(), str(run.id)),
+        )
+    assert repository.active_runs() == []
+    assert repository.get_run("alpha", run.id) == invalid
 
 
 def test_run_id_cannot_be_reused_with_different_input(repository):
@@ -652,3 +708,230 @@ def test_image_event_waits_for_earlier_user_turn_then_claims_idle_conversation(
     )
     assert claim(repository, event).status == "running"
     assert len(repository.conversation_runs("alpha", origin.conversation_id)) == 3
+
+
+def pending_image_upload(repository):
+    job = claim_image(repository, image_job(repository))
+    return repository.update_image_job(
+        "alpha",
+        job.id,
+        image_state(job, upload_status="pending"),
+        job.version,
+        job.owner_id,
+    )
+
+
+def generated_artwork(job):
+    now = utc_now()
+    return Asset(
+        id=uuid5(job.id, "image"),
+        agent_key=job.agent_key,
+        title="Generated image",
+        filename="generated-image.png",
+        media_type="image/png",
+        size_bytes=12,
+        sha256="digest",
+        is_image=True,
+        version=1,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def test_pending_upload_survives_storage_restart_and_owner_replacement(repository):
+    pending = pending_image_upload(repository)
+    restarted = Repository(repository.data_dir)
+    restarted.initialize()
+    assert restarted.active_image_jobs() == [pending]
+    recovered = claim_image(restarted, expire_image(restarted, pending))
+    assert recovered.upload_status == "pending"
+    # The original upload can commit independently of Kadan's new lease owner.
+    asset = restarted.create_asset(generated_artwork(pending), pending.id)
+    current = restarted.get_image_job("alpha", pending.id)
+    assert current.owner_id == recovered.owner_id
+    assert current.upload_status == "completed"
+    assert current.version == recovered.version + 1
+    with pytest.raises(StorageError):
+        restarted.get_run("alpha", pending.event_run_id)
+    completed = restarted.update_image_job(
+        "alpha",
+        current.id,
+        image_state(
+            current,
+            status="completed",
+            asset_id=asset.id,
+            owner_id=None,
+            lease_expires_at=None,
+        ),
+        current.version,
+        recovered.owner_id,
+    )
+    assert (
+        restarted.get_run("alpha", pending.event_run_id).trigger_job_id == completed.id
+    )
+
+
+def test_upload_registration_and_outcome_roll_back_together(repository, monkeypatch):
+    pending = pending_image_upload(repository)
+    asset = generated_artwork(pending)
+
+    def fail(*args):
+        raise RuntimeError("Outcome write failed")
+
+    monkeypatch.setattr(repository, "_save_image_job", fail)
+    with pytest.raises(RuntimeError, match="Outcome write"):
+        repository.create_asset(asset, pending.id)
+    assert repository.get_image_job("alpha", pending.id) == pending
+    with pytest.raises(StorageError):
+        repository.get_asset("alpha", asset.id)
+
+
+def test_conclusive_upload_failure_fences_delayed_registration_and_reopening(
+    repository,
+):
+    pending = pending_image_upload(repository)
+    failed = repository.fail_image_upload("alpha", pending.id)
+    assert failed.upload_status == "failed"
+    assert repository.fail_image_upload("alpha", pending.id) == failed
+    with pytest.raises(StorageError, match="closed"):
+        repository.create_asset(generated_artwork(pending), pending.id)
+    with pytest.raises(StorageError, match="Only storage"):
+        repository.update_image_job(
+            "alpha",
+            failed.id,
+            image_state(failed, upload_status="pending"),
+            failed.version,
+            failed.owner_id,
+        )
+
+
+@pytest.mark.parametrize("upload_status", ["not_started", "pending", "failed"])
+def test_worker_cannot_overwrite_confirmed_upload_outcome(repository, upload_status):
+    pending = pending_image_upload(repository)
+    asset = generated_artwork(pending)
+    repository.create_asset(asset, pending.id)
+    confirmed = repository.get_image_job("alpha", pending.id)
+    assert repository.fail_image_upload("alpha", pending.id) == confirmed
+    with pytest.raises(StorageError):
+        repository.update_image_job(
+            "alpha", pending.id, image_state(pending), pending.version, pending.owner_id
+        )
+    with pytest.raises(StorageError, match="Only storage"):
+        repository.update_image_job(
+            "alpha",
+            confirmed.id,
+            image_state(confirmed, upload_status=upload_status),
+            confirmed.version,
+            confirmed.owner_id,
+        )
+    assert repository.get_image_job("alpha", pending.id) == confirmed
+
+
+def test_stop_during_upload_keeps_artwork_and_suppresses_delivery_on_replay(repository):
+    pending = pending_image_upload(repository)
+    stopping = repository.cancel_image_job("alpha", pending.id)
+    asset = repository.create_asset(generated_artwork(pending), pending.id)
+    current = repository.get_image_job("alpha", pending.id)
+    assert current.status == "cancelling"
+    assert current.upload_status == "completed"
+    with pytest.raises(StorageError):
+        complete_image(
+            repository,
+            stopping.model_copy(update={"upload_status": "completed"}),
+            asset,
+        )
+    with pytest.raises(StorageError, match="Invalid image job"):
+        complete_image(repository, current, asset)
+    cancelled = repository.update_image_job(
+        "alpha",
+        current.id,
+        image_state(current, status="cancelled", owner_id=None, lease_expires_at=None),
+        current.version,
+        current.owner_id,
+    )
+    assert repository.create_asset(asset, pending.id) == asset
+    assert repository.fail_image_upload("alpha", pending.id) == cancelled
+    assert repository.get_image_job("alpha", pending.id) == cancelled
+    assert len(repository.conversation_runs("alpha", pending.conversation_id)) == 2
+    origin = repository.get_run("alpha", pending.run_id)
+    with pytest.raises(StorageError, match="Only completed"):
+        repository.deliver_run_message(
+            "alpha", origin.id, origin.owner_id, message("assistant"), pending.id
+        )
+    assert len(repository.get_resource("alpha", pending.conversation_id).messages) == 1
+
+
+def test_replayed_upload_completion_produces_one_event_and_delivery(repository):
+    pending = pending_image_upload(repository)
+    asset = repository.create_asset(generated_artwork(pending), pending.id)
+    confirmed = repository.get_image_job("alpha", pending.id)
+    assert repository.create_asset(asset, pending.id) == asset
+    assert repository.get_image_job("alpha", pending.id) == confirmed
+    completed = complete_image(repository, confirmed, asset)
+    assert (
+        repository.update_image_job(
+            "alpha",
+            completed.id,
+            image_state(completed),
+            confirmed.version,
+            confirmed.owner_id,
+        )
+        == completed
+    )
+    origin = repository.get_run("alpha", pending.run_id)
+    first = repository.deliver_run_message(
+        "alpha",
+        origin.id,
+        origin.owner_id,
+        message("assistant", "Here it is"),
+        completed.id,
+    )
+    assert (
+        repository.deliver_run_message(
+            "alpha",
+            origin.id,
+            origin.owner_id,
+            message("assistant", "Duplicate"),
+            completed.id,
+        )
+        == first
+    )
+    assert len(first.messages) == 2
+    assert len(repository.conversation_runs("alpha", pending.conversation_id)) == 2
+    with pytest.raises(StorageError, match="immutable"):
+        repository.update_image_job(
+            "alpha",
+            completed.id,
+            image_state(completed, status="failed", asset_id=None),
+            completed.version,
+            confirmed.owner_id,
+        )
+
+
+@pytest.mark.parametrize(
+    "change", [{"id": uuid4()}, {"agent_key": "beta"}, {"is_image": False}]
+)
+def test_storage_rejects_wrong_generated_artwork(repository, change):
+    pending = pending_image_upload(repository)
+    with pytest.raises(StorageError):
+        repository.create_asset(
+            generated_artwork(pending).model_copy(update=change), pending.id
+        )
+    assert repository.get_image_job("alpha", pending.id) == pending
+
+
+@pytest.mark.parametrize("status", ["completed", "failed", "cancelled"])
+def test_unresolved_upload_cannot_become_terminal(status):
+    with pytest.raises(ValidationError, match="unresolved upload"):
+        ImageJobState(
+            status=status,
+            upload_status="pending",
+            asset_id=uuid4() if status == "completed" else None,
+        )
+
+
+def test_stored_image_jobs_default_to_upload_not_started(repository):
+    job = image_job(repository)
+    stored = job.model_dump_json(exclude={"upload_status"})
+    assert ImageJob.model_validate_json(stored) == job
+    assert job.upload_status == "not_started"

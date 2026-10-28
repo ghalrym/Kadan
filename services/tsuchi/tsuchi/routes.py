@@ -26,6 +26,7 @@ from .models import (
     OwnedPersonaUpdate,
     PetJob,
     PetManifest,
+    PetReferenceMode,
     PetState,
     Resource,
     ResourceInput,
@@ -44,6 +45,7 @@ from .services import FileStorage, inline_media, safe_filename
 class PetCreate(Model):
     id: UUID
     prompt: str = Field(min_length=1, max_length=10000)
+    reference_mode: PetReferenceMode = "single_image"
 
     @field_validator("prompt")
     @classmethod
@@ -266,6 +268,12 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     def cancel_image_job(key: AgentKey, job_id: UUID):
         return repository.cancel_image_job(key, job_id)
 
+    @router.post(
+        "/agents/{key}/image-jobs/{job_id}/upload/resolve", response_model=ImageJob
+    )
+    def resolve_image_upload(key: AgentKey, job_id: UUID):
+        return files.resolve_image_upload(key, job_id)
+
     @router.get("/pet-jobs", response_model=list[PetJob])
     def active_pet_jobs():
         return repository.active_pet_jobs()
@@ -276,7 +284,7 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
 
     @router.post("/agents/{key}/pets", response_model=PetJob, status_code=201)
     def create_pet(key: AgentKey, value: PetCreate):
-        return repository.create_pet(key, value.id, value.prompt)
+        return repository.create_pet(key, value.id, value.prompt, value.reference_mode)
 
     @router.post("/agents/{key}/pets/imports", response_model=PetJob, status_code=201)
     def import_pet(key: AgentKey, value: PetImport):
@@ -332,8 +340,11 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         trash: bool = False,
         limit: Annotated[int, Query(ge=1, le=200)] = 100,
         offset: Annotated[int, Query(ge=0)] = 0,
+        kinds: Annotated[list[ResourceKind] | None, Query()] = None,
     ):
-        return repository.list_resources(key, kind, q, trash, limit, offset)
+        return repository.list_resources(
+            key, kind, q, trash, limit, offset, kinds=kinds
+        )
 
     @router.post("/agents/{key}/resources", response_model=Resource, status_code=201)
     def create_resource(key: AgentKey, value: ResourceInput):
@@ -404,6 +415,7 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         tags: Annotated[str, Form()] = "[]",
         sources: Annotated[str, Form()] = "[]",
         asset_id: Annotated[UUID | None, Form()] = None,
+        image_job_id: Annotated[UUID | None, Form()] = None,
     ):
         try:
             metadata = Metadata(
@@ -415,7 +427,9 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
             raise StorageError(
                 "Upload title, tags or sources are invalid", 422
             ) from error
-        return files.upload(key, file.file, file.filename, metadata, asset_id)
+        return files.upload(
+            key, file.file, file.filename, metadata, asset_id, image_job_id
+        )
 
     @router.get("/agents/{key}/assets/{asset_id}", response_model=Asset)
     def get_asset(key: AgentKey, asset_id: UUID):

@@ -66,7 +66,7 @@ PARAMETER = re.compile(r"<parameter=([^>\s]+)>\n?(.*?)\n?</parameter>", re.DOTAL
 class ToolCommand(BaseModel):
     """One tool call, persisted in the run transcript before it executes."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     tool: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_]+$")
     arguments: dict[str, JsonValue] = Field(default_factory=dict)
 
@@ -153,6 +153,12 @@ def parse_tool_calls(text: str, tools: Sequence[dict]) -> tuple[str, list[dict]]
         properties = parameters.get(name, {})
         arguments: dict[str, Any] = {}
         for key, raw in PARAMETER.findall(body):
+            if key in arguments:
+                raise ServiceError(
+                    "The agent returned an invalid tool command.",
+                    502,
+                    "invalid_command",
+                )
             if is_string(properties.get(key)):
                 schema = properties[key]
                 options = schema.get("anyOf") or schema.get("oneOf") or []

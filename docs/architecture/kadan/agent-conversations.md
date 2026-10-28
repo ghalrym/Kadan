@@ -17,7 +17,7 @@ The runner includes at most 97 recent user and assistant messages, subject to th
 
 Browser selection is local, and per-agent drafts use the tab's session storage. The outbox retains the original message identity, mode and persona for reconciliation and retry. Browser state is not a durable work queue.
 
-See [Agent conversations](../../user-expectations/kadan/agent-conversations.md) for the product behavior and [Persona instructions](personas.md) for instruction snapshots.
+The privately provided expectations for agent conversations describe the product behavior. See [Persona instructions](personas.md) for instruction snapshots.
 
 ## Model decisions and delivery
 
@@ -33,6 +33,8 @@ These receipts do not make every external effect repeatable. The [agent computer
 
 Image generation is a separate durable job. Submission ends its initiating run instead of holding an agent turn open while Hikari works. A terminal image event queues another run in the same conversation, allowing ordinary messages to continue and the agent to deliver the eventual result. Idle conversations do not require model polling.
 
+Before uploading generated artwork, Kadan persists the job's pending upload outcome. Recovery fences the original Hikari request without resubmitting generation, then asks Tsuchi to resolve a pending upload. An unresolved outcome keeps the job active for later recovery, including cancellation. Lease expiry permits a new Kadan owner; it does not prove storage has stopped writing. After storage confirms success, Kadan verifies the deterministic asset's identity, PNG bytes and checksum before completing the job. Cancellation suppresses completion and delivery while retaining any saved artwork. Terminal events and image delivery continue to use the existing transactional event and delivery receipts. See [Image upload settlement](../tsuchi/image-uploads.md).
+
 Hikari's scheduling, model lifecycle and memory constraints are described in [Inference architecture](../hikari/inference.md); conversation ownership must remain independent of those execution policies.
 
 ## Shared instruction file
@@ -41,4 +43,4 @@ The human-maintained `services/kadan/AGENT.md` supplies base instructions. Conte
 
 The image includes `/app/AGENT.md`. Operators can bind-mount an edited file read-only there, or set `KADAN_AGENT_INSTRUCTION_FILE` to another readable file. Supply the same intended file to every runner. It is separate from memories and persona records, and changing it does not alter tool schemas, run limits, ownership or cancellation rules.
 
-See [Shared agent instructions](../../user-expectations/kadan/agent-instructions.md) for user expectations.
+See the privately provided expectations for shared agent instructions.

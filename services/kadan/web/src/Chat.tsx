@@ -11,7 +11,7 @@ import { useAgentPet } from "./PetContext";
 import { agentPath, api } from "./api";
 import type { PetState } from "./pet";
 import type { AgentRun, Asset, ImageJob, Message, Resource, RunSnapshot, Status } from "./types";
-import { activeRun, cancellableImage, imageStatus, isImageAsset, latestConversation } from "./agentRuns";
+import { activeRun, cancellableImage, imageStatus, isImageAsset, latestConversation, responseProgress } from "./agentRuns";
 import { randomUuid } from "./uuid";
 import { confirmSend, queueSend, readPending, type PendingMessage } from "./outbox";
 
@@ -130,8 +130,8 @@ export default function Chat({
     !ready.chat || sending || blocked || dictating,
   );
   // Hikari loads the model on demand; the first reply waits for it without a deadline.
-  const modelLoading = generating && status?.hikari.model_state === "loading";
-  // The agent has read the message once Hikari is working on it, and types until the reply lands.
+  const modelLoading = generating && status?.hikari.state === "ready" && status.hikari.model_state === "loading";
+  const progress = responseProgress(runs, status?.hikari);
   const typing = runs.some((run) => run.status === "running") && !modelLoading;
   const [mood, react] = useMood(
     !status
@@ -151,15 +151,12 @@ export default function Chat({
   const hidden = items.length - visible.length;
   let lastUser = visible.length - 1;
   while (lastUser >= 0 && visible[lastUser].role !== "user") lastUser--;
-  const answered = visible.slice(lastUser + 1).some((message) => message.role === "assistant");
   const receipt =
     lastUser < 0
       ? null
       : visible[lastUser] === outgoing
         ? "Sending…"
-        : answered
-          ? "Read"
-          : "Delivered";
+        : "Delivered";
 
   useLayoutEffect(() => {
     // Open at the newest message without animating through the history.
@@ -323,10 +320,11 @@ export default function Chat({
     } catch (e) { setError((e as Error).message); }
     finally { setStopping(false); mutation.current++; }
   }
-  const lastRun = runs.at(-1);
-  const notice = lastRun?.status === "failed"
-    ? `Response failed: ${lastRun.error || "Please try again."}`
-    : lastRun?.status === "cancelled" ? "Response stopped" : "";
+  const conversationRuns = runs.filter((run) => run.conversation_id === chain.id);
+  const outcomes = [
+    conversationRuns.filter((run) => run.status === "failed").at(-1),
+    conversationRuns.filter((run) => run.status === "cancelled").at(-1),
+  ].filter((run): run is AgentRun => !!run);
   const perchStatus = modelLoading
     ? "Loading model…"
     : typing ? "Typing…"
@@ -443,7 +441,7 @@ export default function Chat({
                   )}
                 </article>
                 {index === lastUser && receipt && (
-                  <p className={`receipt ${receipt === "Read" ? "read" : ""}`} aria-live="polite">
+                  <p className="receipt" aria-live="polite">
                     {receipt}
                   </p>
                 )}
@@ -451,23 +449,23 @@ export default function Chat({
             );
           })}
           {typing && (
-            <div className="typing" role="status">
-              <span className="sr-only">{agentName} is typing</span>
+            <div className="typing" aria-hidden="true">
               <i />
               <i />
               <i />
             </div>
           )}
-          {modelLoading && (
+          {progress && (
             <p className="notice" role="status">
-              {agentName} is waking up. Loading the model can take a few minutes.
+              {progress}
             </p>
           )}
-          {notice && !sending && (
-            <p className="notice" role="status">
-              {notice}
-            </p>
-          )}
+          {outcomes.map((run) => {
+            const response = sending || run.id !== conversationRuns.at(-1)?.id ? "Earlier response" : "Response";
+            return <p className="notice" role="status" key={run.id}>
+              {run.status === "failed" ? `${response} failed: ${run.error || "Please try again."}` : `${response} stopped`}
+            </p>;
+          })}
           {images.filter((job) => imageStatus(job)).map((job) => (
             <div className="image-job notice" key={job.id} role="status">
               <span>{imageStatus(job)}</span>
