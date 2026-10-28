@@ -4,6 +4,7 @@ import asyncio
 import csv
 import importlib
 import json
+import logging
 import multiprocessing
 import os
 import socket
@@ -14,6 +15,7 @@ from pathlib import Path
 from experimental_worker.store import ModelStore
 
 GIB = 1024**3
+log = logging.getLogger(__name__)
 BACKENDS = {
     "text": ("lfm3_llm", "HIKARI_ENABLE_LFM3_TEXT"),
     "vision": ("lfm3_vision", "HIKARI_ENABLE_LFM3_VISION"),
@@ -120,6 +122,7 @@ class Runtime:
         self.root = Path(os.getenv("KADAN_MODEL_DIR", "/var/lib/kadan/models"))
         self.store = ModelStore(self.root, self.backend.MODEL, self.manifest)
         self.info = info if info is not None else machine()
+        self.probe_machine = info is None
         self.budget = [0, 0]
         self.queue = asyncio.Queue(maxsize=16)
         self.cancelled: set[str] = set()
@@ -404,9 +407,32 @@ class Runtime:
                 self.queue.task_done()
 
     async def serve(self):
+        """Reconnect with capped backoff; the API owns replacement/requeue decisions."""
+        from websockets.exceptions import ConnectionClosed, InvalidHandshake
+
+        delay = 1
+        while True:
+            try:
+                await self.serve_session()
+            except (OSError, TimeoutError, ConnectionClosed, InvalidHandshake) as error:
+                log.warning("Experimental worker disconnected: %s", error)
+            # serve_session has joined its executor before this reset. Old jobs
+            # cannot replay after a reconnect; only the API may resubmit them.
+            self.budget = [0, 0]
+            self.queue = asyncio.Queue(maxsize=16)
+            self.cancelled.clear()
+            self.active = None
+            self.granted.clear()
+            self.socket = None
+            await asyncio.sleep(delay)
+            delay = min(30, delay * 2)
+
+    async def serve_session(self):
         # The transport dependency is optional on the native/API paths.
         from websockets.asyncio.client import connect
 
+        if self.probe_machine:
+            self.info = machine()
         token = os.getenv("HIKARI_WORKER_TOKEN", "insecure-api-key")
         async with connect(
             os.getenv("HIKARI_API_URL", "ws://hikari-api:8000/v1/workers"),
