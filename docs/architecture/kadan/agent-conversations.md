@@ -30,7 +30,7 @@ there is no new index, endpoint or independent history store.
 
 Browser selection is local, and per-agent drafts use the tab's session storage. The outbox retains the original message identity, mode and persona for reconciliation and retry. Browser state is not a durable work queue.
 
-The privately provided expectations for agent conversations describe the product behavior. See [Persona instructions](personas.md) for instruction snapshots.
+The user expectations for [agent conversations](../../user-expectations/kadan/agent-conversations.md) describe the product behavior. See [Persona instructions](personas.md) for instruction snapshots.
 
 ## Model decisions and delivery
 
@@ -73,4 +73,4 @@ The human-maintained `services/kadan/AGENT.md` supplies base instructions. Conte
 
 The image includes `/app/AGENT.md`. Operators can bind-mount an edited file read-only there, or set `KADAN_AGENT_INSTRUCTION_FILE` to another readable file. Supply the same intended file to every runner. It is separate from memories and persona records, and changing it does not alter tool schemas, run limits, ownership or cancellation rules.
 
-See the privately provided expectations for shared agent instructions.
+See the user expectations for [shared agent instructions](../../user-expectations/kadan/agent-instructions.md).

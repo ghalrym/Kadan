@@ -49,7 +49,7 @@ Generates video with audio using H3 FL2VA INT8 + Turbo: 480p or 768p, 16:9,
 
 The API's VideoJobs index is process-local. It tracks Queued, Rendering, Done, Failed and Cancelled records, while the frontend polls pending work about every three seconds. Only Done with an available artifact provides playable output. Completed MP4 bytes are written atomically beneath `HIKARI_VIDEO_DIR`, falling back to `KADAN_VIDEO_DIR` and then the local default. A content lookup requires the indexed Done job, so retained files do not reconstruct old routes after restart.
 
-Separating transferred worker output from API file serving supports workers on other machines, but does not make this index durable. The privately provided expectations for video generation describe the download behavior.
+Separating transferred worker output from API file serving supports workers on other machines, but does not make this index durable. The user expectations for [video generation](../../user-expectations/hikari/video-generation.md) describe the download behavior.
 
 ## Request defaults
 

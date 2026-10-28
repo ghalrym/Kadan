@@ -42,4 +42,4 @@ Tool results are bounded before entering the transcript, with binary results des
 
 Certain stalled-browser reads may restart the browser and retry once, reporting the reset to the agent. This can discard tabs and page state. Other uncertain browser operations require inspection. Viewer reconnection does not invoke that recovery.
 
-See the privately provided expectations for viewing and controlling the computer.
+See the user expectations for [viewing and controlling the computer](../../user-expectations/kadan/computer.md).

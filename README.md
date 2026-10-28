@@ -16,6 +16,10 @@ Tsuchi owns storage and retrieval; Hikari owns inference. Kadan and Tsuchi run
 without a GPU. Hikari's API does too; its GPU worker containers need a supported
 NVIDIA host.
 
+[User expectations](docs/user-expectations/README.md) describe current behavior,
+limits and recovery by feature. [Open proposals](docs/user-expectations/proposals.md)
+are separate from behavior available on master.
+
 ## Hikari rename and existing installations
 
 Hikari is the inference service formerly named Kadan. The user-facing agent app
@@ -76,7 +80,7 @@ to generate a response. Startup does not generate content or load a model.
 
 All published ports bind to `0.0.0.0`. This is a single-owner prototype;
 namespace keys are storage selectors, not credentials. Operators are responsible
-for securing access to their deployment. See the privately provided expectations for security and operator responsibility. Within Compose, Kadan uses `http://tsuchi-api:8000` for
+for securing access to their deployment. See [security and operator responsibility](docs/user-expectations/security.md). Within Compose, Kadan uses `http://tsuchi-api:8000` for
 storage and `http://hikari-api:8000` for inference. Browser links use the loopback
 URLs above. Each frontend container runs Vite and proxies its API paths, including streaming
 responses, through the same browser origin. Only the frontends and Hikari's API publish ports.

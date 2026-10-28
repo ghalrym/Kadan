@@ -1,6 +1,6 @@
 # Chat notes
 
-Kadan separates storing a user message from requesting agent work. This allows notes to use the same conversation history without requiring inference. See the privately provided expectations for saving chat notes.
+Kadan separates storing a user message from requesting agent work. This allows notes to use the same conversation history without requiring inference. See the user expectations for [saving chat notes](../../user-expectations/kadan/saving-chat-notes.md).
 
 The note path appends a user message through Tsuchi without enqueuing an agent run or attaching a persona. It does not create a Memory resource. Ordinary sending appends the message and queues a run atomically; note saving needs only working storage.
 
