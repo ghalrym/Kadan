@@ -1,9 +1,8 @@
 """Route logic with queue boundaries replaced; no server or inference."""
 
-import asyncio
-from unittest.mock import AsyncMock
+import unittest
+from unittest.mock import AsyncMock, patch
 
-import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
@@ -21,48 +20,54 @@ def request(**changes):
     )
 
 
-def test_invalid_encoded_screenshot_never_enters_queue(monkeypatch):
-    submit = AsyncMock()
-    monkeypatch.setattr(vision.inference, "submit", submit)
-    with pytest.raises(HTTPException) as error:
-        asyncio.run(
-            vision.describe_screenshot(request(image_base64="not base64!"), object())
+class VisionRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_invalid_encoded_screenshot_never_enters_queue(self):
+        submit = AsyncMock()
+        with patch.object(vision.inference, "submit", submit):
+            with self.assertRaises(HTTPException) as error:
+                await vision.describe_screenshot(
+                    request(image_base64="not base64!"), object()
+                )
+        self.assertEqual(error.exception.status_code, 422)
+        submit.assert_not_called()
+
+    async def test_valid_request_uses_vision_queue_and_validates_worker_result(self):
+        body = request()
+        submit = AsyncMock(
+            return_value={"model": "lfm3-vl-2b-bf16", "text": "A dialog is visible."}
         )
-    assert error.value.status_code == 422
-    submit.assert_not_called()
 
+        async def await_queue(request, call):
+            return await call
 
-def test_valid_request_uses_vision_queue_and_validates_worker_result(monkeypatch):
-    body = request()
-    submit = AsyncMock(
-        return_value={"model": "lfm3-vl-2b-bf16", "text": "A dialog is visible."}
-    )
-    monkeypatch.setattr(vision.inference, "submit", submit)
+        with (
+            patch.object(vision.inference, "submit", submit),
+            patch.object(vision, "infer", await_queue),
+        ):
+            response = await vision.describe_screenshot(body, object())
+            submit.assert_awaited_once_with(body, feature="vision")
+            queued = submit.call_args.args[0]
+            self.assertEqual(
+                queued.model_dump(exclude_unset=True)["model"], "lfm3-vl-2b-bf16"
+            )
+            self.assertEqual(response.text, "A dialog is visible.")
+            submit.return_value = {"model": "different-model", "text": "Wrong source"}
+            with self.assertRaises(HTTPException) as error:
+                await vision.describe_screenshot(body, object())
+        self.assertEqual(error.exception.status_code, 502)
 
-    async def await_queue(request, call):
-        return await call
+    def test_request_rejects_blank_question(self):
+        with self.assertRaises(ValidationError):
+            request(question=" ")
 
-    monkeypatch.setattr(vision, "infer", await_queue)
-    response = asyncio.run(vision.describe_screenshot(body, object()))
-    submit.assert_awaited_once_with(body, feature="vision")
-    queued = submit.call_args.args[0]
-    assert queued.model_dump(exclude_unset=True)["model"] == "lfm3-vl-2b-bf16"
-    assert response.text == "A dialog is visible."
-    submit.return_value = {"model": "different-model", "text": "Wrong source"}
-    with pytest.raises(HTTPException) as error:
-        asyncio.run(vision.describe_screenshot(body, object()))
-    assert error.value.status_code == 502
+    def test_request_rejects_excessive_output_tokens(self):
+        with self.assertRaises(ValidationError):
+            request(max_new_tokens=1025)
 
+    def test_request_rejects_boolean_output_tokens(self):
+        with self.assertRaises(ValidationError):
+            request(max_new_tokens=True)
 
-@pytest.mark.parametrize(
-    "changes",
-    [
-        {"question": " "},
-        {"max_new_tokens": 1025},
-        {"max_new_tokens": True},
-        {"image_url": "https://example.com/image.png"},
-    ],
-)
-def test_request_rejects_unsupported_or_unbounded_inputs(changes):
-    with pytest.raises(ValidationError):
-        request(**changes)
+    def test_request_rejects_external_image_url(self):
+        with self.assertRaises(ValidationError):
+            request(image_url="https://example.com/image.png")
