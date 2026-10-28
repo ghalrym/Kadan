@@ -7,6 +7,7 @@ Saved work can continue after the browser closes. A queued message does not prom
 | Feature | What to expect |
 | --- | --- |
 | [Agent conversations](agent-conversations.md) | Hatch agents, send messages and return to saved history within bounded response context. |
+| [Chat attachments](chat-attachments.md) | Upload files and attach them to messages or saved notes. |
 | [Saving chat notes](saving-chat-notes.md) | Save text without requesting a reply, including when inference is unavailable. |
 | [Stopping chat work](stopping-chat-work.md) | Cancel response work and image jobs with separate controls. |
 | [Personas](personas.md) | Save and select instructions for an agent's responses. |
@@ -18,6 +19,8 @@ Saved work can continue after the browser closes. A queued message does not prom
 | [Pets](pets.md) | Create, import, preview, repair and explicitly select animated pets. |
 | [Voice input](voice-input.md) | Transcribe an utterance into an editable message draft. |
 | [Voice calls](voice-calls.md) | Have a separate spoken conversation with interruption and playback controls. |
+| [Opening Workspace files](opening-workspace-files.md) | Let an agent copy a saved file onto its computer without changing the original. |
+| [File delivery](file-delivery.md) | Ask an agent to save a computer file into Workspace and share its download link. |
 | [Workspace](workspace.md) | Browse memories, Spaces and files without automatically adding them to chat context. |
 | [Service status](service-status.md) | Distinguish storage access, inference readiness and model setup needs. |
 | [Runner availability](runner-availability.md) | Understand assignment capacity, queued work and recovery after a runner stops. |

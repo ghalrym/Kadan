@@ -13,7 +13,8 @@ import type { PetState } from "./pet";
 import type { AgentRun, Asset, ImageJob, Message, Resource, RunSnapshot, Status } from "./types";
 import { activeRun, cancellableImage, imageStatus, isImageAsset, latestConversation } from "./agentRuns";
 import { randomUuid } from "./uuid";
-import { confirmSend, queueSend, readPending, type PendingMessage } from "./outbox";
+import { ChatAttachments } from "./attachments";
+import { chatStorageKeys, confirmSend, copyPendingToDraft, discardUnassignedPending, queueSend, readPending, type PendingMessage } from "./outbox";
 
 interface Props {
   agentKey: string;
@@ -92,13 +93,20 @@ export default function Chat({
   refreshStatus,
 }: Props) {
   const petSheet = useAgentPet(agentKey);
-  const draftKey = `kadan.draft.${agentKey}`;
-  const pendingKey = `${draftKey}.pending`;
+  const { draft: draftKey, pending: pendingKey } = chatStorageKeys(agentKey, chain.id);
   const pending = useRef<PendingMessage | null>(
     confirmSend(readPending(sessionStorage.getItem(pendingKey)), chain.messages),
   );
   const [recovery, setRecovery] = useState(pending.current);
+  const [unassigned, setUnassigned] = useState(() => readPending(sessionStorage.getItem(`${draftKey}.pending`)));
   const [draft, setDraft] = useState(() => sessionStorage.getItem(draftKey) || "");
+  const [, redrawAttachments] = useState(0);
+  const [attachments] = useState(() => new ChatAttachments(agentKey, chain.id, sessionStorage,
+    () => redrawAttachments(value => value + 1)));
+  useEffect(() => {
+    attachments.start();
+    return () => attachments.stop();
+  }, [attachments]);
   const [persona, setPersona] = useState("");
   const [sending, setSending] = useState(false);
   const [runs, setRuns] = useState<AgentRun[]>([]);
@@ -224,12 +232,16 @@ export default function Chat({
   async function send(generate: boolean, retry?: PendingMessage) {
     const text = retry?.content ?? draft.trim();
     if (!text || sendLock.current || sending || blocked) return;
+    if (!retry && !attachments.ready) {
+      setError("Finish uploading or remove the unresolved attachments before sending.");
+      return;
+    }
     if (!retry && pending.current) {
       setError("Retry or discard the unsent message before sending another.");
       return;
     }
     const message = queueSend(pending.current, retry ?? {
-      id: randomUuid(), content: text, generate, persona,
+      id: randomUuid(), content: text, generate, persona, attachment_ids: attachments.ids(),
     });
     const messageId = message.id;
     const personaId = message.persona;
@@ -245,10 +257,13 @@ export default function Chat({
       content: text,
       created_at: new Date().toISOString(),
       resource_ids: generate && personaId ? [personaId] : [],
-      attachment_ids: [],
+      attachment_ids: message.attachment_ids ?? [],
       sources: [],
     });
-    if (!retry) setDraft("");
+    if (!retry) {
+      setDraft("");
+      attachments.removeMany(message.attachment_ids ?? []);
+    }
     const path = `${agentPath(agentKey)}/conversations/${chain.id}`;
     try {
       if (!generate) {
@@ -257,6 +272,7 @@ export default function Chat({
             content: text,
             expected_version: currentChain.current.version,
             message_id: messageId,
+            attachment_ids: message.attachment_ids ?? [],
           }),
         );
         react("waving");
@@ -266,6 +282,7 @@ export default function Chat({
           expected_version: currentChain.current.version,
           persona_id: personaId || null,
           message_id: messageId,
+          attachment_ids: message.attachment_ids ?? [],
         });
         accept(result.conversation);
         setRuns((previous) => [...previous.filter((run) => run.id !== result.run.id), result.run]);
@@ -491,14 +508,33 @@ export default function Chat({
           <div>
             <strong>Unsent message</strong>
             <p>{recovery.content}</p>
+            {recovery.attachment_ids?.map(id => <Attachment key={id} agentKey={agentKey} id={id} />)}
           </div>
           <button disabled={blocked || !ready.storage || (recovery.generate && !ready.chat)}
             onClick={() => void send(recovery.generate, recovery)}>Retry</button>
           <button disabled={blocked} onClick={() => savePending(null)}>Discard</button>
         </div>
       )}
+      {unassigned && (
+        <div className="banner inline" role="status">
+          <div>
+            <strong>Earlier unsent message</strong>
+            <p>{unassigned.content}</p>
+            <p>Its original conversation wasn't saved. Check your history before copying it to the draft. It will send as a new message.</p>
+          </div>
+          <button disabled={blocked || sending || dictating || voiceCall.active} onClick={() => {
+            try { setDraft(copyPendingToDraft(draft, unassigned)); }
+            catch (error) { setError((error as Error).message); }
+          }}>Copy to draft</button>
+          <button disabled={blocked} onClick={() => {
+            discardUnassignedPending(sessionStorage, agentKey);
+            setUnassigned(null);
+          }}>Discard</button>
+        </div>
+      )}
       <Composer
         agentName={agentName}
+        attachments={attachments}
         value={draft}
         onChange={setDraft}
         onSend={(generate) => void send(generate)}

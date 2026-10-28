@@ -47,6 +47,12 @@ class Workspace(Protocol):
 
     async def update_project(self, args: UpdateProjectArguments) -> dict: ...
 
+    async def save_workspace_file(self, args: SaveWorkspaceFileArguments) -> dict: ...
+
+    async def read_workspace_file(self, args: ReadWorkspaceFileArguments) -> dict: ...
+
+    async def open_workspace_file(self, args: OpenWorkspaceFileArguments) -> dict: ...
+
 
 class ListWorkspaceDocumentsArguments(Arguments):
     query: str = Field(default="", max_length=500)
@@ -158,6 +164,77 @@ async def update_project(args: UpdateProjectArguments, conversation: Workspace) 
     return await conversation.update_project(args)
 
 
+class SaveWorkspaceFileArguments(Arguments):
+    path: str = Field(
+        min_length=1,
+        max_length=4096,
+        pattern=r"^/",
+        description="Absolute path to a completed file on the agent's computer.",
+    )
+    title: str | None = Field(default=None, min_length=1, max_length=500, pattern=r"\S")
+
+    @field_validator("path")
+    @classmethod
+    def valid_path(cls, value: str) -> str:
+        if "\0" in value:
+            raise ValueError("A file path cannot contain a NUL character")
+        return value
+
+    @field_validator("title")
+    @classmethod
+    def strip_title(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
+class ReadWorkspaceFileArguments(Arguments):
+    file_id: UUID
+
+
+class OpenWorkspaceFileArguments(Arguments):
+    file_id: UUID
+
+
+@conversation_tool
+async def save_workspace_file(
+    args: SaveWorkspaceFileArguments, conversation: Workspace
+) -> dict:
+    """Save a completed computer file, up to 100 MiB, in this agent's Workspace Files.
+
+    Returns a saved file ID and download URL. This does not send a message: use
+    send_message with a Markdown link to that URL to deliver it to the user.
+    The computer's source stays unchanged. Failed or interrupted saves may have
+    completed; use read_workspace_file with the returned file_id before retrying.
+    """
+    return await conversation.save_workspace_file(args)
+
+
+@conversation_tool
+async def read_workspace_file(
+    args: ReadWorkspaceFileArguments, conversation: Workspace
+) -> dict:
+    """Read saved file metadata and its download URL, or check an uncertain save.
+
+    This does not read file contents. Missing or trashed files are reported as
+    errors and never recreated from the computer automatically.
+    """
+    return await conversation.read_workspace_file(args)
+
+
+@conversation_tool
+async def open_workspace_file(
+    args: OpenWorkspaceFileArguments, conversation: Workspace
+) -> dict:
+    """Copy an active Workspace file, up to 100 MiB, onto the agent's computer.
+
+    Returns a verified local path for file, shell or browser tools. This does not
+    read the contents into chat. The saved original is unchanged; edits to the
+    computer copy are not synchronized. An interrupted copy is checked on restart
+    and is never uploaded again automatically. Inspect an unconfirmed path before
+    requesting another copy.
+    """
+    return await conversation.open_workspace_file(args)
+
+
 TOOLS = [
     create_workspace_document,
     list_workspace_documents,
@@ -165,4 +242,7 @@ TOOLS = [
     create_project,
     update_workspace_document,
     update_project,
+    save_workspace_file,
+    read_workspace_file,
+    open_workspace_file,
 ]
