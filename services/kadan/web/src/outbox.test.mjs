@@ -1,9 +1,53 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { confirmSend, queueSend, readPending } from "./outbox.ts";
+import { chatStorageKeys, confirmSend, copyPendingToDraft, discardUnassignedPending, queueSend, readPending } from "./outbox.ts";
 
 const first = { id: "a", content: "First", generate: true, persona: "persona-a" };
 const next = { id: "b", content: "Next draft", generate: false, persona: "" };
+
+test("copying an unassigned submission preserves newer draft text and the pending submission", () => {
+  const pending = Object.freeze({ ...first });
+  assert.equal(copyPendingToDraft("Newer draft", pending), "Newer draft\nFirst");
+  assert.equal(copyPendingToDraft("", pending), "First");
+  assert.deepEqual(pending, first);
+  assert.throws(() => copyPendingToDraft("x".repeat(16000), pending), /Shorten the draft/);
+});
+
+test("discarding an unassigned submission leaves scoped pending messages and drafts intact", () => {
+  const keys = chatStorageKeys("agent", "conversation");
+  const storage = new Map([
+    ["kadan.draft.agent.pending", JSON.stringify(first)],
+    [keys.pending, JSON.stringify(next)],
+    [keys.draft, "Newer draft"],
+    ["kadan.draft.another-agent.pending", JSON.stringify(first)],
+  ]);
+  const unassigned = readPending(storage.get("kadan.draft.agent.pending"));
+  assert.equal(copyPendingToDraft(storage.get(keys.draft), unassigned), "Newer draft\nFirst");
+  assert.deepEqual(readPending(storage.get(keys.pending)), next);
+  discardUnassignedPending({ removeItem: (key) => storage.delete(key) }, "agent");
+  assert.equal(storage.has("kadan.draft.agent.pending"), false);
+  assert.deepEqual(readPending(storage.get(keys.pending)), next);
+  assert.equal(storage.get(keys.draft), "Newer draft");
+  assert.deepEqual(readPending(storage.get("kadan.draft.another-agent.pending")), first);
+});
+
+test("changing the active conversation preserves each conversation's unconfirmed send", () => {
+  const storage = new Map();
+  const original = chatStorageKeys("agent", "original");
+  const replacement = chatStorageKeys("agent", "replacement");
+  storage.set(original.pending, JSON.stringify(first));
+  storage.set(original.draft, "Still writing");
+
+  assert.equal(readPending(storage.get(replacement.pending)), null);
+  assert.equal(storage.get(replacement.draft), "Still writing");
+  storage.set(replacement.pending, JSON.stringify(next));
+  assert.deepEqual(readPending(storage.get(original.pending)), first);
+
+  assert.equal(confirmSend(readPending(storage.get(replacement.pending)), [next]), null);
+  storage.delete(replacement.pending);
+  assert.deepEqual(readPending(storage.get(original.pending)), first);
+  assert.equal(readPending(storage.get(chatStorageKeys("another-agent", "original").pending)), null);
+});
 
 test("a failed send cannot be overwritten by the next draft", () => {
   const pending = queueSend(null, first);

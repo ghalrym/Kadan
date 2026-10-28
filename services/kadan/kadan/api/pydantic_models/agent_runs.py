@@ -56,6 +56,9 @@ class ImageJobState(BaseModel):
     status: Literal[
         "queued", "running", "completed", "failed", "cancelling", "cancelled"
     ] = "queued"
+    upload_status: Literal["not_started", "pending", "completed", "failed"] = (
+        "not_started"
+    )
     owner_id: UUID | None = None
     lease_expires_at: datetime | None = None
     asset_id: UUID | None = None
@@ -75,6 +78,14 @@ class ImageJobState(BaseModel):
             raise ValueError("Lease timestamps require a timezone")
         if (self.status == "completed") != (self.asset_id is not None):
             raise ValueError("Only completed image jobs require an image asset")
+        if self.upload_status == "pending" and self.status in {
+            "completed",
+            "failed",
+            "cancelled",
+        }:
+            raise ValueError("An unresolved upload must remain recoverable")
+        if self.status == "completed" and self.upload_status == "failed":
+            raise ValueError("A failed upload cannot complete an image job")
         return self
 
 

@@ -1,6 +1,7 @@
 import asyncio
 import json
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import httpx
@@ -170,6 +171,25 @@ def test_unavailable_services_return_actionable_status():
     status = run(offline, lambda service: service.status())
     assert status.tsuchi.state == status.hikari.state == "unavailable"
     assert "local service is running" in status.hikari.message
+
+
+@pytest.mark.parametrize(
+    "download",
+    ["not_downloaded", "downloading", "cancelling", "cancelled", "failed", "complete"],
+)
+def test_status_preserves_the_selected_models_reported_download_state(download):
+    boundary = Boundary(settings=ready_settings(status=download))
+
+    def transport(request):
+        if request.url.path == "/model-lifecycle":
+            return httpx.Response(200, json={"state": "unloaded"})
+        return boundary(request)
+
+    status = run(transport, lambda service: service.status())
+    assert status.hikari.download_state == download
+    assert status.hikari.state == (
+        "ready" if download == "complete" else "model_required"
+    )
 
 
 def test_note_persists_without_contacting_hikari():
@@ -382,3 +402,141 @@ def test_ready_status_reports_the_selected_models_context_window(limits, expecte
         Boundary(settings=settings), lambda service: service.inference_status()
     )
     assert status.context_limit == expected
+
+
+@pytest.mark.parametrize("present", [True, False])
+def test_agent_persona_read_is_scoped_and_allows_absent_persona(present):
+    persona = resource("persona", markdown="Be precise.")
+
+    def response(request):
+        assert request.method == "GET"
+        assert request.url.path == "/api/agents/test/persona"
+        return httpx.Response(
+            200,
+            content=json.dumps(persona.model_dump(mode="json") if present else None),
+        )
+
+    result = run(response, lambda service: service.agent_persona("test"))
+    assert result == (persona if present else None)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"agent_key": "other"},
+        {"kind": "memory"},
+        {"deleted_at": NOW},
+    ],
+)
+def test_agent_persona_rejects_wrong_owner_kind_or_trashed_resource(changes):
+    persona = resource(**{"kind": "persona", **changes})
+    with pytest.raises(ServiceError):
+        run(
+            lambda request: httpx.Response(200, json=persona.model_dump(mode="json")),
+            lambda service: service.agent_persona("test"),
+        )
+
+
+@pytest.mark.parametrize(
+    "owned_present, selected",
+    [
+        (False, None),
+        (True, None),
+        (False, "other"),
+        (True, "same"),
+        (True, "other"),
+    ],
+)
+def test_call_instruction_snapshots_owned_and_selected_personas(
+    owned_present, selected
+):
+    async def check():
+        service = LocalServices(None, Settings(_env_file=None))
+        owned = (
+            resource("persona", markdown="Owned instruction.")
+            if owned_present
+            else None
+        )
+        selected_id = (
+            UUID("10000000-0000-4000-8000-000000000004")
+            if selected == "other"
+            else PERSONA_ID
+            if selected
+            else None
+        )
+        service.agent_persona = AsyncMock(return_value=owned)
+        service.resource = AsyncMock(
+            return_value=resource(
+                "persona",
+                id=selected_id or PERSONA_ID,
+                markdown="Selected instruction.",
+            )
+        )
+        instruction = await service.call_instruction("test", selected_id)
+        assert "Have a spoken conversation." in instruction
+        assert "You have no tools." in instruction
+        assert instruction.count("Owned instruction.") == int(owned_present)
+        assert instruction.count("Selected instruction.") == int(selected == "other")
+        service.agent_persona.assert_awaited_once_with("test")
+        if selected == "other":
+            service.resource.assert_awaited_once_with("test", selected_id)
+        else:
+            service.resource.assert_not_awaited()
+        if owned:
+            owned.markdown = "Later edit."
+            assert "Later edit." not in instruction
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"agent_key": "other"},
+        {"kind": "memory"},
+        {"deleted_at": NOW},
+    ],
+)
+def test_call_instruction_rejects_unavailable_selected_persona(changes):
+    async def check():
+        service = LocalServices(None, Settings(_env_file=None))
+        service.agent_persona = AsyncMock(return_value=None)
+        service.resource = AsyncMock(
+            return_value=resource(**{"kind": "persona", **changes})
+        )
+        with pytest.raises(
+            ServiceError, match="selected persona is no longer available"
+        ):
+            await service.call_instruction("test", PERSONA_ID)
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("with_selected", [False, True])
+def test_call_instruction_preserves_full_text_at_limit_and_rejects_overflow(
+    with_selected,
+):
+    async def check():
+        service = LocalServices(None, Settings(_env_file=None))
+        owned = resource("persona", markdown="")
+        service.agent_persona = AsyncMock(return_value=owned)
+        selected_id = (
+            UUID("10000000-0000-4000-8000-000000000004") if with_selected else None
+        )
+        service.resource = AsyncMock(
+            return_value=resource(
+                "persona",
+                id=selected_id or PERSONA_ID,
+                markdown="Selected instruction.",
+            )
+        )
+        base = await service.call_instruction("test", selected_id)
+        owned.markdown = "x" * (8000 - len(base))
+        instruction = await service.call_instruction("test", selected_id)
+        assert len(instruction) == 8000
+        assert owned.markdown in instruction
+        owned.markdown += "x"
+        with pytest.raises(ServiceError, match="8,000-character limit"):
+            await service.call_instruction("test", selected_id)
+
+    asyncio.run(check())

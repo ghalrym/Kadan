@@ -3,6 +3,7 @@
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4, uuid5
 
@@ -15,15 +16,21 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from kadan.api.config import ServiceError
 from kadan.api.pydantic_models.agent_runs import AgentRun, ImageJob, RunMessage
-from kadan.api.pydantic_models.resources import Message, Resource
+from kadan.api.pydantic_models.resources import Message, Resource, ResourceKind
 from kadan.runner.agent_inference import ToolCommand, tool_characters
 from kadan.runner.agent_runs import (
     MAX_CONTEXT,
     AgentRuns,
+    RunState,
     context_characters,
     transcript_messages,
 )
-from kadan.runner.tools import ALL_TOOLS, CONVERSATION_TOOLS
+from kadan.runner.tools import (
+    ALL_TOOLS,
+    CONVERSATION_TOOLS,
+    MEMORY_TOOLS,
+    PERSONA_TOOLS,
+)
 
 
 class Boundary:
@@ -85,6 +92,9 @@ class Boundary:
     async def resource(self, key, conversation_id):
         assert key == "test" and conversation_id == self.conversation.id
         return self.conversation
+
+    async def agent_persona(self, key):
+        assert key == "test"
 
     async def inference_status(self):
         return SimpleNamespace(state="ready", model_id="selected-model")
@@ -377,14 +387,123 @@ def test_instructions_are_reread_when_a_new_context_is_built(boundary):
     assert second[0].content.startswith("Use brief messages.")
 
 
-def test_recovery_uses_persisted_instructions_without_reloading_file(boundary):
+def test_invalid_instruction_encoding_fails_before_inference(boundary):
+    instruction_file = Path(boundary.settings.agent_instruction_file)
+    instruction_file.write_bytes(b"\xff")
+    boundary.controller.inference = Commands()
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert str(instruction_file) in boundary.current.error
+    assert "could not be decoded" in boundary.current.error
+    assert "text encoding" in boundary.current.error
+    assert boundary.current.owner_id is None
+    assert boundary.current.lease_expires_at is None
+    assert boundary.current.transcript == []
+    assert boundary.current.delivered_message_ids == []
+    assert boundary.controller.inference.calls == []
+    assert boundary.delivery_attempts == []
+    assert boundary.deliveries == []
+
+
+@pytest.mark.parametrize("failure", ["missing", "directory"])
+def test_unreadable_instructions_fail_before_inference(boundary, failure):
+    instruction_file = Path(boundary.settings.agent_instruction_file)
+    instruction_file.unlink()
+    if failure == "directory":
+        instruction_file.mkdir()
+    boundary.controller.inference = Commands()
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert str(instruction_file) in boundary.current.error
+    assert boundary.current.owner_id is None
+    assert boundary.current.lease_expires_at is None
+    assert boundary.current.transcript == []
+    assert boundary.controller.inference.calls == []
+    assert boundary.delivery_attempts == []
+    assert boundary.deliveries == []
+
+
+@pytest.mark.parametrize("failure", ["malformed", "missing"])
+def test_recovery_uses_persisted_instructions_without_reloading_file(boundary, failure):
+    transcript = [
+        RunMessage(role="system", content="Saved instructions"),
+        RunMessage(role="user", content="Existing context"),
+    ]
+    boundary.current = boundary.current.model_copy(update={"transcript": transcript})
+    instruction_file = Path(boundary.settings.agent_instruction_file)
+    if failure == "malformed":
+        instruction_file.write_bytes(b"\xff")
+    else:
+        instruction_file.unlink()
     boundary.controller.inference = Commands(finish())
-    run = boundary.start_owned(
-        transcript=[RunMessage(role="user", content="Existing context")]
-    )
-    boundary.settings.agent_instruction_file = "/does-not-exist/AGENT.md"
-    asyncio.run(boundary.controller.advance(run))
+    asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.current.status == "completed"
+    assert boundary.current.owner_id is None
+    assert boundary.current.lease_expires_at is None
+    assert boundary.current.transcript[:2] == transcript
+    assert len(boundary.controller.inference.calls) == 1
+    assert [item.content for item in boundary.controller.inference.calls[0]] == [
+        item.content for item in transcript
+    ]
+    assert boundary.deliveries == []
+
+
+def test_repaired_instructions_allow_a_new_queued_run(boundary):
+    queued = boundary.current
+    instruction_file = Path(boundary.settings.agent_instruction_file)
+    instruction_file.write_bytes(b"\xff")
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    failed = boundary.current
+    assert failed.status == "failed"
+    assert boundary.controller.inference.calls == []
+    boundary.current = queued.model_copy(update={"id": uuid4()})
+    instruction_file.write_text("Repaired instructions.")
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert boundary.current.owner_id is None
+    assert boundary.current.lease_expires_at is None
+    assert boundary.current.error is None
+    assert boundary.current.transcript[0].content == "Repaired instructions."
+    assert len(boundary.controller.inference.calls) == 1
+    assert boundary.controller.inference.calls[0][0].content == "Repaired instructions."
+    assert boundary.deliveries == []
+
+
+@pytest.mark.parametrize("loss", ["cancelled", "another_owner", "expired"])
+def test_instruction_decode_failure_respects_lease_fencing(boundary, monkeypatch, loss):
+    Path(boundary.settings.agent_instruction_file).write_bytes(b"\xff")
+    boundary.controller.inference = Commands()
+
+    async def read_after_ownership_loss(function):
+        if loss == "cancelled":
+            boundary.cancel()
+        else:
+            boundary.current = boundary.current.model_copy(
+                update={"owner_id": uuid4()}
+                if loss == "another_owner"
+                else {"lease_expires_at": datetime.now(UTC) - timedelta(seconds=1)}
+            )
+        return function()
+
+    monkeypatch.setattr(
+        "kadan.runner.agent_runs.asyncio.to_thread", read_after_ownership_loss
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == (
+        "cancelled" if loss == "cancelled" else "running"
+    )
+    assert boundary.current.error is None
+    if loss == "cancelled":
+        assert boundary.current.owner_id is None
+        assert boundary.current.lease_expires_at is None
+    elif loss == "another_owner":
+        assert boundary.current.owner_id != boundary.controller.owner
+    else:
+        assert boundary.current.lease_expires_at < datetime.now(UTC)
+    assert boundary.controller.inference.calls == []
+    assert boundary.delivery_attempts == []
+    assert boundary.deliveries == []
 
 
 def test_recovery_can_replay_the_last_allowed_command(boundary):
@@ -694,7 +813,7 @@ def test_every_conversation_and_computer_tool_is_bound(boundary):
     boundary.controller.inference = Commands(finish())
     asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.controller.inference.tools == [
-        [tool.name for tool in CONVERSATION_TOOLS]
+        [tool.name for tool in [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]]
     ]
 
     boundary.sandbox = Computer()
@@ -732,6 +851,60 @@ def test_computer_result_returns_to_the_agent_and_the_run_continues(boundary):
     assert replay[-2].tool_call_id == replay[-3].tool_calls[0]["id"]
 
 
+@pytest.mark.parametrize("loss", ["cancelled", "another_owner", "expired"])
+def test_ownership_lost_after_command_saved_prevents_computer_dispatch(boundary, loss):
+    boundary.sandbox = Computer()
+    boundary.controller.inference = Commands(command("bash_exec", command="echo hi"))
+
+    async def check():
+        state = await boundary.controller.infer_command(
+            RunState(
+                run=boundary.start_owned(
+                    transcript=[RunMessage(role="user", content="Run a command")]
+                )
+            )
+        )
+        assert (
+            boundary.current.transcript[-1].content
+            == state["command"].model_dump_json()
+        )
+        if loss == "cancelled":
+            boundary.cancel()
+        else:
+            changes = (
+                {"owner_id": uuid4()}
+                if loss == "another_owner"
+                else {"lease_expires_at": datetime.now(UTC) - timedelta(seconds=1)}
+            )
+            boundary.current = boundary.current.model_copy(update=changes)
+        with pytest.raises(ServiceError, match="no longer owned"):
+            await boundary.controller.invoke_tool(RunState(**state))
+
+    asyncio.run(check())
+    assert boundary.sandbox.calls == []
+    assert boundary.current.transcript[-1].role == "assistant"
+
+
+def test_saved_command_dispatches_while_run_remains_owned(boundary):
+    boundary.sandbox = Computer()
+    boundary.controller.inference = Commands(command("bash_exec", command="echo hi"))
+
+    async def check():
+        state = await boundary.controller.infer_command(
+            RunState(
+                run=boundary.start_owned(
+                    transcript=[RunMessage(role="user", content="Run a command")]
+                )
+            )
+        )
+        await boundary.controller.invoke_tool(RunState(**state))
+
+    asyncio.run(check())
+    assert len(boundary.sandbox.calls) == 1
+    assert tool_result(boundary)["tool"] == "bash_exec"
+    assert boundary.current.status == "running"
+
+
 def test_computer_errors_become_tool_results(boundary):
     boundary.sandbox = Computer(ServiceError("The computer is unavailable"))
     boundary.controller.inference = Commands(
@@ -740,6 +913,149 @@ def test_computer_errors_become_tool_results(boundary):
     asyncio.run(boundary.controller.process(boundary.current))
     assert tool_result(boundary, -2)["error"] == "The computer is unavailable"
     assert boundary.current.status == "completed"
+
+
+@pytest.mark.parametrize("parent_id", [None, uuid4()])
+def test_workspace_creation_uses_the_run_agent_without_a_computer(boundary, parent_id):
+    document_id = uuid4()
+    saved = boundary.conversation.model_copy(
+        update={
+            "id": document_id,
+            "kind": ResourceKind.SPACE,
+            "title": "Notes",
+            "markdown": "# Plan",
+            "messages": [],
+            "parent_id": parent_id,
+        }
+    )
+    original_request = boundary.json_request
+
+    async def request(service, method, path, **kwargs):
+        if method == "POST":
+            assert (service, path, kwargs) == (
+                "Tsuchi",
+                "/api/agents/test/resources",
+                {
+                    "json": {
+                        "kind": "space",
+                        "title": "Notes",
+                        "markdown": "# Plan",
+                        "parent_id": str(parent_id) if parent_id else None,
+                    }
+                },
+            )
+            return saved.model_dump(mode="json")
+        return await original_request(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    run = boundary.start_owned()
+    asyncio.run(
+        boundary.controller.invoke_tool(
+            RunState(
+                run=run,
+                command=command(
+                    "create_workspace_document",
+                    title=" Notes ",
+                    markdown="# Plan",
+                    parent_id=parent_id,
+                ),
+            )
+        )
+    )
+    assert tool_result(boundary) == {
+        "tool": "create_workspace_document",
+        "document_id": str(document_id),
+        "title": "Notes",
+        "parent_id": str(parent_id) if parent_id else None,
+        "version": 1,
+    }
+    assert boundary.current.status == "running"
+    assert boundary.deliveries == []
+
+
+@pytest.mark.parametrize("status", [400, 404, 409, 503])
+def test_workspace_write_failure_is_reported_without_success_or_retry(boundary, status):
+    original_request = boundary.json_request
+    writes = []
+
+    async def request(service, method, path, **kwargs):
+        if method == "POST":
+            writes.append(path)
+            raise ServiceError(
+                "Parent unavailable" if status < 500 else "Timed out", status
+            )
+        return await original_request(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    asyncio.run(
+        boundary.controller.invoke_tool(
+            RunState(
+                run=boundary.start_owned(),
+                command=command(
+                    "create_workspace_document", title="Notes", parent_id=uuid4()
+                ),
+            )
+        )
+    )
+    result = tool_result(boundary)
+    assert "document_id" not in result
+    assert ("may have been saved" in result["error"]) is (status >= 500)
+    assert len(writes) == 1
+
+
+def test_restart_does_not_repeat_an_unconfirmed_workspace_write(boundary):
+    original_request = boundary.json_request
+
+    async def request(service, method, path, **kwargs):
+        assert method != "POST"
+        return await original_request(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    asyncio.run(
+        boundary.controller.invoke_tool(
+            RunState(
+                run=boundary.start_owned(),
+                command=command("create_workspace_document", title="Notes"),
+                replayed=True,
+            )
+        )
+    )
+    assert "check Workspace before retrying" in tool_result(boundary)["error"]
+    assert "document_id" not in tool_result(boundary)
+
+
+def test_cancelled_run_cannot_create_a_workspace_document(boundary):
+    run = boundary.start_owned()
+    boundary.cancel()
+    with pytest.raises(ServiceError, match="no longer owned"):
+        asyncio.run(
+            boundary.controller.invoke_tool(
+                RunState(
+                    run=run, command=command("create_workspace_document", title="Notes")
+                )
+            )
+        )
+
+
+def test_invalid_workspace_response_is_an_uncertain_write(boundary):
+    original_request = boundary.json_request
+
+    async def request(service, method, path, **kwargs):
+        if method == "POST":
+            return {"id": str(uuid4())}
+        return await original_request(service, method, path, **kwargs)
+
+    boundary.json_request = request
+    asyncio.run(
+        boundary.controller.invoke_tool(
+            RunState(
+                run=boundary.start_owned(),
+                command=command("create_workspace_document", title="Notes"),
+            )
+        )
+    )
+    assert "may have been saved" in tool_result(boundary)["error"]
+    assert "document_id" not in tool_result(boundary)
 
 
 @pytest.mark.parametrize(
@@ -806,7 +1122,7 @@ def test_transcript_budget_leaves_room_for_the_bound_tools(boundary):
     status = SimpleNamespace(context_limit=65536)
     assert boundary.controller.transcript_limit(status) == context_characters(
         65536
-    ) - tool_characters(CONVERSATION_TOOLS)
+    ) - tool_characters([*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS])
     boundary.controller.services.sandbox.configured = True
     assert boundary.controller.transcript_limit(status) == context_characters(
         65536
@@ -879,6 +1195,66 @@ def test_zero_context_budget_does_not_fall_back_to_default(boundary):
         asyncio.run(boundary.controller.context(boundary.current, limit=0))
 
 
+@pytest.mark.parametrize("loss", ["message_limit", "budget", "removed", "role_changed"])
+def test_quoted_trigger_id_does_not_admit_an_absent_user_message(boundary, loss):
+    target = boundary.conversation.messages[0]
+    quote = Message(role="user", content=f"The earlier message ID was {target.id}")
+    if loss == "message_limit":
+        messages = [
+            target,
+            *[Message(role="user", content="Later") for _ in range(96)],
+            quote,
+        ]
+    elif loss == "budget":
+        messages = [target, Message(role="assistant", content="x" * MAX_CONTEXT), quote]
+    elif loss == "removed":
+        messages = [quote]
+    else:
+        messages = [target.model_copy(update={"role": "assistant"}), quote]
+    boundary.conversation = boundary.conversation.model_copy(
+        update={"messages": messages}
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert (
+        boundary.current.error
+        == "The triggering message is outside the agent context window."
+    )
+    assert boundary.current.owner_id is None
+    assert boundary.current.lease_expires_at is None
+    assert boundary.controller.inference.calls == []
+    assert boundary.deliveries == []
+
+
+def test_actual_user_trigger_is_admitted_at_the_existing_history_limit(boundary):
+    target = boundary.conversation.messages[0]
+    messages = [
+        Message(role="assistant", content="Older excluded history"),
+        target,
+        *[Message(role="user", content=f"Later {index}") for index in range(96)],
+    ]
+    boundary.conversation = boundary.conversation.model_copy(
+        update={"messages": messages}
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert len(boundary.controller.inference.calls) == 1
+    admitted = boundary.controller.inference.calls[0][1:-1]
+    assert [item.content for item in admitted] == [
+        f"[message {message.id}] {message.content}" for message in messages[-97:]
+    ]
+
+
+def test_context_without_a_user_trigger_keeps_its_existing_admission(boundary):
+    boundary.current = boundary.current.model_copy(update={"trigger_message_id": None})
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert len(boundary.controller.inference.calls) == 1
+
+
 def test_runs_keep_history_and_tool_results_up_to_the_models_window(boundary):
     async def inference_status():
         return SimpleNamespace(
@@ -904,3 +1280,179 @@ def test_no_tool_call_completes_after_one_inference_without_delivery(boundary):
     assert boundary.current.owner_id is None
     assert boundary.current.lease_expires_at is None
     assert boundary.deliveries == []
+
+
+def persona_record(boundary, markdown="Use concise answers."):
+    return boundary.conversation.model_copy(
+        update={
+            "id": uuid4(),
+            "kind": ResourceKind.PERSONA,
+            "markdown": markdown,
+            "messages": [],
+        }
+    )
+
+
+def test_owned_persona_applies_without_a_selected_persona(boundary, monkeypatch):
+    persona = persona_record(boundary)
+
+    async def read(key):
+        assert key == "test"
+        return persona
+
+    monkeypatch.setattr(boundary, "agent_persona", read)
+    first = asyncio.run(boundary.controller.context(boundary.current))
+    assert "Your saved persona:\nUse concise answers." in first[0].content
+    persona.markdown = "Use detailed answers."
+    second = asyncio.run(boundary.controller.context(boundary.current))
+    assert "Use detailed answers." in second[0].content
+    assert "Use concise answers." in first[0].content
+
+
+@pytest.mark.parametrize("same_persona", [True, False])
+def test_explicit_persona_supplements_owned_persona_once(
+    boundary, monkeypatch, same_persona
+):
+    owned = persona_record(boundary, "Owned instructions")
+    selected = (
+        owned if same_persona else persona_record(boundary, "Selected instructions")
+    )
+    original_resource = boundary.resource
+
+    async def read(key):
+        return owned
+
+    async def resource(key, resource_id):
+        if resource_id == selected.id:
+            return selected
+        return await original_resource(key, resource_id)
+
+    monkeypatch.setattr(boundary, "agent_persona", read)
+    monkeypatch.setattr(boundary, "resource", resource)
+    run = boundary.current.model_copy(update={"persona_id": selected.id})
+    context = asyncio.run(boundary.controller.context(run))
+    assert context[0].content.count("Owned instructions") == 1
+    if not same_persona:
+        assert context[0].content.endswith("Selected persona:\nSelected instructions")
+
+
+def test_recovery_does_not_reread_owned_persona(boundary, monkeypatch):
+    async def unavailable(key):
+        raise AssertionError("Prepared work must keep its persona snapshot")
+
+    monkeypatch.setattr(boundary, "agent_persona", unavailable)
+    boundary.controller.inference = Commands(finish())
+    run = boundary.start_owned(
+        transcript=[RunMessage(role="system", content="Saved persona")]
+    )
+    asyncio.run(boundary.controller.advance(run))
+    assert boundary.current.status == "completed"
+    assert boundary.current.transcript[0].content == "Saved persona"
+
+
+def test_persona_save_uses_agent_scope_and_read_version(boundary, monkeypatch):
+    persona = persona_record(boundary)
+    original_request = boundary.json_request
+    writes = []
+
+    async def request(service, method, path, **kwargs):
+        if path.endswith("/persona"):
+            writes.append((method, path, kwargs["json"]))
+            return persona.model_dump(mode="json")
+        return await original_request(service, method, path, **kwargs)
+
+    monkeypatch.setattr(boundary, "json_request", request)
+    boundary.controller.inference = Commands(
+        command(
+            "update_persona",
+            title="My persona",
+            markdown="Be concise.",
+            expected_version=None,
+        ),
+        finish(),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert writes == [
+        (
+            "PUT",
+            "/api/agents/test/persona",
+            {
+                "title": "My persona",
+                "markdown": "Be concise.",
+                "expected_version": None,
+            },
+        )
+    ]
+    assert tool_result(boundary, -2)["persona"]["version"] == 1
+    assert boundary.current.status == "completed"
+
+
+def test_recovered_persona_write_is_not_repeated(boundary):
+    pending = command(
+        "update_persona", title="My persona", markdown="Be concise.", expected_version=1
+    )
+    run = boundary.start_owned(
+        transcript=[
+            RunMessage(role="system", content="Saved instructions"),
+            RunMessage(role="assistant", content=pending.model_dump_json()),
+        ]
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.advance(run))
+    assert "read_persona before retrying" in tool_result(boundary, -2)["error"]
+    assert len(boundary.controller.inference.calls) == 1
+
+
+def test_recovered_persona_read_is_repeated(boundary):
+    run = boundary.start_owned(
+        transcript=[
+            RunMessage(role="system", content="Saved instructions"),
+            RunMessage(
+                role="assistant", content=command("read_persona").model_dump_json()
+            ),
+        ]
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.advance(run))
+    assert tool_result(boundary, -2) == {"persona": None}
+
+
+def test_cancelled_run_cannot_start_persona_save(boundary):
+    from kadan.runner.agent_runs import RunConversation
+    from kadan.runner.tools.persona import UpdatePersonaArguments
+
+    conversation = RunConversation(boundary.controller, boundary.start_owned())
+    boundary.cancel()
+    with pytest.raises(ServiceError, match="no longer owned"):
+        asyncio.run(
+            conversation.update_persona(
+                UpdatePersonaArguments(
+                    title="Persona",
+                    markdown="Be concise.",
+                    expected_version=None,
+                )
+            )
+        )
+
+
+def test_persona_conflict_is_a_tool_result(boundary, monkeypatch):
+    original_request = boundary.json_request
+
+    async def conflict(service, method, path, **kwargs):
+        if path.endswith("/persona"):
+            raise ServiceError("Persona changed; read it again.", 409)
+        return await original_request(service, method, path, **kwargs)
+
+    monkeypatch.setattr(boundary, "json_request", conflict)
+    boundary.controller.inference = Commands(
+        command(
+            "update_persona",
+            title="Persona",
+            markdown="Be concise.",
+            expected_version=2,
+        ),
+        finish(),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert tool_result(boundary, -2) == {"error": "Persona changed; read it again."}
+    assert boundary.current.status == "completed"

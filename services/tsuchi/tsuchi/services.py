@@ -1,3 +1,4 @@
+import fcntl
 import hashlib
 import json
 import mimetypes
@@ -6,15 +7,17 @@ import tempfile
 import warnings
 import wave
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 from kadan_tracing import traced
 from PIL import Image, UnidentifiedImageError
 
 from .config import StorageError
-from .models import Asset, Metadata, utc_now
+from .models import Asset, ImageJob, Metadata, utc_now
 from .repository import Repository
 
 RASTER_MEDIA_TYPES = {
@@ -87,6 +90,29 @@ class FileStorage:
     def blob_path(self, asset_id: UUID) -> Path:
         return self.blob_dir / str(UUID(str(asset_id)))
 
+    @contextmanager
+    def _image_upload_lock(
+        self, job_id: UUID, *, blocking: bool = True
+    ) -> Iterator[bool]:
+        # Keep the inode across restarts and replays; unlinking permits two locks
+        # for the same job. A crashed uploader releases its lock automatically.
+        with (self.temp_dir / f"image-{job_id}.lock").open("a+b") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+            except BlockingIOError:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def resolve_image_upload(self, key: str, job_id: UUID) -> ImageJob:
+        with self._image_upload_lock(job_id, blocking=False) as acquired:
+            if not acquired:
+                return self.repository.get_image_job(key, job_id)
+            return self.repository.fail_image_upload(key, job_id)
+
     @traced("kadan.storage.upload")
     def upload(
         self,
@@ -95,6 +121,32 @@ class FileStorage:
         filename: str | None,
         metadata: Metadata,
         asset_id: UUID | None = None,
+        image_job_id: UUID | None = None,
+    ) -> Asset:
+        if image_job_id is None:
+            return self._upload(key, source, filename, metadata, asset_id)
+        with self._image_upload_lock(image_job_id):
+            job = self.repository.get_image_job(key, image_job_id)
+            if job.upload_status not in {"pending", "completed"}:
+                raise StorageError("This image upload is closed", 409)
+            if asset_id != uuid5(job.id, "image"):
+                raise StorageError("Image uploads require their reserved artwork", 409)
+            try:
+                return self._upload(
+                    key, source, filename, metadata, asset_id, image_job_id
+                )
+            except Exception:
+                self.repository.fail_image_upload(key, image_job_id)
+                raise
+
+    def _upload(
+        self,
+        key: str,
+        source: BinaryIO,
+        filename: str | None,
+        metadata: Metadata,
+        asset_id: UUID | None = None,
+        image_job_id: UUID | None = None,
     ) -> Asset:
         self.repository.get_agent(key)
         asset_id = asset_id or uuid4()
@@ -149,6 +201,8 @@ class FileStorage:
                 os.close(directory_descriptor)
             # Retain a published immutable blob if the database write fails. A
             # retry with the same ID/content can finish registration after a crash.
+            if image_job_id is not None:
+                return self.repository.create_asset(asset, image_job_id)
             return self.repository.create_asset(asset)
         finally:
             temporary.unlink(missing_ok=True)

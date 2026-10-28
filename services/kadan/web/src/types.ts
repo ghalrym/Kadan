@@ -3,6 +3,13 @@ export interface Agent {
   name: string;
   created_at: string;
 }
+export interface Runner {
+  runner_id: string;
+  worker_id: string;
+  capacity: number;
+  lease_expires_at: string;
+  agent_keys: string[];
+}
 export interface Message {
   id: string;
   role: "system" | "user" | "assistant" | "tool";
@@ -48,6 +55,7 @@ export interface Status {
     message: string;
     tier: string | null;
     model_id: string | null;
+    download_state?: "not_downloaded" | "downloading" | "cancelling" | "cancelled" | "failed" | "complete" | null;
     /** Whether the selected language model is resident in Hikari; null when unknown. */
     model_state?: "unloaded" | "loading" | "ready" | "offloaded" | "unloading" | "error" | null;
     settings_url: string | null;
@@ -105,10 +113,11 @@ export interface PetJob {
   agent_key: string;
   prompt: string;
   origin: "generated" | "imported";
+  reference_mode: "single_image" | "character_sheet";
   status: "queued" | "running" | "cancelling" | "cancelled" | "interrupted" | "failed" | "ready";
   stage: string;
   completed_steps: number;
-  total_steps: 74;
+  total_steps: 74 | 75;
   steps: PetStep[];
   rejections: { step: PetStep; reason: string }[];
   parent_pet_id?: string | null;

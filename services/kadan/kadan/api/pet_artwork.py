@@ -209,32 +209,68 @@ def base_prompt(description: str) -> str:
     )
 
 
+def character_sheet_prompt(description: str) -> str:
+    return (
+        f"Create a character reference sheet for ONE character design: {description.strip()}. "
+        "Show the SAME character in front, side and back full-body views plus a few expressive "
+        "poses. All views must share identity, proportions, colors, markings, costume and art "
+        "style; do not introduce different characters. Separate the views with generous empty "
+        "space on a flat pure magenta (#ff00ff) background. Keep every view fully inside the "
+        "image. No text, labels, borders, grid lines, shadows or scenery. No magenta on the character."
+    )
+
+
+def sheet_pose_prompt() -> str:
+    return (
+        "The reference is a character sheet showing several views of the SAME character. "
+        "Use those views only to understand the design. Draw exactly ONE character in ONE pose; "
+        "do not reproduce the sheet, its layout, panels, grid, labels or multiple views. "
+        "Use a fixed camera with the neutral character about 260 pixels wide or less and "
+        "292 pixels tall or less on this 384x416 canvas, centered at x=192 with feet at y=368. "
+    )
+
+
+def sheet_base_prompt(description: str) -> str:
+    return sheet_pose_prompt() + base_prompt(description)
+
+
 def frame_name(row: PetRow, index: int) -> str:
     if not 0 <= index < row.frame_count:
         raise ValueError(f"Invalid frame index for {row.name}: {index}")
     return f"{row.name}/{index}"
 
 
-def frame_prompt(description: str, row: PetRow, index: int) -> str:
+def frame_prompt(
+    description: str, row: PetRow, index: int, *, character_sheet: bool = False
+) -> str:
     frame_name(row, index)
     direction = ""
     if row.name in {"running-right", "running-left"}:
         direction = f"Entire body facing {row.name.removeprefix('running-')}, in a running stride. "
+    standing_level = (
+        "standing floor y=368"
+        if character_sheet
+        else "same standing level as the reference"
+    )
     grounding = (
-        "Keep both legs straight and both feet flat at the same standing level as the reference. "
+        f"Keep both legs straight and both feet flat at the {standing_level}. "
         "Do not bend, cross or lift the legs, stand on tiptoe, crouch or float; only the requested "
         "upper-body, arm, head and eye movement changes. "
         if row.name not in {"running-right", "running-left", "jumping"}
         else ""
     )
-    return (
+    camera = (
+        "Keep the same body scale and fixed camera across animation poses. "
+        if character_sheet
+        else "Preserve the reference's body scale, fixed camera and horizontal center at x=192. "
+    )
+    prompt = (
         f"Use the reference to draw exactly ONE full-body character ({description.strip()}) "
         f"in exactly ONE animation pose: {direction}{row.poses[index]}. {grounding}"
         "This is a single 384x416 image, not a sprite sheet or sequence. Keep the reference "
         "character's identity, body proportions, colors, markings, costume and art style. "
         "Generate a genuine articulated pose, with the required limb, face and head changes; "
-        "do not merely translate, rotate or scale the reference picture. Preserve the reference's "
-        "body scale, fixed camera and horizontal center at x=192. The standing floor is y=368; "
+        f"do not merely translate, rotate or scale the reference picture. {camera}The standing floor is y=368; "
         "airborne jump poses must rise above that floor. Preserve body proportions when crouching "
         "or extending limbs; never enlarge the character to fill the image. Keep all extremities "
         "inside the image with generous empty margins on every side and above. "
@@ -243,6 +279,7 @@ def frame_prompt(description: str, row: PetRow, index: int) -> str:
         "No magenta on the character. Up is screen top (0 degrees), right is 90 degrees, "
         "down is 180 degrees, left is 270 degrees."
     )
+    return sheet_pose_prompt() + prompt if character_sheet else prompt
 
 
 def _png(data: bytes, expected: tuple[int, int] | None = None) -> Image.Image:
@@ -318,6 +355,12 @@ def prepare_base(png: bytes) -> bytes:
         character, ((SOURCE_CELL[0] - character.width) // 2, 368 - character.height)
     )
     return _encode(canonical)
+
+
+def prepare_character_sheet(png: bytes) -> bytes:
+    # Preserve the reference layout, never fit or pack its multiple silhouettes
+    # into a single animation cell. This validates structure, not visual identity.
+    return _encode(_png(png))
 
 
 def prepare_frame(png: bytes, row: PetRow, index: int) -> bytes:

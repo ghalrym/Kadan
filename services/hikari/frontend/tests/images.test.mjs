@@ -146,8 +146,8 @@ test('normalizes dimensions to the native grid and resource limits', async () =>
 })
 
 // Replace browser decoding/canvas boundaries only; exercise normalization and validation.
-async function withUploadBrowser({ width = 100, height = 70, pixels = [255, 255, 255, 255], decodeFails = false } = {}, run) {
-  const calls = { revoked: [], draws: [], outputPixels: null }
+async function withUploadBrowser({ width = 100, height = 70, pixels = [255, 255, 255, 255], originalPixels = [], decodeFails = false } = {}, run) {
+  const calls = { revoked: [], draws: [], reads: [], encodes: 0, outputPixels: null }
   const original = Object.fromEntries(['Image', 'document'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
   const create = URL.createObjectURL
   const revoke = URL.revokeObjectURL
@@ -159,14 +159,33 @@ async function withUploadBrowser({ width = 100, height = 70, pixels = [255, 255,
     async decode() { if (decodeFails) throw new Error('invalid image') }
   } })
   Object.defineProperty(globalThis, 'document', { configurable: true, value: {
-    createElement: () => ({
-      getContext: () => ({
-        drawImage: (...args) => calls.draws.push(args.slice(1)),
-        getImageData: () => ({ data: new Uint8ClampedArray(pixels) }),
-        putImageData: value => { calls.outputPixels = [...value.data] },
-      }),
-      toDataURL: () => 'data:image/png;base64,cG5n',
-    }),
+    createElement: () => {
+      let draw
+      const canvas = {
+        getContext: () => ({
+          clearRect: () => {},
+          drawImage: (...args) => { draw = args.slice(1); calls.draws.push(draw) },
+          getImageData: (x, y, readWidth, readHeight) => {
+            // Crops at native resolution expose original pixels; scaled output is independent.
+            const native = draw.length === 8 && draw[2] === draw[6] && draw[3] === draw[7]
+            calls.reads.push({ native, width: canvas.width, height: canvas.height, readWidth, readHeight })
+            if (!native) return { data: new Uint8ClampedArray(pixels) }
+            const data = new Uint8ClampedArray(readWidth * readHeight * 4)
+            for (let i = 0; i < data.length; i += 4) data.set(pixels, i)
+            for (const pixel of originalPixels) {
+              const localX = pixel.x - draw[0] + draw[4] - x
+              const localY = pixel.y - draw[1] + draw[5] - y
+              if (localX >= 0 && localX < readWidth && localY >= 0 && localY < readHeight)
+                data[(localY * readWidth + localX) * 4 + 3] = pixel.alpha
+            }
+            return { data }
+          },
+          putImageData: value => { calls.outputPixels = [...value.data] },
+        }),
+        toDataURL: () => { calls.encodes++; return 'data:image/png;base64,cG5n' },
+      }
+      return canvas
+    },
   } })
   try { await run(calls) } finally {
     URL.createObjectURL = create
@@ -190,7 +209,7 @@ test('normalizes source and matching mask identically and converts mask luminanc
     assert.equal(source.originalHeight, 70)
     assert.deepEqual([source.width, source.height], [96, 64])
     assert.deepEqual([mask.width, mask.height], [96, 64])
-    assert.deepEqual(calls.draws, [[0, 0, 96, 64], [0, 0, 96, 64]])
+    assert.deepEqual(calls.draws.filter(draw => draw.length === 4), [[0, 0, 96, 64], [0, 0, 96, 64]])
     assert.deepEqual(calls.outputPixels, [54, 54, 54, 255])
     assert.deepEqual(calls.revoked, ['blob:local-upload', 'blob:local-upload'])
   })
@@ -221,4 +240,47 @@ test('releases invalid image uploads and gives a recoverable decoding error', as
     await assert.rejects(prepareImageUpload(uploadFile), /could not be read/)
     assert.deepEqual(calls.revoked, ['blob:local-upload'])
   })
+})
+
+test('rejects original mask nonopacity even when resizing produces opaque pixels', async t => {
+  const { prepareImageUpload } = await uploadApi()
+  for (const [width, height, x, y, alpha] of [
+    [8192, 32, 0, 0, 254],
+    [8193, 513, 512, 511, 128],
+    [8193, 513, 8192, 512, 0],
+  ]) {
+    await t.test(`alpha ${alpha} at (${x}, ${y}) in ${width} × ${height}`, async () => {
+      await withUploadBrowser({ width, height, originalPixels: [{ x, y, alpha }] }, async calls => {
+        const source = await prepareImageUpload(uploadFile)
+        assert.deepEqual([source.width, source.height], [3072, height === 32 ? 32 : 192])
+        await assert.rejects(prepareImageUpload(uploadFile, source), /opaque mask.*Transparent masks are not supported/)
+        assert.equal(calls.encodes, 1)
+        assert.equal(calls.outputPixels, null)
+        assert.deepEqual(calls.revoked, ['blob:local-upload', 'blob:local-upload'])
+      })
+    })
+  }
+})
+
+test('accepts opaque original masks with bounded inspection and the source resize', async () => {
+  const { prepareImageUpload } = await uploadApi()
+  for (const [width, height] of [[32, 32], [8192, 32], [8193, 513]]) {
+    await withUploadBrowser({ width, height, pixels: [255, 0, 0, 255],
+      originalPixels: [{ x: width - 1, y: height - 1, alpha: 255 }] }, async calls => {
+      const source = await prepareImageUpload(uploadFile)
+      const mask = await prepareImageUpload(uploadFile, source)
+      assert.deepEqual([mask.width, mask.height], [source.width, source.height])
+      assert.deepEqual([mask.originalWidth, mask.originalHeight], [width, height])
+      assert.equal(mask.dataUrl, 'data:image/png;base64,cG5n')
+      assert.deepEqual(calls.outputPixels, [54, 54, 54, 255])
+      assert.deepEqual(calls.draws.filter(draw => draw.length === 4),
+        [[0, 0, source.width, source.height], [0, 0, source.width, source.height]])
+      const inspections = calls.reads.filter(read => read.native)
+      assert.ok(inspections.length > 0)
+      assert.ok(inspections.every(read => read.width <= 512 && read.height <= 512
+        && read.readWidth <= 512 && read.readHeight <= 512))
+      assert.equal(calls.encodes, 2)
+      assert.deepEqual(calls.revoked, ['blob:local-upload', 'blob:local-upload'])
+    })
+  }
 })
