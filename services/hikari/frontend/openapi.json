@@ -193,7 +193,8 @@
               "transcription",
               "formatting",
               "image",
-              "decision"
+              "decision",
+              "audio"
             ],
             "title": "Kind",
             "type": "string"
