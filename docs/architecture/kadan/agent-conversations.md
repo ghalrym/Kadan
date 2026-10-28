@@ -38,6 +38,23 @@ The runner uses a bounded LangGraph loop around context preparation, inference a
 
 Only the `send_message` tool delivers an agent message to the conversation. Completing inference, returning a tool result or finishing a run does not itself deliver a reply. This distinction prevents internal reasoning and command output from becoming user messages, and lets a run end silently when it has nothing further to communicate.
 
+## Conversation work snapshots
+
+The Kadan conversation-runs polling response projects validated Tsuchi work records
+into `AgentRunSummary` and `ImageJobSummary`. Run summaries contain identities,
+trigger message/job IDs, delivery receipts, status, error and creation/update times.
+Image summaries contain identities, prompt, status, error, delivery message ID and
+creation/update times. The conversation resource remains part of the snapshot.
+
+This narrows the polling response contract: internal transcripts, instructions,
+tool results, leases, ownership and image-upload coordination are omitted. Clients
+expecting these internal fields must update to the summary contract. Run
+creation and cancellation responses, runner access and Tsuchi records remain
+unchanged. Reads require an active conversation; records from another agent or
+conversation fail the snapshot rather than appearing as activity. Upstream failures
+remain errors instead of empty work lists. The snapshot records run state and chat
+delivery; it does not establish that external actions succeeded.
+
 ## Durable ownership and effects
 
 Tsuchi saves a user's message and its queued run atomically. One run at a time owns a conversation; leases and version checks fence stale owners. Commands are saved before execution, and stable action IDs and delivery receipts let recovery distinguish work already delivered from work still pending. Run progress belongs in Tsuchi rather than only in process memory, so a restarted runner can resume saved work while preserving the conversation.
