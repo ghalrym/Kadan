@@ -215,9 +215,10 @@ class InferenceService:
         if job.request.operation == "configure":
             return
         feature = job.request.feature
-        if feature == "llm" and event.context is not None:
+        native_language = feature == "llm" and job.worker != "lfm3_llm"
+        if native_language and event.context is not None:
             self.context = event.context
-        if feature == "llm" and event.model is not None:
+        if native_language and event.model is not None:
             self.model_id = event.model
         image = job.image_progress
         if image is not None:
@@ -261,13 +262,13 @@ class InferenceService:
             job.progress = None
             if self.progress and self.progress.job_id == job.request.id:
                 self.progress = None
-        if event.state == "loading" and feature == "llm":
+        if event.state == "loading" and native_language:
             self.model_id, self.state, self.error = (
                 event.model or self.model_id,
                 "loading",
                 None,
             )
-        if feature == "llm":
+        if native_language:
             if event.state == "succeeded":
                 self.state = (
                     "unloaded" if job.request.operation == "unload" else "ready"

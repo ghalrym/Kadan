@@ -379,7 +379,7 @@ class WorkerHub:
             for model, (kind, _) in EXPERIMENTAL_MODELS.items():
                 if worker.kind == kind:
                     experimental_worker(model)
-        except (TimeoutError, ValueError, KeyError, TypeError) as error:
+        except (TimeoutError, ValueError, KeyError, TypeError, InferenceFailure) as error:
             log.warning("Rejected worker: %s", error)
             await websocket.close(code=1008)
             return
@@ -743,7 +743,7 @@ class WorkerHub:
             job.identified.set()
         if job.request.feature == "llm" and event.context is not None:
             job.context = event.context
-        if job.request.feature == "llm" and event.state == "succeeded":
+        if worker.kind == "llm" and job.request.feature == "llm" and event.state == "succeeded":
             worker.resident_model = (
                 None if job.request.operation == "unload" else job.model
             )
@@ -753,7 +753,7 @@ class WorkerHub:
             worker.residency_known = (
                 job.request.operation == "unload" or job.model is not None
             )
-        elif job.request.feature == "llm" and event.state in ("failed", "cancelled"):
+        elif worker.kind == "llm" and job.request.feature == "llm" and event.state in ("failed", "cancelled"):
             # Preparation cancellation can leave an old engine resident, while
             # execution failure can destroy it without a control snapshot.
             worker.residency_known = False

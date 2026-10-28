@@ -189,12 +189,14 @@ class Runtime:
             if not self.store.complete():
                 await event("failed", error="Model is not downloaded; review its license and use the model download action first.", status_code=409)
                 return
-            while not all(actual >= need for actual, need in zip(self.budget, self.backend.REQUIREMENT)):
-                await event("waiting_for_resources")
+            while True:
                 self.granted.clear()
+                if all(actual >= need for actual, need in zip(self.budget, self.backend.REQUIREMENT)):
+                    break
                 if request_id in self.cancelled:
                     await event("cancelled")
                     return
+                await event("waiting_for_resources")
                 await self.granted.wait()
         if request_id in self.cancelled:
             await event("cancelled")
