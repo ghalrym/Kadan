@@ -50,6 +50,9 @@ class ModelStoreTests(unittest.TestCase):
         self.assertTrue(store.complete())
         self.assertEqual(result["models"][0]["status"], "complete")
         self.assertEqual(progress[-1]["value"], len(self.content))
+        with patch("urllib.request.urlopen") as network:
+            store.download(True, progress.append)
+        network.assert_not_called()
         (store.root / "config.json").unlink()
         self.assertFalse(store.complete())
 

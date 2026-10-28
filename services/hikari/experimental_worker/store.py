@@ -86,6 +86,8 @@ class ModelStore:
         # writers or mistake another worker's incomplete files for a snapshot.
         with (self.root / ".download.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
+            if self.complete():
+                return self.status()
             return self._download(emit)
 
     def _download(self, emit) -> dict:
