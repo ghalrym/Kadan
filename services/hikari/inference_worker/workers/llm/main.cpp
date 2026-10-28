@@ -12,8 +12,7 @@ int main() {
                                },
                                [&channel](const std::string& text) {
                                    channel.content(text);
-                               },
-                               environment.store
+                               }
                            );
                        }});
 }

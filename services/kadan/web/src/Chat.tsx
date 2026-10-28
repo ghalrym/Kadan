@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowUpRight, RotateCw } from "lucide-react";
+import { ArrowUp, ArrowDown, ArrowUpRight, RotateCw, Search, X } from "lucide-react";
 import Markdown from "./Markdown";
 import Composer, { readiness } from "./Composer";
 import Pet, { useMood } from "./Pet";
@@ -13,7 +13,7 @@ import type { PetState } from "./pet";
 import type { AgentRun, Asset, ImageJob, Message, Resource, RunSnapshot, Status } from "./types";
 import { activeRun, cancellableImage, imageStatus, isImageAsset, latestConversation, responseProgress } from "./agentRuns";
 import { randomUuid } from "./uuid";
-import { confirmSend, queueSend, readPending, type PendingMessage } from "./outbox";
+import { chatStorageKeys, confirmSend, copyPendingToDraft, discardUnassignedPending, queueSend, readPending, type PendingMessage } from "./outbox";
 
 interface Props {
   agentKey: string;
@@ -32,6 +32,7 @@ interface Props {
 const BREAK_MS = 4 * 60 * 60 * 1000;
 /** Older messages render on request so a long chain opens quickly. */
 const PAGE = 200;
+const NEAR_LATEST = 80;
 const ROLE = { user: "You", assistant: "Assistant", system: "System", tool: "Tool" } as const;
 
 function breakLabel(value: string) {
@@ -92,12 +93,12 @@ export default function Chat({
   refreshStatus,
 }: Props) {
   const petSheet = useAgentPet(agentKey);
-  const draftKey = `kadan.draft.${agentKey}`;
-  const pendingKey = `${draftKey}.pending`;
+  const { draft: draftKey, pending: pendingKey } = chatStorageKeys(agentKey, chain.id);
   const pending = useRef<PendingMessage | null>(
     confirmSend(readPending(sessionStorage.getItem(pendingKey)), chain.messages),
   );
   const [recovery, setRecovery] = useState(pending.current);
+  const [unassigned, setUnassigned] = useState(() => readPending(sessionStorage.getItem(`${draftKey}.pending`)));
   const [draft, setDraft] = useState(() => sessionStorage.getItem(draftKey) || "");
   const [persona, setPersona] = useState("");
   const [sending, setSending] = useState(false);
@@ -111,6 +112,16 @@ export default function Chat({
   const [outgoing, setOutgoing] = useState<Message | null>(null);
   const [error, setError] = useState("");
   const [shown, setShown] = useState(PAGE);
+  const scope = `${agentKey}:${chain.id}`;
+  const closedFind = { scope, open: false, query: "", messageId: "" };
+  const [findState, setFind] = useState(closedFind);
+  const find = findState.scope === scope ? findState : closedFind;
+  const findButton = useRef<HTMLButtonElement>(null);
+  const messageElements = useRef(new Map<string, HTMLElement>());
+  const messages = useRef<HTMLDivElement>(null);
+  const followLatest = useRef(true);
+  const jumpRequested = useRef(false);
+  const [away, setAway] = useState(false);
   const [card, setCard] = useState(false);
   const [computer, setComputer] = useState(false);
   const closeCard = useCallback(() => setCard(false), []);
@@ -122,11 +133,10 @@ export default function Chat({
   const sendLock = useRef(false);
   const callbacks = useRef({ onChange, refreshStatus });
   callbacks.current = { onChange, refreshStatus };
-  const end = useRef<HTMLDivElement>(null);
   const ready = readiness(status);
   const [dictating, setDictating] = useState(false);
   const voiceCall = useVoiceCall(
-    `You are ${agentName}. Have a spoken conversation. Keep replies short. You have no tools.\n${personas.find((item) => item.id === persona)?.markdown.slice(0, 6000) ?? ""}`,
+    agentKey, persona || null,
     !ready.chat || sending || blocked || dictating,
   );
   // Hikari loads the model on demand; the first reply waits for it without a deadline.
@@ -147,7 +157,15 @@ export default function Chat({
               : "idle",
   );
   const items = outgoing ? [...saved, outgoing] : saved;
-  const visible = items.slice(-shown);
+  const previousItems = useRef({ scope, count: items.length });
+  const query = find.open ? find.query.trim().toLowerCase() : "";
+  const addedItems = previousItems.current.scope === scope ? Math.max(0, items.length - previousItems.current.count) : 0;
+  const shownCount = shown + ((!followLatest.current || query) ? addedItems : 0);
+  const matches = query ? saved.filter((message) => message.content.toLowerCase().includes(query)) : [];
+  const match = matches.find((message) => message.id === find.messageId) ?? matches[0];
+  const matchIndex = match ? matches.indexOf(match) : -1;
+  const matchShown = match ? items.length - items.findIndex((message) => message.id === match.id) : 0;
+  const visible = items.slice(-shownCount);
   const hidden = items.length - visible.length;
   let lastUser = visible.length - 1;
   while (lastUser >= 0 && visible[lastUser].role !== "user") lastUser--;
@@ -159,12 +177,42 @@ export default function Chat({
         : "Delivered";
 
   useLayoutEffect(() => {
-    // Open at the newest message without animating through the history.
-    end.current?.scrollIntoView({ block: "end" });
-  }, []);
+    followLatest.current = true;
+    setAway(false);
+    setFind({ scope, open: false, query: "", messageId: "" });
+    setShown(PAGE);
+    previousItems.current = { scope, count: items.length };
+    scrollToLatest();
+  }, [scope]);
+  useLayoutEffect(() => {
+    const added = items.length - previousItems.current.count;
+    if (previousItems.current.scope === scope && added > 0 && (!followLatest.current || query)) {
+      // Keep the message being read inside the presentation window as replies arrive.
+      setShown((count) => count + added);
+    }
+    previousItems.current = { scope, count: items.length };
+    if (!query && followLatest.current) scrollToLatest();
+  }, [scope, items.length, typing]);
+  useLayoutEffect(() => {
+    if (matchShown > shownCount) setShown((count) => Math.max(count, matchShown));
+  }, [matchShown, shownCount]);
+  const matchVisible = matchShown > 0 && matchShown <= shownCount;
+  useLayoutEffect(() => {
+    if (match && matchVisible) {
+      followLatest.current = false;
+      setAway(true);
+      messageElements.current.get(match.id)?.scrollIntoView({ block: "center" });
+    }
+  }, [match?.id, query, matchVisible]);
+  useLayoutEffect(() => {
+    if (!jumpRequested.current) return;
+    jumpRequested.current = false;
+    scrollToLatest();
+    messages.current?.focus({ preventScroll: true });
+  });
   useEffect(() => {
-    end.current?.scrollIntoView({ block: "end", behavior: "smooth" });
-  }, [items.length, typing]);
+    if (match && match.id !== find.messageId) setFind({ ...find, messageId: match.id });
+  }, [match?.id, find.messageId]);
   useEffect(() => react(entrance, 2), [entrance, react]);
   useEffect(() => {
     let closed = false;
@@ -230,6 +278,10 @@ export default function Chat({
     });
     const messageId = message.id;
     const personaId = message.persona;
+    if (!query) {
+      followLatest.current = true;
+      setAway(false);
+    }
     savePending(message);
     sendLock.current = true;
     mutation.current++;
@@ -356,10 +408,29 @@ export default function Chat({
     if (!card) react("waving");
     setCard(!card);
   }
+  function closeFind() {
+    setFind(closedFind);
+    findButton.current?.focus();
+  }
+  function scrollToLatest() {
+    const element = messages.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }
+  function moveMatch(direction: number) {
+    if (!matches.length) return;
+    const index = (matchIndex + direction + matches.length) % matches.length;
+    setFind({ ...find, messageId: matches[index].id });
+  }
+  function jumpToLatest() {
+    setFind(closedFind);
+    followLatest.current = true;
+    setAway(false);
+    jumpRequested.current = true;
+  }
   return (
     <div className={`chat-split ${computer ? "with-computer" : ""}`}>
-    <section className="chat" aria-label={`Messages with ${agentName}`}>
-      {!empty && (
+    <section className={`chat ${find.open ? "finding" : ""}`} aria-label={`Messages with ${agentName}`}>
+      {!empty && !find.open && (
         <div className={`lookout ${(generating || imagePending) ? "working" : ""}`}>
           <button type="button" className="lookout-pet" aria-label={`Open ${agentName}’s card`}
             title={agentName} aria-expanded={card} aria-haspopup="dialog" onClick={toggleCard}>
@@ -372,7 +443,43 @@ export default function Chat({
           {agentCard}
         </div>
       )}
-      <div className="messages">
+      <div className={`conversation-find ${find.open ? "is-open" : ""}`} onKeyDown={(event) => {
+        if (find.open && event.key === "Escape") { event.preventDefault(); closeFind(); }
+      }}>
+        <button ref={findButton} type="button" disabled={!saved.length && !find.open} aria-expanded={find.open}
+          aria-label={find.open ? "Close find" : "Find in conversation"} title={find.open ? "Close find" : "Find in conversation"}
+          onClick={() => find.open ? closeFind() : setFind({ ...closedFind, open: true })}>
+          {find.open ? <X size={16} /> : <Search size={16} />}
+        </button>
+        {find.open && (
+          <form role="search" aria-label="Find in conversation" onSubmit={(event) => {
+            event.preventDefault();
+            moveMatch(1);
+          }}>
+            <label className="search-field">
+              <span className="sr-only">Find in saved text</span>
+              <input type="search" autoFocus placeholder="Find in saved text" value={find.query}
+                onChange={(event) => setFind({ ...find, query: event.target.value, messageId: "" })}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && event.shiftKey) { event.preventDefault(); moveMatch(-1); }
+                }} />
+            </label>
+            <span className="find-count" role="status" aria-live="polite">
+              {query ? matches.length ? `${matchIndex + 1} of ${matches.length} messages` : "No matching messages" : "Saved text only"}
+            </span>
+            <button type="button" disabled={!matches.length} aria-label="Previous matching message" title="Previous (Shift+Enter)"
+              onClick={() => moveMatch(-1)}><ArrowUp size={16} /></button>
+            <button type="submit" disabled={!matches.length} aria-label="Next matching message" title="Next (Enter)"><ArrowDown size={16} /></button>
+          </form>
+        )}
+      </div>
+      <div className="messages" ref={messages} role="region" aria-label="Conversation messages" tabIndex={-1}
+        onScroll={(event) => {
+          const element = event.currentTarget;
+          const near = element.scrollHeight - element.clientHeight - element.scrollTop <= NEAR_LATEST;
+          followLatest.current = near;
+          setAway(!near);
+        }}>
         <div className={`messages-inner ${empty ? "is-empty" : ""}`}>
           {empty ? (
             <div className="home-stage">
@@ -411,7 +518,12 @@ export default function Chat({
                   </div>
                 )}
                 <article
-                  className={`message ${message.role} ${first ? "first" : ""} ${last ? "last" : ""} ${message === outgoing ? "sending" : ""}`}
+                  ref={(element) => {
+                    if (element) messageElements.current.set(message.id, element);
+                    else messageElements.current.delete(message.id);
+                  }}
+                  className={`message ${message.role} ${first ? "first" : ""} ${last ? "last" : ""} ${message === outgoing ? "sending" : ""} ${message.id === match?.id ? "find-match" : ""}`}
+                  aria-label={message.id === match?.id ? `Matching message ${matchIndex + 1} of ${matches.length}` : undefined}
                   title={stamp(message.created_at)}
                 >
                   <h3 className={message.role === "user" || message.role === "assistant" ? "sr-only" : "role"}>
@@ -472,9 +584,11 @@ export default function Chat({
               {cancellableImage(job) && <button disabled={stopping} onClick={() => void cancelImage(job)}>Stop image</button>}
             </div>
           ))}
-          <div ref={end} />
         </div>
       </div>
+      {(away || query) && <button type="button" className="jump-latest" onClick={jumpToLatest}>
+        <ArrowDown size={14} />{find.open ? "Close find and jump to latest" : "Jump to latest"}
+      </button>}
       {(error || pollError) && (
         <div className="banner inline" role="alert">
           {error || pollError}
@@ -493,6 +607,23 @@ export default function Chat({
           <button disabled={blocked || !ready.storage || (recovery.generate && !ready.chat)}
             onClick={() => void send(recovery.generate, recovery)}>Retry</button>
           <button disabled={blocked} onClick={() => savePending(null)}>Discard</button>
+        </div>
+      )}
+      {unassigned && (
+        <div className="banner inline" role="status">
+          <div>
+            <strong>Earlier unsent message</strong>
+            <p>{unassigned.content}</p>
+            <p>Its original conversation wasn't saved. Check your history before copying it to the draft. It will send as a new message.</p>
+          </div>
+          <button disabled={blocked || sending || dictating || voiceCall.active} onClick={() => {
+            try { setDraft(copyPendingToDraft(draft, unassigned)); }
+            catch (error) { setError((error as Error).message); }
+          }}>Copy to draft</button>
+          <button disabled={blocked} onClick={() => {
+            discardUnassignedPending(sessionStorage, agentKey);
+            setUnassigned(null);
+          }}>Discard</button>
         </div>
       )}
       <Composer

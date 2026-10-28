@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict
 class Arguments(BaseModel):
     """Base for argument models; unknown arguments are rejected."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class NoArguments(Arguments):

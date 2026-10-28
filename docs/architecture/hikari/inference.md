@@ -1,6 +1,6 @@
 # Inference architecture
 
-Hikari manages model loading and memory allocations across inference workers so users can switch inference types without manually unloading models. The user-visible contract is described in [Inference operations](../../user-expectations/hikari/inference.md).
+Hikari manages model loading and memory allocations across inference workers so users can switch inference types without manually unloading models. The privately provided expectations for inference operations describe the user-visible contract.
 
 ## Mixture-of-experts language models
 
@@ -47,6 +47,12 @@ The API hub also expires resident models after `HIKARI_MODEL_IDLE_SECONDS` (defa
 Requests must respect their actual input and memory requirements. Hikari must not silently truncate chat history or reduce requested media settings to force a fit. Cancellation must finish cleanup before the released resources are reused.
 
 Concurrent throughput, model quality and physical memory fit require manual validation on the target machine. Scheduling and offloading policies alone do not establish measured latency or guarantee that every combination of inference requests fits.
+
+## Submission and cancellation ownership
+
+Hikari keeps a job's submission scopes open until every in-progress send returns, including an overlapping worker handoff. It registers recipient ownership only after acquiring that connection's write lock. Cancellation while waiting for the lock can therefore retire locally without a worker reply. Once a write begins, caller cancellation preserves its completion and the lock; an error or transport deadline cannot prove that delivery failed. That recipient remains owned until a terminal event or disconnect, even if cancellation sends fail or an unknown cancellation ID produces no reply.
+
+Cancellation records an unsuccessful outcome independently of recipient retirement and stops further fanout or handoff. Earlier worker failures retain their original error. A store operation cannot report success after skipping recipients, and a terminal failure deferred by an open submission cannot restart work on another worker.
 
 ## Reusable conversation state
 

@@ -203,10 +203,31 @@ class Worker:
             budget[index] = value
         return budget
 
-    async def send(self, message: dict | bytes):
+    async def send(self, message: dict | bytes, *, job: InferenceJob | None = None):
         text = message if isinstance(message, bytes) else encode_request(message)
         async with self.write_lock:
-            await asyncio.wait_for(self.websocket.send_text(text.decode()), 10)
+            if job is not None:
+                if job.cancel_requested or job.failure is not None:
+                    return
+                if self.id not in self.computer.ledger.workers:
+                    raise InferenceFailure("Worker disconnected.", 503)
+                job.machines.add(self.id)
+                self.jobs.add(job.request.id)
+                if job.worker is not None:
+                    self.slot.pending += 1
+                job.sent = True
+            # Once entered, a write may have delivered even if its caller leaves.
+            write = asyncio.create_task(
+                asyncio.wait_for(self.websocket.send_text(text.decode()), 10)
+            )
+            try:
+                await asyncio.shield(write)
+            except asyncio.CancelledError:
+                if job is not None:
+                    job.request_cancel()
+                with suppress(Exception):
+                    await await_cleanup(write)
+                raise
 
     async def control(self, command: str, timeout: float = 30, **fields) -> dict:
         request_id = uuid4().hex
@@ -413,6 +434,10 @@ class WorkerHub:
             if job is None:
                 continue
             job.machines.discard(worker.id)
+            if job.cancel_requested or job.failure is not None:
+                if not job.machines:
+                    self._settle(job)
+                continue
             if job.worker is not None and job.state in REQUEUEABLE:
                 try:
                     await self._send_job(job)
@@ -463,6 +488,11 @@ class WorkerHub:
         return targets
 
     async def _send_job(self, job: InferenceJob):
+        if job.result.done():
+            return
+        if job.cancel_requested or job.failure is not None:
+            self._settle(job)
+            return
         message = job.request.model_dump(mode="json")
         if job.tracing is not None:
             message.update(job.tracing.parent)
@@ -471,14 +501,25 @@ class WorkerHub:
             if job.worker is None
             else [self._route(job.worker)]
         )
-        for worker in targets:
-            job.machines.add(worker.id)
-            worker.jobs.add(job.request.id)
-            if job.worker is not None:
-                worker.slot.pending += 1
-            await worker.send(message)
-        job.sent = True
-        self.wake.set()
+        # A terminal event can arrive during send, including an overlapping requeue.
+        job.submissions += 1
+        try:
+            for worker in targets:
+                if job.cancel_requested or job.failure is not None:
+                    break
+                if worker.id not in self.workers:
+                    job.failure = InferenceFailure("Worker disconnected.", 503)
+                    break
+                await worker.send(message, job=job)
+        except BaseException as error:
+            if isinstance(error, InferenceFailure):
+                job.failure = job.failure or error
+            job.request_cancel()
+            raise
+        finally:
+            job.submissions -= 1
+            self._settle(job)
+            self.wake.set()
 
     async def _wait_for_worker(self, request: InferenceTask):
         """Gives worker containers that are still starting time to connect."""
@@ -511,6 +552,9 @@ class WorkerHub:
             if job.sent:
                 with suppress(Exception, asyncio.CancelledError):
                     await await_cleanup(asyncio.create_task(self.cancel_and_join(job)))
+            for future in (job.accepted, job.result):
+                if future.done() and not future.cancelled():
+                    future.exception()
             self._release(job)
             self.jobs.pop(request.id, None)
             job.tracing.end(failed=True)
@@ -527,25 +571,50 @@ class WorkerHub:
 
     async def cancel(self, job_id: str):
         job = self.jobs.get(job_id)
-        if job is None:
+        if job is None or job.result.done():
             return
+        job.request_cancel()
+        if not any(worker_id in self.workers for worker_id in job.machines):
+            job.machines.clear()
+            self._fail(job, InferenceFailure("Inference cancelled.", 499))
+            return
+        send_error = None
         for worker_id in tuple(job.machines):
             worker = self.workers.get(worker_id)
             if worker is not None:
-                await worker.send({"id": job_id, "command": "cancel"})
+                try:
+                    await worker.send({"id": job_id, "command": "cancel"})
+                except (
+                    InferenceFailure,
+                    RuntimeError,
+                    OSError,
+                    TimeoutError,
+                    WebSocketDisconnect,
+                ) as error:
+                    send_error = send_error or error
+        if send_error is not None:
+            raise send_error
 
     async def cancel_and_join(self, job: InferenceJob):
+        job.request_cancel()
         # A job whose workers are all gone has no one left to report its end.
         if not job.result.done() and not any(
             worker_id in self.workers for worker_id in job.machines
         ):
+            job.machines.clear()
             self._fail(job, InferenceFailure("Inference cancelled.", 499))
         if not job.result.done():
             try:
                 await self.cancel(job.request.id)
-            except (InferenceFailure, RuntimeError, OSError, TimeoutError):
-                # The worker is unreachable; it no longer runs this job.
-                self._fail(job, InferenceFailure("Inference cancelled.", 499))
+            except (
+                InferenceFailure,
+                RuntimeError,
+                OSError,
+                TimeoutError,
+                WebSocketDisconnect,
+            ):
+                # A failed send does not confirm cleanup; wait for an end or disconnect.
+                pass
         with suppress(Exception):
             await asyncio.shield(job.result)
 
@@ -563,6 +632,10 @@ class WorkerHub:
         self.wake.set()
 
     def _fail(self, job: InferenceJob, failure: InferenceFailure):
+        job.failure = job.failure or failure
+        failure = job.failure
+        if job.submissions:
+            return
         if job.tracing is not None:
             job.tracing.end(failed=True)
         job.identified.set()
@@ -574,6 +647,8 @@ class WorkerHub:
         job.machines.clear()
 
     def _settle(self, job: InferenceJob):
+        if job.submissions or job.machines or job.result.done():
+            return
         if job.tracing is not None:
             job.tracing.end(failed=job.failure is not None)
         job.identified.set()
@@ -582,8 +657,6 @@ class WorkerHub:
                 job.accepted.set_exception(job.failure)
             else:
                 job.accepted.set_result(None)
-        if job.result.done():
-            return
         if job.failure is not None:
             job.result.set_exception(job.failure)
         else:

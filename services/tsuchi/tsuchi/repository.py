@@ -13,6 +13,7 @@ from .models import (
     Activity,
     Agent,
     AgentInput,
+    AgentRename,
     AgentRun,
     AgentRunState,
     Asset,
@@ -20,8 +21,11 @@ from .models import (
     ExportRevision,
     ImageJob,
     ImageJobState,
+    MarkdownContent,
+    MarkdownResource,
     Message,
     Metadata,
+    OwnedPersonaUpdate,
     PetJob,
     PetManifest,
     PetReferenceMode,
@@ -147,6 +151,8 @@ class Repository:
             columns = {row[1] for row in db.execute("PRAGMA table_info(agents)")}
             if "selected_pet_id" not in columns:
                 db.execute("ALTER TABLE agents ADD COLUMN selected_pet_id TEXT")
+            if "persona_id" not in columns:
+                db.execute("ALTER TABLE agents ADD COLUMN persona_id TEXT")
             db.commit()
 
     @contextmanager
@@ -796,7 +802,16 @@ class Repository:
                     raise StorageError(
                         "Image job lease must expire within five minutes", 409
                     )
+            if value.upload_status != current.upload_status and not (
+                current.upload_status == "not_started"
+                and value.upload_status == "pending"
+                and current.status == value.status == "running"
+                and not claiming
+            ):
+                raise StorageError("Only storage can settle an image upload", 409)
             if value.status == "completed":
+                if value.asset_id != uuid5(job_id, "image"):
+                    raise StorageError("Image artwork identity cannot change", 409)
                 asset = self._asset(db, key, value.asset_id)
                 if asset.deleted_at or not asset.is_image:
                     raise StorageError(
@@ -813,6 +828,23 @@ class Repository:
             self._save_image_job(db, updated)
             if updated.status in terminal:
                 self._image_event(db, updated)
+            return updated
+
+    def fail_image_upload(self, key: str, job_id: UUID) -> ImageJob:
+        # FileStorage holds the upload's file lock: no old request may register
+        # artwork after this transaction closes its persisted upload gate.
+        with self.connect(write=True) as db:
+            job = self._image_job(db, key, job_id)
+            if job.upload_status != "pending":
+                return job
+            updated = job.model_copy(
+                update={
+                    "upload_status": "failed",
+                    "version": job.version + 1,
+                    "updated_at": utc_now(),
+                }
+            )
+            self._save_image_job(db, updated)
             return updated
 
     def cancel_image_job(self, key: str, job_id: UUID) -> ImageJob:
@@ -845,12 +877,86 @@ class Repository:
         with self.connect() as db:
             return self._agent(db, key)
 
+    def _owned_persona(
+        self, db: sqlite3.Connection, key: str
+    ) -> MarkdownResource | None:
+        agent = self._agent(db, key)
+        if agent.persona_id is None:
+            return None
+        persona = self._resource(db, key, agent.persona_id)
+        self._active(persona)
+        if persona.kind != ResourceKind.PERSONA:
+            raise StorageError(
+                "The agent's owned persona must be a persona resource", 409
+            )
+        return persona
+
+    def get_owned_persona(self, key: str) -> MarkdownResource | None:
+        with self.connect() as db:
+            return self._owned_persona(db, key)
+
+    def save_owned_persona(
+        self, key: str, value: OwnedPersonaUpdate
+    ) -> MarkdownResource:
+        with self.connect(write=True) as db:
+            current = self._owned_persona(db, key)
+            if current is None:
+                if value.expected_version is not None:
+                    raise StorageError(
+                        "This agent has no saved persona. Reload before saving.", 409
+                    )
+                now = utc_now()
+                persona = MarkdownResource(
+                    kind=ResourceKind.PERSONA,
+                    title=value.title,
+                    markdown=value.markdown,
+                    id=uuid4(),
+                    agent_key=key,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+                self._save_resource(db, persona)
+                db.execute(
+                    "UPDATE agents SET persona_id = ? WHERE key = ?",
+                    (str(persona.id), key),
+                )
+                self._activity(
+                    db, key, "created", "resource", str(persona.id), persona.title
+                )
+                return persona
+            if value.expected_version is None:
+                raise StorageError(
+                    "This agent already has a persona. Reload before saving.", 409
+                )
+            content = MarkdownContent.model_validate(
+                {
+                    **current.model_dump(exclude=set(ResourceRecord.model_fields)),
+                    "title": value.title,
+                    "markdown": value.markdown,
+                }
+            )
+            return self._update_resource(
+                db, key, current, content, value.expected_version, "updated"
+            )
+
     def list_agents(self) -> list[Agent]:
         with self.connect() as db:
             return [
                 Agent.model_validate(dict(row))
                 for row in db.execute("SELECT * FROM agents ORDER BY name, key")
             ]
+
+    def rename_agent(self, key: str, value: AgentRename) -> Agent:
+        with self.connect(write=True) as db:
+            current = self._agent(db, key)
+            if current.name == value.name:
+                return current
+            if current.name != value.expected_name:
+                raise StorageError("Agent name changed since it was loaded.", 409)
+            db.execute("UPDATE agents SET name = ? WHERE key = ?", (value.name, key))
+            self._activity(db, key, "updated", "agent", key, value.name)
+            return current.model_copy(update={"name": value.name})
 
     def create_agent(self, value: AgentInput) -> Agent:
         agent = Agent(**value.model_dump(), created_at=utc_now())
@@ -1645,9 +1751,18 @@ class Repository:
             ),
         )
 
-    def create_asset(self, asset: Asset) -> Asset:
+    def create_asset(self, asset: Asset, image_job_id: UUID | None = None) -> Asset:
         with self.connect(write=True) as db:
             self._agent(db, asset.agent_key)
+            job = None
+            if image_job_id is not None:
+                job = self._image_job(db, asset.agent_key, image_job_id)
+                if job.upload_status not in {"pending", "completed"}:
+                    raise StorageError("This image upload is closed", 409)
+                if asset.id != uuid5(job.id, "image") or not asset.is_image:
+                    raise StorageError(
+                        "Image uploads require their reserved artwork", 409
+                    )
             row = db.execute(
                 "SELECT data FROM assets WHERE id = ?", (str(asset.id),)
             ).fetchone()
@@ -1668,12 +1783,29 @@ class Repository:
                     getattr(current, field) == getattr(asset, field)
                     for field in replay_fields
                 ):
-                    return current
-                raise StorageError("This asset ID is already in use", 409)
-            self._save_asset(db, asset)
-            self._activity(
-                db, asset.agent_key, "uploaded", "asset", str(asset.id), asset.title
-            )
+                    asset = current
+                else:
+                    raise StorageError("This asset ID is already in use", 409)
+            else:
+                if job is not None and job.upload_status == "completed":
+                    raise StorageError(
+                        "Completed image artwork cannot be recreated", 409
+                    )
+                self._save_asset(db, asset)
+                self._activity(
+                    db, asset.agent_key, "uploaded", "asset", str(asset.id), asset.title
+                )
+            if job is not None and job.upload_status == "pending":
+                self._save_image_job(
+                    db,
+                    job.model_copy(
+                        update={
+                            "upload_status": "completed",
+                            "version": job.version + 1,
+                            "updated_at": utc_now(),
+                        }
+                    ),
+                )
         return asset
 
     def update_asset(

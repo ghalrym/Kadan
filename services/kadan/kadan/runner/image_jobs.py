@@ -210,29 +210,11 @@ class ImageJobs:
             try:
                 # Fence even after ownership changes. Recovery never resubmits this
                 # request, so a stale worker may safely stop its own inference.
-                await self.stop_request(job)
-                async with self.lock:
-                    current = await self.owned(job)
-                    if current.status == "cancelling":
-                        await self.finish(current, "cancelled")
-                    else:
-                        failure = (
-                            str(error)[:10000]
-                            or "Image generation was interrupted before an image was saved."
-                        )
-                        try:
-                            asset_id = await self.saved_asset(current)
-                        except UnusableSavedImage as saved_error:
-                            asset_id = None
-                            failure = str(saved_error)[:10000]
-                        if asset_id is not None:
-                            await self.finish(current, "completed", asset_id=asset_id)
-                        else:
-                            await self.finish(
-                                current,
-                                "failed",
-                                error=failure,
-                            )
+                await self.recover(
+                    job,
+                    failure=str(error)[:10000]
+                    or "Image generation was interrupted before an image was saved.",
+                )
             except Exception:
                 # A failed fence/lease write remains active for expiry recovery.
                 logger.exception("Image job cleanup was not confirmed")
@@ -247,17 +229,35 @@ class ImageJobs:
         )
 
     @traced("kadan.image_jobs.recover")
-    async def recover(self, job: ImageJob) -> None:
+    async def recover(
+        self,
+        job: ImageJob,
+        *,
+        failure: str = "Image generation was interrupted before an image was saved; it was not resubmitted.",
+    ) -> None:
         # A generation with an uncertain outcome must never be silently resubmitted.
         await self.stop_request(job)
         async with self.lock:
             current = await self.owned(job)
+            if current.upload_status == "pending":
+                await self.services.json_request(
+                    "Tsuchi",
+                    "POST",
+                    f"/api/agents/{job.agent_key}/image-jobs/{job.id}/upload/resolve",
+                )
+                current = await self.owned(job)
+                if current.upload_status == "pending":
+                    return
             if current.status == "cancelling":
                 await self.finish(current, "cancelled")
                 return
-            error = "Image generation was interrupted before an image was saved; it was not resubmitted."
+            error = failure
             try:
-                asset_id = await self.saved_asset(current)
+                asset_id = (
+                    None
+                    if current.upload_status == "failed"
+                    else await self.saved_asset(current)
+                )
             except UnusableSavedImage as saved_error:
                 asset_id = None
                 error = str(saved_error)
@@ -332,6 +332,7 @@ class ImageJobs:
             current = await self.owned(job)
             if current.status == "cancelling":
                 raise asyncio.CancelledError
+            await self.save(current, upload_status="pending")
         value = await self.services.json_request(
             "Tsuchi",
             "POST",
@@ -341,6 +342,7 @@ class ImageJobs:
                 "title": "Generated image",
                 "tags": json.dumps(["generated-image", str(job.id)]),
                 "asset_id": str(asset_id),
+                "image_job_id": str(job.id),
             },
         )
         asset = ImageAsset.model_validate(value)
