@@ -1,6 +1,7 @@
 """Bounded BF16 LFM3 text trial, executed only in the worker's child process."""
 
 from collections.abc import Callable
+import time
 
 MODEL_ID = "lfm3-1.7b-bf16"
 REVISION = "40ebe0aa6662c9d40389c2f5d565b6a2c6aebacd"
@@ -149,6 +150,8 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
         attn_implementation="sdpa",
     ).eval()
     inputs = inputs.to(model.device)
+    torch.cuda.synchronize()
+    generation_started = time.perf_counter()
     # Dense math attention can allocate [heads, chunk, full-history] scores.
     # Fail explicitly if this GPU lacks an efficient SDPA kernel for the mask.
     with (
@@ -162,6 +165,8 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
         ),
     ):
         output = generate_text(model, inputs)
+    torch.cuda.synchronize()
+    generation_seconds = time.perf_counter() - generation_started
     generated = output[0, prompt_tokens:]
     # Preserve reasoning and tool delimiters until parsing; some tokenizer builds
     # classify these as special tokens, so skipping them could leak private text.
@@ -174,5 +179,9 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
         "model": MODEL_ID,
         "text": text,
         "finish_reason": finish,
-        "timing": {"output_tokens": len(generated), "prefill_tokens": prompt_tokens},
+        "timing": {
+            "output_tokens": len(generated),
+            "prefill_tokens": prompt_tokens,
+            "generation_seconds": generation_seconds,
+        },
     }
