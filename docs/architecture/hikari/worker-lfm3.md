@@ -12,7 +12,7 @@ The text trial's total context is 262,144 tokens, including input and output. Ge
 
 Generation uses Transformers 5.21's supported `prefill_chunk_size=512` with a dynamic hybrid cache, caching enabled and compilation disabled. The checkpoint delegates its prefill to that implementation, which carries the convolution, sliding and full-attention cache between chunks, slices the cumulative attention mask and absolute positions, and uses the final chunk's logits for the first generated token. The complete prompt is passed once to `generate`; the application does not slice away history or prefill tokens twice. This bounds each SDPA mask's query axis rather than allocating one full-window square mask. Efficient CUDA attention kernels are required; math-attention fallback is disabled because its score allocation can exceed the grant. Cache growth and physical fit still require target-machine validation and can fail explicitly.
 
-See [inference expectations](../../user-expectations/hikari/inference.md) for the observable trial limits. Morning operation and rollback commands are in the experimental worker README.
+See [inference expectations](../../user-expectations/hikari/inference.md) for the observable trial limits. Operation and rollback commands are in the [shared worker setup](../../../services/hikari/experimental_worker/README.md).
 
 ## Manual trial evidence
 
@@ -34,4 +34,4 @@ Executor measurements report elapsed time, peak RSS and CUDA allocation and
 reservation. Generation timing excludes model loading but includes prefill.
 They do not include prompt or reply content. Workers reconnect with capped
 backoff after transport loss, refresh resource identity and do not replay
-unconfirmed work. Additive Compose workers restart unless explicitly stopped.
+unconfirmed work. Profile workers restart unless explicitly stopped.
