@@ -4,6 +4,7 @@ services:
     environment:
       HIKARI_ENABLE_LFM3_AUDIO: ${HIKARI_ENABLE_LFM3_AUDIO:-false}
       HIKARI_LFM3_AUDIO_SINGLE_TURN: ${HIKARI_LFM3_AUDIO_SINGLE_TURN:-false}
+      HIKARI_LFM3_AUDIO_STREAM_PROBE: ${HIKARI_LFM3_AUDIO_STREAM_PROBE:-false}
 
   kadan-frontend:
     environment:

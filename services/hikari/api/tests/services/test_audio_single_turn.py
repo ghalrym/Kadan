@@ -203,3 +203,38 @@ class AudioTurnTransportTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(ValidationError):
                 AudioCallTask(**fields)
+
+
+class CodecProbeSelectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_api_probe_flag_only_changes_the_complete_turn_task(self):
+        for value, enabled in (("false", False), ("true", True)):
+            stream = TurnStream()
+            call = SingleTurnCallTests().call(stream)
+            with patch.dict(
+                "os.environ",
+                {
+                    "HIKARI_LFM3_AUDIO_SINGLE_TURN": "true",
+                    "HIKARI_LFM3_AUDIO_STREAM_PROBE": value,
+                },
+            ):
+                await call.respond("wav", 1)
+            submitted = call.inference.open_audio_turn.call_args.args[0]
+            self.assertIs(submitted.codec_streaming_probe, enabled)
+
+    def test_probe_is_a_strict_boolean_and_only_enabled_for_complete_turns(self):
+        for fields in (
+            {"mode": "transcribe", "audio": "wav", "codec_streaming_probe": True},
+            {
+                "mode": "reply",
+                "messages": [{"role": "system", "text": "Persona"}],
+                "codec_streaming_probe": True,
+            },
+            {
+                "mode": "turn",
+                "audio": "wav",
+                "messages": [{"role": "system", "text": "Persona"}],
+                "codec_streaming_probe": "false",
+            },
+        ):
+            with self.assertRaises(ValidationError):
+                AudioCallTask(**fields)
