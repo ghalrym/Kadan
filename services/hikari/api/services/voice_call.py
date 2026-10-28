@@ -3,10 +3,12 @@
 import asyncio
 import re
 from contextlib import suppress
+from typing import Literal
 
 import anyio
 from api.pydantic_models.chat import ChatMessage
 from api.pydantic_models.inference_task import (
+    AudioCallTask,
     ChatTask,
     SpeechTask,
     SpeechVoice,
@@ -19,13 +21,35 @@ from pydantic import BaseModel
 
 
 class CallModels(BaseModel):
-    tier: TierId
+    tier: TierId | None
+    backend: Literal["native", "lfm3"] = "native"
     llm: str
     transcription: str
     speech: str
 
     @classmethod
-    def selected(cls, status: ModelStoreStatus):
+    def selected(cls, status: ModelStoreStatus, backend: str = "native"):
+        if backend == "lfm3":
+            model = next(
+                (model for model in status.models if model.id == "lfm3-audio-2b-bf16"),
+                None,
+            )
+            if (
+                model is None
+                or model.status != "complete"
+                or not model.inference_available
+            ):
+                raise InferenceFailure(
+                    "Review the LFM3-Audio license and download its checkpoint in Hikari before calling.",
+                    422,
+                )
+            return cls(
+                tier=status.selected_tier,
+                backend="lfm3",
+                llm=model.id,
+                transcription=model.id,
+                speech=model.id,
+            )
         tier = next(
             (tier for tier in status.tiers if tier.id == status.selected_tier), None
         )
@@ -85,7 +109,10 @@ class VoiceCall:
         self.played = 0
 
     def check_models(self):
-        if CallModels.selected(self.inference.models_status()) != self.models:
+        if (
+            CallModels.selected(self.inference.models_status(), self.models.backend)
+            != self.models
+        ):
             raise InferenceFailure("The selected tier changed. Start a new call.", 409)
 
     async def emit(self, turn: int, **event):
@@ -168,7 +195,44 @@ class VoiceCall:
                 await asyncio.gather(incoming, return_exceptions=True)
                 await self.stop_response()
 
+    async def respond_audio(self, audio: str, turn: int):
+        transcript = await self.inference.submit(
+            AudioCallTask(mode="transcribe", audio=audio), feature="audio_call"
+        )
+        text = transcript["text"].strip()
+        if not text:
+            await self.emit(turn, type="done")
+            return
+        if len(text) > 4000:
+            raise InferenceFailure("Recognized utterance exceeded the call limit.", 502)
+        self.remember("user", text)
+        await self.emit(turn, type="transcript", text=text)
+        result = await self.inference.submit(
+            AudioCallTask(
+                mode="reply",
+                messages=[
+                    ChatMessage(role="system", text=self.instruction),
+                    *self.history,
+                ],
+            ),
+            feature="audio_call",
+        )
+        reply, audio_base64 = result.get("text", "").strip(), result.get("audio_base64")
+        if not reply or len(reply) > 8000 or not audio_base64:
+            raise InferenceFailure(
+                "Experimental audio worker returned an incomplete reply.", 502
+            )
+        # One buffered reply is one playback acknowledgement. Unheard replies
+        # never enter history when this turn is interrupted.
+        self.segments.append(reply)
+        await self.emit(turn, type="text", text=reply)
+        await self.emit(turn, type="audio", segment=0, audio=audio_base64)
+        await self.emit(turn, type="done")
+
     async def respond(self, audio: str, turn: int):
+        if self.models.backend == "lfm3":
+            await self.respond_audio(audio, turn)
+            return
         transcript = await self.inference.submit(
             TranscriptionTask(
                 audio=audio,

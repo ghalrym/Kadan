@@ -1,0 +1,37 @@
+# Apply with compose.yaml in an isolated, explicitly enabled trial stack.
+services:
+  hikari-api:
+    environment:
+      HIKARI_ENABLE_LFM3_AUDIO: ${HIKARI_ENABLE_LFM3_AUDIO:-false}
+
+  kadan-frontend:
+    environment:
+      VITE_ENABLE_LFM3_AUDIO: ${HIKARI_ENABLE_LFM3_AUDIO:-false}
+
+  hikari-worker-lfm3-audio:
+    profiles: [lfm3-audio]
+    build:
+      context: ./services/hikari
+      dockerfile: experimental_worker/Dockerfile
+    init: true
+    environment:
+      HIKARI_API_URL: ${HIKARI_API_URL:-ws://hikari-api:8000/v1/workers}
+      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-insecure-api-key}
+      HIKARI_ENABLE_LFM3_AUDIO: ${HIKARI_ENABLE_LFM3_AUDIO:-false}
+      HIKARI_EXPERIMENTAL_BACKEND: experimental_worker.audio
+      KADAN_MODEL_DIR: /var/lib/kadan/models
+    volumes:
+      - lfm3_audio_model_data:/var/lib/kadan/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      hikari-api:
+        condition: service_healthy
+
+volumes:
+  lfm3_audio_model_data:

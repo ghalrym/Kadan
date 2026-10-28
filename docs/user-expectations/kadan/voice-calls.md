@@ -11,3 +11,5 @@ Replies arrive as short Qwen3-TTS 1.7B CustomVoice audio segments with the Ryan 
 During a call, the three participating models have equal residency priority, without equal VRAM shares or a promise that they fit together. The existing worker architecture still enforces physical RAM and per-GPU limits. End, disconnect, or error restores normal priorities and idle expiry. Changing the selected tier ends the call; start again to use the new tier.
 
 Applications using Hikari directly have separate [live voice call expectations](../hikari/voice-calls.md), including responsibility for playback acknowledgements and interruption controls.
+
+An optional, explicitly selected [LFM3 audio trial](../hikari/lfm3-audio-trial.md) keeps this call lifecycle with a different buffered speech model. It is disabled by default and needs separate download approval and manual runtime validation.

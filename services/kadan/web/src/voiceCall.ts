@@ -118,7 +118,7 @@ export class VoiceCallSession {
     if (!this.closed && this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(event));
   }
 
-  async start(agentKey: string, personaId: string | null): Promise<void> {
+  async start(agentKey: string, personaId: string | null, backend: "native" | "lfm3" = "native"): Promise<void> {
     try {
       const unavailable = callUnavailable();
       if (unavailable) throw new Error(unavailable);
@@ -147,7 +147,7 @@ export class VoiceCallSession {
       const url = new URL(`/api/agents/${encodeURIComponent(agentKey)}/calls`, window.location.href);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       this.socket = new WebSocket(url);
-      this.socket.onopen = () => this.send({ type: "start", persona_id: personaId });
+      this.socket.onopen = () => this.send({ type: "start", persona_id: personaId, ...(backend === "lfm3" ? { backend } : {}) });
       this.socket.onmessage = (event) => this.message(event.data);
       this.socket.onerror = () => this.end("Could not connect the call. Try again.");
       this.socket.onclose = () => this.end("The call disconnected. Start a new call.");
