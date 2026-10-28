@@ -31,7 +31,7 @@ from ..api.pydantic_models.agent_runs import (
     ImageJob,
     RunMessage,
 )
-from ..api.pydantic_models.resources import Message, ResourceKind
+from ..api.pydantic_models.resources import Message, Resource, ResourceKind
 from ..api.run_client import RunClient
 from ..api.services import parse_resource
 from .agent_inference import (
@@ -46,8 +46,15 @@ from .conversation_history import (
     history_page,
 )
 from .memories import AgentMemories
-from .tools import ALL_TOOLS, CONVERSATION_TOOLS, MEMORY_TOOLS, TOOLS_BY_NAME
+from .tools import (
+    ALL_TOOLS,
+    CONVERSATION_TOOLS,
+    MEMORY_TOOLS,
+    PERSONA_TOOLS,
+    TOOLS_BY_NAME,
+)
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
+from .tools.persona import UpdatePersonaArguments
 from .tools.workspace import CreateWorkspaceDocumentArguments
 
 if TYPE_CHECKING:
@@ -205,6 +212,38 @@ class RunConversation:
 
     async def finish(self) -> None:
         self.finished = True
+
+    async def read_persona(self) -> dict:
+        persona = await self.runs.services.agent_persona(self.run.agent_key)
+        return {
+            "persona": persona.model_dump(
+                mode="json", include={"id", "title", "markdown", "version"}
+            )
+            if persona
+            else None
+        }
+
+    async def update_persona(self, args: UpdatePersonaArguments) -> dict:
+        # Stop or loss of the lease must fence a write that has not started yet.
+        await self.runs.owned(self.run)
+        value = await self.runs.services.json_request(
+            "Tsuchi",
+            "PUT",
+            f"/api/agents/{self.run.agent_key}/persona",
+            json=args.model_dump(mode="json"),
+        )
+        persona = Resource.model_validate(value)
+        if (
+            persona.agent_key != self.run.agent_key
+            or persona.kind != ResourceKind.PERSONA
+            or persona.deleted_at
+        ):
+            raise ServiceError("Tsuchi returned an invalid saved persona.", 502)
+        return {
+            "persona": persona.model_dump(
+                mode="json", include={"id", "title", "markdown", "version"}
+            )
+        }
 
     async def create_workspace_document(
         self, args: CreateWorkspaceDocumentArguments
@@ -366,7 +405,12 @@ class AgentRuns(RunClient):
         conversation = await self.services.resource(run.agent_key, run.conversation_id)
         if conversation.kind != ResourceKind.CONVERSATION or conversation.deleted_at:
             raise ServiceError("The conversation is no longer available.", 409)
-        if run.persona_id:
+        owned_persona = await self.services.agent_persona(run.agent_key)
+        if owned_persona:
+            instructions += "\nYour saved persona:\n" + owned_persona.markdown
+        if run.persona_id and (
+            owned_persona is None or run.persona_id != owned_persona.id
+        ):
             persona = await self.services.resource(run.agent_key, run.persona_id)
             if persona.kind != ResourceKind.PERSONA or persona.deleted_at:
                 raise ServiceError("The selected persona is no longer available.", 409)
@@ -543,7 +587,7 @@ class AgentRuns(RunClient):
         return (
             ALL_TOOLS
             if self.services.sandbox.configured
-            else [*CONVERSATION_TOOLS, *MEMORY_TOOLS]
+            else [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]
         )
 
     @traced("kadan.agent_runs.invoke_tool")
@@ -555,6 +599,21 @@ class AgentRuns(RunClient):
         conversation = RunConversation(self, run, state.replayed)
         if tool is None:
             result = {"tool": command.tool, "error": "This tool no longer exists."}
+        elif tool in PERSONA_TOOLS:
+            if state.replayed and command.tool == "update_persona":
+                result = {
+                    "error": "The runner restarted before this persona save reported "
+                    "a result. It may or may not have saved; read_persona before retrying."
+                }
+            else:
+                try:
+                    result = await tool.ainvoke(
+                        command.arguments,
+                        config={"configurable": {"conversation": conversation}},
+                    )
+                except (ServiceError, ValidationError) as error:
+                    result = {"error": str(error)}
+
         elif tool in MEMORY_TOOLS:
             result = await self.use_memory(tool, command, run, state.replayed)
         elif tool in CONVERSATION_TOOLS:

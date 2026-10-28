@@ -4,6 +4,8 @@ Tsuchi owns content, revisions, trash and file bytes. Kadan exposes separate rea
 
 Workspace documents retain Tsuchi's `space` (Markdown) and `deck` kinds. Memories retain `memory`; personas and conversations belong to neither collection. All records remain scoped by `agent_key`. Existing IDs, kinds, revisions, attachments and parent links are unchanged, with no migration or copying of content. In particular, an existing Memory's `parent_id` does not make it a Workspace document.
 
+The Open Tsuchi link uses the configured storage frontend. Workspace reads on navigation, search and explicit refresh rather than continuously synchronizing external edits. Selected records refresh independently of search results so filtering cannot imply deletion. A document read uses the unfiltered active resource collection for its text, ancestors and children; memory and file details use their individual reads. Confirmed absence, trash or a changed kind hides obsolete content, while transient failures retain the last loaded record with an error. Each read is invalidated by newer navigation or refreshes so late responses cannot replace the current selection.
+
 ## Read contract
 
 - `GET /api/agents/{key}/workspace/documents` returns active `space` and `deck` records as `WorkspaceDocument` values.
