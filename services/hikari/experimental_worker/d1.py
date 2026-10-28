@@ -2,6 +2,7 @@
 
 import json
 import math
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -172,7 +173,7 @@ def answers(task: dict, result: dict) -> list[dict]:
     return output
 
 
-def evaluate(model, task: dict) -> list[dict]:
+def evaluate(model, task: dict, timing: dict | None = None) -> list[dict]:
     """Count every complete prompt and use mean scores with no input truncation."""
     named = prepare_questions(task)
     questions = [model.engine.ask(question) for question in named.values()]
@@ -181,11 +182,15 @@ def evaluate(model, task: dict) -> list[dict]:
     tokens = model.engine.tokens(task["state"], questions)
     if type(tokens) is not int or not 0 < tokens <= MAX_CONTEXT:
         raise InputError(
-            "d1 state and questions exceed the 128000-token context; no input was truncated."
+            f"d1 state and questions require {tokens} tokens; the context allows 1 to 128000; no input was truncated."
         )
-    return answers(
-        task, model.system_one(task["state"], named, score_readout="mean", set_size=1)
-    )
+    started = time.perf_counter()
+    result = model.system_one(task["state"], named, score_readout="mean", set_size=1)
+    if timing is not None:
+        timing.update(
+            decision_seconds=time.perf_counter() - started, max_prompt_tokens=tokens
+        )
+    return answers(task, result)
 
 
 def execute(
@@ -203,6 +208,7 @@ def execute(
         raise ValueError(
             "This d1 BF16 worker requires a CUDA device with BF16 support."
         )
+    started = time.perf_counter()
     model = AutoModel.from_pretrained(
         model_path,
         dtype=torch.bfloat16,
@@ -210,6 +216,8 @@ def execute(
         trust_remote_code=True,
         local_files_only=True,
     ).eval()
+    timing = {"model_load_seconds": time.perf_counter() - started}
     emit({"state": "running", "model": MODEL["id"]})
     with torch.inference_mode():
-        return {"model": MODEL["id"], "answers": evaluate(model, task)}
+        result = evaluate(model, task, timing)
+    return {"model": MODEL["id"], "answers": result, "timing": timing}
