@@ -80,6 +80,41 @@ class LocalServices:
         )
         return parse_resource(value)
 
+    async def agent_persona(self, key: str) -> Resource | None:
+        value = await self.json_request("Tsuchi", "GET", f"/api/agents/{key}/persona")
+        if value is None:
+            return None
+        persona = parse_resource(value)
+        require_active(persona, ResourceKind.PERSONA)
+        if persona.agent_key != key:
+            raise ServiceError("Tsuchi returned a persona for another agent.", 502)
+        return persona
+
+    async def call_instruction(self, key: str, persona_id: UUID | None) -> str:
+        instruction = (
+            "You are the user's agent. Have a spoken conversation. "
+            "Keep replies short. You have no tools."
+        )
+        owned = await self.agent_persona(key)
+        if owned is not None:
+            instruction += "\nYour saved persona:\n" + owned.markdown
+        if persona_id is not None and (owned is None or persona_id != owned.id):
+            selected = await self.resource(key, persona_id)
+            if (
+                selected.agent_key != key
+                or selected.kind != ResourceKind.PERSONA
+                or selected.deleted_at is not None
+            ):
+                raise ServiceError("The selected persona is no longer available.", 409)
+            instruction += "\nSelected persona:\n" + selected.markdown
+        if len(instruction) > 8000:
+            raise ServiceError(
+                "Voice call instructions exceed the 8,000-character limit. "
+                "Shorten the saved persona or remove the additional selection.",
+                422,
+            )
+        return instruction
+
     async def list_resource_kinds(
         self,
         key: str,

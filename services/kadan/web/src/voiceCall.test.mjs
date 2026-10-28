@@ -28,7 +28,7 @@ function message(event) { socket.onmessage({ data: JSON.stringify(event) }); }
 function session() { return new VoiceCallSession(state => states.push(state), error => errors.push(error)); }
 async function connected() {
   const call = session();
-  await call.start("Short spoken replies.");
+  await call.start("test", "selected-persona");
   socket.readyState = 1;
   socket.onopen();
   message({ type: "ready" });
@@ -104,7 +104,8 @@ test("stopping playback cancels all scheduled segments and invalidates queued en
 
 test("capture continues during playback and onset cancels old audio before sending new speech", async () => {
   const call = await connected();
-  assert.equal(socket.url, "wss://kadan.local/api/calls");
+  assert.equal(socket.url, "wss://kadan.local/api/agents/test/calls");
+  assert.deepEqual(socket.sent[0], { type: "start", persona_id: "selected-persona" });
   speech(); silence();
   assert.deepEqual(socket.sent.map(event => event.type), ["start", "interrupt", "utterance"]);
   assert.equal(socket.sent[2].turn, 1);
@@ -189,7 +190,7 @@ test("ending before permission resolves releases a late microphone without openi
   navigator.mediaDevices.getUserMedia = () => new Promise(done => { permit = done; });
   socket = null;
   const call = session();
-  const starting = call.start("Hi");
+  const starting = call.start("test", null);
   await flush();
   call.end();
   permit({ getTracks: () => [track], getAudioTracks: () => [track] });
@@ -204,7 +205,7 @@ test("ending before worklet loading resolves cannot attach capture afterwards", 
   install("AudioContext", function () { context = fakeContext(); context.audioWorklet.addModule = () => new Promise(done => { finishModule = done; }); return context; });
   capture = null;
   const call = session();
-  const starting = call.start("Hi");
+  const starting = call.start("test", null);
   await flush();
   call.end();
   finishModule();
@@ -231,7 +232,7 @@ test("browser-trusted HTTP origins can start calls over an unencrypted WebSocket
   window.location.href = "http://kadan.local/";
   assert.equal(callUnavailable(), null);
   const call = await connected();
-  assert.equal(socket.url, "ws://kadan.local/api/calls");
+  assert.equal(socket.url, "ws://kadan.local/api/agents/test/calls");
   call.end();
 });
 
@@ -240,7 +241,17 @@ test("untrusted origins and denied permissions return useful errors", async () =
   assert.match(callUnavailable(), /HTTPS or localhost/);
   window.isSecureContext = true;
   navigator.mediaDevices.getUserMedia = async () => { throw new Error("Permission denied"); };
-  await session().start("Hi");
+  await session().start("test", null);
   assert.equal(errors[0], "Permission denied");
   assert.equal(context.closed, true);
+});
+
+
+test("starting without an additional persona sends an explicit null selection", async () => {
+  const call = session();
+  await call.start("test", null);
+  socket.readyState = 1;
+  socket.onopen();
+  assert.deepEqual(socket.sent[0], { type: "start", persona_id: null });
+  call.end();
 });

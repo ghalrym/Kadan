@@ -419,7 +419,7 @@ services:
 
   # The agent computer shares the Compose network with the other services.
   kadan-sandbox:
-    image: ghcr.io/agent-infra/sandbox:1.11.0@sha256:6328d7fd2f0ff0b4c147c3d05b3df1ce331f4a482eb6e550ecd64ed1fcf906e7
+    build: ./services/kadan/sandbox
     environment:
       SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:-insecure-api-key}
       TZ: ${TZ:-UTC}

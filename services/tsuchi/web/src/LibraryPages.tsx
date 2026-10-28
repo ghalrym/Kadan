@@ -150,9 +150,11 @@ export function ResourcesPage({
           ),
     [agentKey, kind, q, offset, refresh, tree],
   );
-  const isEmpty = tree
-    ? !data?.some((resource) => resource.kind === "space")
-    : data?.length === 0;
+  const isEmpty =
+    data !== null &&
+    (tree
+      ? !data.some((resource) => resource.kind === "space")
+      : data.length === 0);
   return (
     <>
       <div className="page-heading">

@@ -12,16 +12,19 @@ from .models import (
     Agent,
     AgentInput,
     AgentKey,
+    AgentRename,
     AgentRun,
     AgentRunState,
     Asset,
     AssetUpdate,
     ImageJob,
     ImageJobState,
+    MarkdownResource,
     Message,
     MessageAppend,
     Metadata,
     Model,
+    OwnedPersonaUpdate,
     PetJob,
     PetManifest,
     PetReferenceMode,
@@ -172,6 +175,22 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     @router.post("/agents", response_model=Agent, status_code=201)
     def create_agent(value: AgentInput):
         return repository.create_agent(value)
+
+    @router.get("/agents/{key}/persona", response_model=MarkdownResource | None)
+    def get_owned_persona(key: AgentKey):
+        return repository.get_owned_persona(key)
+
+    @router.put("/agents/{key}/persona", response_model=MarkdownResource)
+    def save_owned_persona(key: AgentKey, value: OwnedPersonaUpdate):
+        return repository.save_owned_persona(key, value)
+
+    @router.get("/agents/{key}", response_model=Agent)
+    def get_agent(key: AgentKey):
+        return repository.get_agent(key)
+
+    @router.put("/agents/{key}", response_model=Agent)
+    def rename_agent(key: AgentKey, value: AgentRename):
+        return repository.rename_agent(key, value)
 
     @router.get("/agent-runs", response_model=list[AgentRun])
     def active_runs():
