@@ -168,7 +168,7 @@ class AudioCallTask(TaskInput):
 
 class TranscriptionFormattingTask(TaskInput):
     feature: Literal["stt_formatting"] = "stt_formatting"
-    text: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=32000)
 
 
 class VideoTask(TaskInput):
