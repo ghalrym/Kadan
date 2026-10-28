@@ -10,7 +10,7 @@ const { outputText } = ts.transpileModule(source, {
 })
 
 function clip(script) {
-  return { voice: 'Ryan', meta: 'WAV', script, time: '0:01', audio_base64: script, mime_type: 'audio/wav' }
+  return { voice: 'Female · American English', meta: 'WAV', script, time: '0:01', audio_base64: script, mime_type: 'audio/wav' }
 }
 
 function elements(node) {
@@ -63,7 +63,7 @@ async function page() {
   const modules = {
     react, 'react/jsx-runtime': module({ jsx, jsxs: jsx, Fragment: 'fragment' }),
     '../components/Media': module({ AudioCard: function AudioCard() {} }),
-    '../data/playground': module({ speechScript: 'Editable script', voiceDescription: 'Calm' }),
+    '../data/playground': module({ speechScript: 'Editable script' }),
     '../api/speech': module({
       fetchSpeechHistory: signal => request(reads, signal),
       requestSpeech: (body, signal) => request(requests, signal, body),
@@ -85,8 +85,8 @@ async function page() {
   }
   await flush()
   modelReads[0].resolve({ response: { ok: true }, data: [{
-    id: 'qwen-tts-1.7b-custom', name: 'CustomVoice', speakers: ['Ryan'],
-    default_speaker: 'Ryan', supports_instruction: true,
+    id: 'lfm3-audio-2b-bf16', name: 'LFM3 Audio', languages: ['American English', 'Japanese'],
+    genders: ['female', 'male'], default_language: 'American English', default_gender: 'female',
   }] })
   await flush()
   return {
@@ -249,3 +249,21 @@ for (const pending of ['initial history', 'history retry', 'speech']) {
     })
   }
 }
+
+
+test('speech form submits only supported LFM language and gender without named voices', async () => {
+  const view = await page()
+  view.reads[0].resolve([])
+  await view.flush()
+  const select = id => elements(view.tree).find(node => node.props?.id === id)
+  assert.equal(select('speech-speaker'), undefined)
+  assert.equal(select('speech-description'), undefined)
+  select('speech-language').props.onChange({ target: { value: 'Japanese' } })
+  select('speech-gender').props.onChange({ target: { value: 'male' } })
+  await view.flush()
+  await view.submit()
+  assert.deepEqual(JSON.parse(JSON.stringify(view.requests[0].body)), {
+    script: 'Editable script', model_id: 'lfm3-audio-2b-bf16', language: 'Japanese', gender: 'male',
+  })
+  view.unmount()
+})
