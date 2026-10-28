@@ -93,6 +93,7 @@ public:
     ) const;
 
 private:
+    std::optional<Bytes> completed_bytes(const CatalogEntry& entry) const;
     std::vector<ManifestFile>
     manifest(const CatalogEntry& entry, const std::atomic_bool& cancel) const;
     fs::path root_, data_;
