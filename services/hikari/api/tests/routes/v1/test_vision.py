@@ -23,11 +23,13 @@ def request(**changes):
 class VisionRouteTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_encoded_screenshot_never_enters_queue(self):
         submit = AsyncMock()
-        with patch.object(vision.inference, "submit", submit):
-            with self.assertRaises(HTTPException) as error:
-                await vision.describe_screenshot(
-                    request(image_base64="not base64!"), object()
-                )
+        with (
+            patch.object(vision.inference, "submit", submit),
+            self.assertRaises(HTTPException) as error,
+        ):
+            await vision.describe_screenshot(
+                request(image_base64="not base64!"), object()
+            )
         self.assertEqual(error.exception.status_code, 422)
         submit.assert_not_called()
 
@@ -56,13 +58,26 @@ class VisionRouteTests(unittest.IsolatedAsyncioTestCase):
                 await vision.describe_screenshot(body, object())
         self.assertEqual(error.exception.status_code, 502)
 
+    def test_request_defaults_to_model_remaining_context_and_large_output_is_accepted(
+        self,
+    ):
+        self.assertIsNone(request().max_new_tokens)
+        self.assertEqual(request(question="x" * 5000).question, "x" * 5000)
+        self.assertEqual(request(max_new_tokens=16384).max_new_tokens, 16384)
+        self.assertEqual(
+            len(
+                vision.DescribeResponse(model="lfm3-vl-2b-bf16", text="x" * 40000).text
+            ),
+            40000,
+        )
+
     def test_request_rejects_blank_question(self):
         with self.assertRaises(ValidationError):
             request(question=" ")
 
     def test_request_rejects_excessive_output_tokens(self):
         with self.assertRaises(ValidationError):
-            request(max_new_tokens=1025)
+            request(max_new_tokens=128000)
 
     def test_request_rejects_boolean_output_tokens(self):
         with self.assertRaises(ValidationError):
