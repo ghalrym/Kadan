@@ -17,7 +17,17 @@ const conversation = (messages, id = "conversation") => ({ id, version: 1, messa
 
 // Exercise Chat handlers and effects with in-memory hooks and service/DOM boundaries.
 function chat(chain, storageValues = {}) {
-  const slots = [], effects = [], layouts = [], scrolls = [], focuses = [];
+  const slots = [], effects = [], layouts = [], scrolls = [], focuses = [], timers = [];
+  let viewportNode, scrollTop = 1500;
+  const viewport = {
+    scrollHeight: 2000, clientHeight: 500,
+    get scrollTop() { return scrollTop; },
+    set scrollTop(value) {
+      scrolls.push({ node: viewportNode, top: value });
+      scrollTop = Math.min(value, this.scrollHeight - this.clientHeight);
+    },
+  };
+  let resolveSnapshot;
   const storage = new Map(Object.entries(storageValues));
   let cursor = 0, tree, dirty = false;
   const effect = queue => (callback, dependencies) => {
@@ -56,7 +66,7 @@ function chat(chain, storageValues = {}) {
     "./VoiceCallControl": { useVoiceCall: () => ({}) },
     "./presence": { activeLabel: () => "idle" },
     "./PetContext": { useAgentPet: () => null },
-    "./api": { agentPath: key => `/agents/${key}`, api: () => new Promise(() => {}) },
+    "./api": { agentPath: key => `/agents/${key}`, api: () => new Promise(resolve => { resolveSnapshot = resolve; }) },
     "./agentRuns": agentRuns,
     "./uuid": { randomUuid: () => "outgoing" },
     "./outbox": outbox,
@@ -69,7 +79,7 @@ function chat(chain, storageValues = {}) {
       setItem: (key, value) => storage.set(key, value),
       removeItem: key => storage.delete(key),
     },
-    setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
+    setTimeout: callback => timers.push(callback), clearTimeout() {}, setInterval: () => 0, clearInterval() {},
   });
   const props = {
     agentKey: "guide", agentName: "Guide", chain, personas: [], status: null, entrance: "idle",
@@ -87,7 +97,16 @@ function chat(chain, storageValues = {}) {
       cursor = 0;
       tree = exports.default(props);
       for (const node of all(node => node.props?.ref)) {
-        const element = { scrollIntoView: options => scrolls.push({ node, options }), focus: () => focuses.push(node) };
+        const element = node.props.className === "messages" ? viewport : {
+          scrollIntoView(options) {
+            scrolls.push({ node, options });
+          },
+          focus: () => focuses.push(node),
+        };
+        if (element === viewport) {
+          viewportNode = node;
+          element.focus = () => focuses.push(node);
+        }
         if (typeof node.props.ref === "function") node.props.ref(element);
         else node.props.ref.current = element;
       }
@@ -119,7 +138,20 @@ function chat(chain, storageValues = {}) {
     render();
   }
   render();
-  return { all, render, named, keyDown, field, status, search, scrolls, focuses, storage, props };
+  return {
+    all, render, named, keyDown, field, status, search, scrolls, focuses, storage, props, viewport,
+    scroll(distance) {
+      viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight - distance;
+      named("Conversation messages").props.onScroll({ currentTarget: viewport });
+      render();
+    },
+    async updateRuns(runs) {
+      if (timers.length) timers.shift()();
+      resolveSnapshot({ runs, images: [], conversation: props.chain });
+      await new Promise(resolve => setImmediate(resolve));
+      render();
+    },
+  };
 }
 
 const selected = view => view.all(node => node.type === "article" && node.props.className.includes("find-match"));
@@ -259,4 +291,138 @@ test("an emptied conversation keeps Close find available", () => {
   view.named("Close find").props.onClick();
   view.render();
   assert.equal(view.named("Find in conversation").props.disabled, true);
+});
+
+const jump = view => view.all(node => node.props?.className === "jump-latest")[0];
+function appendMessage(view, text = "A new reply") {
+  view.props.chain = {
+    ...view.props.chain, version: view.props.chain.version + 1,
+    messages: [...view.props.chain.messages, message(`new-${view.props.chain.version}`, text, "assistant")],
+  };
+  view.viewport.scrollHeight += 100;
+  view.render();
+}
+
+test("opening a conversation starts at latest without a jump control", () => {
+  const view = chat(conversation([message("saved", "Saved text")]));
+  assert.equal(view.scrolls.at(-1).top, view.viewport.scrollHeight);
+  assert.equal(view.viewport.scrollTop, view.viewport.scrollHeight - view.viewport.clientHeight);
+  assert.equal(jump(view), undefined);
+});
+
+test("reading earlier messages keeps the position and visible history when replies and typing arrive", async () => {
+  const view = chat(conversation(Array.from({ length: 201 }, (_, i) => message(`m${i}`, `Message ${i}`))));
+  view.scroll(500);
+  const position = view.viewport.scrollTop;
+  view.scrolls.length = 0;
+  appendMessage(view);
+  assert.equal(view.viewport.scrollTop, position);
+  assert.equal(view.scrolls.length, 0);
+  assert.equal(view.all(node => node.type === "article").length, 201);
+  assert.equal(view.all(node => node.type === "Markdown")[0].props.children, "Message 1");
+  assert.ok(jump(view));
+  await view.updateRuns([{ id: "running", conversation_id: view.props.chain.id, status: "running" }]);
+  assert.equal(view.scrolls.length, 0);
+  assert.equal(view.viewport.scrollTop, position);
+});
+
+test("messages and typing follow when the reader is near latest", async () => {
+  const view = chat(conversation([message("saved", "Saved text")]));
+  view.scroll(40);
+  view.scrolls.length = 0;
+  appendMessage(view);
+  assert.equal(view.scrolls.at(-1).top, view.viewport.scrollHeight);
+  assert.equal(view.viewport.scrollTop, view.viewport.scrollHeight - view.viewport.clientHeight);
+  assert.equal(jump(view), undefined);
+  view.scrolls.length = 0;
+  await view.updateRuns([{ id: "running", conversation_id: view.props.chain.id, status: "running" }]);
+  assert.equal(view.scrolls.at(-1).top, view.viewport.scrollHeight);
+});
+
+test("scrolling back near latest resumes following", () => {
+  const view = chat(conversation([message("saved", "Saved text")]));
+  view.scroll(500);
+  assert.ok(jump(view));
+  view.scroll(20);
+  assert.equal(jump(view), undefined);
+  view.scrolls.length = 0;
+  appendMessage(view);
+  assert.equal(view.scrolls.at(-1).top, view.viewport.scrollHeight);
+});
+
+test("Jump to latest returns to the bottom, resumes following and gives focus to the message region", () => {
+  const view = chat(conversation([message("saved", "Saved text")]));
+  view.scroll(500);
+  jump(view).props.onClick();
+  view.render();
+  assert.equal(jump(view), undefined);
+  assert.equal(view.viewport.scrollTop, view.viewport.scrollHeight - view.viewport.clientHeight);
+  assert.equal(view.focuses.at(-1).props["aria-label"], "Conversation messages");
+  view.scrolls.length = 0;
+  appendMessage(view);
+  assert.equal(view.scrolls.at(-1).top, view.viewport.scrollHeight);
+});
+
+test("Jump explicitly closes Find and clears its selected match before following latest", () => {
+  const view = chat(conversation([message("saved", "needle")]));
+  view.search("needle");
+  assert.equal(jump(view).props.children.at(-1), "Close find and jump to latest");
+  view.scrolls.length = 0;
+  jump(view).props.onClick();
+  view.render();
+  assert.equal(view.field(), undefined);
+  assert.equal(selected(view).length, 0);
+  assert.equal(jump(view), undefined);
+  assert.ok(view.scrolls.every(scroll => scroll.top === view.viewport.scrollHeight));
+  appendMessage(view, "Another needle");
+  assert.equal(selected(view).length, 0);
+  assert.equal(view.scrolls.at(-1).top, view.viewport.scrollHeight);
+});
+
+test("closing Find at an earlier match keeps follow paused for incoming replies", () => {
+  const view = chat(conversation([message("saved", "needle")]));
+  view.search("needle");
+  view.named("Close find").props.onClick();
+  view.render();
+  view.scrolls.length = 0;
+  appendMessage(view);
+  assert.equal(view.scrolls.length, 0);
+  assert.ok(jump(view));
+});
+
+test("sending one's own message returns to latest while an active Find query keeps its position", () => {
+  for (const searching of [false, true]) {
+    const view = chat(conversation([message("saved", "needle")]));
+    view.scroll(500);
+    if (searching) view.search("needle");
+    view.all(node => node.type === "Composer")[0].props.onChange("My new message");
+    view.render();
+    view.scrolls.length = 0;
+    view.all(node => node.type === "Composer")[0].props.onSend(false);
+    view.render();
+    if (searching) {
+      assert.equal(view.field().props.value, "needle");
+      assert.equal(selected(view).length, 1);
+      assert.equal(view.scrolls.length, 0);
+      assert.ok(jump(view));
+    } else {
+      assert.equal(view.scrolls.at(-1).top, view.viewport.scrollHeight);
+      assert.equal(jump(view), undefined);
+    }
+  }
+});
+
+test("changing conversation resets search and follow even when the message count stays the same", () => {
+  const view = chat(conversation([message("saved", "needle")]));
+  view.scroll(500);
+  view.search("needle");
+  view.scrolls.length = 0;
+  view.props.chain = conversation([message("other", "New conversation")], "replacement");
+  view.render();
+  assert.equal(view.field(), undefined);
+  assert.equal(jump(view), undefined);
+  assert.equal(view.scrolls.at(-1).top, view.viewport.scrollHeight);
+  view.scrolls.length = 0;
+  appendMessage(view);
+  assert.equal(view.scrolls.at(-1).top, view.viewport.scrollHeight);
 });

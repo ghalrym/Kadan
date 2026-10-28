@@ -693,6 +693,18 @@ main:focus {
   flex-direction: column;
   gap: 2px;
 }
+.jump-latest {
+  position: relative;
+  z-index: 3;
+  align-self: center;
+  flex-shrink: 0;
+  min-height: 44px;
+  max-width: calc(100% - 32px);
+  margin: -52px auto 8px;
+  background: var(--surface);
+  border-color: var(--line-strong);
+  font-size: 12px;
+}
 .earlier {
   align-self: center;
   margin-bottom: 12px;
