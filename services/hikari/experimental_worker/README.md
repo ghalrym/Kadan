@@ -39,12 +39,12 @@ connected worker or completed download does not establish inference success.
    HIKARI_ENABLE_LFM3_TEXT=true docker compose -f compose.yaml -f compose.lfm3-text.yaml --profile lfm3-text up -d --no-deps hikari-worker-lfm3-text
    ```
 
-5. Inspect `GET /v1/models` and the model's pinned `license_url`. Read the LFM
-   Open License v1.0 yourself. Only after accepting it, use the existing
-   `POST /v1/models/lfm3-1.7b-bf16/download` endpoint with
-   `{"license_acknowledged":true}`. Poll `/v1/models` until this model is
-   `complete`; failures remain visible there. No credentials are created by
-   this trial. Stop if upstream access requires account or license approval.
+5. Open Hikari Settings and find **Experimental models**. Read the model's
+   linked LFM Open License v1.0 and custom-code notice. After accepting the
+   license, check its acceptance box and choose **Accept and download**. Wait
+   for this model to show **Complete**; failures remain visible there. The
+   existing model download API is also available. No credentials are created
+   by this trial. Stop if upstream access requires account or license approval.
 6. First compare a short explicit `model: "lfm3-1.7b-bf16"` chat request with
    the unchanged native model. Check identity, sensible content, error handling
    and cancellation. For the Kadan trial, run the reviewed API and runner with
@@ -54,8 +54,9 @@ connected worker or completed download does not establish inference success.
    before trusting generated claims. Test stopping a pending reply and retrying.
 7. Confirm an explicitly selected native model still works and image/video
    services are still available. Record actual response time, errors and GPU
-   usage. The 262,144-token architecture maximum is exposed; fitting that window
-   on this machine, especially alongside another model, remains unmeasured.
+   usage. A single-GPU trial fitted 261,120 prompt tokens plus the 1,024-token
+   reply reservation; repeat admission and quality checks for your hardware.
+   Concurrent full-window requests have not been validated.
 
 To leave the trial, unset the Kadan experiment flag and return its API and runner
 to the owner's existing configuration. Stop only `hikari-worker-lfm3-text` using
@@ -99,13 +100,17 @@ runner use `KADAN_EXPERIMENTAL_LFM3_TEXT` and `KADAN_EXPERIMENTAL_LFM3_VISION`;
 the optional audio button uses `VITE_ENABLE_LFM3_AUDIO`. All default to false.
 An owner must explicitly choose to run the reviewed API/runner/frontend code
 with these flags, preserving existing Tsuchi data, volume identities and worker
-token. The implementation task did not recreate or deploy those services.
+token. The owner-authorized server trial used a separate stack and preserved
+existing services.
 
 Only after that owner step, use the same Compose files/profiles and `up -d
 --no-deps` naming just the new worker services. Review each pinned license URL
-and approve each model's download separately through `/v1/models/{id}/download`.
+and approve each model's download separately through Hikari Settings.
 Wait for `complete` before inference. Start with the short read-only conversation
 test, a screenshot compared with the live desktop, and a short spoken utterance;
 then check stop/interruption and the unchanged native paths. Detailed vision and
 audio checks are in the linked architecture pages. Maximum-window trials come
 after basic runtime/quality validation and measured memory observation.
+Workers reconnect with capped backoff after an API disconnect and refresh their
+resource identity. Unconfirmed requests are not replayed. Each additive Compose
+worker also restarts unless explicitly stopped.

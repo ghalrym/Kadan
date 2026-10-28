@@ -2,7 +2,7 @@
 
 Kadan agents can use their configured computer to browse websites, read and change files, and run commands or code during text conversations. Hikari supplies the model's decisions; Kadan executes the actions. Voice calls do not provide these tools.
 
-Operators can opt text conversations into the experimental LFM3 BF16 worker. This uses the same saved session, personas, tool permissions and action recovery. The trial must have its own enabled worker and user-approved checkpoint download. It does not change the saved Hikari tier or fall back to that tier when unavailable. Its smaller context can reject long conversations; the trial's tool-use quality and speed need manual evaluation before relying on it.
+Operators can opt text conversations into the experimental LFM3 BF16 worker. This uses the same saved session, personas, tool permissions and action recovery. The trial must have its own enabled worker and user-approved checkpoint download. It does not change the saved Hikari tier or fall back to that tier when unavailable. Its bounded context can reject long conversations; the trial's tool-use quality and speed need manual evaluation before relying on it.
 
 The current deployment shares one computer across agents. Actions and manual input can affect the same browser, files and processes. Agent separation in Tsuchi does not create separate desktops. Files created on the computer are not automatically added to Tsuchi's file library.
 
