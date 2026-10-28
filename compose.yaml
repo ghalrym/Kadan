@@ -124,7 +124,7 @@ services:
     volumes:
       - lfm3_vision_models:/var/lib/kadan/models
 
-  # Language worker: the tier's mixture-of-experts model for chat.
+  # Speech and calls share the same LFM audio checkpoint.
   hikari-worker-lfm3-audio:
     <<: *lfm3_worker
     environment:
