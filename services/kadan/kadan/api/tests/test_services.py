@@ -71,7 +71,11 @@ def resource(kind="conversation", messages=None, **changes):
 
 
 def ready_models(status="complete", available=True):
-    return {"models": [{"id": "lfm3-1.7b-bf16", "status": status, "inference_available": available}]}
+    return {
+        "models": [
+            {"id": "lfm3-1.7b-bf16", "status": status, "inference_available": available}
+        ]
+    }
 
 
 class Boundary:
@@ -196,9 +200,7 @@ def test_fixed_lfm3_requires_its_own_downloaded_worker(models, expected):
             return httpx.Response(200, json={"models": models})
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(boundary)) as client:
-            service = LocalServices(
-                client, Settings(_env_file=None)
-            )
+            service = LocalServices(client, Settings(_env_file=None))
             status = await service.inference_status()
             assert status.state == expected
             assert status.model_id == "lfm3-1.7b-bf16"
@@ -383,7 +385,9 @@ def test_docker_status_requests_internal_origins_and_returns_browser_links(unava
     ("lifecycle", "state"),
     [
         (
-            httpx.Response(200, json={"state": "loading", "model_id": "lfm3-1.7b-bf16"}),
+            httpx.Response(
+                200, json={"state": "loading", "model_id": "lfm3-1.7b-bf16"}
+            ),
             "loading",
         ),
         (

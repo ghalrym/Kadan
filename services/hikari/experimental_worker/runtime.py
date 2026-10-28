@@ -309,7 +309,10 @@ class Runtime:
             return
         if self.backend_name == "text" and request["operation"] != "download":
             request = {**request, "input": dict(request["input"])}
-            if "context_limit" not in request["input"] or request["input"]["context_limit"] is None:
+            if (
+                "context_limit" not in request["input"]
+                or request["input"]["context_limit"] is None
+            ):
                 request["input"]["context_limit"] = self.store.context()
         context = multiprocessing.get_context("spawn")
         reader, writer = context.Pipe(duplex=False)
@@ -349,9 +352,7 @@ class Runtime:
                             if line.startswith("VmRSS:")
                         )
                         if int(resident.split()[1]) * 1024 > self.budget[0]:
-                            error = (
-                                "LFM3 executor exceeded its granted RAM budget."
-                            )
+                            error = "LFM3 executor exceeded its granted RAM budget."
                             break
                     except (OSError, StopIteration):
                         pass

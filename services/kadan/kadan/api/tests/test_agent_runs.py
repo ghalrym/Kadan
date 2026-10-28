@@ -823,7 +823,9 @@ def test_every_conversation_and_computer_tool_is_bound(boundary):
     )
     boundary.controller.inference = Commands(finish())
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.controller.inference.tools == [[tool.name for tool in [*ALL_TOOLS, *VISION_TOOLS]]]
+    assert boundary.controller.inference.tools == [
+        [tool.name for tool in [*ALL_TOOLS, *VISION_TOOLS]]
+    ]
 
 
 def test_computer_result_returns_to_the_agent_and_the_run_continues(boundary):

@@ -125,9 +125,7 @@ def finish_reason(generated, eos_token_id: int | list[int] | None) -> str:
 
 def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict:
     if operation not in ("generate", "completion"):
-        raise ValueError(
-            "LFM3 supports generation only; models load per request."
-        )
+        raise ValueError("LFM3 supports generation only; models load per request.")
     if task.get("model_id", task.get("model")) not in (None, MODEL_ID):
         raise ValueError("This worker serves only the explicit LFM3 BF16 checkpoint.")
     messages(task)

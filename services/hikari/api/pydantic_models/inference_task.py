@@ -42,7 +42,6 @@ class ChatTask(TaskInput):
         return lfm3_messages(values)
 
 
-
 LlmModel = Literal["lfm3-1.7b-bf16"]
 # Preserve the complete image-generation and editing pipeline.
 ImageModel = Literal["qwen-image-2.1-turbo"]

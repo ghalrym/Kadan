@@ -40,7 +40,14 @@ class TranscriptionSequenceTests(unittest.IsolatedAsyncioTestCase):
                 transcription.inference,
                 "submit",
                 new=AsyncMock(
-                    side_effect=[raw, {"text": text, "model": "lfm3-1.7b-bf16", "finish_reason": "stop"}]
+                    side_effect=[
+                        raw,
+                        {
+                            "text": text,
+                            "model": "lfm3-1.7b-bf16",
+                            "finish_reason": "stop",
+                        },
+                    ]
                 ),
             ) as submit:
                 result = await transcription.transcribe(body)
@@ -48,8 +55,10 @@ class TranscriptionSequenceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(formatter.messages[-1].text, raw["raw_text"])
             self.assertEqual(formatter.model, "lfm3-1.7b-bf16")
             self.assertFalse(formatter.reuse_prefix)
-            self.assertEqual(submit.await_args_list[1].kwargs,
-                             {"feature": "llm", "operation": "completion"})
+            self.assertEqual(
+                submit.await_args_list[1].kwargs,
+                {"feature": "llm", "operation": "completion"},
+            )
             self.assertEqual(result["text"], text)
             self.assertEqual(result["raw_text"], raw["raw_text"])
             self.assertEqual(result["model"], "medium")
@@ -111,7 +120,11 @@ class TranscriptionSequenceTests(unittest.IsolatedAsyncioTestCase):
             calls.append(feature)
             if feature == "stt":
                 return await waiting
-            return {"text": "Thursday.", "model": "lfm3-1.7b-bf16", "finish_reason": "stop"}
+            return {
+                "text": "Thursday.",
+                "model": "lfm3-1.7b-bf16",
+                "finish_reason": "stop",
+            }
 
         with patch.object(transcription.inference, "submit", new=submit):
             task = asyncio.create_task(

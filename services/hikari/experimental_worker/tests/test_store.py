@@ -87,7 +87,9 @@ class ModelStoreTests(unittest.TestCase):
         self.assertFalse(store.complete())
         store.set_context(None)
         self.assertIsNone(self.store().status()["models"][0]["context_limit"])
-        self.assertEqual(self.store().status()["models"][0]["architecture_context_limit"], 8192)
+        self.assertEqual(
+            self.store().status()["models"][0]["architecture_context_limit"], 8192
+        )
 
     def test_invalid_context_does_not_replace_the_saved_setting(self):
         store = self.store()

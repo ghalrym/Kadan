@@ -55,9 +55,12 @@ def test_worker_failure_is_reported_without_fabricating_an_observation():
 
 
 def test_vision_is_available_only_when_the_agent_has_a_computer():
-    owner = SimpleNamespace(services=SimpleNamespace(
-        settings=Settings(_env_file=None), sandbox=SimpleNamespace(configured=True),
-    ))
+    owner = SimpleNamespace(
+        services=SimpleNamespace(
+            settings=Settings(_env_file=None),
+            sandbox=SimpleNamespace(configured=True),
+        )
+    )
     assert AgentRuns.bound_tools(owner) == [*ALL_TOOLS, *VISION_TOOLS]
     owner.services.sandbox.configured = False
     assert not any(tool in VISION_TOOLS for tool in AgentRuns.bound_tools(owner))

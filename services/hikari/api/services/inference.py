@@ -87,18 +87,32 @@ class InferenceService:
 
     def status(self):
         model_id = "lfm3-1.7b-bf16"
-        checkpoint = next((model for model in self.worker.models.models
-                           if model.id == model_id), None) if self.worker.models else None
-        active = any(job.worker == "lfm3_llm" and not job.result.done()
-                     for job in self.worker.jobs.values())
+        checkpoint = (
+            next(
+                (model for model in self.worker.models.models if model.id == model_id),
+                None,
+            )
+            if self.worker.models
+            else None
+        )
+        active = any(
+            job.worker == "lfm3_llm" and not job.result.done()
+            for job in self.worker.jobs.values()
+        )
         return {
             "state": "loading" if active else "unloaded",
             "model_id": model_id,
-            "error": None if checkpoint is not None else "The LFM3 conversation worker is unavailable.",
+            "error": None
+            if checkpoint is not None
+            else "The LFM3 conversation worker is unavailable.",
             "memory": self.worker.memory.model_dump() if self.worker.memory else None,
-            "configured_context_limit": checkpoint.context_limit if checkpoint else None,
+            "configured_context_limit": checkpoint.context_limit
+            if checkpoint
+            else None,
             "effective_context_limit": None,
-            "supported_context_limit": checkpoint.architecture_context_limit if checkpoint else None,
+            "supported_context_limit": checkpoint.architecture_context_limit
+            if checkpoint
+            else None,
             "max_output_tokens": None,
         }
 

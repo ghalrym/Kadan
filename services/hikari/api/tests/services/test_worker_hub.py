@@ -1013,7 +1013,10 @@ class CancellationHandoffTests(CancellationTestCase):
         self.assert_cancelled(job)
 
     async def test_store_cancel_attempts_other_workers_after_a_send_failure(self):
-        workers = [self.add_worker("first", "decision"), self.add_worker("second", "image")]
+        workers = [
+            self.add_worker("first", "decision"),
+            self.add_worker("second", "image"),
+        ]
         job = await self.add_job(request=self.store_request())
         first, second = [self.hub.workers[worker_id] for worker_id in job.machines]
         with (
@@ -1077,7 +1080,10 @@ class SubmissionOwnershipTests(CancellationTestCase):
         self.assertEqual(raised.exception.status_code, 422)
 
     async def test_all_early_terminals_wait_for_submission_to_close(self):
-        workers = [self.add_worker("first", "decision"), self.add_worker("second", "image")]
+        workers = [
+            self.add_worker("first", "decision"),
+            self.add_worker("second", "image"),
+        ]
         job = self.register_job()
         completed_during_send = []
 

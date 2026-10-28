@@ -40,8 +40,10 @@ def completed(content):
 
 def call(name, **arguments):
     parameters = "".join(
-        f"<parameter={key}>\n" + (value if isinstance(value, str) else json.dumps(value))
-        + "\n</parameter>\n" for key, value in arguments.items()
+        f"<parameter={key}>\n"
+        + (value if isinstance(value, str) else json.dumps(value))
+        + "\n</parameter>\n"
+        for key, value in arguments.items()
     )
     return f"<tool_call>\n<function={name}>\n{parameters}</function>\n</tool_call>"
 
@@ -152,7 +154,11 @@ def test_bound_tools_use_lfm_schemas_without_changing_system_instructions():
     assert seen[0]["messages"][1] == {"role": "user", "content": "Hello"}
     assert seen[0]["tools"] == [convert_to_openai_tool(tool) for tool in TOOLS]
     functions = [convert_to_openai_tool(tool)["function"] for tool in TOOLS]
-    assert tool_characters(TOOLS) == len("<tools>\n" + "\n".join(json.dumps(function) for function in functions) + "\n</tools>")
+    assert tool_characters(TOOLS) == len(
+        "<tools>\n"
+        + "\n".join(json.dumps(function) for function in functions)
+        + "\n</tools>"
+    )
 
 
 def test_lfm3_sends_structured_tools_and_true_tool_result_roles():
@@ -486,7 +492,10 @@ def test_cancel_closes_silent_hikari_stream():
         ) as client:
             task = asyncio.create_task(
                 AgentInference(client, "http://hikari").call(
-                    [HumanMessage(content="Hello")], "lfm3-1.7b-bf16", "conversation", TOOLS
+                    [HumanMessage(content="Hello")],
+                    "lfm3-1.7b-bf16",
+                    "conversation",
+                    TOOLS,
                 )
             )
             await stream.waiting.wait()
@@ -499,14 +508,37 @@ def test_cancel_closes_silent_hikari_stream():
 
 
 def test_tool_calls_and_results_keep_structured_roles_and_argument_mapping():
-    wire = HikariChatModel._wire_messages([
-        SystemMessage(content="Instructions"), HumanMessage(content="Hello"),
-        AIMessage(content="", tool_calls=[{"name": "shell_exec_command", "args": {"command": "ls"}, "id": "1"}]),
-        ToolMessage(content='{"output": "a.txt"}', tool_call_id="1"), HumanMessage(content="Thanks"),
-    ])
+    wire = HikariChatModel._wire_messages(
+        [
+            SystemMessage(content="Instructions"),
+            HumanMessage(content="Hello"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "shell_exec_command", "args": {"command": "ls"}, "id": "1"}
+                ],
+            ),
+            ToolMessage(content='{"output": "a.txt"}', tool_call_id="1"),
+            HumanMessage(content="Thanks"),
+        ]
+    )
     assert wire == [
-        {"role": "system", "content": "Instructions"}, {"role": "user", "content": "Hello"},
-        {"role": "assistant", "content": "", "tool_calls": [{"id": "1", "type": "function", "function": {"name": "shell_exec_command", "arguments": {"command": "ls"}}}]},
+        {"role": "system", "content": "Instructions"},
+        {"role": "user", "content": "Hello"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {
+                        "name": "shell_exec_command",
+                        "arguments": {"command": "ls"},
+                    },
+                }
+            ],
+        },
         {"role": "tool", "content": '{"output": "a.txt"}', "tool_call_id": "1"},
         {"role": "user", "content": "Thanks"},
     ]

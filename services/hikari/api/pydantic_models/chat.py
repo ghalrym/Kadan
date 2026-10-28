@@ -67,7 +67,9 @@ def lfm3_messages(values):
     """Normalize the fixed LFM3 prompt without accepting an alternate checkpoint."""
     if not isinstance(values, dict):
         return values
-    if any(values.get(key) not in (None, "lfm3-1.7b-bf16") for key in ("model_id", "model")):
+    if any(
+        values.get(key) not in (None, "lfm3-1.7b-bf16") for key in ("model_id", "model")
+    ):
         raise ValueError("Only the fixed LFM3 conversation model is supported")
     if not isinstance(values.get("messages", []), list):
         return {**values, "model": "lfm3-1.7b-bf16"}
@@ -75,7 +77,9 @@ def lfm3_messages(values):
         **values,
         "model": "lfm3-1.7b-bf16",
         "messages": [
-            Lfm3Message.model_validate(row.model_dump() if isinstance(row, BaseModel) else row)
+            Lfm3Message.model_validate(
+                row.model_dump() if isinstance(row, BaseModel) else row
+            )
             for row in values.get("messages", [])
         ],
     }

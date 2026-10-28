@@ -152,10 +152,18 @@ def target_worker(request: InferenceTask) -> str | None:
         return None
     if request.feature == "llm":
         if requested_model(request) not in (None, "lfm3-1.7b-bf16"):
-            raise InferenceFailure("Only the fixed LFM3 conversation model is supported.", 422)
+            raise InferenceFailure(
+                "Only the fixed LFM3 conversation model is supported.", 422
+            )
         if request.operation in ("load", "unload"):
-            raise InferenceFailure("LFM3 models load per request; manual residency is unavailable.", 422)
-    if request.feature == "stt" and requested_model(request) not in (None, "medium", "whisper-medium"):
+            raise InferenceFailure(
+                "LFM3 models load per request; manual residency is unavailable.", 422
+            )
+    if request.feature == "stt" and requested_model(request) not in (
+        None,
+        "medium",
+        "whisper-medium",
+    ):
         raise InferenceFailure("The fixed transcription model is Whisper medium.", 422)
     return FEATURE_WORKERS[request.feature]
 
@@ -311,7 +319,11 @@ class WorkerHub:
             if worker.models is None:
                 continue
             for model in worker.models.models:
-                if model.id in allowed and model_worker(model.id) == worker.kind and model.id not in known:
+                if (
+                    model.id in allowed
+                    and model_worker(model.id) == worker.kind
+                    and model.id not in known
+                ):
                     snapshot.models.append(model.model_copy(deep=True))
                     known.add(model.id)
         self.models = snapshot if base is not None or snapshot.models else None
@@ -535,15 +547,26 @@ class WorkerHub:
         model = requested_model(request)
         if request.feature == "whisper_selection":
             if model != "medium":
-                raise InferenceFailure("The fixed transcription model is Whisper medium.", 422)
+                raise InferenceFailure(
+                    "The fixed transcription model is Whisper medium.", 422
+                )
             model = None
         if model is not None and model not in MODEL_WORKERS:
-            raise InferenceFailure("The requested model is not in the fixed stack.", 422)
+            raise InferenceFailure(
+                "The requested model is not in the fixed stack.", 422
+            )
         if request.operation == "configure":
             if request.feature in ("whisper_formatting", "whisper_selection"):
-                targets = [worker for worker in self._ready() if worker.kind in NATIVE_MODEL_STORES]
+                targets = [
+                    worker
+                    for worker in self._ready()
+                    if worker.kind in NATIVE_MODEL_STORES
+                ]
                 if not targets:
-                    raise InferenceFailure("No native model store is connected to save transcription settings.", 503)
+                    raise InferenceFailure(
+                        "No native model store is connected to save transcription settings.",
+                        503,
+                    )
             else:
                 targets = self._ready(model_worker(model))
         else:
@@ -882,7 +905,10 @@ class WorkerHub:
             tasks.append(
                 {"feature": "whisper_selection", "model": source.selected_whisper}
             )
-        if worker.kind in NATIVE_MODEL_STORES and source.whisper_formatting != target.whisper_formatting:
+        if (
+            worker.kind in NATIVE_MODEL_STORES
+            and source.whisper_formatting != target.whisper_formatting
+        ):
             tasks.append(
                 {"feature": "whisper_formatting", "enabled": source.whisper_formatting}
             )

@@ -84,9 +84,12 @@ class ModelStore:
         return json.loads(path.read_text())["context_limit"]
 
     def set_context(self, value: int | None) -> None:
-        maximum = self.metadata.get("architecture_context_limit", self.metadata["context_limit"])
-        if self.metadata["kind"] != "llm" or (value is not None and
-                (type(value) is not int or not 1 <= value <= maximum)):
+        maximum = self.metadata.get(
+            "architecture_context_limit", self.metadata["context_limit"]
+        )
+        if self.metadata["kind"] != "llm" or (
+            value is not None and (type(value) is not int or not 1 <= value <= maximum)
+        ):
             raise ValueError("Unsupported model context limit")
         self.root.parent.mkdir(parents=True, exist_ok=True)
         with (self.root.parent / ".context.lock").open("a") as lock:
