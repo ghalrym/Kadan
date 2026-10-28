@@ -105,10 +105,10 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "grant observed"):
                 await asyncio.wait_for(runtime.run_job(self.request()), 0.1)
 
-    def test_disabled_worker_fails_before_probe_or_connection(self):
+    def test_fixed_stack_requires_no_experimental_enable_flag(self):
         with patch.dict("os.environ", {"HIKARI_ENABLE_LFM3_TEXT": "false"}):
-            with self.assertRaisesRegex(ValueError, "requires HIKARI_ENABLE_LFM3_TEXT"):
-                Runtime("text")
+            runtime = Runtime("text", self.runtime.info)
+        self.assertEqual(runtime.kind, "lfm3_llm")
 
     async def test_reconnect_discards_stale_work_and_requires_a_fresh_grant(self):
         runtime = self.runtime

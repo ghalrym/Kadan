@@ -19,14 +19,10 @@ from experimental_worker.store import ModelStore
 GIB = 1024**3
 log = logging.getLogger(__name__)
 BACKENDS = {
-    "text": ("lfm3_llm", "HIKARI_ENABLE_LFM3_TEXT"),
-    "vision": ("lfm3_vision", "HIKARI_ENABLE_LFM3_VISION"),
-    "audio": ("lfm3_audio", "HIKARI_ENABLE_LFM3_AUDIO"),
+    "text": "lfm3_llm",
+    "vision": "lfm3_vision",
+    "audio": "lfm3_audio",
 }
-
-
-def enabled(name: str) -> bool:
-    return os.getenv(name, "").lower() in ("1", "true", "yes")
 
 
 def machine() -> dict:
@@ -138,9 +134,7 @@ def execute_child(
 class Runtime:
     def __init__(self, backend_name: str, info: dict | None = None):
         backend_name = backend_name.removeprefix("experimental_worker.")
-        self.kind, flag = BACKENDS[backend_name]
-        if not enabled(flag):
-            raise ValueError(f"Experimental worker requires {flag}=true")
+        self.kind = BACKENDS[backend_name]
         self.backend_name = backend_name
         self.backend = importlib.import_module("experimental_worker." + backend_name)
         self.manifest = json.loads(
@@ -205,7 +199,7 @@ class Runtime:
                     {
                         "id": request_id,
                         "state": "rejected",
-                        "error": "Experimental models load per request; manual residency is unavailable.",
+                        "error": "LFM3 models load per request; manual residency is unavailable.",
                         "status_code": 422,
                     }
                 )
@@ -281,19 +275,14 @@ class Runtime:
             await event("cancelled")
             return
         if request["operation"] == "configure":
-            # Native tier/Whisper settings are broadcast to all workers. They
-            # never select or alter this explicit experimental checkpoint.
-            if (
-                request["input"].get("feature") == "model_context"
-                and request["input"].get("model_id") == self.backend.MODEL["id"]
-            ):
-                await event(
-                    "failed",
-                    error="The experimental trial uses a fixed bounded context.",
-                    status_code=422,
-                )
-            else:
-                await event("succeeded", result=self.store.status())
+            if request["input"].get("feature") == "model_context":
+                try:
+                    self.store.set_context(request["input"]["context_limit"])
+                except ValueError as error:
+                    await event("failed", error=str(error), status_code=422)
+                    return
+            await event("succeeded", result=self.store.status())
+            await self.models()
             return
         if request["operation"] != "download":
             if not self.store.complete():
@@ -318,6 +307,10 @@ class Runtime:
         if request_id in self.cancelled:
             await event("cancelled")
             return
+        if self.backend_name == "text" and request["operation"] != "download":
+            request = {**request, "input": dict(request["input"])}
+            if "context_limit" not in request["input"] or request["input"]["context_limit"] is None:
+                request["input"]["context_limit"] = self.store.context()
         context = multiprocessing.get_context("spawn")
         reader, writer = context.Pipe(duplex=False)
         process = context.Process(
@@ -357,7 +350,7 @@ class Runtime:
                         )
                         if int(resident.split()[1]) * 1024 > self.budget[0]:
                             error = (
-                                "Experimental executor exceeded its granted RAM budget."
+                                "LFM3 executor exceeded its granted RAM budget."
                             )
                             break
                     except (OSError, StopIteration):
@@ -377,7 +370,7 @@ class Runtime:
                 else:
                     await asyncio.sleep(0.02)
             if not received_result and error is None:
-                error = "Experimental executor exited without a result."
+                error = "LFM3 executor exited without a result."
         finally:
             # No terminal event or release may precede physical process exit.
             if started and process.is_alive():
@@ -442,7 +435,7 @@ class Runtime:
             try:
                 await self.serve_session()
             except (OSError, TimeoutError, ConnectionClosed, InvalidHandshake) as error:
-                log.warning("Experimental worker disconnected: %s", error)
+                log.warning("LFM3 worker disconnected: %s", error)
             # serve_session has joined its executor before this reset. Old jobs
             # cannot replay after a reconnect; only the API may resubmit them.
             self.budget = [0, 0]

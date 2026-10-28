@@ -16,11 +16,9 @@ from api.pydantic_models.chat import (
     Lfm3Message,
     Lfm3Tool,
     lfm3_messages,
-    require_lfm3_tools,
 )
 from api.pydantic_models.decisions import DecisionQuestion
 from api.pydantic_models.inference import Operation
-from api.pydantic_models.model_store import TierId
 
 
 class TaskInput(BaseModel):
@@ -29,10 +27,10 @@ class TaskInput(BaseModel):
 
 class ChatTask(TaskInput):
     feature: Literal["llm"] = "llm"
-    messages: list[ChatMessage | Lfm3Message] = Field(default_factory=list)
+    messages: list[Lfm3Message] = Field(default_factory=list)
     tools: list[Lfm3Tool] | None = Field(default=None, max_length=256)
-    model: str | None = None
-    model_id: str | None = None
+    model: Literal["lfm3-1.7b-bf16"] | None = None
+    model_id: Literal["lfm3-1.7b-bf16"] | None = None
     context_limit: int | None = None
     stream: bool = False
     conversation_id: str | None = None
@@ -40,22 +38,13 @@ class ChatTask(TaskInput):
 
     @model_validator(mode="before")
     @classmethod
-    def experimental_messages(cls, values):
+    def fixed_messages(cls, values):
         return lfm3_messages(values)
 
-    @model_validator(mode="after")
-    def experimental_tools_only(self):
-        require_lfm3_tools(self.model_id or self.model, self.messages, self.tools)
-        return self
 
 
-# One GGUF mixture-of-experts language model per hardware tier.
-LlmModel = Literal[
-    "qwen3.6-35b-a3b-q4-k-m",
-    "qwen3.8-flash-next-ud-iq3-xxs",
-    "qwen3.8-flash-next-q3-k-xl",
-]
-# Every hardware tier generates images with Turbo.
+LlmModel = Literal["lfm3-1.7b-bf16"]
+# Preserve the complete image-generation and editing pipeline.
 ImageModel = Literal["qwen-image-2.1-turbo"]
 
 
@@ -189,11 +178,6 @@ class DownloadTask(TaskInput):
     license_acknowledged: bool = False
 
 
-class TierSelectionTask(TaskInput):
-    feature: Literal["tier_selection"] = "tier_selection"
-    tier: TierId
-
-
 class ModelContextTask(TaskInput):
     feature: Literal["model_context"] = "model_context"
     model_id: str
@@ -221,7 +205,6 @@ InferenceInput = Annotated[
     | AudioCallTask
     | VideoTask
     | DownloadTask
-    | TierSelectionTask
     | ModelContextTask
     | WhisperSelectionTask
     | WhisperFormattingTask,
@@ -250,7 +233,6 @@ class InferenceTask(BaseModel):
     @model_validator(mode="after")
     def validate_operation(self):
         settings = self.feature in (
-            "tier_selection",
             "model_context",
             "whisper_selection",
             "whisper_formatting",

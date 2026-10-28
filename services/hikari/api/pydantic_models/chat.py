@@ -48,6 +48,7 @@ class Lfm3Message(BaseModel):
     model_config = ConfigDict(extra="forbid")
     role: Literal["system", "user", "assistant", "tool"]
     text: str = Field(default="", validation_alias=AliasChoices("text", "content"))
+    meta: str | None = None
     tool_calls: list[Lfm3ToolCall] | None = None
     tool_call_id: str | None = Field(default=None, min_length=1, max_length=120)
 
@@ -63,27 +64,18 @@ class Lfm3Message(BaseModel):
 
 
 def lfm3_messages(values):
-    """Select the rich message schema only for this user-selected experiment."""
-    if (
-        isinstance(values, dict)
-        and (values.get("model_id") or values.get("model")) == "lfm3-1.7b-bf16"
-    ):
-        values = {
-            **values,
-            "messages": [
-                Lfm3Message.model_validate(
-                    row.model_dump() if isinstance(row, BaseModel) else row
-                )
-                for row in values.get("messages", [])
-            ],
-        }
-    return values
-
-
-def require_lfm3_tools(model, messages, tools):
-    if model != "lfm3-1.7b-bf16" and (
-        tools is not None or any(isinstance(row, Lfm3Message) for row in messages)
-    ):
-        raise ValueError(
-            "Structured tools and tool history require the explicit experimental LFM3 text model"
-        )
+    """Normalize the fixed LFM3 prompt without accepting an alternate checkpoint."""
+    if not isinstance(values, dict):
+        return values
+    if any(values.get(key) not in (None, "lfm3-1.7b-bf16") for key in ("model_id", "model")):
+        raise ValueError("Only the fixed LFM3 conversation model is supported")
+    if not isinstance(values.get("messages", []), list):
+        return {**values, "model": "lfm3-1.7b-bf16"}
+    return {
+        **values,
+        "model": "lfm3-1.7b-bf16",
+        "messages": [
+            Lfm3Message.model_validate(row.model_dump() if isinstance(row, BaseModel) else row)
+            for row in values.get("messages", [])
+        ],
+    }

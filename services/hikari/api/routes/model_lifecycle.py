@@ -19,7 +19,7 @@ class ModelLifecycleStatus(BaseModel):
     configured_context_limit: int | None = None
     effective_context_limit: int | None = None
     supported_context_limit: int | None = None
-    max_output_tokens: int = 256
+    max_output_tokens: int | None = None
 
 
 class ModelLoadRequest(BaseModel):

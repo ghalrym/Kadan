@@ -4,15 +4,9 @@ Users expect Hikari to run chat, decisions, speech synthesis, transcription and 
 
 ## Language models and hardware
 
-Hikari can run the selected language checkpoint even when the complete model is larger than GPU memory, provided the computer has enough memory for the required model weights and the request. It must not silently substitute a smaller or dense language model to make a request fit.
+Hikari uses the fixed LFM conversation checkpoint and must not silently substitute another model to make work fit. BF16 execution needs compatible hardware and enough per-device memory for the checkpoint, prompt and reply. A supported context window does not guarantee that every request fits.
 
-Using system memory or disk can make responses slower. Available memory, CPU speed, storage speed and GPU transfer speed all affect performance. A hardware tier is a starting configuration, not a guarantee of response speed or of fitting every context length.
-
-### Experimental LFM3 conversation trial
-
-Operators can explicitly enable a separate LFM3 1.7B BF16 conversation worker for evaluation. It is disabled by default and does not replace a hardware tier's language model. Requests must select the experimental model explicitly; unavailable workers and incomplete user-approved downloads produce an error, with no substitution.
-
-This trial loads the model for each request and returns the completed reply through the existing chat interface. Its 262,144-token context is shared by input and output. A reply can use all space remaining after the complete prompt, until the model finishes or the request is cancelled. Prompts leaving no reply space fail without truncating history. Long replies can take much longer and can still fail if memory is insufficient. It does not retain a conversation prefix or support manual preloading. A worker reconnects after losing the service connection, but interrupted work is not automatically replayed. Model quality, latency and physical fit require owner validation on the target computer; a connected worker or downloaded checkpoint does not prove successful inference.
+The conversation model's 262,144-token context is shared by input and output. Replies can use the space remaining after the complete prompt, until the model finishes or the request is cancelled. Prompts leaving no reply space fail without truncating history. Each request currently loads its own model; no conversation prefix or manual preload is retained. Interrupted work is not automatically replayed.
 
 ## Multiple inference types at once
 
@@ -42,8 +36,4 @@ Concurrent throughput, model quality and physical memory fit require manual vali
 
 ## Conversation prefix reuse
 
-Chat requests associated with the same conversation can reuse the worker's last completed prefix when the earlier prompt exactly starts a longer one. Direct clients can disable reuse; requests without a conversation identity do not retain a prefix. Edited, shorter or identical prompts, another conversation, cancellation and incompatible model or context settings require a fresh prefill. A different worker may also miss the cache.
-
-When an idle model unloads or yields VRAM, Hikari can keep its reusable KV and recurrent state in RAM. A compatible later request restores that state after loading the model. Each worker retains at most one prefix; it can discard it sooner when RAM is needed for work. No reusable state is written to disk, and restarting the worker loses it.
-
-The prefix cache expires after one hour without reuse by default. Operators can configure this separately from model idle expiry: unloading a model does not restart the cache timer, and discarding its cache does not unload the model. Expiry waits for active and queued work. Conversation history and downloaded checkpoints are unaffected. Responses report actual reused and stored tokens and whether a prefix was restored from RAM; reuse does not guarantee a measured latency improvement.
+The current LFM conversation executor releases its model and cache after every request. Conversation history is sent again for each turn; no prefix reuse or retained resident model is promised. Cancellation and completion release resources only after executor cleanup.

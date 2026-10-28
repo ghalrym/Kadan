@@ -1,4 +1,4 @@
-"""Bounded BF16 LFM3 text trial, executed only in the worker's child process."""
+"""BF16 LFM3 conversation inference, executed only in the worker's child process."""
 
 from collections.abc import Callable
 import time
@@ -17,10 +17,10 @@ MODEL = {
     "revision": REVISION,
     "license": "lfm1.0",
     "license_url": f"https://huggingface.co/LiquidAI/LFM3-1.7B/blob/{REVISION}/LICENSE",
-    "license_notice": "Experimental BF16 model and pinned checkpoint custom code. Review the LFM Open License v1.0 before downloading.",
+    "license_notice": "BF16 model and pinned checkpoint custom code. Review the LFM Open License v1.0 before downloading.",
     "estimated_bytes": 3_475_627_209,
     "kind": "llm",
-    "display_name": "LFM3 1.7B BF16 (experimental)",
+    "display_name": "LFM3 1.7B BF16",
     "context_limit": CONTEXT_LIMIT,
     "architecture_context_limit": 262144,
 }
@@ -126,7 +126,7 @@ def finish_reason(generated, eos_token_id: int | list[int] | None) -> str:
 def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict:
     if operation not in ("generate", "completion"):
         raise ValueError(
-            "The LFM3 trial supports generation only; models load per request."
+            "LFM3 supports generation only; models load per request."
         )
     if task.get("model_id", task.get("model")) not in (None, MODEL_ID):
         raise ValueError("This worker serves only the explicit LFM3 BF16 checkpoint.")
@@ -142,7 +142,7 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
-        raise ValueError("The LFM3 BF16 trial requires a BF16-capable CUDA GPU.")
+        raise ValueError("The LFM3 BF16 worker requires a BF16-capable CUDA GPU.")
     tokenizer = AutoTokenizer.from_pretrained(
         model_path, local_files_only=True, trust_remote_code=True
     )

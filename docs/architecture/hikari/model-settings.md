@@ -1,25 +1,9 @@
-# Model settings and downloads
+# Model settings
 
-Hikari separates saved tier selection, checkpoint acquisition and model residency. Persisting a choice must not imply that its download or load succeeded. See the user expectations for [model settings and downloads](../../user-expectations/hikari/model-settings.md), and [Model lifecycle](model-lifecycle.md) for loading and context settings.
+Hikari uses fixed assignments from `ModelAssignments`, returned with observed checkpoints by both Settings and the worker model snapshot. There are no hardware tiers or saved tier selection. The API aggregates actual worker catalogs; an assigned but disconnected LFM worker contributes no fabricated checkpoint or download status.
 
-`PUT /v1/settings` saves the tier and queues incomplete checkpoints. Omitted settings retain their values; a null tier does not clear the selection. Transcription formatting is an independent saved switch with a per-request override, so changing tiers alone does not toggle it. Settings and model-status reads do not run inference.
+`GET /v1/settings` returns `models`, `defaults`, `video_defaults` and `whisper_formatting`. `PUT /v1/settings` changes only the optional formatting preference. Video defaults are five seconds at 480p, independent of hardware; explicit request settings remain subject to actual admission.
 
-`POST /v1/models/{model_id}/download` queues acquisition, and `DELETE` on the same path requests cancellation. HTTP 202 acknowledges the operation rather than completed downloading or immediate resource release. Clients poll model status for the outcome. A second active download for the same checkpoint, or cancellation with no active download, is a conflict. Cancellation does not delete a completed checkpoint.
+Each model is downloaded through its existing model-specific action with explicit license acknowledgement. Context configuration goes to the worker owning the language checkpoint. Its saved per-model setting is stored separately from the pinned artifact manifest and affects future requests only; null uses the architecture maximum. The LFM executor still loads per request and retains no resident model or prefix cache.
 
-Native request preparation can acquire a missing checkpoint. An unusable existing directory or acquisition failure remains an error. Kadan separately gates ordinary chat sending on its reported downloaded-language-model state. These entry points therefore have different prerequisites without changing model ownership.
-
-Progress is reported per checkpoint. Aggregate percentages may use catalog estimates before byte totals are known; checkpoint state establishes completion. Tier changes can unload the prior resident language model after earlier chat work finishes, but do not delete its stored checkpoint.
-
-## Checkpoint storage
-
-The catalog pins revisions and verifies downloaded files before publishing them.
-Docker Compose persists models in `model_data` at `/var/lib/kadan/models`.
-`docker compose down -v` deletes named volumes, including stored data.
-Do not modify completed checkpoints externally or share a store between
-independent API servers. Review the catalog model cards and licenses before use.
-
-Cancellation joins checkpoint preparation and native cleanup. Memory reservations
-are conservative admission estimates, not physical hard limits; other programs
-can change available memory. A cleanup failure stops admission rather than
-reusing uncertain allocations. Recovered model directories can remain on their
-existing storage; copying the entire collection is unnecessary.
+The native model store no longer reads or writes `tier.json`. Existing checkpoint directories and historical settings files are left untouched. LFM snapshots retain their existing model-volume paths so this migration does not lose verified downloads.
