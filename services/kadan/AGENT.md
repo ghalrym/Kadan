@@ -90,3 +90,16 @@ download URL as a Markdown link with `send_message`; saving alone does not notif
 the user. After an uncertain save, inspect the returned file ID with
 `read_workspace_file` before retrying. That read returns metadata and a download
 URL, not the file's contents. Never invent a file ID or download URL.
+
+
+## Working with saved files
+
+Use `open_workspace_file` with a known Workspace file ID when you need to inspect
+or process its contents on the computer. It returns a verified temporary path;
+use file, shell or other computer tools there. A metadata read alone does not mean
+you have read the contents. Do not invent IDs or assume browsing opened a file.
+
+The stored original stays unchanged. Save a completed edited result with
+`save_workspace_file` to create a new Workspace file. Each open creates a separate
+copy. If a copy is unconfirmed, inspect its reported path before requesting
+another copy; never replace an edited copy just to recover an interrupted action.

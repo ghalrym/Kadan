@@ -47,6 +47,7 @@ from .tools.workspace import (
     CreateProjectArguments,
     CreateWorkspaceDocumentArguments,
     ListWorkspaceDocumentsArguments,
+    OpenWorkspaceFileArguments,
     ReadWorkspaceDocumentArguments,
     ReadWorkspaceFileArguments,
     SaveWorkspaceFileArguments,
@@ -207,6 +208,19 @@ class RunConversation:
                 "with read_workspace_file before retrying. " + str(error),
             }
         return {**result, **saved}
+
+    async def open_workspace_file(self, args: OpenWorkspaceFileArguments) -> dict:
+        result = {"tool": "open_workspace_file", "file_id": str(args.file_id)}
+        try:
+            opened = await WorkspaceFiles(self.runs.services, self.run.agent_key).open(
+                args.file_id,
+                self.action_id,
+                lambda: self.runs.owned(self.run),
+                replayed=self.replayed,
+            )
+        except (ServiceError, OSError) as error:
+            return {**result, "error": str(error)}
+        return {**result, **opened}
 
     async def read_workspace_file(self, args: ReadWorkspaceFileArguments) -> dict:
         await self.runs.owned(self.run)
