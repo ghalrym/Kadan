@@ -6,10 +6,13 @@ import {
   MessageCircle,
   Plus,
   Palette,
+  Pencil,
+  Server,
   RefreshCw,
   X,
 } from "lucide-react";
 import { agentPath, allResources, api } from "./api";
+import { latestConversation } from "./agentRuns";
 import type { Agent, PetJob, Resource, Status } from "./types";
 import Chat from "./Chat";
 import Workspace from "./Workspace";
@@ -17,6 +20,8 @@ import Hatch from "./Hatch";
 import Pet, { agentPet, useMood } from "./Pet";
 import { agentHue } from "./pet";
 import PetEditor from "./PetEditor";
+import RenameAgent from "./RenameAgent";
+import RunnerAssignment from "./RunnerAssignment";
 import { PetContext, useAgentPet } from "./PetContext";
 
 /** Animate a view change, letting the agent's pet glide between layouts. */
@@ -62,6 +67,8 @@ export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [pets, setPets] = useState<Record<string, PetJob | null>>({});
   const [editingPet, setEditingPet] = useState(false);
+  const [renamingAgent, setRenamingAgent] = useState("");
+  const [runnerAgent, setRunnerAgent] = useState("");
   const petSelectionRevision = useRef<Record<string, number>>({});
   const pendingPetSelection = useRef<Record<string, number>>({});
   const [key, setKey] = useState(localStorage.getItem("kadan.agent") || "");
@@ -198,6 +205,8 @@ export default function App() {
   }, [agents, refreshPetSelection]);
   useEffect(() => {
     setEditingPet(false);
+    setRenamingAgent("");
+    setRunnerAgent("");
     localStorage.setItem("kadan.agent", key);
     setChain(null);
     setPersonas([]);
@@ -229,7 +238,9 @@ export default function App() {
   }, [key, resourceRevision]);
 
   function updateChain(value: Resource) {
-    if (value.agent_key === activeAgent.current) setChain(value);
+    if (value.agent_key === activeAgent.current) {
+      setChain((current) => current ? latestConversation(current, value) : current);
+    }
   }
   function show(next: typeof view) {
     setMenu(false);
@@ -355,6 +366,14 @@ export default function App() {
             </button>
           </header>
           <nav className="panel-nav" aria-label="Agent views">
+            <button disabled={!selectedAgent || disabled} onClick={() => { setMenu(false); setRunnerAgent(key); }}>
+              <Server size={17} />
+              Runner assignment
+            </button>
+            <button disabled={!selectedAgent || disabled} onClick={() => { setMenu(false); setRenamingAgent(key); }}>
+              <Pencil size={17} />
+              Rename agent
+            </button>
             <button disabled={!key} onClick={() => { setMenu(false); setEditingPet(true); }}>
               <Palette size={17} />
               Edit pet
@@ -436,7 +455,7 @@ export default function App() {
           <Workspace key={key} agentKey={key} browserUrl={status?.tsuchi.browser_url ?? null} />
         ) : chain ? (
           <Chat
-            key={key}
+            key={`${key}:${chain.id}`}
             agentKey={key}
             agentName={selectedAgent?.name || key}
             chain={chain}
@@ -460,6 +479,27 @@ export default function App() {
           </div>
         )}
       </main>
+      {renamingAgent === key && selectedAgent && <RenameAgent
+        key={key}
+        agent={selectedAgent}
+        onUpdated={(saved) => {
+          if (activeAgent.current !== saved.key) return;
+          setAgents((rows) => rows.map((agent) => agent.key === saved.key
+            ? { ...agent, name: saved.name } : agent));
+        }}
+        onClose={() => {
+          setRenamingAgent("");
+          if (mobile && !menu) openNavigation.current?.focus();
+        }}
+      />}
+      {runnerAgent === key && selectedAgent && <RunnerAssignment
+        key={key}
+        agent={selectedAgent}
+        onClose={() => {
+          setRunnerAgent("");
+          if (mobile && !menu) openNavigation.current?.focus();
+        }}
+      />}
       {editingPet && selectedAgent && <PetEditor
         key={key}
         agentKey={key}
