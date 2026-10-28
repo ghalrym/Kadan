@@ -179,7 +179,7 @@ bool hex_digest(const std::string& value, std::size_t size) {
            && value.find_first_not_of("0123456789abcdef") == std::string::npos;
 }
 
-void download(
+void download_file(
     const std::string& url,
     const fs::path& path,
     const ManifestFile& item,
@@ -548,7 +548,22 @@ ModelStore::manifest(const CatalogEntry& model, const std::atomic_bool& cancel) 
     return files;
 }
 
-fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& cancel) {
+fs::path ModelStore::require_local(
+    const std::string& model, const std::atomic_bool& cancel
+) const {
+    preparation_cancel(cancel);
+    const auto& catalog = entry(model);
+    preparation_check(
+        complete(catalog),
+        "Download " + model + " explicitly in Settings before running inference.",
+        409
+    );
+    preparation_cancel(cancel);
+    return root_ / (model + "-" + catalog.revision);
+}
+
+fs::path
+ModelStore::download(const std::string& model, const std::atomic_bool& cancel) {
     const auto& catalog = entry(model);
     const auto revision = catalog.revision;
     const auto destination = root_ / (model + "-" + revision);
@@ -670,7 +685,7 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
                              ? catalog.asset_url
                              : "https://huggingface.co/" + catalog.repo_id + "/resolve/"
                                    + revision + "/" + name;
-        download(url, stage / name, file, cancel, fetch_, progress);
+        download_file(url, stage / name, file, cancel, fetch_, progress);
         if (!name.ends_with(".safetensors.index.json"))
             continue;
         const auto index = read_document(stage / name);

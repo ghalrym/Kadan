@@ -108,7 +108,7 @@ void prepare_input(
         } else
             throw RequestError("Unsupported image aspect", 422);
     }
-    request.configuration.checkpoint = store.acquire(request.model, cancel);
+    request.configuration.checkpoint = store.require_local(request.model, cancel);
     if (!input.seed)
         input.seed = std::random_device{}();
 }

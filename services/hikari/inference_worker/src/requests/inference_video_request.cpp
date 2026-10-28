@@ -16,7 +16,7 @@ void prepare_input(
             input.short_edge = 480;
     }
     request.model = input.model;
-    const auto checkpoint = store.acquire(request.model, cancel);
+    const auto checkpoint = store.require_local(request.model, cancel);
     request.configuration.checkpoint = checkpoint;
     input.paths = {
         (checkpoint / "FL2VA/tokenizer/tokenizer.json").string(),

@@ -19,13 +19,13 @@ void prepare_input(
         "The Whisper checkpoint supports English.",
         422
     );
+    const auto source = store.require_local("whisper-" + request.model, cancel);
     const auto root = configured_path(
         "KADAN_WHISPER_MODEL_ROOT", store.root() / "whisper" / request.model
     );
     input.assets = configured_path("KADAN_WHISPER_ASSET_ROOT", root / "assets");
     if (!fs::exists(root)) {
         const auto& entry = store.entry("whisper-" + request.model);
-        const auto source = store.acquire("whisper-" + request.model, cancel);
         export_whisper(source / (request.model + ".pt"), entry.revision, root, cancel);
     }
     if (!fs::exists(input.assets)) {

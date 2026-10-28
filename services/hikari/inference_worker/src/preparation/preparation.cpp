@@ -71,7 +71,7 @@ void prepare_input(
         422
     );
     request.model = input.model;
-    request.configuration.checkpoint = store.acquire(input.model, cancel);
+    request.configuration.checkpoint = store.download(input.model, cancel);
 }
 
 void prepare_input(

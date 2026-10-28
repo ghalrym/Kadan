@@ -221,7 +221,25 @@ void whisper_formatting_setting_units() {
 
 void whisper_formatting_request_units() {
     Directory tmp;
-    ModelStore store(tmp.path, worker_data_directory());
+    const auto data = tmp.path / "data";
+    const auto checkpoint = tmp.path / "whisper-medium-revision";
+    const auto manifest =
+        local_manifest(checkpoint, {{"medium.pt", "local-checkpoint"}});
+    auto model = entry("whisper-medium", manifest);
+    model["kind"] = "transcription";
+    catalog(data, Json::array({model}));
+    write_document(
+        checkpoint / "complete.json", {{"revision", "revision"}, {"files", manifest}}
+    );
+    ModelStore store(
+        tmp.path,
+        data,
+        [](const auto&, const auto&, const auto&, bool, std::uint64_t) -> std::int64_t {
+            throw RequestError(
+                "Unexpected network access in transcription preparation"
+            );
+        }
+    );
     store.select_whisper("medium");
     // Preparation checks file presence only; no model is loaded or executed.
     const auto root = tmp.path / "whisper/medium";
@@ -452,6 +470,95 @@ void codec_units() {
     assert(!fs::exists(tmp.path / "invalid"));
 }
 
+void explicit_inference_acquisition_units() {
+    Directory tmp;
+    const auto root = tmp.path / "models", data = tmp.path / "data";
+    const auto manifest = local_manifest(
+        tmp.path / "source", {{"weights.safetensors", "verified-bytes"}}
+    );
+    Json models = Json::array();
+    for (const auto* id :
+         {"laya", "qwen-image-2.1-turbo", "h3-fl2va-int8-turbo", "whisper-medium"}) {
+        auto model = entry(id, manifest);
+        if (std::string(id) == "whisper-medium")
+            model["kind"] = "transcription";
+        model["license_notice"] = "Review the model license before downloading.";
+        models.push_back(model);
+    }
+    catalog(data, models);
+    unsigned transfers = 0;
+    std::atomic_bool cancel{false};
+    bool cancel_transfer = false;
+    ModelStore store(
+        root,
+        data,
+        [&](const auto&, const auto& write, const auto&, bool, std::uint64_t) {
+            ++transfers;
+            write("verified-bytes");
+            if (cancel_transfer)
+                cancel = true;
+            return 14;
+        }
+    );
+    JobWorkspace files(tmp.path / "jobs");
+    // A derived Whisper cache does not authorize acquiring its source checkpoint.
+    for (const auto* name :
+         {"model.safetensors", "dimensions.txt", "assets/english.tokens"})
+        bytes(root / "whisper/medium" / name, "");
+    for (const TaskInput& input : std::vector<TaskInput>{
+             DecisionRequest{}, ImageRequest{}, VideoRequest{}, TranscriptionRequest{}
+         }) {
+        auto inference =
+            request("missing", {{"feature", "image"}, {"prompt", "mountain"}});
+        inference.input = input;
+        if (auto* image = std::get_if<ImageRequest>(&inference.input))
+            image->prompt = "mountain";
+        bool missing = false;
+        try {
+            prepare_task(inference, store, files, running);
+        } catch (const RequestError& error) {
+            missing = error.status == 409;
+        }
+        assert(missing && transfers == 0);
+        assert(!fs::exists(root / ".download.lock"));
+        files.cleanup(inference.id);
+    }
+    auto download =
+        request("download", {{"feature", "models"}, {"model_id", "laya"}}, "download");
+    bool license_required = false;
+    try {
+        prepare_task(download, store, files, running);
+    } catch (const RequestError& error) {
+        license_required = error.status == 422;
+    }
+    assert(license_required && transfers == 0);
+    files.cleanup(download.id);
+    std::get<DownloadRequest>(download.input).license_acknowledged = true;
+    cancel_transfer = true;
+    rejects([&] { prepare_task(download, store, files, cancel); });
+    assert(transfers == 1 && !store.complete(store.entry("laya")));
+    assert(fs::exists(root / ".laya.partial"));
+    files.cleanup(download.id);
+    cancel = false;
+    cancel_transfer = false;
+    prepare_task(download, store, files, cancel);
+    assert(store.complete(store.entry("laya")));
+    assert(download.configuration.checkpoint == store.require_local("laya", running));
+    const auto completed_transfers = transfers;
+    DecisionRequest decision;
+    prepare_input(decision, download, store, running);
+    assert(transfers == completed_transfers);
+    // A completion marker alone is insufficient when a required artifact is missing.
+    fs::remove(download.configuration.checkpoint / "weights.safetensors");
+    bool incomplete = false;
+    try {
+        store.require_local("laya", running);
+    } catch (const RequestError& error) {
+        incomplete = error.status == 409;
+    }
+    assert(incomplete && transfers == completed_transfers);
+}
+
 void acquisition_units() {
     Directory tmp;
     const auto data = tmp.path / "data", root = tmp.path / "models";
@@ -475,14 +582,14 @@ void acquisition_units() {
             progress.emplace_back(received, total);
         }
     );
-    const auto checkpoint = store.acquire("test", running);
+    const auto checkpoint = store.download("test", running);
     assert(calls == 1 && store.complete(store.entry("test")));
     assert(
         progress.front().first == 0 && progress.back().first == 14
         && progress.back().second == 14
     );
     assert(read_bytes(checkpoint / "weights.safetensors", 32) == "verified-bytes");
-    assert(store.acquire("test", running) == checkpoint && calls == 1);
+    assert(store.download("test", running) == checkpoint && calls == 1);
     assert(!store.allowed("../weights.safetensors", store.entry("test")));
     fs::remove_all(checkpoint);
     ModelStore corrupt(
@@ -493,7 +600,7 @@ void acquisition_units() {
             return 14;
         }
     );
-    rejects([&] { corrupt.acquire("test", running); });
+    rejects([&] { corrupt.download("test", running); });
     assert(fs::exists(root / ".test.partial") && !fs::exists(checkpoint));
     std::atomic_bool cancel{false};
     ModelStore cancelled(
@@ -505,10 +612,10 @@ void acquisition_units() {
             return 14;
         }
     );
-    rejects([&] { cancelled.acquire("test", cancel); });
+    rejects([&] { cancelled.download("test", cancel); });
     assert(fs::exists(root / ".test.partial") && !fs::exists(checkpoint));
     cancel = false;
-    assert(store.acquire("test", cancel) == checkpoint);  // writer lock was released
+    assert(store.download("test", cancel) == checkpoint);  // writer lock was released
     fs::remove(checkpoint / "weights.safetensors");
     fs::create_symlink(
         tmp.path / "source/weights.safetensors", checkpoint / "weights.safetensors"
@@ -548,7 +655,7 @@ void recovery_units() {
                 throw RequestError("Unit connection interrupted", 503);
             }
         );
-        rejects([&] { interrupted.acquire("test", cancel); });
+        rejects([&] { interrupted.download("test", cancel); });
         const auto stage = root / ".test.partial";
         assert(read_bytes(stage / "a.safetensors", 32) == "verified");
         assert(read_bytes(stage / "b.safetensors", 32) == "rema");
@@ -582,7 +689,7 @@ void recovery_units() {
             }
         );
         cancel = false;
-        const auto path = resumed.acquire("test", cancel);
+        const auto path = resumed.download("test", cancel);
         assert(calls == 1 && progress == 17);
         assert(read_bytes(path / "b.safetensors", 32) == "remaining");
         assert(resumed.complete(resumed.entry("test")));
@@ -609,7 +716,7 @@ struct PartialDownload {
                 throw RequestError("Unit interruption", 503);
             }
         );
-        rejects([&] { interrupted.acquire("test", running); });
+        rejects([&] { interrupted.download("test", running); });
         assert(read_bytes(artifact, 32) == "veri");
     }
 };
@@ -637,7 +744,7 @@ void partial_identity_units() {
                 return 0;
             }
         );
-        rejects([&] { mismatch.acquire("test", running); });
+        rejects([&] { mismatch.download("test", running); });
         assert(calls == 0 && read_bytes(partial.artifact, 32) == "veri");
     }
 }
@@ -662,7 +769,7 @@ void partial_path_units() {
                 return 0;
             }
         );
-        rejects([&] { store.acquire("test", running); });
+        rejects([&] { store.download("test", running); });
         assert(calls == 0);
         assert(
             read_bytes(partial.tmp.path / "source/weights.safetensors", 32)
@@ -686,7 +793,7 @@ void partial_marker_units() {
             return 0;
         }
     );
-    rejects([&] { store.acquire("test", running); });
+    rejects([&] { store.download("test", running); });
     assert(calls == 0 && read_bytes(outside, 32) == "untouched");
 }
 
@@ -707,7 +814,7 @@ void partial_integrity_units() {
                 return 4;
             }
         );
-        rejects([&] { store.acquire("test", running); });
+        rejects([&] { store.download("test", running); });
         assert(calls == (complete ? 0U : 1U) && !fs::exists(partial.artifact));
         assert(!store.complete(store.entry("test")));
     }
@@ -729,7 +836,7 @@ void partial_range_units() {
                 return 8;
             }
         );
-        rejects([&] { store.acquire("test", running); });
+        rejects([&] { store.download("test", running); });
         assert(read_bytes(partial.artifact, 32) == "veri");
         assert(!store.complete(store.entry("test")));
     }
@@ -760,10 +867,10 @@ void partial_initialization_units() {
             }
         );
         if (std::string(leftover) == "weights.safetensors") {
-            rejects([&] { store.acquire("test", running); });
+            rejects([&] { store.download("test", running); });
             assert(calls == 0 && read_bytes(stage / leftover, 32) == "unfinished");
         } else {
-            assert(fs::exists(store.acquire("test", running) / "complete.json"));
+            assert(fs::exists(store.download("test", running) / "complete.json"));
             assert(calls == 1);
         }
     }
@@ -795,14 +902,14 @@ void single_file_acquisition_units() {
             return 13;
         }
     );
-    rejects([&] { store.acquire("whisper-test", running); });
+    rejects([&] { store.download("whisper-test", running); });
     assert(heads == 1 && bodies == 0);
     missing_size = false;
     corrupt = true;
-    rejects([&] { store.acquire("whisper-test", running); });
+    rejects([&] { store.download("whisper-test", running); });
     assert(fs::exists(root / ".whisper-test.partial"));
     corrupt = false;
-    const auto checkpoint = store.acquire("whisper-test", running);
+    const auto checkpoint = store.download("whisper-test", running);
     assert(
         store.complete(CatalogEntry::parse(model))
         && read_bytes(checkpoint / "test.pt", 32) == "metadata-only"
@@ -871,19 +978,19 @@ void upstream_manifest_units() {
             return 0;
         }
     );
-    rejects([&] { store.acquire("test", running); });
+    rejects([&] { store.download("test", running); });
     assert(bodies == 0);
     upstream["sha"] = "revision";
     upstream["siblings"].push_back(siblings[0]);
-    rejects([&] { store.acquire("test", running); });
+    rejects([&] { store.download("test", running); });
     assert(bodies == 0);
     upstream["siblings"] = siblings;
-    rejects([&] { store.acquire("test", running); });
+    rejects([&] { store.download("test", running); });
     assert(read_bytes(root / ".test.partial/config.json", 32) == "{");
-    const auto checkpoint = store.acquire("test", running);
+    const auto checkpoint = store.download("test", running);
     assert(bodies == 5 && store.complete(CatalogEntry::parse(model)));
     assert(fetched.front() == "model.safetensors.index.json");
-    assert(store.acquire("test", running) == checkpoint && bodies == 5);
+    assert(store.download("test", running) == checkpoint && bodies == 5);
     fs::remove_all(checkpoint);
     // Authenticate and validate index metadata before any tensor transfer.
     for (const Json& map :
@@ -903,7 +1010,7 @@ void upstream_manifest_units() {
                     {"size", changed[i].at("size")}, {"sha256", changed[i].at("digest")}
                 };
         fetched.clear();
-        rejects([&] { store.acquire("test", running); });
+        rejects([&] { store.download("test", running); });
         assert(fetched == std::vector<std::string>{"model.safetensors.index.json"});
         assert(!fs::exists(checkpoint) && fs::exists(root / ".test.partial"));
         // Each changed upstream index is an independent fixture.
@@ -913,7 +1020,7 @@ void upstream_manifest_units() {
         if (item["rfilename"] == "model.safetensors.index.json")
             item["lfs"]["size"] = 32 * 1024 * 1024 + 1;
     fetched.clear();
-    rejects([&] { store.acquire("test", running); });
+    rejects([&] { store.download("test", running); });
     assert(fetched.empty());
 
     for (const bool valid : {false, true}) {
@@ -951,16 +1058,16 @@ void upstream_manifest_units() {
             }
         );
         if (valid) {
-            const auto path = components.acquire("components", running);
+            const auto path = components.download("components", running);
             assert(components.complete(components.entry("components")));
-            assert(components.acquire("components", running) == path);
+            assert(components.download("components", running) == path);
             assert(fetched.size() == 4);
             // Composite completion comparison requires the original manifest order.
             assert(
                 read_document(path / "complete.json").at("files") == component_files
             );
         } else {
-            rejects([&] { components.acquire("components", running); });
+            rejects([&] { components.download("components", running); });
             assert(fetched.size() == 2);
             assert(fs::exists(root / ".components.partial"));
             fs::remove_all(root / ".components.partial");
@@ -1366,6 +1473,7 @@ int main() {
     checkpoint_catalog_units();
     typed_request_units();
     codec_units();
+    explicit_inference_acquisition_units();
     acquisition_units();
     recovery_units();
     partial_identity_units();

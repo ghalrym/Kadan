@@ -68,7 +68,9 @@ public:
         fs::path root, fs::path data, Fetch fetch = {}, DownloadProgress progress = {}
     );
     const CatalogEntry& entry(const std::string& model) const;
-    fs::path acquire(const std::string& model, const std::atomic_bool& cancel);
+    fs::path
+    require_local(const std::string& model, const std::atomic_bool& cancel) const;
+    fs::path download(const std::string& model, const std::atomic_bool& cancel);
     std::string whisper_selected() const;
     std::string whisper_model(const std::string& name) const;
     void select_whisper(const std::string& model);
