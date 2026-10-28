@@ -19,12 +19,13 @@ MODEL = {
     "short_name": "LFM3 Audio",
     "estimated_bytes": 4_170_027_447,
     "kind": "audio",
-    "context_limit": 8192,
+    "context_limit": 32768,
+    "architecture_context_limit": 32768,
 }
 # Provisional admission bounds, not a measured fit guarantee. Include model,
 # codec, preprocessing and bounded generation; the engine uses one visible GPU.
-REQUIREMENT = (6 * 1024**3, 10 * 1024**3)
-MAX_CONTEXT_TOKENS = 8192
+REQUIREMENT = (8 * 1024**3, 16 * 1024**3)
+MAX_CONTEXT_TOKENS = 32768
 MAX_NEW_TOKENS = 1024
 MAX_INPUT_TOKENS = MAX_CONTEXT_TOKENS - MAX_NEW_TOKENS
 
@@ -65,12 +66,8 @@ def conversation(task: dict, audio_path: str | None = None) -> list[dict]:
     if task.get("mode") != "reply" or task.get("audio") is not None:
         raise ValueError("Unknown audio call operation")
     messages = task.get("messages", [])
-    if (
-        not messages
-        or len(messages) > 14
-        or sum(len(message.get("text", "")) for message in messages) > 20_000
-    ):
-        raise ValueError("Audio call history exceeds the trial limit")
+    if not messages:
+        raise ValueError("Audio call needs text history")
     result = []
     for message in messages:
         role, text = message.get("role"), message.get("text")
@@ -127,6 +124,18 @@ def public_text(raw: str, *, transcribe: bool) -> str:
     return text.strip()
 
 
+def validate_context(input_tokens: int, output_tokens: int = MAX_NEW_TOKENS) -> None:
+    """Reserve reply space within the released audio model's 32K context."""
+    if (
+        input_tokens < 1
+        or output_tokens < 1
+        or input_tokens + output_tokens > MAX_CONTEXT_TOKENS
+    ):
+        raise ValueError(
+            "Audio call exceeds the 32768-token model context; start a new call"
+        )
+
+
 def generate(task: dict, model, processor, codec, torch, audio_path=None) -> dict:
     """Use the pinned model-card contract; dependencies are passed for unit tests."""
     transcribe = task["mode"] == "transcribe"
@@ -142,10 +151,7 @@ def generate(task: dict, model, processor, codec, torch, audio_path=None) -> dic
         return_tensors="pt",
     ).to("cuda:0")
     count = inputs["input_ids"].shape[1]
-    if count > MAX_INPUT_TOKENS:
-        raise ValueError(
-            "Audio call exceeds the 8192-token trial context; start a new call"
-        )
+    validate_context(count)
     sampling = (
         {"suppress_mixed": True, "suppress_audio_out": True}
         if transcribe

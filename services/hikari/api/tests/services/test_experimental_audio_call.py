@@ -36,11 +36,10 @@ class AudioModelsTests(unittest.TestCase):
         with self.assertRaises(InferenceFailure):
             CallModels.selected(audio_snapshot())
 
-    def test_audio_task_disallows_unbounded_or_tool_history(self):
+    def test_audio_task_requires_the_matching_input_and_disallows_tool_history(self):
         for value in (
             {"mode": "transcribe"},
             {"mode": "reply", "audio": "wav"},
-            {"mode": "reply", "messages": [{"role": "user", "text": "x" * 20001}]},
             {"mode": "reply", "messages": [{"role": "tool", "text": "result"}]},
         ):
             with self.subTest(value=value), self.assertRaises(ValidationError):

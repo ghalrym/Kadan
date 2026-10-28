@@ -113,7 +113,7 @@ class AudioCallTask(TaskInput):
     model_id: Literal["lfm3-audio-2b-bf16"] = "lfm3-audio-2b-bf16"
     mode: Literal["transcribe", "reply"]
     audio: str | None = Field(default=None, max_length=900_000)
-    messages: list[ChatMessage] = Field(default_factory=list, max_length=14)
+    messages: list[ChatMessage] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_turn(self):
@@ -124,8 +124,6 @@ class AudioCallTask(TaskInput):
                 )
         elif self.audio is not None or not self.messages:
             raise ValueError("Audio replies need text history and no utterance")
-        if sum(len(message.text) for message in self.messages) > 20_000:
-            raise ValueError("Audio call history exceeds the trial limit")
         return self
 
 

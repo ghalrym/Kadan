@@ -14,6 +14,7 @@ from experimental_worker.audio import (
     conversation,
     generate,
     public_text,
+    validate_context,
 )
 
 
@@ -68,7 +69,7 @@ class AudioAdapterTests(unittest.TestCase):
         processor = Mock()
         processor.apply_chat_template.return_value = Inputs(MAX_INPUT_TOKENS + 1)
         model = Mock()
-        with self.assertRaisesRegex(ValueError, "8192-token"):
+        with self.assertRaisesRegex(ValueError, "32768-token"):
             generate(
                 {"mode": "transcribe"}, model, processor, Mock(), Mock(), "/tmp/wav"
             )
@@ -149,3 +150,17 @@ class AudioOutputPrivacyTests(unittest.TestCase):
 
     def test_output_tokens_are_reserved_inside_trial_context(self):
         self.assertEqual(MAX_INPUT_TOKENS + MAX_NEW_TOKENS, MAX_CONTEXT_TOKENS)
+
+
+class AudioContextTests(unittest.TestCase):
+    def test_released_maximum_context_includes_reserved_reply_at_exact_boundary(self):
+        validate_context(32768 - MAX_NEW_TOKENS)
+        with self.assertRaisesRegex(ValueError, "32768-token"):
+            validate_context(32768 - MAX_NEW_TOKENS + 1)
+
+    def test_history_has_no_extra_character_or_turn_cap_below_model_context(self):
+        history = [
+            {"role": "system", "text": "Instructions"},
+            *({"role": "user", "text": "x" * 1500} for _ in range(16)),
+        ]
+        self.assertEqual(len(conversation({"mode": "reply", "messages": history})), 18)
