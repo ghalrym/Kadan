@@ -137,7 +137,7 @@ class AudioCallTask(TaskInput):
 
     feature: Literal["audio_call"] = "audio_call"
     model_id: Literal["lfm3-audio-2b-bf16"] = "lfm3-audio-2b-bf16"
-    mode: Literal["transcribe", "reply"]
+    mode: Literal["transcribe", "reply", "turn"]
     audio: str | None = Field(default=None, max_length=900_000)
     messages: list[ChatMessage] = Field(default_factory=list)
 
@@ -148,8 +148,13 @@ class AudioCallTask(TaskInput):
                 raise ValueError(
                     "Audio transcription needs one utterance and no history"
                 )
-        elif self.audio is not None or not self.messages:
-            raise ValueError("Audio replies need text history and no utterance")
+        elif self.mode == "reply":
+            if self.audio is not None or not self.messages:
+                raise ValueError("Audio replies need text history and no utterance")
+        elif self.audio is None or not self.messages:
+            raise ValueError(
+                "A complete audio turn needs an utterance and text history"
+            )
         return self
 
 
