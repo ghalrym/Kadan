@@ -255,7 +255,7 @@ class D1RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime.handle({"id": "req", "command": "requirement"})
         message = self.runtime.socket.messages[-1]
         self.assertEqual(message["model"], "d1-2b-bf16")
-        self.assertEqual(message["minimum"], [8 * GIB, 16 * GIB])
+        self.assertEqual(message["minimum"], [8 * GIB, 22 * GIB])
         self.assertEqual(message["preferred"], message["minimum"])
         self.assertEqual(message["device_floor"], message["minimum"][1])
 

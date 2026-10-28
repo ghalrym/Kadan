@@ -8,7 +8,7 @@ from pathlib import Path
 
 MODEL = json.loads(Path(__file__).with_name("catalog_d1.json").read_text())
 # Provisional grants, not measured fit; the owner must validate target hardware.
-REQUIREMENT = (8 * 1024**3, 16 * 1024**3)
+REQUIREMENT = (8 * 1024**3, 22 * 1024**3)
 MAX_CONTEXT = 128000
 
 
