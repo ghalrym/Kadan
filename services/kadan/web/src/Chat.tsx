@@ -13,7 +13,7 @@ import type { PetState } from "./pet";
 import type { AgentRun, Asset, ImageJob, Message, Resource, RunSnapshot, Status } from "./types";
 import { activeRun, cancellableImage, imageStatus, isImageAsset, latestConversation, responseProgress } from "./agentRuns";
 import { randomUuid } from "./uuid";
-import { confirmSend, queueSend, readPending, type PendingMessage } from "./outbox";
+import { chatStorageKeys, confirmSend, copyPendingToDraft, discardUnassignedPending, queueSend, readPending, type PendingMessage } from "./outbox";
 
 interface Props {
   agentKey: string;
@@ -92,12 +92,12 @@ export default function Chat({
   refreshStatus,
 }: Props) {
   const petSheet = useAgentPet(agentKey);
-  const draftKey = `kadan.draft.${agentKey}`;
-  const pendingKey = `${draftKey}.pending`;
+  const { draft: draftKey, pending: pendingKey } = chatStorageKeys(agentKey, chain.id);
   const pending = useRef<PendingMessage | null>(
     confirmSend(readPending(sessionStorage.getItem(pendingKey)), chain.messages),
   );
   const [recovery, setRecovery] = useState(pending.current);
+  const [unassigned, setUnassigned] = useState(() => readPending(sessionStorage.getItem(`${draftKey}.pending`)));
   const [draft, setDraft] = useState(() => sessionStorage.getItem(draftKey) || "");
   const [persona, setPersona] = useState("");
   const [sending, setSending] = useState(false);
@@ -493,6 +493,23 @@ export default function Chat({
           <button disabled={blocked || !ready.storage || (recovery.generate && !ready.chat)}
             onClick={() => void send(recovery.generate, recovery)}>Retry</button>
           <button disabled={blocked} onClick={() => savePending(null)}>Discard</button>
+        </div>
+      )}
+      {unassigned && (
+        <div className="banner inline" role="status">
+          <div>
+            <strong>Earlier unsent message</strong>
+            <p>{unassigned.content}</p>
+            <p>Its original conversation wasn't saved. Check your history before copying it to the draft. It will send as a new message.</p>
+          </div>
+          <button disabled={blocked || sending || dictating || voiceCall.active} onClick={() => {
+            try { setDraft(copyPendingToDraft(draft, unassigned)); }
+            catch (error) { setError((error as Error).message); }
+          }}>Copy to draft</button>
+          <button disabled={blocked} onClick={() => {
+            discardUnassignedPending(sessionStorage, agentKey);
+            setUnassigned(null);
+          }}>Discard</button>
         </div>
       )}
       <Composer

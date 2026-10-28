@@ -3,6 +3,13 @@ export interface Agent {
   name: string;
   created_at: string;
 }
+export interface Runner {
+  runner_id: string;
+  worker_id: string;
+  capacity: number;
+  lease_expires_at: string;
+  agent_keys: string[];
+}
 export interface Message {
   id: string;
   role: "system" | "user" | "assistant" | "tool";

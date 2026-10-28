@@ -13,6 +13,7 @@ from .models import (
     Activity,
     Agent,
     AgentInput,
+    AgentRename,
     AgentRun,
     AgentRunState,
     Asset,
@@ -945,6 +946,17 @@ class Repository:
                 Agent.model_validate(dict(row))
                 for row in db.execute("SELECT * FROM agents ORDER BY name, key")
             ]
+
+    def rename_agent(self, key: str, value: AgentRename) -> Agent:
+        with self.connect(write=True) as db:
+            current = self._agent(db, key)
+            if current.name == value.name:
+                return current
+            if current.name != value.expected_name:
+                raise StorageError("Agent name changed since it was loaded.", 409)
+            db.execute("UPDATE agents SET name = ? WHERE key = ?", (value.name, key))
+            self._activity(db, key, "updated", "agent", key, value.name)
+            return current.model_copy(update={"name": value.name})
 
     def create_agent(self, value: AgentInput) -> Agent:
         agent = Agent(**value.model_dump(), created_at=utc_now())
