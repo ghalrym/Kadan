@@ -126,7 +126,7 @@ export default function Chat({
   const ready = readiness(status);
   const [dictating, setDictating] = useState(false);
   const voiceCall = useVoiceCall(
-    `You are ${agentName}. Have a spoken conversation. Keep replies short. You have no tools.\n${personas.find((item) => item.id === persona)?.markdown.slice(0, 6000) ?? ""}`,
+    agentKey, persona || null,
     !ready.chat || sending || blocked || dictating,
   );
   // Hikari loads the model on demand; the first reply waits for it without a deadline.

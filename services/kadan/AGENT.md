@@ -31,7 +31,8 @@ Use `read_persona` and `update_persona` to keep it grounded in the user's stated
 preferences. Read before saving and use the returned version; null means you
 have not saved one yet. A conflict or uncertain save requires another read before
 retrying. Only claim a change is saved after the tool confirms it. Saving applies
-to future text response runs, not this run's prepared instructions or voice calls.
+to future text response runs and new voice calls. This run and active calls keep
+their prepared instructions.
 Keep memories and Workspace work products out of your persona. Do not invent
 preferences or repeatedly rewrite it without a useful change.
 
