@@ -12,6 +12,7 @@ from experimental_worker.audio import (
     MAX_NEW_TOKENS,
     audio_bytes,
     conversation,
+    execute,
     generate,
     public_text,
     validate_context,
@@ -257,3 +258,90 @@ class AudioReplyCompletionTests(unittest.TestCase):
         )
         self.assertEqual(result, {"text": "Hello"})
         codec.decode.assert_not_called()
+
+
+class FusedAudioExecutorTests(unittest.TestCase):
+    def execute(self, generate_results):
+        torch = Mock()
+        torch.cuda.is_available.return_value = True
+        torch.cuda.is_bf16_supported.return_value = True
+        model = Mock()
+        model.eval.return_value = model
+        processor = Mock()
+        codec = Mock()
+        processor.audio_tokenizer.to.return_value.eval.return_value = codec
+        transformers = SimpleNamespace(
+            AutoModelForMultimodalLM=Mock(), AutoProcessor=Mock()
+        )
+        transformers.AutoModelForMultimodalLM.from_pretrained.return_value = model
+        transformers.AutoProcessor.from_pretrained.return_value = processor
+        calls = []
+
+        def generated(task, *args):
+            calls.append((task, args))
+            result = generate_results[len(calls) - 1]
+            if isinstance(result, Exception):
+                raise result
+            return dict(result)
+
+        events = []
+        task = {
+            "feature": "audio_call",
+            "model_id": "lfm3-audio-2b-bf16",
+            "mode": "turn",
+            "audio": wav_uri(),
+            "messages": [
+                {"role": "system", "text": "Persona"},
+                *[{"role": "user", "text": "x" * 1000} for _ in range(12)],
+            ],
+        }
+        with (
+            patch.dict("sys.modules", {"torch": torch, "transformers": transformers}),
+            patch("experimental_worker.audio.generate", side_effect=generated),
+        ):
+            try:
+                result = execute(
+                    task,
+                    "generate",
+                    "/tmp/checkpoint",
+                    lambda event: events.append((event, len(calls))),
+                )
+            except ValueError as error:
+                result = error
+        return result, calls, events, transformers, model, processor, codec
+
+    def test_single_model_load_runs_two_fresh_mock_generations_and_emits_asr_first(
+        self,
+    ):
+        result, calls, events, transformers, model, processor, codec = self.execute(
+            [{"text": "Hi"}, {"text": "Hello", "audio_base64": "AAAA"}]
+        )
+        self.assertEqual(result["transcript"], "Hi")
+        self.assertEqual([call[0]["mode"] for call in calls], ["transcribe", "reply"])
+        transformers.AutoModelForMultimodalLM.from_pretrained.assert_called_once()
+        transformers.AutoProcessor.from_pretrained.assert_called_once()
+        self.assertTrue(all(call[1][:3] == (model, processor, codec) for call in calls))
+        self.assertEqual(
+            events, [({"state": "audio_transcript", "transcript": "Hi"}, 1)]
+        )
+        self.assertEqual(len(calls[1][0]["messages"]), 13)
+        self.assertEqual(calls[1][0]["messages"][-1], {"role": "user", "text": "Hi"})
+        self.assertNotIn("past_key_values", calls[1][0])
+
+    def test_failed_reply_returns_no_audio_and_does_not_erase_completed_transcript(
+        self,
+    ):
+        result, calls, events, *_ = self.execute(
+            [{"text": "Hi"}, ValueError("before completing the reply")]
+        )
+        self.assertIsInstance(result, ValueError)
+        self.assertEqual(
+            events, [({"state": "audio_transcript", "transcript": "Hi"}, 1)]
+        )
+        self.assertEqual(len(calls), 2)
+
+    def test_empty_transcript_skips_reply_generation(self):
+        result, calls, _events, *_ = self.execute([{"text": ""}])
+        self.assertEqual(result["transcript"], "")
+        self.assertIsNone(result["audio_base64"])
+        self.assertEqual(len(calls), 1)

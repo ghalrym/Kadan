@@ -1,6 +1,7 @@
 """A call owns only queue requests and turn history, never an inference engine."""
 
 import asyncio
+import os
 import re
 from contextlib import suppress
 from typing import Literal
@@ -17,6 +18,7 @@ from api.pydantic_models.inference_task import (
 from api.pydantic_models.model_store import ModelStoreStatus, TierId
 from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
+from experimental_worker.call_history import append_call_history
 from pydantic import BaseModel
 
 
@@ -121,13 +123,12 @@ class VoiceCall:
             await self.send({"turn": turn, **event})
 
     def remember(self, role, text):
-        if text.strip():
-            self.history.append(ChatMessage(role=role, text=text[:4000]))
-        while (
-            len(self.history) > 12
-            or sum(len(message.text) for message in self.history) > 12000
-        ):
-            self.history.pop(0)
+        self.history[:] = [
+            ChatMessage.model_validate(message)
+            for message in append_call_history(
+                [message.model_dump() for message in self.history], role, text
+            )
+        ]
 
     async def stop_response(self):
         if self.response is not None:
@@ -195,7 +196,71 @@ class VoiceCall:
                 await asyncio.gather(incoming, return_exceptions=True)
                 await self.stop_response()
 
+    async def respond_audio_turn(self, audio: str, turn: int):
+        stream = await self.inference.open_audio_turn(
+            AudioCallTask(
+                mode="turn",
+                audio=audio,
+                model_id=self.models.llm,
+                messages=[
+                    ChatMessage(role="system", text=self.instruction),
+                    *self.history,
+                ],
+            )
+        )
+        transcript = None
+        try:
+            async for event in stream:
+                if event["type"] == "transcript":
+                    if transcript is not None:
+                        raise InferenceFailure(
+                            "Audio turn returned more than one transcript.", 502
+                        )
+                    if turn != self.turn:
+                        return
+                    transcript = event["text"].strip()
+                    if len(transcript) > 4000:
+                        raise InferenceFailure(
+                            "Recognized utterance exceeded the call limit.", 502
+                        )
+                    self.remember("user", transcript)
+                    if transcript:
+                        await self.emit(turn, type="transcript", text=transcript)
+                elif event["type"] == "reply":
+                    if (
+                        transcript is None
+                        or event.get("transcript", "").strip() != transcript
+                    ):
+                        raise InferenceFailure(
+                            "Audio turn did not confirm its transcript.", 502
+                        )
+                    if transcript:
+                        await self.publish_audio_reply(event, turn)
+                    else:
+                        await self.emit(turn, type="done")
+        finally:
+            with anyio.CancelScope(shield=True):
+                await await_cleanup(asyncio.create_task(stream.aclose()))
+
+    async def publish_audio_reply(self, result: dict, turn: int):
+        reply, audio_base64 = result.get("text", "").strip(), result.get("audio_base64")
+        if not reply or len(reply) > 8000 or not audio_base64:
+            raise InferenceFailure(
+                "Experimental audio worker returned an incomplete reply.", 502
+            )
+        self.segments.append(reply)
+        await self.emit(turn, type="text", text=reply)
+        await self.emit(turn, type="audio", segment=0, audio=audio_base64)
+        await self.emit(turn, type="done")
+
     async def respond_audio(self, audio: str, turn: int):
+        if os.getenv("HIKARI_LFM3_AUDIO_SINGLE_TURN", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            await self.respond_audio_turn(audio, turn)
+            return
         transcript = await self.inference.submit(
             AudioCallTask(mode="transcribe", audio=audio, model_id=self.models.llm),
             feature="audio_call",
@@ -219,17 +284,9 @@ class VoiceCall:
             ),
             feature="audio_call",
         )
-        reply, audio_base64 = result.get("text", "").strip(), result.get("audio_base64")
-        if not reply or len(reply) > 8000 or not audio_base64:
-            raise InferenceFailure(
-                "Experimental audio worker returned an incomplete reply.", 502
-            )
         # One buffered reply is one playback acknowledgement. Unheard replies
         # never enter history when this turn is interrupted.
-        self.segments.append(reply)
-        await self.emit(turn, type="text", text=reply)
-        await self.emit(turn, type="audio", segment=0, audio=audio_base64)
-        await self.emit(turn, type="done")
+        await self.publish_audio_reply(result, turn)
 
     async def respond(self, audio: str, turn: int):
         if self.models.backend == "lfm3":

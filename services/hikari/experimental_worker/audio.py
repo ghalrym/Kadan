@@ -10,6 +10,8 @@ import wave
 from collections.abc import Callable
 from pathlib import Path
 
+from experimental_worker.call_history import append_call_history
+
 MODEL = {
     "id": "lfm3-audio-2b-bf16",
     "repo_id": "LiquidAI/LFM3-Audio-2B",
@@ -223,8 +225,11 @@ def execute(
         raise ValueError(
             "The audio worker only serves explicitly selected audio-call turns"
         )
-    data = audio_bytes(task.get("audio")) if task.get("mode") == "transcribe" else None
-    if data is None:
+    mode = task.get("mode")
+    data = audio_bytes(task.get("audio")) if mode in ("transcribe", "turn") else None
+    if mode == "turn":
+        conversation({"mode": "reply", "messages": task.get("messages")})
+    elif data is None:
         conversation(task)
     # Optional inference dependencies must be imported only in the spawned job
     # process. Native Hikari and its API never load the experimental runtime.
@@ -251,11 +256,41 @@ def execute(
     codec = processor.audio_tokenizer.to(device="cuda:0").eval()
     torch.cuda.synchronize()
     prepared = time.perf_counter()
-    if task.get("mode") == "transcribe":
+    stage_timing = {}
+    if mode in ("transcribe", "turn"):
+        asr_started = time.perf_counter()
         with tempfile.TemporaryDirectory(prefix="lfm3-audio-") as directory:
             audio_path = Path(directory) / "utterance.wav"
             audio_path.write_bytes(data)
-            result = generate(task, model, processor, codec, torch, str(audio_path))
+            result = generate(
+                {"mode": "transcribe"}, model, processor, codec, torch, str(audio_path)
+            )
+        torch.cuda.synchronize()
+        asr_finished = time.perf_counter()
+        if mode == "turn":
+            stage_timing["asr_operation_seconds"] = asr_finished - asr_started
+            stage_timing["reply_operation_seconds"] = 0.0
+            transcript = result["text"]
+            # This typed event reaches the call before reply generation, so a
+            # later failure or interruption does not erase the user's utterance.
+            emit({"state": "audio_transcript", "transcript": transcript})
+            if transcript:
+                history = append_call_history(task["messages"][1:], "user", transcript)
+                reply_started = time.perf_counter()
+                result = generate(
+                    {"mode": "reply", "messages": [task["messages"][0], *history]},
+                    model,
+                    processor,
+                    codec,
+                    torch,
+                )
+                torch.cuda.synchronize()
+                stage_timing["reply_operation_seconds"] = (
+                    time.perf_counter() - reply_started
+                )
+            else:
+                result = {"text": "", "audio_base64": None}
+            result["transcript"] = transcript
     else:
         result = generate(task, model, processor, codec, torch)
     torch.cuda.synchronize()
@@ -264,5 +299,6 @@ def execute(
         "model_load_seconds": loaded - imported,
         "processor_load_seconds": prepared - loaded,
         "audio_operation_seconds": time.perf_counter() - prepared,
+        **stage_timing,
     }
     return result

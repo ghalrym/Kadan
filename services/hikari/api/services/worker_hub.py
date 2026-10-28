@@ -773,6 +773,23 @@ class WorkerHub:
             worker.residency_known = False
             worker.resident_model = None
             worker.resident_context = {}
+        if event.state == "audio_transcript":
+            if (
+                job.request.feature != "audio_call"
+                or job.request.input.mode != "turn"
+                or job.events is None
+            ):
+                job.stream_error = "Unexpected audio transcript event."
+                asyncio.create_task(self.cancel(event.id))
+            elif job.stream_error is None:
+                try:
+                    job.events.put_nowait(
+                        {"type": "transcript", "text": event.transcript}
+                    )
+                except asyncio.QueueFull:
+                    job.stream_error = "Audio turn consumer is too slow."
+                    asyncio.create_task(self.cancel(event.id))
+            return
         if event.state == "content":
             if job.events is not None and job.stream_error is None:
                 try:
