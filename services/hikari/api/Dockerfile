@@ -10,6 +10,7 @@ COPY api/requirements*.txt /app/
 COPY bin/requirements.txt /app/bin/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt -r bin/requirements.txt && pip check
 COPY api/ /app/api
+COPY experimental_worker/ /app/experimental_worker
 COPY bin/*.py /app/bin/
 RUN python bin/hikari.py check install
 EXPOSE 8000

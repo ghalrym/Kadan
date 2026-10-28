@@ -14,6 +14,7 @@ from kadan.runner.tools import (
     COMPUTER_TOOLS,
     CONVERSATION_TOOLS,
     TOOLS_BY_NAME,
+    VISION_TOOLS,
 )
 from kadan.runner.tools.base import body
 from kadan.runner.tools.bash import bash_exec
@@ -73,7 +74,8 @@ def required(schema: dict, root: dict) -> dict:
 
 
 def test_every_tool_has_a_unique_name_and_a_description():
-    assert len(TOOLS_BY_NAME) == len(ALL_TOOLS) == 25
+    assert len(ALL_TOOLS) == 25
+    assert len(TOOLS_BY_NAME) == len(ALL_TOOLS) + len(VISION_TOOLS)
     assert len(CONVERSATION_TOOLS) == 6
     assert all(tool.description for tool in ALL_TOOLS)
 
