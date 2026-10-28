@@ -27,14 +27,7 @@ class CheckpointStatus(BaseModel):
     license: str
     estimated_bytes: int
     kind: Literal[
-        "llm",
-        "video",
-        "speech",
-        "transcription",
-        "formatting",
-        "image",
-        "decision",
-        "audio",
+        "llm", "video", "speech", "transcription", "formatting", "image", "decision", "audio", "vision"
     ]
     display_name: str | None
     short_name: str | None = None

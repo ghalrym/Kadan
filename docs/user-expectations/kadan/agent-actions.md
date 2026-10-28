@@ -10,6 +10,8 @@ A computer action can fail because the computer, website, program or requested f
 
 Action results have a limited text size. The current agent cannot inspect screenshot pixels through its text model, even though users can view the computer. A delivered chat message does not prove that an external change succeeded; inspect the resulting page, file or application when confirmation matters.
 
+An optional experimental vision worker lets the agent ask about a fresh screenshot of its configured computer. It returns a text observation to the same conversation; it does not control the computer or replace the conversation model. The experiment is disabled by default and requires an operator to enable it and a user to approve the model download. Oversized screenshots, unavailable workers and failed inference report an error. Observations can be inaccurate, and a screenshot describes only the moment captured. This path has unit validation; model execution and visual accuracy still require a manual trial.
+
 An interrupted or timed-out action may already have happened. After a runner restart, Kadan does not automatically replay an unconfirmed action that could change state; the agent is told to check before retrying. Stopping a response does not undo actions or guarantee that an already launched external process has stopped.
 
 See [Viewing and controlling the computer](computer.md), [Stopping chat work](stopping-chat-work.md) and [operator responsibility](../security.md).
