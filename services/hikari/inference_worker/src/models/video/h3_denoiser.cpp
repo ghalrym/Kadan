@@ -5,6 +5,7 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <iostream>
 #include <limits>
 #include <optional>
 #include <string>
@@ -19,6 +20,63 @@ namespace kadan::video {
 namespace {
 using Shard = checkpoint::Shard;
 using Dtype = checkpoint::Dtype;
+
+const char* fallback_phase(PlanFailure reason) {
+    switch (reason) {
+    case PlanFailure::capacity:
+        return "denoiser_host_capacity";
+    case PlanFailure::topology:
+        return "denoiser_host_topology";
+    case PlanFailure::unsupported_layout:
+        return "denoiser_host_unsupported";
+    case PlanFailure::invalid_shape:
+        return "denoiser_host_invalid_shape";
+    }
+    throw std::invalid_argument("h3_resident_plan_failure");
+}
+
+const char* refiner_fallback_phase(PlanFailure reason) {
+    switch (reason) {
+    case PlanFailure::capacity:
+        return "denoiser_refiner_host_capacity";
+    case PlanFailure::topology:
+        return "denoiser_refiner_host_topology";
+    case PlanFailure::unsupported_layout:
+        return "denoiser_refiner_host_unsupported";
+    case PlanFailure::invalid_shape:
+        return "denoiser_refiner_host_invalid_shape";
+    }
+    throw std::invalid_argument("h3_resident_plan_failure");
+}
+
+const char* attention_fallback_phase(PlanFailure reason) {
+    switch (reason) {
+    case PlanFailure::capacity:
+        return "denoiser_attention_host_capacity";
+    case PlanFailure::topology:
+        return "denoiser_attention_host_topology";
+    case PlanFailure::unsupported_layout:
+        return "denoiser_attention_host_unsupported";
+    case PlanFailure::invalid_shape:
+        return "denoiser_attention_host_invalid_shape";
+    }
+    throw std::invalid_argument("h3_resident_plan_failure");
+}
+
+void report_fallback(
+    const H3Denoiser::Hook& hook, const char* phase, const MediaPlanError& error
+) {
+    std::clog << "h3_fallback phase=" << phase << " detail=" << error.detail << '\n';
+    if (error.rejected)
+        for (const auto& device : error.rejected->devices)
+            std::clog << "h3_fallback phase=" << phase << " device=" << device.device
+                      << " arena_bytes=" << device.arena_bytes
+                      << " physical_shortfall_bytes=" << device.physical_shortfall
+                      << " ledger_shortfall_bytes=" << device.ledger_shortfall << '\n';
+    std::clog.flush();
+    if (hook)
+        hook(phase, 0);
+}
 
 void require(bool value, const char* why) {
     if (!value)
@@ -1306,6 +1364,11 @@ void H3Denoiser::execute(
                 throw std::runtime_error("h3_resident_admission: " + error->detail);
             resident->attention_rejected = std::move(error);
             close_held(false);
+            report_fallback(
+                hook,
+                attention_fallback_phase(resident->attention_rejected->reason),
+                *resident->attention_rejected
+            );
             return false;
         }
         const auto& layout = std::get<detail::H3Block>(described);
@@ -1344,6 +1407,11 @@ void H3Denoiser::execute(
                     throw std::runtime_error("h3_resident_admission: " + error->detail);
                 resident->refiner_rejected = std::move(error);
                 close_held(false);
+                report_fallback(
+                    hook,
+                    refiner_fallback_phase(resident->refiner_rejected->reason),
+                    *resident->refiner_rejected
+                );
                 return false;
             }
             const auto& layout = std::get<detail::H3Refiner>(described);
@@ -1426,6 +1494,11 @@ void H3Denoiser::execute(
                     throw std::runtime_error("h3_resident_admission: " + error->detail);
                 resident->rejected = std::move(error);
                 session->finish();
+                report_fallback(
+                    hook,
+                    fallback_phase(resident->rejected->reason),
+                    *resident->rejected
+                );
                 return false;
             }
             const auto& layout = std::get<detail::H3FeedForward>(described);

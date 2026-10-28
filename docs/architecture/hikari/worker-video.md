@@ -26,6 +26,8 @@ Generates video with audio using H3 FL2VA INT8 + Turbo: 480p or 768p, 16:9,
 - The finished MP4 returns inline in the result, because the worker may run on
   another machine. The API writes the file it serves.
 
+Resident refiner, attention and feed-forward admission failures emit their existing fallback phase immediately after session cleanup, before host execution continues. Flushed `h3_fallback` stderr records include the internal planner detail and, when a rejected capacity plan exists, per-device arena and physical/ledger shortfall bytes. They contain no prompt or output paths. The API's acknowledged `load <worker> with <GiB> GiB` log records the actual grant; a later resize is a separate allocation, not evidence of the earlier running grant. Fallback diagnostics do not change the admission decision, computation or cleanup ownership.
+
 ## Memory
 
 - **Minimum:** the RAM working stage for the largest clip the API accepts
