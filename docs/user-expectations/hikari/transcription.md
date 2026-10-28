@@ -10,4 +10,6 @@ The page uses the saved transcription model and formatting preference. Optional 
 
 **Cancel** ignores late results while cleanup finishes. Leaving the page also aborts pending work and releases microphone access.
 
+Whisper can reuse intermediate audio data within one transcription. That state is released when the request completes, fails or is cancelled; it is not reused for a later clip. Transcription still needs enough temporary memory, and reuse does not guarantee a fixed response time.
+
 See [Transcription architecture](../../architecture/hikari/worker-speech.md) for audio conversion, model selection and formatting fallback.

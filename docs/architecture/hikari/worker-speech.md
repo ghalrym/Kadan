@@ -33,6 +33,25 @@ native Whisper.
 - **Preferred:** checkpoint size plus those floors.
 - **Several GPUs:** each GPU it uses needs its own 2.4 GiB floor.
 
+Greedy decoding retains cross-attention keys and values for each decoder layer only
+within the current call. Encoded audio and checkpoint weights remain immutable
+throughout that call, including progress callbacks. Standalone `decode` calls do
+not retain this cache, and self-attention still recomputes the text prefix. The
+first cross-attention projection uses the same shapes, bias and precision as an
+uncached projection; later tokens reuse its validated F32 results. Checkpoint
+mutation checks still run on reuse. A failed or cancelled fill never becomes
+reusable, and scope cleanup releases the cache before request completion.
+
+The complete cache is charged to the speech host ledger before the first decoder
+projection: `2 * text_layers * audio_context * text_state * sizeof(float)`, plus a
+512-byte metadata envelope. The medium payload is 294,912,000 bytes; the maximum
+accepted dimensions require 491,520,000 payload bytes. Engine preparation checks
+headroom for this plan alongside its separately reserved request scratch before
+encoding. The cache owns its actual reservation once, during decoding; it is not
+also included in the request-scratch reservation. Ordinary projection and decoder
+buffers keep their existing reservations. Lack of headroom does not select a
+smaller model or silently disable the cache.
+
 ## Scheduling
 
 - Priority 3, shared with formatting.

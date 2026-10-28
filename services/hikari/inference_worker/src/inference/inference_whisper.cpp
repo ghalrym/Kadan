@@ -4,6 +4,7 @@
 #include "kadan/preparation.hpp"
 #include "kadan/stt.hpp"
 #include "kadan/whisper.hpp"
+#include "kadan/whisper_cross_attention.hpp"
 #include "kadan/whisper_tokens.hpp"
 
 namespace kadan::serving {
@@ -92,7 +93,10 @@ public:
                 * (samples_ + dimensions_.mels * 3000
                    + dimensions_.audio_context * dimensions_.audio_state + max_tokens_)
             + stt::WhisperTokens::max_text_bytes;
-        if (available[0] < scratch)
+        const auto cache = stt::WhisperCrossAttentionCache::bytes(
+            dimensions_.text_layers, dimensions_.audio_context, dimensions_.text_state
+        );
+        if (available[0] < scratch || available[0] - scratch < cache)
             throw AdmissionWait("whisper_request_headroom");
         request_memory_ =
             std::make_unique<HostAllocation>(resources_, Workload::speech, scratch);
