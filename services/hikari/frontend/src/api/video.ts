@@ -1,5 +1,15 @@
-import { cancelVideo, generateVideo, getSettings, getVideo, listVideos } from './generated/sdk.gen'
-import type { VideoDefaults, VideoGenerationRequest, VideoJob } from './generated/types.gen'
+import {
+  cancelVideo,
+  generateVideo,
+  getSettings,
+  getVideo,
+  listVideos,
+} from './generated/sdk.gen'
+import type {
+  VideoDefaults,
+  VideoGenerationRequest,
+  VideoJob,
+} from './generated/types.gen'
 
 export type { VideoJob, VideoGenerationRequest }
 
@@ -42,7 +52,9 @@ function validateJob(job: VideoJob | undefined): VideoJob {
     !job ||
     !job.id ||
     typeof job.prompt !== 'string' ||
-    !['Queued', 'Rendering', 'Done', 'Failed', 'Cancelled'].includes(job.status) ||
+    !['Queued', 'Rendering', 'Done', 'Failed', 'Cancelled'].includes(
+      job.status,
+    ) ||
     !Number.isFinite(job.progress) ||
     job.progress < 0 ||
     job.progress > 100
@@ -51,13 +63,15 @@ function validateJob(job: VideoJob | undefined): VideoJob {
   return job
 }
 
-/** Read clip defaults from the worker's selected hardware tier. */
-export async function loadVideoDefaults(signal: AbortSignal): Promise<VideoDefaults> {
+/** Read the fixed stack's clip defaults from the API. */
+export async function loadVideoDefaults(
+  signal: AbortSignal,
+): Promise<VideoDefaults> {
   const result = await getSettings({ signal })
   checkResponse(result.response)
-  const tier = result.data?.tiers.find((tier) => tier.id === result.data?.tier)
-  if (!tier) throw new Error('Choose a hardware tier in Settings before submitting a video.')
-  return tier.video_defaults
+  if (!result.data?.video_defaults)
+    throw new Error('Video defaults are unavailable. Check Settings and retry.')
+  return result.data.video_defaults
 }
 
 /**
@@ -96,7 +110,9 @@ export async function submitVideo(
     body.prompt.length > 8000 ||
     (body.negative_prompt?.length ?? 0) > 8000 ||
     (body.seconds != null &&
-      (!Number.isInteger(body.seconds) || body.seconds < 1 || body.seconds > 15)) ||
+      (!Number.isInteger(body.seconds) ||
+        body.seconds < 1 ||
+        body.seconds > 15)) ||
     (body.fps !== undefined && body.fps !== 24)
   )
     throw new Error(

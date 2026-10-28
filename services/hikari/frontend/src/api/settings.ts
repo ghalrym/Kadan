@@ -1,18 +1,12 @@
 import {
+  cancelDownloadV1ModelsModelIdDownloadDelete,
+  configureContextV1ModelsModelIdContextPut,
   downloadModelV1ModelsModelIdDownloadPost,
   getSettings,
-  listModelsV1ModelsGet,
-  updateSettings,
 } from './generated/sdk.gen'
-import type {
-  CheckpointStatus,
-  SettingsResponse,
-  TierModel,
-  TierSetting,
-} from './generated/types.gen'
+import type { CheckpointStatus, SettingsResponse } from './generated/types.gen'
 
-export type { CheckpointStatus, SettingsResponse, TierModel, TierSetting }
-export type TierId = TierSetting['id']
+export type { CheckpointStatus, SettingsResponse }
 export type DownloadState =
   | 'unassigned'
   | 'not_downloaded'
@@ -20,120 +14,118 @@ export type DownloadState =
   | 'downloading'
   | 'complete'
   | 'failed'
+export type ConfiguredModel = {
+  id: string
+  uses: string[]
+  checkpoint: CheckpointStatus | null
+}
 
-/**
- * Turn a missing or rejected response into an actionable Settings error,
- * preferring the API's own detail.
- */
+const labels: Record<string, string> = {
+  llm: 'Conversation',
+  vision: 'Screenshot understanding',
+  speech: 'Speech and calls',
+  image: 'Image generation and editing',
+  video: 'Video',
+  transcription: 'Transcription',
+  formatting: 'Transcript formatting',
+  decisions: 'Decisions',
+}
+
 function settingsError(response: Response | undefined, error: unknown): Error {
   const detail = (error as { detail?: unknown } | undefined)?.detail
-  if (typeof detail === 'string') return new Error(detail)
   return new Error(
-    response
-      ? `Settings request failed (HTTP ${response.status}). Please retry.`
-      : 'Cannot reach the settings API. Check that the backend is running, then retry.',
+    typeof detail === 'string'
+      ? detail
+      : response
+        ? `Settings request failed (HTTP ${response.status}). Please retry.`
+        : 'Cannot reach the settings API. Check that the backend is running, then retry.',
   )
 }
 
-/** Read the tiers, the selected tier and each assigned checkpoint's download state. */
-export async function fetchSettings(signal: AbortSignal): Promise<SettingsResponse> {
-  const result = await getSettings({ signal })
-  if (!result.response?.ok || !result.data) throw settingsError(result.response, result.error)
-  return result.data
+/** The fixed stack can contain a shared model or a model with no connected worker. */
+export function configuredModels(
+  settings: SettingsResponse,
+): ConfiguredModel[] {
+  const models = new Map<string, ConfiguredModel>()
+  for (const [feature, id] of Object.entries(settings.defaults)) {
+    const row = models.get(id)
+    if (row) row.uses.push(labels[feature] ?? feature)
+    else
+      models.set(id, {
+        id,
+        uses: [labels[feature] ?? feature],
+        checkpoint: settings.models.find((model) => model.id === id) ?? null,
+      })
+  }
+  return [...models.values()]
 }
 
-/**
- * Save the tier and queue its incomplete downloads. The caller has shown the
- * tier's license notices before acknowledging them.
- */
-export async function chooseTier(
-  tier: TierId,
+export async function fetchSettings(
   signal: AbortSignal,
 ): Promise<SettingsResponse> {
-  const result = await updateSettings({
-    body: { tier, license_acknowledged: true },
-    signal,
-  })
-  if (!result.response?.ok || !result.data) throw settingsError(result.response, result.error)
+  const result = await getSettings({ signal })
+  if (!result.response?.ok || !result.data)
+    throw settingsError(result.response, result.error)
   return result.data
 }
 
-export function experimentalModels(models: CheckpointStatus[]): CheckpointStatus[] {
-  return models.filter((model) => model.id.startsWith('lfm3-'))
-}
-
-export async function fetchExperimentalModels(signal: AbortSignal): Promise<CheckpointStatus[]> {
-  const result = await listModelsV1ModelsGet({ signal })
-  if (!result.response?.ok || !result.data) throw settingsError(result.response, result.error)
-  return experimentalModels(result.data.models)
-}
-
-/** The dialog must obtain explicit acknowledgement before queuing any download. */
-export async function downloadExperimentalModel(
+/** A caller must obtain acknowledgement of this checkpoint's own license first. */
+export async function downloadModel(
   modelId: string,
   acknowledged: boolean,
   signal: AbortSignal,
 ): Promise<CheckpointStatus[]> {
-  if (!acknowledged) throw new Error('Review and acknowledge the model license before downloading.')
+  if (!acknowledged)
+    throw new Error(
+      'Review and acknowledge the model license before downloading.',
+    )
   const result = await downloadModelV1ModelsModelIdDownloadPost({
-    path: { model_id: modelId }, body: { license_acknowledged: true }, signal,
+    path: { model_id: modelId },
+    body: { license_acknowledged: true },
+    signal,
   })
-  if (!result.response?.ok || !result.data) throw settingsError(result.response, result.error)
-  return experimentalModels(result.data.models)
+  if (!result.response?.ok || !result.data)
+    throw settingsError(result.response, result.error)
+  return result.data.models
 }
 
-/**
- * A queued download has no observed size yet; cancelling still occupies the
- * queue until the worker confirms.
- */
+export async function cancelModelDownload(
+  modelId: string,
+  signal: AbortSignal,
+): Promise<CheckpointStatus[]> {
+  const result = await cancelDownloadV1ModelsModelIdDownloadDelete({
+    path: { model_id: modelId },
+    signal,
+  })
+  if (!result.response?.ok || !result.data)
+    throw settingsError(result.response, result.error)
+  return result.data.models
+}
+
+/** Null uses the model maximum; this changes the saved setting, not a running request. */
+export async function configureModelContext(
+  modelId: string,
+  context: number | null,
+  signal: AbortSignal,
+): Promise<CheckpointStatus[]> {
+  if (context !== null && (!Number.isSafeInteger(context) || context < 1))
+    throw new Error(
+      'Enter a positive whole-token context limit, or leave it blank to use the model maximum.',
+    )
+  const result = await configureContextV1ModelsModelIdContextPut({
+    path: { model_id: modelId },
+    body: { context_limit: context },
+    signal,
+  })
+  if (!result.response?.ok || !result.data)
+    throw settingsError(result.response, result.error)
+  return result.data.models
+}
+
 export function downloadState(model: CheckpointStatus | null): DownloadState {
   if (!model) return 'unassigned'
   if (model.status === 'complete') return 'complete'
   if (model.status === 'failed' || model.status === 'cancelled') return 'failed'
   if (model.status === 'not_downloaded') return 'not_downloaded'
   return model.total_bytes > 0 ? 'downloading' : 'queued'
-}
-
-/** Assigned checkpoints of a tier, deduplicated when modalities share one. */
-function assigned(tier: TierSetting): CheckpointStatus[] {
-  const models = new Map<string, CheckpointStatus>()
-  for (const { model } of tier.models) if (model) models.set(model.id, model)
-  return [...models.values()]
-}
-
-export function tierDownloading(tier: TierSetting): boolean {
-  return assigned(tier).some((model) => {
-    const state = downloadState(model)
-    return state === 'queued' || state === 'downloading'
-  })
-}
-
-export function tierCanDownload(tier: TierSetting): boolean {
-  return !tierDownloading(tier) && !tierComplete(tier)
-}
-
-export function tierComplete(tier: TierSetting): boolean {
-  return assigned(tier).every((model) => model.status === 'complete')
-}
-
-/**
- * Whole-tier progress in percent, weighting each checkpoint by its catalog
- * estimate until the worker reports the exact size.
- */
-export function tierProgress(tier: TierSetting): number {
-  let done = 0
-  let total = 0
-  for (const model of assigned(tier)) {
-    const size = model.total_bytes || model.estimated_bytes
-    total += size
-    done += model.status === 'complete' ? size : Math.min(model.downloaded_bytes, size)
-  }
-  return total ? Math.floor((done / total) * 100) : 0
-}
-
-/** License notices the user must read before the tier's downloads start. */
-export function licenseNotices(tier: TierSetting): CheckpointStatus[] {
-  return assigned(tier).filter(
-    (model) => model.license_notice && model.status !== 'complete',
-  )
 }

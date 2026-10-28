@@ -102,7 +102,7 @@ async function page() {
     }),
     'react/jsx-runtime': module({ jsx, jsxs: jsx, Fragment: 'fragment' }),
     '../api/settings': module({
-      fetchExperimentalModels: (signal) => {
+      fetchSettings: (signal) => {
         read.signal = signal
         return read.promise
       },
@@ -143,13 +143,6 @@ async function page() {
     get lateUpdates() {
       return lateUpdates
     },
-    get select() {
-      return elements(tree).find((node) => node.type === 'select')
-    },
-    async choose(value) {
-      this.select.props.onChange({ target: { value } })
-      await flush()
-    },
     async send(text) {
       elements(tree)
         .find((node) => node.type === 'textarea')
@@ -175,58 +168,64 @@ async function page() {
     },
   }
 }
-test('offers only downloaded inference-ready LFM3 text; keeps Settings as default', async () => {
+const saved = (model = ready) => ({
+  defaults: { llm: ready.id },
+  models: model ? [model] : [],
+})
+test('Chat shows the fixed conversation model with observed download readiness', async () => {
   const view = await page()
-  view.read.resolve([
-    ready,
-    { ...ready, id: 'lfm3-audio-2b-bf16' },
-    { ...ready, status: 'not_downloaded' },
-    { ...ready, inference_available: false },
-  ])
+  view.read.resolve(saved())
   await view.flush()
-  assert.equal(view.select.props.value, '')
-  assert.deepEqual(
-    elements(view.select)
-      .filter((node) => node.type === 'option')
-      .map((node) => node.props.value),
-    ['', ready.id],
+  assert.equal(
+    elements(view.tree).some((node) => node.type === 'select'),
+    false,
+  )
+  assert.match(content(view.tree), /LFM3 trial · Downloaded/)
+  assert.doesNotMatch(
+    content(view.tree),
+    /Hikari Settings model|Choose a downloaded trial model/,
   )
   view.unmount()
 })
-test('retry keeps model; New chat unlocks selection and resets conversation identity', async () => {
+test('retry retains submitted conversation; New chat resets conversation identity', async () => {
   const view = await page()
-  view.read.resolve([ready])
+  view.read.resolve(saved())
   await view.flush()
-  await view.choose(ready.id)
   await view.send('Hello')
-  assert.equal(view.calls[0].args[4], ready.id)
+  assert.equal(view.calls[0].args[4], undefined)
   const first = view.calls[0].args[3]
-  assert.equal(view.select.props.disabled, true)
   view.calls[0].reject(new Error('Unavailable'))
   await view.flush()
-  assert.equal(view.select.props.disabled, true)
   await view.click('Retry last message')
-  assert.equal(view.calls[1].args[4], ready.id)
   assert.equal(view.calls[1].args[3], first)
   view.calls[1].resolve({ role: 'assistant', text: 'Hello' })
   await view.flush()
   await view.click('New chat')
-  assert.equal(view.select.props.disabled, false)
-  await view.choose('')
-  await view.send('Native')
+  await view.send('New conversation')
   assert.equal(view.calls[2].args[4], undefined)
   assert.notEqual(view.calls[2].args[3], first)
+  view.unmount()
+})
+test('missing fixed worker is reported rather than another model offered', async () => {
+  const view = await page()
+  view.read.resolve(saved(null))
+  await view.flush()
+  assert.match(content(view.tree), /Conversation worker unavailable/)
+  assert.equal(
+    elements(view.tree).some((node) => node.type === 'select'),
+    false,
+  )
   view.unmount()
 })
 test('unmount aborts model read and ignores late results', async () => {
   const view = await page()
   view.unmount()
   assert.equal(view.read.signal.aborted, true)
-  view.read.resolve([ready])
+  view.read.resolve(saved())
   await view.flush()
   assert.equal(view.lateUpdates, 0)
 })
-test('request builder sends explicit model only when selected', async () => {
+test('default request leaves the fixed model choice with the server', async () => {
   const source = await readFile(
     new URL('../src/api/chat.ts', import.meta.url),
     'utf8',
@@ -236,7 +235,8 @@ test('request builder sends explicit model only when selected', async () => {
     throw new Error('Unexpected runtime dependency')
   })
   await module.evaluate()
-  const messages = [{ role: 'user', text: 'Hello' }]
-  assert.equal('model' in module.namespace.chatRequest(messages), false)
-  assert.equal(module.namespace.chatRequest(messages, ready.id).model, ready.id)
+  assert.equal(
+    'model' in module.namespace.chatRequest([{ role: 'user', text: 'Hello' }]),
+    false,
+  )
 })
