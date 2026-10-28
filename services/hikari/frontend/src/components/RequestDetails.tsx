@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { ActionButton } from './Controls'
 import type { RequestResponse } from '../api/generated/types.gen'
@@ -11,17 +11,55 @@ export default function RequestDetails() {
   const { data, error, refresh } = usePolling<RequestResponse>(
     `/v1/requests/${encodeURIComponent(requestId ?? '')}`,
   )
-  const [copyError, setCopyError] = useState('')
   const request = data?.request
-  async function copyId() {
+  const [copyFeedback, setCopyFeedback] = useState<{
+    requestId: string | undefined
+    recordId: string
+    message: string
+    failed: boolean
+    signal: AbortSignal
+  } | null>(null)
+  const copyAttempt = useRef<AbortController | null>(null)
+  useEffect(() => () => copyAttempt.current?.abort(), [requestId, request?.id])
+
+  async function copy(kind: 'details' | 'id') {
     if (!request) return
+    copyAttempt.current?.abort()
+    const attempt = new AbortController()
+    copyAttempt.current = attempt
+    setCopyFeedback(null)
     try {
-      await navigator.clipboard.writeText(request.id)
-      setCopyError('')
+      await navigator.clipboard.writeText(
+        kind === 'details' ? JSON.stringify(request, null, 2) : request.id,
+      )
+      if (!attempt.signal.aborted)
+        setCopyFeedback({
+          requestId,
+          recordId: request.id,
+          message: kind === 'details' ? 'Details copied' : 'ID copied',
+          failed: false,
+          signal: attempt.signal,
+        })
     } catch {
-      setCopyError('Could not copy request ID.')
+      if (!attempt.signal.aborted)
+        setCopyFeedback({
+          requestId,
+          recordId: request.id,
+          message:
+            kind === 'details'
+              ? 'Could not copy details. Select the JSON under Advanced and copy it manually.'
+              : 'Could not copy request ID.',
+          failed: true,
+          signal: attempt.signal,
+        })
     }
   }
+  const feedback =
+    copyFeedback?.requestId === requestId &&
+    copyFeedback?.recordId === request?.id &&
+    !copyFeedback?.signal.aborted
+      ? copyFeedback
+      : null
   return (
     <div className="detail-overlay">
       <Link
@@ -82,14 +120,25 @@ export default function RequestDetails() {
                   <pre>{JSON.stringify(request, null, 2)}</pre>
                 </div>
               </details>
-              {copyError && <p role="alert">{copyError}</p>}
+              {feedback && (
+                <p role={feedback.failed ? 'alert' : 'status'}>
+                  {feedback.message}
+                </p>
+              )}
             </div>
             <footer className="drawer-footer row wrap">
-              <ActionButton>Copy as cURL</ActionButton>
               <button
                 type="button"
                 className="button button--secondary"
-                onClick={() => void copyId()}
+                title="Copy observed request as JSON"
+                onClick={() => void copy('details')}
+              >
+                Copy details
+              </button>
+              <button
+                type="button"
+                className="button button--secondary"
+                onClick={() => void copy('id')}
               >
                 Copy ID
               </button>
