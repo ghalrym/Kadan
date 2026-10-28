@@ -26,7 +26,7 @@ services:
       HIKARI_ENABLE_LFM3_VISION: ${HIKARI_ENABLE_LFM3_VISION:-false}
       KADAN_MODEL_DIR: /var/lib/kadan/models
     volumes:
-      - model_data:/var/lib/kadan/models
+      - lfm3_vision_models:/var/lib/kadan/models
     deploy:
       resources:
         reservations:
@@ -37,3 +37,6 @@ services:
     depends_on:
       hikari-api:
         condition: service_healthy
+
+volumes:
+  lfm3_vision_models:
