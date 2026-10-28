@@ -133,6 +133,7 @@ export type CheckpointStatus = {
     | 'formatting'
     | 'image'
     | 'decision'
+    | 'vision'
   /**
    * License
    */
@@ -416,6 +417,46 @@ export type DecisionResponse = {
    * Answers
    */
   answers: Array<ChoiceAnswer | ScoreAnswer | NoulAnswer>
+}
+
+/**
+ * DescribeRequest
+ */
+export type DescribeRequest = {
+  /**
+   * Image Base64
+   */
+  image_base64: string
+  /**
+   * Max New Tokens
+   */
+  max_new_tokens?: number
+  /**
+   * Media Type
+   */
+  media_type: 'image/png' | 'image/jpeg'
+  /**
+   * Model
+   */
+  model?: 'lfm3-vl-2b-bf16'
+  /**
+   * Question
+   */
+  question: string
+}
+
+/**
+ * DescribeResponse
+ */
+export type DescribeResponse = {
+  /**
+   * Model
+   */
+  model: 'lfm3-vl-2b-bf16'
+  /**
+   * Text
+   */
+  text: string
 }
 
 /**
@@ -2434,3 +2475,30 @@ export type GetVideoContentResponses = {
    */
   200: unknown
 }
+
+export type DescribeScreenshotData = {
+  body: DescribeRequest
+  path?: never
+  query?: never
+  url: '/v1/vision/describe'
+}
+
+export type DescribeScreenshotErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type DescribeScreenshotError =
+  DescribeScreenshotErrors[keyof DescribeScreenshotErrors]
+
+export type DescribeScreenshotResponses = {
+  /**
+   * Successful Response
+   */
+  200: DescribeResponse
+}
+
+export type DescribeScreenshotResponse =
+  DescribeScreenshotResponses[keyof DescribeScreenshotResponses]
