@@ -285,7 +285,7 @@
       "id": "laya",
       "repo_id": "convaiinnovations/laya",
       "revision": "7b928d828b7b0e022f929d9bd2e44165aa270148",
-      "license": "unknown",
+      "license": "apache-2.0",
       "estimated_bytes": 0,
       "kind": "decision",
       "display_name": "Laya",
@@ -302,7 +302,7 @@
       "weight_paths": [
         ""
       ],
-      "license_url": null,
+      "license_url": "https://huggingface.co/convaiinnovations/laya/blob/7b928d828b7b0e022f929d9bd2e44165aa270148/README.md",
       "license_notice": null,
       "inference_available": true,
       "asset_url": null,
