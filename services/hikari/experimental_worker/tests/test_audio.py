@@ -261,7 +261,7 @@ class AudioReplyCompletionTests(unittest.TestCase):
 
 
 class FusedAudioExecutorTests(unittest.TestCase):
-    def execute(self, generate_results, *, probe=False):
+    def execute(self, generate_results, *, probe=False, sentence=False):
         torch = Mock()
         torch.cuda.is_available.return_value = True
         torch.cuda.is_bf16_supported.return_value = True
@@ -290,6 +290,7 @@ class FusedAudioExecutorTests(unittest.TestCase):
             "model_id": "lfm3-audio-2b-bf16",
             "mode": "turn",
             "codec_streaming_probe": probe,
+            "sentence_tts": sentence,
             "audio": wav_uri(),
             "messages": [
                 {"role": "system", "text": "Persona"},
@@ -366,3 +367,29 @@ class FusedAudioExecutorTests(unittest.TestCase):
         self.assertTrue(callable(calls[1][2]["emit"]))
         self.assertEqual(result["timing"]["streamed_chunk_count"], 2)
         self.assertIn("model_load_seconds", result["timing"])
+
+    def test_sentence_turn_loads_once_and_runs_asr_answer_then_known_scripts(self):
+        result, calls, events, transformers, model, processor, codec = self.execute(
+            [
+                {"text": "Hi"},
+                {"text": "First. Second."},
+                {"script": "First.", "sample_count": 2400, "audio_base64": "AAAA"},
+                {"script": "Second.", "sample_count": 2400, "audio_base64": "BBBB"},
+            ],
+            sentence=True,
+        )
+        self.assertEqual(
+            [entry[0]["mode"] for entry in calls],
+            ["transcribe", "answer", "tts", "tts"],
+        )
+        self.assertTrue(
+            all(entry[1][:3] == (model, processor, codec) for entry in calls)
+        )
+        transformers.AutoModelForMultimodalLM.from_pretrained.assert_called_once()
+        transformers.AutoProcessor.from_pretrained.assert_called_once()
+        self.assertEqual(
+            [entry[0]["state"] for entry in events],
+            ["audio_transcript", "audio_answer", "audio_segment", "audio_segment"],
+        )
+        self.assertEqual(result["scripts"], ["First.", "Second."])
+        self.assertEqual(result["timing"]["tts_segment_count"], 2)

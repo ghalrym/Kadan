@@ -54,6 +54,13 @@ class WorkerMemory(BaseModel):
     residents: int
 
 
+class AudioSegment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    index: int = Field(ge=0, le=8000, strict=True)
+    script: str = Field(min_length=1, max_length=240)
+    audio_base64: str = Field(min_length=1, max_length=4_000_000)
+
+
 class WorkerEvent(BaseModel):
     """A job event from a machine; control replies are handled separately."""
 
@@ -68,6 +75,8 @@ class WorkerEvent(BaseModel):
         "progress",
         "content",
         "audio_transcript",
+        "audio_answer",
+        "audio_segment",
         "succeeded",
         "failed",
         "cancelled",
@@ -83,6 +92,8 @@ class WorkerEvent(BaseModel):
     total: int = 0
     content: str | None = None
     transcript: str | None = Field(default=None, max_length=4000)
+    answer: str | None = Field(default=None, min_length=1, max_length=8000)
+    audio_segment: AudioSegment | None = None
     model: str | None = None
     context: dict[str, int | None] | None = None
     status_code: int = 502
@@ -92,6 +103,10 @@ class WorkerEvent(BaseModel):
     def validate_transcript(self):
         if self.state == "audio_transcript" and self.transcript is None:
             raise ValueError("An audio transcript event requires transcript text")
+        if self.state == "audio_answer" and self.answer is None:
+            raise ValueError("An audio answer event requires public text")
+        if self.state == "audio_segment" and self.audio_segment is None:
+            raise ValueError("An audio segment event requires a known-script segment")
         return self
 
     @field_validator("trace_unix_ns", mode="before")

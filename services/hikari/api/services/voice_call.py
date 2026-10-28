@@ -2,7 +2,6 @@
 
 import asyncio
 import os
-import re
 from contextlib import suppress
 from typing import Literal
 
@@ -19,6 +18,7 @@ from api.pydantic_models.model_store import ModelStoreStatus, TierId
 from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
 from experimental_worker.call_history import append_call_history
+from experimental_worker.speech_segments import speech_scripts, speech_segment
 from pydantic import BaseModel
 
 
@@ -79,22 +79,6 @@ class CallModels(BaseModel):
 
     def participants(self) -> frozenset[str]:
         return frozenset((self.llm, self.transcription, self.speech))
-
-
-def speech_segment(text: str, final=False) -> tuple[str, str]:
-    """Bound Qwen's buffered synthesis to a sentence or a short text segment."""
-    boundary = re.search(r"[.!?\n](?:\s|$)", text)
-    if boundary and boundary.end() <= 240:
-        end = boundary.end()
-    elif len(text) >= 240:
-        end = text.rfind(" ", 0, 240)
-        if end < 1:
-            end = 240
-    elif final:
-        end = len(text)
-    else:
-        return "", text
-    return text[:end].strip(), text[end:].lstrip()
 
 
 class VoiceCall:
@@ -197,13 +181,25 @@ class VoiceCall:
                 await self.stop_response()
 
     async def respond_audio_turn(self, audio: str, turn: int):
+        sentence_tts = os.getenv("HIKARI_LFM3_AUDIO_SENTENCE_TTS", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        codec_probe = os.getenv("HIKARI_LFM3_AUDIO_STREAM_PROBE", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if sentence_tts and codec_probe:
+            raise InferenceFailure(
+                "Sentence TTS cannot run with the private codec probe.", 422
+            )
         stream = await self.inference.open_audio_turn(
             AudioCallTask(
                 mode="turn",
-                codec_streaming_probe=os.getenv(
-                    "HIKARI_LFM3_AUDIO_STREAM_PROBE", ""
-                ).lower()
-                in ("1", "true", "yes"),
+                sentence_tts=sentence_tts,
+                codec_streaming_probe=codec_probe,
                 audio=audio,
                 model_id=self.models.llm,
                 messages=[
@@ -212,9 +208,13 @@ class VoiceCall:
                 ],
             )
         )
-        transcript = None
+        transcript, answer = None, None
+        expected_scripts = []
+        received = False
         try:
             async for event in stream:
+                if turn != self.turn:
+                    return
                 if event["type"] == "transcript":
                     if transcript is not None:
                         raise InferenceFailure(
@@ -230,7 +230,41 @@ class VoiceCall:
                     self.remember("user", transcript)
                     if transcript:
                         await self.emit(turn, type="transcript", text=transcript)
+                elif event["type"] == "answer":
+                    if not sentence_tts or not transcript or answer is not None:
+                        raise InferenceFailure("Unexpected public audio answer.", 502)
+                    answer = event["text"].strip()
+                    if not answer or len(answer) > 8000:
+                        raise InferenceFailure("Invalid public audio answer.", 502)
+                    expected_scripts = speech_scripts(answer)
+                elif event["type"] == "segment":
+                    index, script = event["index"], event["script"]
+                    if (
+                        not sentence_tts
+                        or answer is None
+                        or type(index) is not int
+                        or index != len(self.segments)
+                        or index >= len(expected_scripts)
+                        or script != expected_scripts[index]
+                        or not event.get("audio_base64")
+                    ):
+                        raise InferenceFailure(
+                            "Unexpected known-script audio segment.", 502
+                        )
+                    self.segments.append(script)
+                    if index == 0:
+                        # Preserve the complete answer's original spacing. The
+                        # scripts identify played history, not display deltas.
+                        await self.emit(turn, type="text", text=answer)
+                    await self.emit(
+                        turn, type="audio", segment=index, audio=event["audio_base64"]
+                    )
                 elif event["type"] == "reply":
+                    if received:
+                        raise InferenceFailure(
+                            "Audio turn returned more than one final receipt.", 502
+                        )
+                    received = True
                     if (
                         transcript is None
                         or event.get("transcript", "").strip() != transcript
@@ -238,10 +272,26 @@ class VoiceCall:
                         raise InferenceFailure(
                             "Audio turn did not confirm its transcript.", 502
                         )
-                    if transcript:
+                    if transcript and sentence_tts:
+                        if (
+                            answer is None
+                            or event.get("text") != answer
+                            or event.get("scripts") != expected_scripts
+                            or type(event.get("segment_count")) is not int
+                            or event["segment_count"] != len(expected_scripts)
+                            or self.segments != expected_scripts
+                        ):
+                            raise InferenceFailure(
+                                "Sentence TTS final receipt did not match its completed scripts.",
+                                502,
+                            )
+                        await self.emit(turn, type="done")
+                    elif transcript:
                         await self.publish_audio_reply(event, turn)
                     else:
                         await self.emit(turn, type="done")
+            if not received:
+                raise InferenceFailure("Audio turn ended without a final receipt.", 502)
         finally:
             with anyio.CancelScope(shield=True):
                 await await_cleanup(asyncio.create_task(stream.aclose()))
@@ -258,11 +308,20 @@ class VoiceCall:
         await self.emit(turn, type="done")
 
     async def respond_audio(self, audio: str, turn: int):
-        if os.getenv("HIKARI_LFM3_AUDIO_SINGLE_TURN", "").lower() in (
+        single_turn = os.getenv("HIKARI_LFM3_AUDIO_SINGLE_TURN", "").lower() in (
             "1",
             "true",
             "yes",
+        )
+        if (
+            os.getenv("HIKARI_LFM3_AUDIO_SENTENCE_TTS", "").lower()
+            in ("1", "true", "yes")
+            and not single_turn
         ):
+            raise InferenceFailure(
+                "Sentence TTS requires the single-turn audio worker path.", 422
+            )
+        if single_turn:
             await self.respond_audio_turn(audio, turn)
             return
         transcript = await self.inference.submit(

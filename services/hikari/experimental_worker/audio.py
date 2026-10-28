@@ -12,6 +12,7 @@ from pathlib import Path
 
 from experimental_worker.audio_stream_probe import create_probe
 from experimental_worker.call_history import append_call_history
+from experimental_worker.speech_segments import speech_scripts
 
 MODEL = {
     "id": "lfm3-audio-2b-bf16",
@@ -67,7 +68,19 @@ def conversation(task: dict, audio_path: str | None = None) -> list[dict]:
             {"role": "system", "content": "Perform ASR in English."},
             {"role": "user", "content": [{"type": "audio", "audio": audio_path}]},
         ]
-    if task.get("mode") != "reply" or task.get("audio") is not None:
+    if task.get("mode") == "tts":
+        script = task.get("script")
+        if not isinstance(script, str) or not script.strip() or len(script) > 240:
+            raise ValueError("TTS needs one bounded known script")
+        return [
+            {
+                "role": "system",
+                "content": "Perform TTS in American English using a female voice.",
+            },
+            {"role": "user", "content": script},
+            {"role": "assistant", "content": "<|audio_start|>"},
+        ]
+    if task.get("mode") not in ("reply", "answer") or task.get("audio") is not None:
         raise ValueError("Unknown audio call operation")
     messages = task.get("messages", [])
     if not messages:
@@ -86,10 +99,12 @@ def conversation(task: dict, audio_path: str | None = None) -> list[dict]:
         result.append({"role": role, "content": text})
     if result[0]["role"] != "system":
         raise ValueError("Audio call needs the session's spoken instructions")
-    result[0]["content"] = (
-        "Respond with interleaved text and audio.\n\n" + result[0]["content"]
-    )
-    result.append({"role": "assistant", "content": "<|mixed_start|>"})
+    if task["mode"] == "reply":
+        result[0]["content"] = (
+            "Respond with interleaved text and audio.\n\n" + result[0]["content"]
+        )
+    if task["mode"] == "reply":
+        result.append({"role": "assistant", "content": "<|mixed_start|>"})
     return result
 
 
@@ -153,13 +168,15 @@ def generate(
 ) -> dict:
     """Use the pinned model-card contract; dependencies are passed for unit tests."""
     transcribe = task["mode"] == "transcribe"
-    if codec_streaming_probe and transcribe:
+    answer = task["mode"] == "answer"
+    tts = task["mode"] == "tts"
+    if codec_streaming_probe and task["mode"] != "reply":
         raise ValueError("The private codec probe cannot run during transcription")
     inputs = processor.apply_chat_template(
         conversation(task, audio_path),
         **(
             {"add_generation_prompt": True}
-            if transcribe
+            if transcribe or answer
             else {"continue_final_message": True}
         ),
         tokenize=True,
@@ -170,12 +187,13 @@ def generate(
     validate_context(count)
     sampling = (
         {"suppress_mixed": True, "suppress_audio_out": True}
-        if transcribe
+        if transcribe or answer
         else {
             "audio_temperature": 1.0,
             "audio_top_k": 128,
             "audio_repetition_penalty": 1.1,
             "audio_repetition_window": 4096,
+            **({"suppress_mixed": True, "suppress_audio_out": True} if tts else {}),
         }
     )
     probe = create_probe(codec, torch, emit) if codec_streaming_probe else None
@@ -185,6 +203,7 @@ def generate(
             max_new_tokens=MAX_NEW_TOKENS,
             return_dict_in_generate=True,
             **({"audio_streamer": probe} if probe is not None else {}),
+            **({"generation_mode": "text"} if answer else {}),
             **sampling,
         )
         tokens = output.sequences[0, count:]
@@ -192,21 +211,44 @@ def generate(
         endings = set(eos if isinstance(eos, (list, tuple)) else [eos])
         # In mixed output, text_end starts the audio tail; only an actual
         # turn EOS proves that the buffered speech finished before the cap.
-        if transcribe:
+        if transcribe or answer or tts:
             endings.add(model.config.text_end_token_id)
         if not len(tokens) or int(tokens[-1]) not in endings:
             raise ValueError(
                 "Audio generation reached the trial limit before completing the reply"
             )
-        text = public_text(
-            processor.decode(tokens, skip_special_tokens=False), transcribe=transcribe
-        )
+        decoded = processor.decode(tokens, skip_special_tokens=False)
+        if tts:
+            # Pure TTS has only audio placeholders and its terminal markers.
+            # A new mode opener could make text_end mean an unfinished mixed
+            # tail, so reject it before the ordinary mixed-output parser.
+            remaining = decoded
+            for marker in (
+                "<|audio_out|>",
+                "<|text_end|>",
+                "<|im_end|>",
+                "<|endoftext|>",
+            ):
+                remaining = remaining.replace(marker, "")
+            if remaining.strip():
+                raise ValueError(
+                    "TTS returned unexpected public text or control markers"
+                )
+        text = public_text(decoded, transcribe=transcribe or answer)
         if len(text) > (4000 if transcribe else 8000):
             raise ValueError("Audio model output exceeded the call limit")
-        if transcribe:
+        if transcribe or answer:
+            if answer and not text:
+                raise ValueError("Audio model returned no public answer")
             return {"text": text}
-        if not text or output.audio_codes is None or int(output.audio_lengths[0]) <= 0:
-            raise ValueError("Audio model did not return both speech and text")
+        if tts and text:
+            raise ValueError("TTS returned unexpected public text")
+        if (
+            (not tts and not text)
+            or output.audio_codes is None
+            or int(output.audio_lengths[0]) <= 0
+        ):
+            raise ValueError("Audio model did not return the required speech output")
         waveform = codec.decode(
             output.audio_codes[:1, :, : int(output.audio_lengths[0])]
         ).audio_values[0]
@@ -227,7 +269,63 @@ def generate(
     return {
         "text": text,
         "audio_base64": base64.b64encode(buffer.getvalue()).decode("ascii"),
+        **(
+            {"script": task["script"], "sample_count": int(samples.size)} if tts else {}
+        ),
         **({"timing": probe_timing} if probe_timing is not None else {}),
+    }
+
+
+def sentence_reply(messages, model, processor, codec, torch, emit):
+    started = time.perf_counter()
+    answer = generate(
+        {"mode": "answer", "messages": messages}, model, processor, codec, torch
+    )["text"]
+    torch.cuda.synchronize()
+    answered = time.perf_counter()
+    scripts = speech_scripts(answer)
+    emit({"state": "audio_answer", "answer": answer})
+    total_samples, total_tts, first_segment = 0, 0.0, None
+    for index, script in enumerate(scripts):
+        segment_started = time.perf_counter()
+        result = generate(
+            {"mode": "tts", "script": script}, model, processor, codec, torch
+        )
+        torch.cuda.synchronize()
+        segment_finished = time.perf_counter()
+        total_tts += segment_finished - segment_started
+        if (
+            result["script"] != script
+            or result["sample_count"] < 1
+            or not result.get("audio_base64")
+        ):
+            raise ValueError("TTS returned an invalid known-script segment")
+        total_samples += result["sample_count"]
+        if total_samples > 60 * 24000:
+            raise ValueError("Sentence TTS exceeded sixty seconds for this turn")
+        if first_segment is None:
+            first_segment = segment_finished - started
+        emit(
+            {
+                "state": "audio_segment",
+                "audio_segment": {
+                    "index": index,
+                    "script": script,
+                    "audio_base64": result["audio_base64"],
+                },
+            }
+        )
+    return {
+        "text": answer,
+        "scripts": scripts,
+        "segment_count": len(scripts),
+        "timing": {
+            "public_text_answer_seconds": answered - started,
+            "first_tts_segment_seconds": first_segment,
+            "total_tts_seconds": total_tts,
+            "tts_segment_count": len(scripts),
+            "tts_sample_count": total_samples,
+        },
     }
 
 
@@ -244,6 +342,13 @@ def execute(
         )
     mode = task.get("mode")
     streaming_probe = task.get("codec_streaming_probe", False)
+    sentence_tts = task.get("sentence_tts", False)
+    if not isinstance(sentence_tts, bool) or (
+        sentence_tts and (mode != "turn" or streaming_probe)
+    ):
+        raise ValueError(
+            "Sentence TTS requires a complete turn without the private codec probe"
+        )
     if not isinstance(streaming_probe, bool) or (streaming_probe and mode != "turn"):
         raise ValueError("The private codec probe requires a complete audio turn")
     data = audio_bytes(task.get("audio")) if mode in ("transcribe", "turn") else None
@@ -297,18 +402,28 @@ def execute(
             if transcript:
                 history = append_call_history(task["messages"][1:], "user", transcript)
                 reply_started = time.perf_counter()
-                result = generate(
-                    {"mode": "reply", "messages": [task["messages"][0], *history]},
-                    model,
-                    processor,
-                    codec,
-                    torch,
-                    **(
-                        {"codec_streaming_probe": True, "emit": emit}
-                        if streaming_probe
-                        else {}
-                    ),
-                )
+                if sentence_tts:
+                    result = sentence_reply(
+                        [task["messages"][0], *history],
+                        model,
+                        processor,
+                        codec,
+                        torch,
+                        emit,
+                    )
+                else:
+                    result = generate(
+                        {"mode": "reply", "messages": [task["messages"][0], *history]},
+                        model,
+                        processor,
+                        codec,
+                        torch,
+                        **(
+                            {"codec_streaming_probe": True, "emit": emit}
+                            if streaming_probe
+                            else {}
+                        ),
+                    )
                 torch.cuda.synchronize()
                 stage_timing["reply_operation_seconds"] = (
                     time.perf_counter() - reply_started
