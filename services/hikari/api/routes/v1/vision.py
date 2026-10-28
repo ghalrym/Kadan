@@ -34,7 +34,9 @@ class DescribeResponse(BaseModel):
 
 
 @router.post("/describe", operation_id="describeScreenshot")
-async def describe_screenshot(body: DescribeRequest, request: Request) -> DescribeResponse:
+async def describe_screenshot(
+    body: DescribeRequest, request: Request
+) -> DescribeResponse:
     try:
         image_bytes(body.model_dump())
     except ValueError as error:
@@ -43,4 +45,6 @@ async def describe_screenshot(body: DescribeRequest, request: Request) -> Descri
     try:
         return DescribeResponse.model_validate(result)
     except ValueError as error:
-        raise HTTPException(502, "Vision worker returned an invalid description.") from error
+        raise HTTPException(
+            502, "Vision worker returned an invalid description."
+        ) from error
