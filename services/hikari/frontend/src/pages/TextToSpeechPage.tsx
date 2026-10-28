@@ -1,7 +1,7 @@
 import type { SpeechRequest } from '../api/generated/types.gen'
 import { useEffect, useRef, useState } from 'react'
 import { AudioCard } from '../components/Media'
-import { speechScript, voiceDescription } from '../data/playground'
+import { speechScript } from '../data/playground'
 import { fetchSpeechHistory, requestSpeech } from '../api/speech'
 import { listSpeechModels } from '../api/generated/sdk.gen'
 import type {
@@ -9,16 +9,18 @@ import type {
   SpeechModelOption,
 } from '../api/generated/types.gen'
 
-/** Own custom-voice settings, cancellable history and one active submission. */
+/** Own supported LFM speech choices, cancellable history and one submission. */
 export default function TextToSpeechPage() {
   const [script, setScript] = useState(speechScript)
-  const [description, setDescription] = useState(voiceDescription)
-  const [speaker, setSpeaker] = useState('')
+  const [language, setLanguage] = useState<NonNullable<SpeechRequest['language']>>('American English')
+  const [gender, setGender] = useState<NonNullable<SpeechRequest['gender']>>('female')
   const [model, setModel] = useState('')
   const [models, setModels] = useState<SpeechModelOption[]>([])
   const selectedModel = models.find((item) => item.id === model)
-  const chosenSpeaker = selectedModel?.speakers?.includes(speaker)
-    ? speaker : selectedModel?.default_speaker ?? selectedModel?.speakers?.[0] ?? ''
+  const chosenLanguage = selectedModel?.languages.includes(language)
+    ? language : selectedModel?.default_language ?? 'American English'
+  const chosenGender = selectedModel?.genders.includes(gender)
+    ? gender : selectedModel?.default_gender ?? 'female'
   const [audio, setAudio] = useState<GeneratedSpeech[]>([])
   const [loadingHistory, setLoadingHistory] = useState(true)
   const [historyError, setHistoryError] = useState<string | null>(null)
@@ -83,7 +85,7 @@ export default function TextToSpeechPage() {
   }
 
   /**
-   * Validate the selected voice and submit once history loading has finished.
+   * Validate the selected LFM speech choices after history loading has finished.
    * Keep user input for retry, expose API errors, and append only validated audio
    * from the still-active controller; cancellation cannot create a local audio result.
    */
@@ -93,12 +95,11 @@ export default function TextToSpeechPage() {
     setNotice('')
     let body: SpeechRequest
     try {
-      if (model !== 'qwen-tts-1.7b-custom')
-        throw new Error('Select the supported CustomVoice model.')
+      if (model !== 'lfm3-audio-2b-bf16')
+        throw new Error('Select the LFM3 Audio speech model.')
       body = {
-        script: script.trim(), model_id: model, language: 'Auto',
-        voice: { mode: 'custom', speaker: chosenSpeaker,
-          instruction: selectedModel?.supports_instruction ? description : '' },
+        script: script.trim(), model_id: model,
+        language: chosenLanguage, gender: chosenGender,
       }
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'Check your input.')
@@ -157,37 +158,23 @@ export default function TextToSpeechPage() {
               ))}
             </select>
           </div>
-          {selectedModel && (
+          {selectedModel && <>
             <div className="field">
-              <label htmlFor="speech-speaker" className="eyebrow">
-                Speaker
-              </label>
-              <select
-                id="speech-speaker"
-                className="input"
-                value={chosenSpeaker}
-                disabled={pending}
-                onChange={(event) => setSpeaker(event.target.value)}
-              >
-                {(selectedModel?.speakers ?? []).map((name) => (
-                  <option key={name}>{name}</option>
-                ))}
+              <label htmlFor="speech-language" className="eyebrow">Language / locale</label>
+              <select id="speech-language" className="input" value={chosenLanguage}
+                disabled={pending} onChange={(event) => setLanguage(event.target.value as NonNullable<SpeechRequest['language']>)}>
+                {selectedModel.languages.map((name) => <option key={name}>{name}</option>)}
               </select>
             </div>
-          )}
-          {selectedModel?.supports_instruction ? (
             <div className="field">
-              <textarea
-                id="speech-description"
-                aria-label="Voice description"
-                className="input"
-                rows={3}
-                value={description}
-                disabled={pending}
-                onChange={(event) => setDescription(event.target.value)}
-              />
+              <label htmlFor="speech-gender" className="eyebrow">Voice gender</label>
+              <select id="speech-gender" className="input" value={chosenGender}
+                disabled={pending} onChange={(event) => setGender(event.target.value as NonNullable<SpeechRequest['gender']>)}>
+                {selectedModel.genders.map((name) => <option key={name} value={name}>{name === 'female' ? 'Female' : 'Male'}</option>)}
+              </select>
             </div>
-          ) : null}
+            <p className="faint">LFM3 Audio · 24 kHz WAV · up to 60 seconds.</p>
+          </>}
           <div className="speech-script field">
             <label htmlFor="speech-script" className="eyebrow">
               Script
@@ -228,7 +215,7 @@ export default function TextToSpeechPage() {
               disabled={
                 loadingHistory ||
                 !model ||
-                !script.trim() || !chosenSpeaker
+                !script.trim() || !chosenLanguage || !chosenGender
               }
             >
               {error ? 'Retry speech request' : 'Generate speech'}

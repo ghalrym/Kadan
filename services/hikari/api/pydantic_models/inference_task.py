@@ -3,6 +3,12 @@
 from typing import Annotated, Literal
 from uuid import uuid4
 
+from experimental_worker.speech_voice import (
+    DEFAULT_GENDER,
+    DEFAULT_LANGUAGE,
+    SpeechGender,
+    SpeechLanguage,
+)
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 from api.pydantic_models.chat import (
@@ -10,11 +16,9 @@ from api.pydantic_models.chat import (
     Lfm3Message,
     Lfm3Tool,
     lfm3_messages,
-    require_lfm3_tools,
 )
 from api.pydantic_models.decisions import DecisionQuestion
 from api.pydantic_models.inference import Operation
-from api.pydantic_models.model_store import TierId
 
 
 class TaskInput(BaseModel):
@@ -23,10 +27,10 @@ class TaskInput(BaseModel):
 
 class ChatTask(TaskInput):
     feature: Literal["llm"] = "llm"
-    messages: list[ChatMessage | Lfm3Message] = Field(default_factory=list)
+    messages: list[Lfm3Message] = Field(default_factory=list)
     tools: list[Lfm3Tool] | None = Field(default=None, max_length=256)
-    model: str | None = None
-    model_id: str | None = None
+    model: Literal["lfm3-1.7b-bf16"] | None = None
+    model_id: Literal["lfm3-1.7b-bf16"] | None = None
     context_limit: int | None = None
     stream: bool = False
     conversation_id: str | None = None
@@ -34,22 +38,12 @@ class ChatTask(TaskInput):
 
     @model_validator(mode="before")
     @classmethod
-    def experimental_messages(cls, values):
+    def fixed_messages(cls, values):
         return lfm3_messages(values)
 
-    @model_validator(mode="after")
-    def experimental_tools_only(self):
-        require_lfm3_tools(self.model_id or self.model, self.messages, self.tools)
-        return self
 
-
-# One GGUF mixture-of-experts language model per hardware tier.
-LlmModel = Literal[
-    "qwen3.6-35b-a3b-q4-k-m",
-    "qwen3.8-flash-next-ud-iq3-xxs",
-    "qwen3.8-flash-next-q3-k-xl",
-]
-# Every hardware tier generates images with Turbo.
+LlmModel = Literal["lfm3-1.7b-bf16"]
+# Preserve the complete image-generation and editing pipeline.
 ImageModel = Literal["qwen-image-2.1-turbo"]
 
 
@@ -110,18 +104,12 @@ class VisionTask(TaskInput):
     max_new_tokens: int | None = Field(default=None, ge=1, lt=128000, strict=True)
 
 
-class SpeechVoice(TaskInput):
-    mode: Literal["custom"]
-    speaker: str
-    instruction: str = ""
-
-
 class SpeechTask(TaskInput):
     feature: Literal["tts"] = "tts"
-    script: str
-    model_id: str = "qwen-tts-1.7b-custom"
-    language: str = "Auto"
-    voice: SpeechVoice
+    script: str = Field(min_length=1)
+    model_id: Literal["lfm3-audio-2b-bf16"] = "lfm3-audio-2b-bf16"
+    language: SpeechLanguage = DEFAULT_LANGUAGE
+    gender: SpeechGender = DEFAULT_GENDER
 
 
 class TranscriptionTask(TaskInput):
@@ -130,6 +118,40 @@ class TranscriptionTask(TaskInput):
     model: str | None = None
     language: str | None = None
     formatting: bool | None = None
+
+
+class AudioCallTask(TaskInput):
+    """Bounded buffered turn on the explicitly selected experimental audio worker."""
+
+    feature: Literal["audio_call"] = "audio_call"
+    model_id: Literal["lfm3-audio-2b-bf16"] = "lfm3-audio-2b-bf16"
+    mode: Literal["transcribe", "reply", "turn"]
+    codec_streaming_probe: bool = Field(default=False, strict=True)
+    sentence_tts: bool = Field(default=False, strict=True)
+    audio: str | None = Field(default=None, max_length=900_000)
+    messages: list[ChatMessage] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_turn(self):
+        if self.sentence_tts and (self.mode != "turn" or self.codec_streaming_probe):
+            raise ValueError(
+                "Sentence TTS requires a complete turn without the private codec probe"
+            )
+        if self.codec_streaming_probe and self.mode != "turn":
+            raise ValueError("The private codec probe requires a complete audio turn")
+        if self.mode == "transcribe":
+            if self.audio is None or self.messages:
+                raise ValueError(
+                    "Audio transcription needs one utterance and no history"
+                )
+        elif self.mode == "reply":
+            if self.audio is not None or not self.messages:
+                raise ValueError("Audio replies need text history and no utterance")
+        elif self.audio is None or not self.messages:
+            raise ValueError(
+                "A complete audio turn needs an utterance and text history"
+            )
+        return self
 
 
 class TranscriptionFormattingTask(TaskInput):
@@ -153,11 +175,6 @@ class DownloadTask(TaskInput):
     feature: Literal["models"] = "models"
     model_id: str
     license_acknowledged: bool = False
-
-
-class TierSelectionTask(TaskInput):
-    feature: Literal["tier_selection"] = "tier_selection"
-    tier: TierId
 
 
 class ModelContextTask(TaskInput):
@@ -184,9 +201,9 @@ InferenceInput = Annotated[
     | SpeechTask
     | TranscriptionTask
     | TranscriptionFormattingTask
+    | AudioCallTask
     | VideoTask
     | DownloadTask
-    | TierSelectionTask
     | ModelContextTask
     | WhisperSelectionTask
     | WhisperFormattingTask,
@@ -215,7 +232,6 @@ class InferenceTask(BaseModel):
     @model_validator(mode="after")
     def validate_operation(self):
         settings = self.feature in (
-            "tier_selection",
             "model_context",
             "whisper_selection",
             "whisper_formatting",

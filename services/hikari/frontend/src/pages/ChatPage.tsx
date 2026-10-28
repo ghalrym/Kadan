@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { streamChat, type ConversationMessage } from '../api/chat'
+import { fetchSettings, type CheckpointStatus } from '../api/settings'
 
 /** Keep tab-local conversation history and one cancellable request with explicit retry. */
 export default function ChatPage() {
@@ -11,10 +12,31 @@ export default function ChatPage() {
     ConversationMessage[] | null
   >(null)
   const [notice, setNotice] = useState('')
+  const [model, setModel] = useState<CheckpointStatus | null | undefined>(
+    undefined,
+  )
+  const [modelError, setModelError] = useState(false)
   const active = useRef<AbortController | null>(null)
   const activeConversation = useRef<ConversationMessage[]>([])
   const conversationId = useRef<string | null>(null)
   const historyEnd = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void fetchSettings(controller.signal).then(
+      (settings) => {
+        if (!controller.signal.aborted)
+          setModel(
+            settings.models.find((item) => item.id === settings.defaults.llm) ??
+              null,
+          )
+      },
+      () => {
+        if (!controller.signal.aborted) setModelError(true)
+      },
+    )
+    return () => controller.abort()
+  }, [])
 
   useEffect(
     () => () => {
@@ -56,7 +78,6 @@ export default function ChatPage() {
             setMessages([...conversation, { role: 'assistant', text }])
         },
         conversationId.current,
-        'lfm3-1.7b-bf16',
       )
       if (active.current !== controller || controller.signal.aborted) return
       setMessages([...conversation, message])
@@ -100,7 +121,21 @@ export default function ChatPage() {
 
   return (
     <div className="chat-page">
-      <p className="faint">LFM3 1.7B BF16</p>
+      <p role="status" className="faint">
+        {modelError
+          ? 'Cannot check the conversation model. Check Settings.'
+          : model === undefined
+            ? 'Checking the conversation model…'
+            : !model
+              ? 'Conversation worker unavailable. Check Settings.'
+              : `${model.display_name ?? model.id} · ${
+                  !model.inference_available
+                    ? 'Inference unavailable'
+                    : model.status === 'complete'
+                      ? 'Downloaded'
+                      : 'Download required in Settings'
+                }`}
+      </p>
       <div
         className="chat-history"
         role="log"
@@ -111,8 +146,7 @@ export default function ChatPage() {
           {messages.length === 0 && (
             <p className="muted">
               Send a message to test the chat API. Conversation history stays in
-              this browser tab. Download LFM3 in Settings before sending a
-              message.
+              this browser tab. Hikari uses its fixed LFM conversation model.
             </p>
           )}
           {messages.map((message, index) => (

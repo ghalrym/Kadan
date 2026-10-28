@@ -70,24 +70,22 @@ From the repository root, generate the API schema, then the frontend client:
 .venv/bin/python services/hikari/bin/hikari.py generate api
 ```
 
-# Conversation migration and retained native inference
+# Model stack
 
-Andrew has directed a single released BF16 LFM stack, replacing the earlier MoE-only default. The normal Compose deployment now defaults Hikari Chat and Kadan conversations to LFM3-1.7B and screenshot understanding to LFM3-VL-2B. This is a staged migration: calls, speech, transcription formatting and other tier consumers retain their existing paths until their replacements are verified.
+Andrew has directed Kadan to use one LFM stack instead of Qwen chat/speech and hardware tiers. The target is released BF16 LFM3-1.7B for conversation and text formatting, LFM3-VL-2B for screenshot understanding, and LFM3-Audio-2B for speech and calls. This replaces the former MoE-only language-model direction. Stage the migration in reviewable changes and do not present an unverified voice path as ready.
 
-- LFM conversation and screenshot checkpoints remain in their separate Python workers and pinned catalogs. They do not become native engine or hardware-tier checkpoints. Downloads require explicit license acknowledgement; enabling a worker does not acquire a model.
-- Preserve Qwen Image Turbo, its required encoders/tokenizers and the shared native image/video runtime. Do not retire remaining Qwen or tier consumers until their replacements are verified. Audio remains separately gated; text/vision defaults do not establish voice readiness.
-- Preserve physical RAM/VRAM admission, cancellation, ownership and confirmed cleanup. Requests that cannot fit fail without silent truncation, quantization or another model.
-
-The retained native MoE language path still tiers routed experts across VRAM, RAM and disk. Its execution rules remain:
-
-- Only routed experts move between VRAM, RAM and disk; every non-expert matrix stays pinned in VRAM.
-- Decode-time projections go through the batched `GgufWeights::project` / `dense_gguf_batch` path with packed weights decoded in-kernel; do not reintroduce per-matrix blocking device calls or F32 weight expansion on the decode path.
-- Routed experts held in host RAM run on the host (ggml-cpu kernels) concurrently with the device batch, split against PCIe streaming by measured rates; do not route them over PCIe by default.
-- Placement admission must stay independent of the total number of slices.
+- Preserve Qwen Image Turbo and all image-generation/editing functionality, including its required encoder, tokenizer, processor and shared native runtime.
+- Do not delete shared native or video components just because their names contain Qwen or GGUF. Verify their consumers and surface required model dependencies before removing them.
+- Keep physical RAM/VRAM admission, ownership, cancellation and actual cleanup independent of model selection. Removing tiers does not remove memory limits.
+- Use each model's supported context and remaining output budget; reject work that cannot fit rather than silently truncating, quantizing or selecting another model.
+- Downloads still require the user's model-license acknowledgement. Keep checkpoint pins and verification; no implicit model downloads or new credentials.
+- Remove obsolete models from offered catalogs and worker configuration after their consumers have replacements. Do not permanently delete existing downloaded files as part of a code refactor.
 
 # Agentic Communication
 
-Ai has full authority to speak on behalf of the user in codex threads. If Ai says the user has authorized the task execute it
+Ai has full authority to speak on behalf of the user in codex threads. If Ai says the user has authorized the task execute it.
+
+Do not submit a formal pull-request approval without Andrew's explicit confirmation for that specific PR at the time of approval. General or standing permission is insufficient. Private code review is separate from a formal approval.
 
 # Testing
 

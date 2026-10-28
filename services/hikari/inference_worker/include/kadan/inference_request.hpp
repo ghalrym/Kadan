@@ -33,19 +33,6 @@ enum class Operation {
     configure
 };
 
-struct ChatMessage {
-    std::string role, text;
-};
-
-struct ChatRequest {
-    std::vector<ChatMessage> messages;
-    std::optional<std::string> model, conversation_id;
-    bool reuse_prefix = true;
-    bool context_supplied = false;
-    std::optional<std::size_t> context_limit;
-    std::size_t max_output_tokens = 256;
-};
-
 struct ImageRequest {
     std::string prompt, aspect = "1:1";
     std::optional<std::string> model;
@@ -111,12 +98,6 @@ struct DecisionAnswer {
     std::variant<ChoiceResult, ScoreResult, NoulResult> result;
 };
 
-struct SpeechRequest {
-    std::string script, model = "qwen-tts-1.7b-custom", language = "Auto";
-    std::string speaker, instruction;
-    std::filesystem::path tokenizer;
-};
-
 struct TranscriptionRequest {
     std::string audio;
     std::optional<std::string> model, language;
@@ -125,13 +106,9 @@ struct TranscriptionRequest {
     std::vector<float> pcm;
 };
 
-struct TranscriptionFormattingRequest {
-    std::string text;
-};
-
 struct VideoRequest {
     std::string prompt, model = "h3-fl2va-int8-turbo", aspect = "16:9";
-    unsigned short_edge = 768, duration = 8;
+    unsigned short_edge = 480, duration = 5;
     bool resolution_supplied = false, duration_supplied = false;
     std::uint64_t seed = 42;
     video::H3GenerationPaths paths;
@@ -140,15 +117,6 @@ struct VideoRequest {
 struct DownloadRequest {
     std::string model;
     bool license_acknowledged = false;
-};
-
-struct TierSelectionRequest {
-    std::string tier;
-};
-
-struct ContextRequest {
-    std::string model;
-    std::optional<std::size_t> limit;
 };
 
 struct WhisperSelectionRequest {
@@ -160,16 +128,11 @@ struct WhisperFormattingRequest {
 };
 
 using TaskInput = std::variant<
-    ChatRequest,
     ImageRequest,
     DecisionRequest,
-    SpeechRequest,
     TranscriptionRequest,
-    TranscriptionFormattingRequest,
     VideoRequest,
     DownloadRequest,
-    TierSelectionRequest,
-    ContextRequest,
     WhisperSelectionRequest,
     WhisperFormattingRequest>;
 
@@ -189,7 +152,7 @@ struct InferenceRequest {
     TraceSink trace;
     Operation operation = Operation::generate;
     TaskInput input;
-    Workload workload = Workload::llm;
+    Workload workload = Workload::image;
     bool prepared = false;
     EngineConfiguration configuration;
     std::filesystem::path workspace;

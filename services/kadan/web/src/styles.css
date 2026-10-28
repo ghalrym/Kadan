@@ -1003,25 +1003,6 @@ main:focus {
   background: linear-gradient(transparent, var(--bg) 60px);
   width: min(760px, calc(100% - 32px));
 }
-.plan-prompt {
-  width: 100%;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-lg);
-  background: var(--surface);
-  font-size: 13px;
-}
-.plan-prompt > div {
-  flex: 1 1 280px;
-}
-.plan-prompt p {
-  margin: 4px 0 0;
-  color: var(--muted);
-}
 .attention {
   display: inline-flex;
   align-items: center;

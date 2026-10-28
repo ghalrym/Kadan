@@ -4,13 +4,12 @@ import os
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from fastapi import WebSocketDisconnect
 from pydantic import ValidationError
 
 from api.pydantic_models.inference_task import InferenceTask
-from api.services.inference import InferenceService
 from api.services.inference_errors import InferenceFailure
 from api.services.inference_worker import InferenceJob, JobState, WorkerEvent
 from api.services.memory_scheduler import GIB, MachineLedger, Requirement, WorkerSlot
@@ -105,12 +104,12 @@ def hello(
     }
 
 
-def models(tier=None, whisper=None, checkpoints=()):
+def models(formatting=True, whisper=None, checkpoints=()):
     return {
         "models": list(checkpoints),
-        "selected_tier": tier,
+        "selected_model_id": "lfm3-1.7b-bf16",
         "selected_whisper": whisper,
-        "whisper_formatting": True,
+        "whisper_formatting": formatting,
     }
 
 
@@ -191,6 +190,9 @@ def image():
 
 class HubTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        self.timeout = patch("api.services.worker_hub.CONNECT_TIMEOUT", 0.05)
+        self.timeout.start()
+        self.addCleanup(self.timeout.stop)
         self.events = []
         self.hub = WorkerHub(
             on_event=lambda job, event: self.events.append((job, event))
@@ -228,330 +230,6 @@ class HubTestCase(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
 
 
-class LifecycleResidencyTests(HubTestCase):
-    async def asyncSetUp(self):
-        await super().asyncSetUp()
-        self.service = InferenceService()
-        self.service.worker = self.hub
-        self.hub.on_event = self.service._observe
-
-    def language_request(
-        self, worker, *, operation="load", effective=8192, terminal="succeeded"
-    ):
-        job = InferenceJob(
-            InferenceTask(operation=operation, input={"feature": "llm"}), False
-        )
-        job.worker = "llm"
-        job.machines.add(worker.id)
-        worker.jobs.add(job.request.id)
-        self.hub.jobs[job.request.id] = job
-        worker.slot.loaded = True
-        self.hub._job_event(
-            worker,
-            WorkerEvent(
-                id=job.request.id,
-                state="progress",
-                phase="prepared",
-                model="m",
-                context={
-                    "configured": 65536,
-                    "effective": effective,
-                    "supported": 262144,
-                },
-            ),
-        )
-        self.hub._job_event(
-            worker,
-            WorkerEvent(
-                id=job.request.id,
-                state=terminal,
-                error="Failed request" if terminal == "failed" else "",
-            ),
-        )
-
-    async def failure_then_surviving_copy(self):
-        _, first = await self.connect("llm", instance="first")
-        self.language_request(first, effective=4096)
-        self.language_request(first, effective=4096, terminal="failed")
-        self.assertFalse(first.residency_known)
-        socket, second = await self.connect("llm", instance="second")
-        self.language_request(second, effective=8192)
-        status = self.service.status()
-        self.assertEqual(status["state"], "ready")
-        self.assertEqual(status["effective_context_limit"], 8192)
-        return first, socket, second
-
-    async def test_failed_copy_cannot_resurrect_after_survivor_disconnects(self):
-        _, socket, _ = await self.failure_then_surviving_copy()
-        await socket.close()
-        await self.settle()
-        status = self.service.status()
-        self.assertEqual(status["state"], "error")
-        self.assertIn("unconfirmed", status["error"])
-        self.assertIsNone(status["effective_context_limit"])
-        self.assertEqual(status["model_id"], "m")
-        self.assertEqual(status["configured_context_limit"], 65536)
-
-    async def test_failed_copy_cannot_resurrect_after_survivor_releases(self):
-        _, _, second = await self.failure_then_surviving_copy()
-        await self.hub._dispatch(
-            second,
-            {
-                "state": "worker",
-                "worker": "llm",
-                "event": "offloaded",
-                "model": None,
-                "loaded": False,
-                "budget": [0, 0],
-            },
-        )
-        status = self.service.status()
-        self.assertEqual(status["state"], "error")
-        self.assertIsNone(status["effective_context_limit"])
-
-    async def test_cancelled_preparation_is_unknown_instead_of_confirmed_unload(self):
-        _, worker = await self.connect("llm")
-        self.language_request(worker, effective=4096)
-        worker.slot.budget = [GIB, GIB]
-        self.language_request(worker, terminal="cancelled")
-        self.assertFalse(worker.residency_known)
-        self.assertTrue(worker.slot.loaded)
-        self.assertEqual(worker.slot.budget, [GIB, GIB])
-        self.assertEqual(self.service.status()["state"], "error")
-        self.assertIsNone(self.service.status()["effective_context_limit"])
-        self.assertEqual(self.service.status()["configured_context_limit"], 65536)
-
-    async def test_snapshot_without_model_does_not_resolve_unknown_residency(self):
-        _, worker = await self.connect("llm")
-        self.language_request(worker)
-        self.language_request(worker, terminal="cancelled")
-        await self.hub._dispatch(
-            worker,
-            {
-                "state": "worker",
-                "worker": "llm",
-                "loaded": True,
-                "budget": [GIB, GIB],
-            },
-        )
-        self.assertFalse(worker.residency_known)
-        self.assertIsNone(self.service.status()["effective_context_limit"])
-
-    async def test_resynchronization_resolves_unknown_without_old_effective_context(
-        self,
-    ):
-        first, socket, _ = await self.failure_then_surviving_copy()
-        await socket.close()
-        await self.settle()
-        first.slot.releasing = True
-        first.control = AsyncMock(
-            return_value={
-                "workers": [
-                    {
-                        "worker": "llm",
-                        "model": "m",
-                        "loaded": True,
-                        "budget": [GIB, GIB],
-                    }
-                ]
-            }
-        )
-        await self.hub._resynchronize(first.computer)
-        self.assertTrue(first.residency_known)
-        self.assertEqual(self.service.status()["state"], "ready")
-        self.assertIsNone(self.service.status()["effective_context_limit"])
-        first.slot.releasing = True
-        first.control.return_value = {
-            "workers": [
-                {"worker": "llm", "model": None, "loaded": False, "budget": [0, 0]}
-            ]
-        }
-        await self.hub._resynchronize(first.computer)
-        self.assertTrue(first.residency_known)
-        self.assertEqual(self.service.status()["state"], "unloaded")
-        self.assertIsNone(self.service.status()["effective_context_limit"])
-
-    async def test_confirmed_idle_release_clears_residency_but_keeps_context_setting(
-        self,
-    ):
-        _, worker = await self.connect("llm")
-        self.language_request(worker)
-        self.assertEqual(self.service.status()["state"], "ready")
-        worker.slot.releasing = True
-        self.assertEqual(self.service.status()["state"], "ready")
-        await self.hub._dispatch(
-            worker,
-            {
-                "state": "worker",
-                "worker": "llm",
-                "event": "offloaded",
-                "model": None,
-                "loaded": False,
-                "budget": [128, 0],
-            },
-        )
-        status = self.service.status()
-        self.assertEqual(status["state"], "unloaded")
-        self.assertIsNone(status["model_id"])
-        self.assertIsNone(status["effective_context_limit"])
-        self.assertEqual(status["configured_context_limit"], 65536)
-        self.assertEqual(worker.slot.budget, [128, 0])
-
-    async def test_resize_budget_does_not_claim_an_engine_is_resident(self):
-        _, worker = await self.connect("llm")
-        self.language_request(worker)
-        await self.hub._dispatch(
-            worker,
-            {
-                "state": "worker",
-                "worker": "llm",
-                "event": "resized",
-                "model": None,
-                "loaded": True,
-                "budget": [GIB, GIB],
-            },
-        )
-        self.assertTrue(worker.slot.loaded)
-        self.assertEqual(self.service.status()["state"], "unloaded")
-        self.assertIsNone(self.service.status()["effective_context_limit"])
-
-    async def test_idle_disconnect_cannot_leave_ready_status(self):
-        socket, worker = await self.connect("llm")
-        self.language_request(worker)
-        await socket.close()
-        await self.settle()
-        self.assertNotIn(worker.id, self.hub.workers)
-        self.assertEqual(self.service.status()["state"], "unloaded")
-
-    async def test_disconnected_load_cannot_leave_loading_or_effective_context(self):
-        socket, worker = await self.connect("llm")
-        job = InferenceJob(
-            InferenceTask(operation="load", input={"feature": "llm"}), False
-        )
-        job.worker = "llm"
-        job.machines.add(worker.id)
-        worker.jobs.add(job.request.id)
-        self.hub.jobs[job.request.id] = job
-        self.hub._job_event(
-            worker,
-            WorkerEvent(
-                id=job.request.id,
-                state="loading",
-                model="m",
-                context={"configured": 65536, "effective": 8192, "supported": 262144},
-            ),
-        )
-        self.assertEqual(self.service.status()["state"], "loading")
-        await socket.close()
-        await self.settle()
-        self.assertTrue(job.result.done())
-        self.assertEqual(self.service.status()["state"], "unloaded")
-        self.assertIsNone(self.service.status()["effective_context_limit"])
-        self.assertEqual(self.service.status()["configured_context_limit"], 65536)
-
-    async def test_surviving_same_model_uses_its_own_effective_context(self):
-        _, first = await self.connect("llm", instance="first")
-        self.language_request(first, effective=4096)
-        socket, second = await self.connect("llm", instance="second")
-        self.language_request(second, effective=8192)
-        await socket.close()
-        await self.settle()
-        self.assertNotIn(second.id, self.hub.workers)
-        status = self.service.status()
-        self.assertEqual((status["state"], status["model_id"]), ("ready", "m"))
-        self.assertEqual(status["effective_context_limit"], 4096)
-
-    async def test_other_workload_loading_does_not_offload_resident_language_model(
-        self,
-    ):
-        _, worker = await self.connect("llm")
-        self.language_request(worker)
-        job = InferenceJob(image(), False)
-        self.service._observe(
-            job, WorkerEvent(state="loading", context={"effective": 1})
-        )
-        status = self.service.status()
-        self.assertEqual(status["state"], "ready")
-        self.assertEqual(status["effective_context_limit"], 8192)
-        self.assertEqual(status["configured_context_limit"], 65536)
-
-    async def test_explicit_unload_success_clears_residency(self):
-        _, worker = await self.connect(
-            "llm", store=models(checkpoints=[checkpoint("m", context_limit=65536)])
-        )
-        self.language_request(worker)
-        self.language_request(worker, operation="unload")
-        self.assertIsNone(worker.resident_model)
-        self.assertEqual(self.service.status()["state"], "unloaded")
-        self.assertIsNone(self.service.status()["effective_context_limit"])
-        self.assertEqual(self.service.models_status().models[0].context_limit, 65536)
-
-    async def test_confirmed_status_resynchronization_updates_residency(self):
-        _, worker = await self.connect("llm")
-        self.language_request(worker)
-        worker.slot.releasing = True
-        worker.control = AsyncMock(
-            return_value={
-                "workers": [
-                    {"worker": "llm", "model": None, "loaded": False, "budget": [0, 0]}
-                ]
-            }
-        )
-        await self.hub._resynchronize(worker.computer)
-        self.assertEqual(self.service.status()["state"], "unloaded")
-
-    async def test_cache_release_does_not_hide_a_resident_engine(self):
-        _, worker = await self.connect("llm")
-        self.language_request(worker)
-        await self.hub._dispatch(
-            worker,
-            {
-                "state": "worker",
-                "worker": "llm",
-                "event": "cache_released",
-                "model": "m",
-                "loaded": True,
-                "budget": [GIB, GIB],
-            },
-        )
-        self.assertEqual(self.service.status()["state"], "ready")
-        self.assertEqual(self.service.status()["effective_context_limit"], 8192)
-
-    async def test_settings_completion_keeps_existing_engine_observation(self):
-        _, worker = await self.connect("llm")
-        self.language_request(worker)
-        job = InferenceJob(
-            InferenceTask(
-                operation="configure", input={"feature": "tier_selection", "tier": "go"}
-            ),
-            False,
-        )
-        job.machines.add(worker.id)
-        worker.jobs.add(job.request.id)
-        self.hub.jobs[job.request.id] = job
-        self.hub._job_event(worker, WorkerEvent(id=job.request.id, state="succeeded"))
-        self.assertEqual(self.service.status()["state"], "ready")
-        self.assertEqual(self.service.status()["effective_context_limit"], 8192)
-
-    async def test_unidentified_resident_snapshot_does_not_reuse_another_models_context(
-        self,
-    ):
-        _, worker = await self.connect("llm")
-        self.language_request(worker)
-        await self.hub._dispatch(
-            worker,
-            {
-                "state": "worker",
-                "worker": "llm",
-                "model": "other",
-                "loaded": True,
-                "budget": [GIB, GIB],
-            },
-        )
-        self.assertEqual(worker.resident_context, {})
-        self.assertEqual(self.service.status()["state"], "unloaded")
-
-
 class AuthorizationTests(unittest.TestCase):
     def test_token_must_match(self):
         socket = SimpleNamespace(headers={"authorization": "Bearer secret"})
@@ -574,43 +252,42 @@ class AuthorizationTests(unittest.TestCase):
     def test_requested_model_reads_either_field(self):
         video = InferenceTask(input={"feature": "video", "prompt": "sea"})
         self.assertEqual(requested_model(video), "h3-fl2va-int8-turbo")
-        self.assertIsNone(requested_model(chat()))
+        self.assertEqual(requested_model(chat()), "lfm3-1.7b-bf16")
 
 
 class RegistrationTests(HubTestCase):
     async def test_physical_ram_is_independent_of_capped_worker_registration_order(
         self,
     ):
-        with patch.dict(os.environ, {"HIKARI_ENABLE_LFM3_TEXT": "true"}):
-            for order in (("lfm3_llm", "video"), ("video", "lfm3_llm")):
-                with self.subTest(order=order):
-                    workers = {}
-                    for kind in order:
-                        _, workers[kind] = await self.connect(
-                            kind,
-                            computer="-".join(order),
-                            ram_free=23 if kind == "lfm3_llm" else 400,
-                            physical_ram_free=400,
-                            ram_limit=23 if kind == "lfm3_llm" else None,
-                            gpus=(("GPU-a", 23), ("GPU-b", 23)),
-                            replies={
-                                "load": ok,
-                                "requirement": needs((16, 0), (16, 0)),
-                            },
-                        )
-                    language, video = workers["lfm3_llm"], workers["video"]
-                    self.assertIs(language.computer, video.computer)
-                    ledger = video.computer.ledger
-                    self.assertEqual(ledger.capacity, [400 * GIB, 23 * GIB, 23 * GIB])
-                    self.assertEqual(language.slot.host_limit, 23 * GIB)
-                    self.assertIsNone(video.slot.host_limit)
-                    video.slot.pending = 1
-                    video.slot.requirement = Requirement(
-                        "h3", (117 * GIB, 3 * GIB), (117 * GIB, 3 * GIB)
+        for order in (("lfm3_llm", "video"), ("video", "lfm3_llm")):
+            with self.subTest(order=order):
+                workers = {}
+                for kind in order:
+                    _, workers[kind] = await self.connect(
+                        kind,
+                        computer="-".join(order),
+                        ram_free=23 if kind == "lfm3_llm" else 400,
+                        physical_ram_free=400,
+                        ram_limit=23 if kind == "lfm3_llm" else None,
+                        gpus=(("GPU-a", 23), ("GPU-b", 23)),
+                        replies={
+                            "load": ok,
+                            "requirement": needs((16, 0), (16, 0)),
+                        },
                     )
-                    await self.hub._schedule(video.computer)
-                    self.assertEqual(video.slot.budget[0], 117 * GIB)
-                    self.assertTrue(video.slot.loaded)
+                language, video = workers["lfm3_llm"], workers["video"]
+                self.assertIs(language.computer, video.computer)
+                ledger = video.computer.ledger
+                self.assertEqual(ledger.capacity, [400 * GIB, 23 * GIB, 23 * GIB])
+                self.assertEqual(language.slot.host_limit, 23 * GIB)
+                self.assertIsNone(video.slot.host_limit)
+                video.slot.pending = 1
+                video.slot.requirement = Requirement(
+                    "h3", (117 * GIB, 3 * GIB), (117 * GIB, 3 * GIB)
+                )
+                await self.hub._schedule(video.computer)
+                self.assertEqual(video.slot.budget[0], 117 * GIB)
+                self.assertTrue(video.slot.loaded)
 
     async def test_legacy_first_registration_retains_conservative_physical_baseline(
         self,
@@ -622,7 +299,7 @@ class RegistrationTests(HubTestCase):
         self.assertEqual(old.slot.host_limit, 23 * GIB)
 
     async def test_unsupported_protocol_and_unknown_types_are_rejected(self):
-        for message in (hello("llm", protocol=3), hello("gpu")):
+        for message in (hello("lfm3_llm", protocol=3), hello("gpu")):
             socket = FakeSocket()
             socket.push(message)
             await self.hub.serve(socket)
@@ -630,7 +307,7 @@ class RegistrationTests(HubTestCase):
         self.assertFalse(self.hub.workers)
 
     async def test_workers_on_one_computer_share_its_ram_and_each_gpu_once(self):
-        _, language = await self.connect("llm", gpus=(("GPU-a", 24),))
+        _, language = await self.connect("lfm3_llm", gpus=(("GPU-a", 24),))
         _, picture = await self.connect("image", gpus=(("GPU-a", 24),))
         self.assertIs(language.computer, picture.computer)
         ledger = language.computer.ledger
@@ -638,8 +315,8 @@ class RegistrationTests(HubTestCase):
         self.assertEqual(set(ledger.workers), {language.id, picture.id})
 
     async def test_workers_on_other_computers_have_their_own_ledgers(self):
-        _, here = await self.connect("llm", computer="boot-1")
-        _, there = await self.connect("llm", computer="boot-2", instance="llm-2")
+        _, here = await self.connect("lfm3_llm", computer="boot-1")
+        _, there = await self.connect("lfm3_llm", computer="boot-2", instance="llm-2")
         self.assertIsNot(here.computer, there.computer)
         self.assertEqual(len(self.hub.computers), 2)
 
@@ -652,7 +329,7 @@ class RegistrationTests(HubTestCase):
 
         # The language worker sees both GPUs and will start on GPU-a.
         await self.connect(
-            "llm",
+            "lfm3_llm",
             gpus=(("GPU-a", 24), ("GPU-b", 20)),
             replies={"requirement": needs((1, 6), (1, 6))},
         )
@@ -670,43 +347,38 @@ class RegistrationTests(HubTestCase):
     async def test_cache_idle_setting_is_sent_with_worker_budget(self):
         self.hub.kv_cache_idle_seconds = 45
         socket, worker = await self.connect(
-            "llm", replies={"load": ok, "requirement": needs((1, 6), (1, 6))}
+            "lfm3_llm", replies={"load": ok, "requirement": needs((1, 6), (1, 6))}
         )
         await self.hub.submit(chat())
         await self.hub._schedule(worker.computer)
         self.assertEqual(socket.commands("load")[-1]["kv_cache_idle_seconds"], 45)
 
     async def test_computer_ledger_goes_when_its_last_worker_leaves(self):
-        socket, worker = await self.connect("llm")
+        socket, worker = await self.connect("lfm3_llm")
         await socket.close()
         await self.settle()
         self.assertNotIn(worker.computer.id, self.hub.computers)
 
     async def test_first_worker_is_primary_for_model_status(self):
-        await self.connect("llm", store=models(tier="go"))
-        self.assertEqual(self.hub.models.selected_tier, "go")
-
-    async def test_late_worker_receives_the_primary_settings(self):
-        primary = models(
-            tier="pro",
-            whisper="medium",
-            checkpoints=[checkpoint("qwen", context_limit=32768)],
+        await self.connect(
+            "image",
+            store=models(checkpoints=[checkpoint("qwen-image-2.1-turbo", "image")]),
         )
-        await self.connect("llm", store=primary)
-        late = models(tier="go", checkpoints=[checkpoint("qwen", context_limit=65536)])
+        self.assertEqual(self.hub.models.selected_model_id, "lfm3-1.7b-bf16")
+
+    async def test_late_worker_receives_saved_whisper_preferences_without_a_tier(self):
+        primary = models(formatting=False, whisper="medium")
+        await self.connect("image", store=primary)
         socket, _ = await self.connect(
-            "image", computer="boot-2", store=late, replies={"submit": configured}
+            "video", computer="boot-2", store=models(), replies={"submit": configured}
         )
         sent = [message["input"] for message in socket.commands("submit")]
-        self.assertIn({"feature": "tier_selection", "tier": "pro"}, sent)
         self.assertIn({"feature": "whisper_selection", "model": "medium"}, sent)
-        self.assertIn(
-            {"feature": "model_context", "model_id": "qwen", "context_limit": 32768},
-            sent,
-        )
+        self.assertIn({"feature": "whisper_formatting", "enabled": False}, sent)
+        self.assertNotIn("tier_selection", [message["feature"] for message in sent])
 
     async def test_late_worker_is_not_routable_until_settings_apply(self):
-        await self.connect("llm", store=models(tier="pro"))
+        await self.connect("speech", store=models(formatting=False))
         socket = FakeSocket(
             replies={
                 "submit": lambda m: [
@@ -721,28 +393,28 @@ class RegistrationTests(HubTestCase):
             }
         )
         socket.push(hello("image", computer="boot-2"))
-        socket.push({"state": "models", "models": models(tier="go")})
+        socket.push({"state": "models", "models": models(formatting=True)})
         socket.push({"state": "ready", "protocol": 4, "pid": 1})
         with self.assertLogs("api.services.worker_hub", level="ERROR"):
             await self.hub.serve(socket)
         self.assertEqual(socket.closed, 1011)
-        self.assertEqual([w.kind for w in self.hub.workers.values()], ["llm"])
+        self.assertEqual([w.kind for w in self.hub.workers.values()], ["speech"])
 
 
 class JobTests(HubTestCase):
     async def test_job_runs_on_a_worker_of_its_type_and_resolves(self):
         await self.connect("image")
-        socket, worker = await self.connect("llm")
+        socket, worker = await self.connect("lfm3_llm")
         job = await self.hub.submit(chat())
         self.assertEqual(job.machines, {worker.id})
         self.assertEqual(worker.slot.pending, 1)
         memory = {"capacity": [1, 2], "used": [0, 1], "residents": 1}
-        socket.push({"id": job.request.id, "state": "running", "worker": "llm"})
+        socket.push({"id": job.request.id, "state": "running", "worker": "lfm3_llm"})
         socket.push(
             {
                 "id": job.request.id,
                 "state": "succeeded",
-                "worker": "llm",
+                "worker": "lfm3_llm",
                 "result": {"text": "hello"},
                 "memory": memory,
             }
@@ -750,7 +422,9 @@ class JobTests(HubTestCase):
         self.assertEqual(await job.result, {"text": "hello"})
         self.assertEqual(worker.slot.pending, 0)
         self.assertFalse(worker.slot.busy)
-        self.assertEqual(self.hub.memory.used, [0, 1])
+        self.assertIsNone(
+            self.hub.memory
+        )  # Per-request LFM does not report native residency memory.
         self.assertEqual(
             [event.state for _, event in self.events],
             ["queued", "running", "succeeded"],
@@ -765,7 +439,7 @@ class JobTests(HubTestCase):
 
     async def test_rejection_before_acceptance_fails_submission(self):
         await self.connect(
-            "llm",
+            "lfm3_llm",
             replies={
                 "submit": lambda m: [
                     {"id": m["id"], "state": "rejected", "error": "queue_full"}
@@ -778,7 +452,7 @@ class JobTests(HubTestCase):
         self.assertFalse(self.hub.jobs)
 
     async def test_streamed_content_is_bounded(self):
-        socket, _ = await self.connect("llm")
+        socket, _ = await self.connect("lfm3_llm")
         job = await self.hub.submit(chat(), streaming=True)
         socket.push({"id": job.request.id, "state": "content", "content": "hi"})
         await self.settle()
@@ -797,18 +471,21 @@ class JobTests(HubTestCase):
         submission = asyncio.create_task(self.hub.submit(chat()))
         await self.settle()
         self.assertFalse(submission.done())
-        _, worker = await self.connect("llm")
+        _, worker = await self.connect("lfm3_llm")
         job = await submission
         self.assertEqual(job.machines, {worker.id})
 
-    async def test_settings_go_to_every_worker_and_settle_once_all_finish(self):
-        first, _ = await self.connect("llm")
+    async def test_settings_go_to_native_stores_and_settle_once_all_finish(self):
+        language, _ = await self.connect("lfm3_llm")
+        first, _ = await self.connect("decision")
         second, _ = await self.connect("image")
         job = await self.hub.submit(
             InferenceTask(
-                operation="configure", input={"feature": "tier_selection", "tier": "go"}
+                operation="configure",
+                input={"feature": "whisper_formatting", "enabled": False},
             )
         )
+        self.assertFalse(language.commands("submit"))
         first.push({"id": job.request.id, "state": "succeeded", "result": {}})
         await self.settle()
         self.assertFalse(job.result.done())
@@ -825,15 +502,15 @@ class JobTests(HubTestCase):
         self.assertEqual(raised.exception.status_code, 422)
 
     async def test_a_download_goes_to_one_worker_of_its_type_per_computer(self):
-        store = models(checkpoints=[checkpoint("qwen-image", kind="image")])
-        language, _ = await self.connect("llm", store=store)
+        store = models(checkpoints=[checkpoint("qwen-image-2.1-turbo", kind="image")])
+        language, _ = await self.connect("lfm3_llm", store=store)
         here, _ = await self.connect("image", instance="image-1", store=store)
         twin, _ = await self.connect("image", instance="image-2", store=store)
         there, _ = await self.connect("image", computer="boot-2", store=store)
         await self.hub.submit(
             InferenceTask(
                 operation="download",
-                input={"feature": "models", "model_id": "qwen-image"},
+                input={"feature": "models", "model_id": "qwen-image-2.1-turbo"},
             )
         )
         self.assertFalse(language.commands("submit"))
@@ -841,7 +518,7 @@ class JobTests(HubTestCase):
         self.assertEqual(len(there.commands("submit")), 1)
 
     async def test_cancel_reaches_the_worker(self):
-        socket, _ = await self.connect("llm")
+        socket, _ = await self.connect("lfm3_llm")
         job = await self.hub.submit(chat())
         await self.hub.cancel(job.request.id)
         self.assertEqual(
@@ -851,12 +528,12 @@ class JobTests(HubTestCase):
 
 class DisconnectTests(HubTestCase):
     async def test_waiting_job_moves_and_running_job_fails(self):
-        first, _ = await self.connect("llm", instance="llm-1")
+        first, _ = await self.connect("lfm3_llm", instance="llm-1")
         waiting = await self.hub.submit(chat())
         running = await self.hub.submit(chat())
         first.push({"id": running.request.id, "state": "running"})
         await self.settle()
-        second, other = await self.connect("llm", instance="llm-2")
+        second, other = await self.connect("lfm3_llm", instance="llm-2")
         await first.close()
         await self.settle()
         with self.assertRaises(InferenceFailure) as raised:
@@ -869,7 +546,7 @@ class DisconnectTests(HubTestCase):
         self.assertEqual(other.slot.pending, 1)
 
     async def test_cancelling_a_job_without_workers_does_not_wait(self):
-        await self.connect("llm", replies={"cancel": lambda m: []})
+        await self.connect("lfm3_llm", replies={"cancel": lambda m: []})
         job = await self.hub.submit(chat())
         job.machines = {"gone"}
         await asyncio.wait_for(self.hub.cancel_and_join(job), 1)
@@ -877,7 +554,7 @@ class DisconnectTests(HubTestCase):
             await job.result
 
     async def test_pending_controls_fail_on_disconnect(self):
-        socket, worker = await self.connect("llm")
+        socket, worker = await self.connect("lfm3_llm")
         control = asyncio.create_task(worker.control("status"))
         await self.settle()
         await socket.close()
@@ -895,7 +572,7 @@ class CancellationTestCase(unittest.IsolatedAsyncioTestCase):
                 if future.done() and not future.cancelled():
                     future.exception()
 
-    def add_worker(self, instance, kind="llm"):
+    def add_worker(self, instance, kind="lfm3_llm"):
         info = hello(kind, instance=instance, computer=instance)
         computer = Computer(info["machine"])
         worker = Worker(FakeSocket(), info, computer)
@@ -912,7 +589,7 @@ class CancellationTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def add_job(self, state=JobState.QUEUED, request=None):
         job = InferenceJob(request or chat(), False)
-        job.worker = "llm" if request is None else None
+        job.worker = "lfm3_llm" if request is None else None
         self.hub.jobs[job.request.id] = job
         await self.hub._send_job(job)
         job.accepted.set_result(None)
@@ -932,7 +609,8 @@ class CancellationTestCase(unittest.IsolatedAsyncioTestCase):
 
     def store_request(self):
         return InferenceTask(
-            operation="configure", input={"feature": "tier_selection", "tier": "go"}
+            operation="configure",
+            input={"feature": "whisper_formatting", "enabled": False},
         )
 
 
@@ -1138,7 +816,7 @@ class LockedSubmissionTests(CancellationTestCase):
     async def test_terminal_failure_waiting_for_lock_inhibits_submission(self):
         worker = self.add_worker("first")
         job = InferenceJob(chat(), False)
-        job.worker = "llm"
+        job.worker = "lfm3_llm"
         self.hub.jobs[job.request.id] = job
         await worker.write_lock.acquire()
         submission = asyncio.create_task(self.hub._send_job(job))
@@ -1285,7 +963,7 @@ class CancellationHandoffTests(CancellationTestCase):
 
     async def test_cancelled_job_is_not_sent_even_without_available_workers(self):
         job = InferenceJob(chat(), False)
-        job.worker = "llm"
+        job.worker = "lfm3_llm"
         self.hub.jobs[job.request.id] = job
         await self.hub.cancel_and_join(job)
         await self.hub._send_job(job)
@@ -1339,7 +1017,7 @@ class CancellationHandoffTests(CancellationTestCase):
                 self.assertEqual(await job.result, {"text": "current"})
 
     async def test_cancelled_store_waits_for_all_remaining_workers(self):
-        first = self.add_worker("first")
+        first = self.add_worker("first", "decision")
         second = self.add_worker("second", "image")
         job = await self.add_job(request=self.store_request())
         await self.hub.cancel(job.request.id)
@@ -1354,7 +1032,7 @@ class CancellationHandoffTests(CancellationTestCase):
         self.assertEqual(len(second.websocket.commands("submit")), 1)
 
     async def test_cancel_during_store_submission_skips_unsent_workers(self):
-        first = self.add_worker("first")
+        first = self.add_worker("first", "decision")
         second = self.add_worker("second", "image")
         entered, release = asyncio.Event(), asyncio.Event()
         send_text = first.websocket.send_text
@@ -1397,7 +1075,10 @@ class CancellationHandoffTests(CancellationTestCase):
         self.assert_cancelled(job)
 
     async def test_store_cancel_attempts_other_workers_after_a_send_failure(self):
-        workers = [self.add_worker("first"), self.add_worker("second", "image")]
+        workers = [
+            self.add_worker("first", "decision"),
+            self.add_worker("second", "image"),
+        ]
         job = await self.add_job(request=self.store_request())
         first, second = [self.hub.workers[worker_id] for worker_id in job.machines]
         with (
@@ -1412,7 +1093,7 @@ class CancellationHandoffTests(CancellationTestCase):
         self.assert_cancelled(job)
 
     async def test_send_disconnect_cancels_remaining_store_workers_and_joins(self):
-        self.add_worker("first")
+        self.add_worker("first", "decision")
         self.add_worker("second", "image")
         job = await self.add_job(request=self.store_request())
         first, second = [self.hub.workers[worker_id] for worker_id in job.machines]
@@ -1439,12 +1120,12 @@ class CancellationHandoffTests(CancellationTestCase):
 class SubmissionOwnershipTests(CancellationTestCase):
     def register_job(self, request=None):
         job = InferenceJob(request or self.store_request(), False)
-        job.worker = "llm" if request is not None else None
+        job.worker = "lfm3_llm" if request is not None else None
         self.hub.jobs[job.request.id] = job
         return job
 
     async def test_early_terminal_does_not_complete_remaining_fanout(self):
-        first = self.add_worker("first")
+        first = self.add_worker("first", "decision")
         second = self.add_worker("second", "image")
         job = self.register_job()
 
@@ -1461,7 +1142,10 @@ class SubmissionOwnershipTests(CancellationTestCase):
         self.assertEqual(raised.exception.status_code, 422)
 
     async def test_all_early_terminals_wait_for_submission_to_close(self):
-        workers = [self.add_worker("first"), self.add_worker("second", "image")]
+        workers = [
+            self.add_worker("first", "decision"),
+            self.add_worker("second", "image"),
+        ]
         job = self.register_job()
         completed_during_send = []
 
@@ -1483,7 +1167,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
         self.assertEqual(job.machines, set())
 
     async def test_cancel_after_early_terminal_stops_unsent_targets(self):
-        first = self.add_worker("first")
+        first = self.add_worker("first", "decision")
         second = self.add_worker("second", "image")
         third = self.add_worker("third", "video")
         job = self.register_job()
@@ -1529,7 +1213,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
         self.assert_cancelled(job)
 
     async def test_cancelled_partial_fanout_cannot_succeed(self):
-        first = self.add_worker("first")
+        first = self.add_worker("first", "decision")
         second = self.add_worker("second", "image")
         third = self.add_worker("third", "video")
         job = self.register_job()
@@ -1582,7 +1266,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
         self.assertEqual(raised.exception.status_code, 507)
 
     async def test_cancel_preserves_prior_store_failure_while_other_send_is_open(self):
-        first = self.add_worker("first")
+        first = self.add_worker("first", "decision")
         second = self.add_worker("second", "image")
         third = self.add_worker("third", "video")
         job = self.register_job()
@@ -1612,7 +1296,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
         self.assertEqual(raised.exception.status_code, 422)
 
     async def test_disconnected_unsent_store_target_is_incomplete(self):
-        first = self.add_worker("first")
+        first = self.add_worker("first", "decision")
         second = self.add_worker("second", "image")
         job = self.register_job()
 
@@ -1628,7 +1312,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
         self.assertEqual(raised.exception.status_code, 503)
 
     async def test_cancel_with_no_recipients_waits_for_open_send(self):
-        worker = self.add_worker("first")
+        worker = self.add_worker("first", "decision")
         job = self.register_job()
         completed_during_send = []
 
@@ -1736,7 +1420,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
         self.assertEqual(raised.exception.status_code, 503)
 
     async def test_partial_send_failure_keeps_submission_until_all_cleanup(self):
-        first = self.add_worker("first")
+        first = self.add_worker("first", "decision")
         second = self.add_worker("second", "image")
         third = self.add_worker("third", "video")
         first_socket = first.websocket = JobSocket(self.hub, first)
@@ -1825,7 +1509,7 @@ class KvIdleSettingsTests(unittest.TestCase):
 
 
 class ModelIdleTests(HubTestCase):
-    async def resident(self, kind="llm", **identity):
+    async def resident(self, kind="lfm3_llm", **identity):
         socket, worker = await self.connect(kind, replies={"offload": ok}, **identity)
         slot = worker.slot
         slot.loaded, slot.budget, slot.last_used = True, [GIB, GIB], 100
@@ -1834,7 +1518,7 @@ class ModelIdleTests(HubTestCase):
 
     async def test_every_modality_expires_at_the_boundary_and_waits_for_cleanup(self):
         for kind in (
-            "llm",
+            "lfm3_llm",
             "decision",
             "tts",
             "speech",
@@ -1871,7 +1555,9 @@ class ModelIdleTests(HubTestCase):
         socket, worker = await self.resident()
         for completed_at in (5000, 7000):
             job = await self.hub.submit(chat())
-            socket.push({"id": job.request.id, "state": "running", "worker": "llm"})
+            socket.push(
+                {"id": job.request.id, "state": "running", "worker": "lfm3_llm"}
+            )
             await self.settle()
             with patch(
                 "api.services.worker_hub.time.monotonic", return_value=completed_at
@@ -1882,7 +1568,7 @@ class ModelIdleTests(HubTestCase):
                     {
                         "id": job.request.id,
                         "state": "succeeded",
-                        "worker": "llm",
+                        "worker": "lfm3_llm",
                         "result": {},
                     }
                 )
@@ -1979,7 +1665,7 @@ class SchedulingTests(HubTestCase):
 
     async def test_container_ceiling_is_not_transient_free_ram(self):
         socket, worker = await self.connect(
-            "llm",
+            "lfm3_llm",
             physical_ram_free=400,
             ram_free=2,
             ram_limit=23,
@@ -1991,7 +1677,7 @@ class SchedulingTests(HubTestCase):
 
     async def test_worker_ram_limit_rejects_work_even_when_physical_host_fits(self):
         socket, worker = await self.connect(
-            "llm",
+            "lfm3_llm",
             ram_free=23,
             physical_ram_free=400,
             ram_limit=23,
@@ -2010,7 +1696,7 @@ class SchedulingTests(HubTestCase):
     async def test_legacy_worker_stays_capped_with_a_new_physical_baseline(self):
         await self.connect("image", ram_free=400, physical_ram_free=400)
         socket, worker = await self.connect(
-            "llm",
+            "lfm3_llm",
             ram_free=23,
             replies={"requirement": needs((16, 1), (100, 1)), "load": ok},
         )
@@ -2020,7 +1706,7 @@ class SchedulingTests(HubTestCase):
 
     async def test_waiting_worker_gets_a_budget(self):
         _, worker = await self.connect(
-            "llm", replies={"requirement": needs((1, 4), (2, 30)), "load": ok}
+            "lfm3_llm", replies={"requirement": needs((1, 4), (2, 30)), "load": ok}
         )
         await self.hub.submit(chat())
         await self.hub._schedule(worker.computer)
@@ -2034,7 +1720,7 @@ class SchedulingTests(HubTestCase):
             loads.append(message["budget"])
             return ok(message)
 
-        await self.connect("llm", replies={"requirement": needs((1, 6), (2, 30))})
+        await self.connect("lfm3_llm", replies={"requirement": needs((1, 6), (2, 30))})
         await self.connect("decision", replies={"requirement": needs((1, 0), (1, 0))})
         _, picture = await self.connect(
             "image", replies={"requirement": needs((1, 2), (1, 40)), "load": load}
@@ -2049,7 +1735,7 @@ class SchedulingTests(HubTestCase):
         )
         picture.slot.loaded, picture.slot.budget = True, [GIB, 24 * GIB]
         picture.slot.requirement = Requirement("i", (GIB, 2 * GIB), (GIB, 24 * GIB))
-        _, language = await self.connect("llm")
+        _, language = await self.connect("lfm3_llm")
         language.slot.pending = 1
         language.slot.requirement = Requirement("m", (GIB, 10 * GIB), (GIB, 10 * GIB))
         await self.hub._schedule(language.computer)
@@ -2067,7 +1753,7 @@ class SchedulingTests(HubTestCase):
             return ok(message)
 
         _, worker = await self.connect(
-            "llm",
+            "lfm3_llm",
             replies={
                 "requirement": lambda m: [
                     {
@@ -2087,7 +1773,7 @@ class SchedulingTests(HubTestCase):
 
     async def test_job_that_can_never_fit_fails_instead_of_waiting(self):
         socket, worker = await self.connect(
-            "llm", replies={"requirement": needs((1, 200), (1, 200), model="huge")}
+            "lfm3_llm", replies={"requirement": needs((1, 200), (1, 200), model="huge")}
         )
         job = await self.hub.submit(chat())
         with self.assertLogs("api.services.worker_hub", level="WARNING"):
@@ -2101,7 +1787,7 @@ class SchedulingTests(HubTestCase):
         self.assertFalse(socket.commands("load"))
 
     async def test_worker_events_update_the_ledger_in_its_order(self):
-        await self.connect("llm", gpus=(("GPU-a", 24), ("GPU-b", 24)))
+        await self.connect("lfm3_llm", gpus=(("GPU-a", 24), ("GPU-b", 24)))
         socket, picture = await self.connect("image", gpus=(("GPU-b", 24),))
         picture.slot.loaded = True
         socket.push(
@@ -2117,10 +1803,10 @@ class SchedulingTests(HubTestCase):
         self.assertEqual(picture.slot.budget, [GIB, 0, 3 * GIB])
 
     async def test_unload_offloads_every_worker_of_the_type(self):
-        socket, worker = await self.connect("llm", replies={"offload": ok})
+        socket, worker = await self.connect("lfm3_llm", replies={"offload": ok})
         slot = worker.slot
         slot.loaded, slot.budget = True, [GIB, GIB]
-        await self.hub.offload("llm")
+        await self.hub.offload("lfm3_llm")
         # The charge stays until the worker confirms the memory is free.
         self.assertTrue(slot.loaded and slot.releasing)
         self.assertEqual(slot.budget, [GIB, GIB])
@@ -2128,7 +1814,7 @@ class SchedulingTests(HubTestCase):
             {
                 "state": "worker",
                 "event": "offloaded",
-                "worker": "llm",
+                "worker": "lfm3_llm",
                 "loaded": False,
                 "budget": [0, 0],
             }
@@ -2140,12 +1826,12 @@ class SchedulingTests(HubTestCase):
 
 class ResidentRequirementTests(HubTestCase):
     async def test_routine_snapshots_keep_requirements_and_changes_drop_them(self):
-        socket, worker = await self.connect("llm", store=models(tier="go"))
+        socket, worker = await self.connect("lfm3_llm", store=models(formatting=True))
         worker.slot.requirement = Requirement("m", (GIB, GIB), (GIB, GIB))
-        socket.push({"state": "models", "models": models(tier="go")})
+        socket.push({"state": "models", "models": models(formatting=True)})
         await self.settle()
         self.assertIsNotNone(worker.slot.requirement)
-        socket.push({"state": "models", "models": models(tier="pro")})
+        socket.push({"state": "models", "models": models(formatting=False)})
         await self.settle()
         self.assertIsNone(worker.slot.requirement)
 
@@ -2157,7 +1843,7 @@ class ResidentRequirementTests(HubTestCase):
             return ok(message)
 
         _, worker = await self.connect(
-            "llm", replies={"requirement": needs((1, 6), (2, 30)), "load": load}
+            "lfm3_llm", replies={"requirement": needs((1, 6), (2, 30)), "load": load}
         )
         # A grant made before a tier existed: loaded with nothing.
         worker.slot.loaded, worker.slot.budget, worker.slot.pending = True, [0, 0], 1
@@ -2171,7 +1857,7 @@ class ResidentRequirementTests(HubTestCase):
             loads.append(message["budget"])
             return ok(message)
 
-        llm_socket, language = await self.connect("llm", replies={"load": load})
+        llm_socket, language = await self.connect("lfm3_llm", replies={"load": load})
         language.slot.loaded, language.slot.budget = True, [2 * GIB, 24 * GIB]
         language.slot.requirement = Requirement(
             "m", (GIB, 6 * GIB), (2 * GIB, 30 * GIB)
@@ -2192,7 +1878,7 @@ class ResidentRequirementTests(HubTestCase):
             {
                 "state": "worker",
                 "event": "resized",
-                "worker": "llm",
+                "worker": "lfm3_llm",
                 "loaded": True,
                 "budget": [2 * GIB, 6 * GIB],
             }
@@ -2231,11 +1917,11 @@ class ReleaseConfirmationTests(HubTestCase):
                     "id": message["id"],
                     "state": "status",
                     "machine": {},
-                    "workers": [{"worker": "store"}, {"worker": "llm", **status}],
+                    "workers": [{"worker": "store"}, {"worker": "lfm3_llm", **status}],
                 }
             ]
 
-        _, worker = await self.connect("llm", replies={"status": reply})
+        _, worker = await self.connect("lfm3_llm", replies={"status": reply})
         slot = worker.slot
         slot.loaded, slot.budget, slot.releasing = True, [4 * GIB, 20 * GIB], True
         slot.releasing_since = expired()
@@ -2273,142 +1959,107 @@ class ReleaseConfirmationTests(HubTestCase):
         self.assertEqual(slot.budget, [GIB, 9 * GIB])
 
 
-class LoadContextTests(HubTestCase):
-    async def connect_with_context_needs(self, asked, loads):
-        def requirement(message):
-            asked.append(
-                {k: v for k, v in message.items() if k in ("model", "context")}
+class ContextConfigurationTests(HubTestCase):
+    async def test_manual_preload_is_rejected_without_submitting_or_granting(self):
+        socket, _ = await self.connect("lfm3_llm", replies={"load": ok})
+        with self.assertRaisesRegex(InferenceFailure, "per request"):
+            await self.hub.submit(
+                InferenceTask(
+                    operation="load", input={"feature": "llm", "context_limit": 8192}
+                )
             )
-            # Only the saved context is too large for this machine.
-            device = 6 if "context" in message else 200
-            return needs((1, device), (1, device), model="qwen")(message)
+        self.assertFalse(socket.commands("submit"))
+        self.assertFalse(socket.commands("load"))
+        self.assertFalse(self.hub.jobs)
 
-        def load(message):
-            loads.append(message["budget"])
-            return ok(message)
-
-        return await self.connect(
-            "llm", replies={"requirement": requirement, "load": load}
+    async def test_saved_context_is_configured_only_on_the_owning_model_worker(self):
+        picture, _ = await self.connect("image")
+        language, worker = await self.connect(
+            "lfm3_llm", replies={"submit": configured}
         )
-
-    def load_task(self, **context):
-        return InferenceTask(operation="load", input={"feature": "llm", **context})
-
-    async def test_a_smaller_load_context_is_planned_instead_of_rejected(self):
-        asked, loads = [], []
-        _, worker = await self.connect_with_context_needs(asked, loads)
-        job = await self.hub.submit(self.load_task(context_limit=8192))
-        await self.hub._schedule(worker.computer)
-        self.assertEqual(asked[-1], {"model": None, "context": 8192})
-        self.assertEqual(loads, [[GIB, 6 * GIB]])
-        self.assertFalse(job.result.done())
-
-    async def test_explicit_null_and_omitted_contexts_are_distinct(self):
-        asked, loads = [], []
-        _, worker = await self.connect_with_context_needs(asked, loads)
-        worker.slot.loaded = worker.slot.busy = True
-        await self.hub.submit(self.load_task(context_limit=None))
-        await self.hub._schedule(worker.computer)
-        self.assertEqual(asked[-1], {"model": None, "context": None})
-        await self.hub.submit(chat())
+        request = InferenceTask(
+            operation="configure",
+            input={
+                "feature": "model_context",
+                "model_id": "lfm3-1.7b-bf16",
+                "context_limit": 8192,
+            },
+        )
+        job = await self.hub.submit(request)
+        await job.result
+        self.assertFalse(picture.commands("submit"))
         self.assertEqual(
-            self.hub._head_fields(worker), {"model": None, "context": None}
+            language.commands("submit")[0]["input"],
+            {
+                "feature": "model_context",
+                "model_id": "lfm3-1.7b-bf16",
+                "context_limit": 8192,
+            },
         )
-        self.hub.jobs.pop(next(iter(self.hub.jobs)))
-        self.assertEqual(self.hub._head_fields(worker), {"model": None})
+        self.assertEqual(worker.slot.pending, 0)
+        self.assertFalse(language.commands("load"))
 
-    async def test_requirement_follows_a_new_head_job(self):
-        asked, loads = [], []
-        _, worker = await self.connect_with_context_needs(asked, loads)
-        first = await self.hub.submit(self.load_task(context_limit=8192))
-        await self.hub._schedule(worker.computer)
-        self.hub.jobs.pop(first.request.id)
-        worker.jobs.discard(first.request.id)
-        await self.hub.submit(self.load_task(context_limit=4096))
-        worker.slot.busy = True
-        await self.hub._schedule(worker.computer)
-        self.assertEqual(asked[-1], {"model": None, "context": 4096})
-
-
-class FullDuplexResidencyTests(unittest.TestCase):
-    def test_session_cleanup_restores_priorities_after_last_overlapping_call(self):
-        hub = WorkerHub()
-        slots = {
-            kind: WorkerSlot(
-                name=kind,
-                kind=kind,
-                requirement=Requirement(model=model, minimum=(1, 1), preferred=(1, 1)),
+    async def test_maximum_context_choice_is_not_replaced_with_a_numeric_default(self):
+        socket, _ = await self.connect("lfm3_llm", replies={"submit": configured})
+        job = await self.hub.submit(
+            InferenceTask(
+                operation="configure",
+                input={
+                    "feature": "model_context",
+                    "model_id": "lfm3-1.7b-bf16",
+                    "context_limit": None,
+                },
             )
-            for kind, model in (
-                ("llm", "chat"),
-                ("tts", "voice"),
-                ("speech", "whisper"),
-                ("formatting", "formatter"),
-            )
-        }
-        hub.computers["box"] = SimpleNamespace(ledger=MachineLedger([100, 100], slots))
-        with (
-            self.assertRaisesRegex(RuntimeError, "disconnect"),
-            hub.full_duplex(frozenset(("chat", "voice", "whisper"))),
-        ):
-            self.assertEqual(
-                [slots[k].priority for k in ("llm", "tts", "speech")], [1, 1, 1]
-            )
-            self.assertFalse(slots["formatting"].full_duplex)
-            with hub.full_duplex(frozenset(("chat", "voice", "whisper"))):
-                pass
-            self.assertTrue(slots["tts"].full_duplex)
-            raise RuntimeError("disconnect")
-        self.assertEqual(
-            [slots[k].priority for k in ("llm", "tts", "speech")], [1, 2, 3]
         )
-        self.assertGreater(slots["tts"].last_used, 0)
-        self.assertFalse(hub.calls)
+        await job.result
+        self.assertIn("context_limit", socket.commands("submit")[0]["input"])
+        self.assertIsNone(socket.commands("submit")[0]["input"]["context_limit"])
 
-    def test_other_checkpoint_does_not_inherit_call_retention(self):
+
+class SingleAudioCallScopeTests(unittest.TestCase):
+    def test_overlapping_call_scopes_track_one_audio_checkpoint_and_cleanup_on_error(
+        self,
+    ):
         hub = WorkerHub()
         slot = WorkerSlot(
-            name="llm",
-            kind="llm",
-            requirement=Requirement(model="other", minimum=(1, 1), preferred=(1, 1)),
+            name="audio",
+            kind="lfm3_audio",
+            budget=[0, 0],
+            requirement=Requirement(
+                model="lfm3-audio-2b-bf16", minimum=(1, 1), preferred=(1, 1)
+            ),
         )
         hub.computers["box"] = SimpleNamespace(
-            ledger=MachineLedger([100, 100], {"llm": slot})
+            ledger=MachineLedger([100, 100], {"audio": slot})
         )
-        with hub.full_duplex(frozenset(("chat", "voice", "whisper"))):
+        with self.assertRaisesRegex(RuntimeError, "disconnect"):
+            with hub.full_duplex(frozenset(("lfm3-audio-2b-bf16",))):
+                self.assertEqual(len(hub.calls), 1)
+                self.assertEqual(slot.priority, 1)
+                self.assertEqual(slot.budget, [0, 0])
+                self.assertFalse(slot.loaded)
+                with hub.full_duplex(frozenset(("lfm3-audio-2b-bf16",))):
+                    self.assertEqual(len(hub.calls), 2)
+                self.assertEqual(len(hub.calls), 1)
+                raise RuntimeError("disconnect")
+        self.assertFalse(hub.calls)
+        self.assertEqual(slot.priority, 1)
+        self.assertEqual(slot.budget, [0, 0])
+
+    def test_audio_call_scope_cannot_pin_an_unrelated_media_checkpoint(self):
+        hub = WorkerHub()
+        slot = WorkerSlot(
+            name="image",
+            kind="image",
+            budget=[0, 0],
+            requirement=Requirement(
+                model="qwen-image-2.1-turbo", minimum=(1, 1), preferred=(1, 1)
+            ),
+        )
+        hub.computers["box"] = SimpleNamespace(
+            ledger=MachineLedger([100, 100], {"image": slot})
+        )
+        with hub.full_duplex(frozenset(("lfm3-audio-2b-bf16",))):
             self.assertFalse(slot.full_duplex)
-
-    def test_active_call_skips_idle_expiry_then_restores_it(self):
-        async def check():
-            hub = WorkerHub()
-            slot = WorkerSlot(
-                name="tts",
-                kind="tts",
-                loaded=True,
-                last_used=time.monotonic() - hub.model_idle_seconds - 1,
-                budget=[1, 1],
-                requirement=Requirement(
-                    model="voice", minimum=(1, 1), preferred=(1, 1)
-                ),
-            )
-            computer = SimpleNamespace(ledger=MachineLedger([100, 100], {"tts": slot}))
-            ready = asyncio.Event()
-            ready.set()
-            hub.workers["tts"] = SimpleNamespace(slot=slot, ready=ready)
-            hub.computers["box"] = computer
-            hub._apply = AsyncMock(return_value=True)
-            with hub.full_duplex(frozenset(("voice",))):
-                await hub._schedule(computer)
-                self.assertFalse(
-                    any(
-                        action.kind == "offload"
-                        for call in hub._apply.call_args_list
-                        for action in call.args[1]
-                    )
-                )
-            slot.last_used = time.monotonic() - hub.model_idle_seconds - 1
-            hub._apply.reset_mock()
-            await hub._schedule(computer)
-            self.assertEqual(hub._apply.call_args.args[1][0].kind, "offload")
-
-        asyncio.run(check())
+            self.assertEqual(slot.priority, 4)
+            self.assertEqual(slot.budget, [0, 0])

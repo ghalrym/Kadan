@@ -12,7 +12,13 @@ const source = await readFile(
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX },
 })
-const conversationModel = 'lfm3-1.7b-bf16'
+const ready = {
+  id: 'lfm3-1.7b-bf16',
+  display_name: 'LFM3 trial',
+  kind: 'llm',
+  status: 'complete',
+  inference_available: true,
+}
 function elements(node) {
   return !node || typeof node !== 'object'
     ? []
@@ -43,10 +49,10 @@ async function page() {
     lateUpdates = 0
   const slots = [],
     effects = [],
-    calls = []
+    calls = [],
+    read = deferred()
   const context = createContext({
     AbortController,
-    Error,
     Uint8Array,
     crypto: { getRandomValues: (bytes) => bytes.fill(++serial) },
   })
@@ -95,6 +101,12 @@ async function page() {
       },
     }),
     'react/jsx-runtime': module({ jsx, jsxs: jsx, Fragment: 'fragment' }),
+    '../api/settings': module({
+      fetchSettings: (signal) => {
+        read.signal = signal
+        return read.promise
+      },
+    }),
     '../api/chat': module({
       streamChat: (...args) => {
         const call = { args, ...deferred() }
@@ -122,6 +134,7 @@ async function page() {
   }
   await flush()
   return {
+    read,
     calls,
     flush,
     get tree() {
@@ -155,47 +168,64 @@ async function page() {
     },
   }
 }
-test('Chat sends the released BF16 LFM3 model without waiting for Settings', async () => {
+const saved = (model = ready) => ({
+  defaults: { llm: ready.id },
+  models: model ? [model] : [],
+})
+test('Chat shows the fixed conversation model with observed download readiness', async () => {
   const view = await page()
-  assert.match(content(view.tree), /LFM3 1\.7B BF16/)
-  await view.send('Hello')
-  assert.equal(view.calls[0].args[4], conversationModel)
+  view.read.resolve(saved())
+  await view.flush()
+  assert.equal(
+    elements(view.tree).some((node) => node.type === 'select'),
+    false,
+  )
+  assert.match(content(view.tree), /LFM3 trial · Downloaded/)
+  assert.doesNotMatch(
+    content(view.tree),
+    /Hikari Settings model|Choose a downloaded trial model/,
+  )
   view.unmount()
 })
-test('a missing LFM3 model fails visibly; retry and New chat keep LFM3', async () => {
+test('retry retains submitted conversation; New chat resets conversation identity', async () => {
   const view = await page()
-  await view.send('Hello')
-  const first = view.calls[0].args[3]
-  view.calls[0].reject(
-    new Error('Download LFM3 explicitly in Settings before chat.'),
-  )
+  view.read.resolve(saved())
   await view.flush()
-  assert.match(
-    content(view.tree),
-    /Download LFM3 explicitly in Settings before chat\./,
-  )
+  await view.send('Hello')
+  assert.equal(view.calls[0].args[4], undefined)
+  const first = view.calls[0].args[3]
+  view.calls[0].reject(new Error('Unavailable'))
+  await view.flush()
   await view.click('Retry last message')
-  assert.equal(view.calls[1].args[4], conversationModel)
   assert.equal(view.calls[1].args[3], first)
-  assert.deepEqual(view.calls[1].args[0], view.calls[0].args[0])
   view.calls[1].resolve({ role: 'assistant', text: 'Hello' })
   await view.flush()
   await view.click('New chat')
-  await view.send('A fresh conversation')
-  assert.equal(view.calls[2].args[4], conversationModel)
+  await view.send('New conversation')
+  assert.equal(view.calls[2].args[4], undefined)
   assert.notEqual(view.calls[2].args[3], first)
   view.unmount()
 })
-test('unmount aborts the chat request and ignores its late response', async () => {
+test('missing fixed worker is reported rather than another model offered', async () => {
   const view = await page()
-  await view.send('Hello')
+  view.read.resolve(saved(null))
+  await view.flush()
+  assert.match(content(view.tree), /Conversation worker unavailable/)
+  assert.equal(
+    elements(view.tree).some((node) => node.type === 'select'),
+    false,
+  )
   view.unmount()
-  assert.equal(view.calls[0].args[1].aborted, true)
-  view.calls[0].resolve({ role: 'assistant', text: 'Late response' })
+})
+test('unmount aborts model read and ignores late results', async () => {
+  const view = await page()
+  view.unmount()
+  assert.equal(view.read.signal.aborted, true)
+  view.read.resolve(saved())
   await view.flush()
   assert.equal(view.lateUpdates, 0)
 })
-test('request builder preserves explicit LFM3 and omitted-model API requests', async () => {
+test('request builder explicitly selects the fixed LFM conversation model', async () => {
   const source = await readFile(
     new URL('../src/api/chat.ts', import.meta.url),
     'utf8',
@@ -205,10 +235,8 @@ test('request builder preserves explicit LFM3 and omitted-model API requests', a
     throw new Error('Unexpected runtime dependency')
   })
   await module.evaluate()
-  const messages = [{ role: 'user', text: 'Hello' }]
-  assert.equal('model' in module.namespace.chatRequest(messages), false)
   assert.equal(
-    module.namespace.chatRequest(messages, conversationModel).model,
-    conversationModel,
+    module.namespace.chatRequest([{ role: 'user', text: 'Hello' }]).model,
+    'lfm3-1.7b-bf16',
   )
 })

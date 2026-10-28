@@ -79,3 +79,22 @@ class ModelStoreTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "artifact path"):
             self.store(name="../config.json")
+
+    def test_context_is_model_specific_and_persists_without_downloading(self):
+        store = self.store()
+        store.set_context(4096)
+        self.assertEqual(self.store().context(), 4096)
+        self.assertFalse(store.complete())
+        store.set_context(None)
+        self.assertIsNone(self.store().status()["models"][0]["context_limit"])
+        self.assertEqual(
+            self.store().status()["models"][0]["architecture_context_limit"], 8192
+        )
+
+    def test_invalid_context_does_not_replace_the_saved_setting(self):
+        store = self.store()
+        store.set_context(4096)
+        for value in (0, False, 8193):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                store.set_context(value)
+        self.assertEqual(store.context(), 4096)

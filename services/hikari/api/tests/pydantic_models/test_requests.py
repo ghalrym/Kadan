@@ -4,7 +4,7 @@ from typing import get_args
 from pydantic import TypeAdapter, ValidationError
 
 from api.pydantic_models.inference_task import LlmModel
-from api.pydantic_models.requests import RequestRecord
+from api.pydantic_models.requests import ObservedLanguageModel, RequestRecord
 
 
 class ObservedModelTests(unittest.TestCase):
@@ -25,7 +25,7 @@ class ObservedModelTests(unittest.TestCase):
         )
 
     def test_records_preserve_native_lfm_and_unknown_observations(self):
-        for model in (*get_args(LlmModel), "lfm3-1.7b-bf16", None):
+        for model in (*get_args(ObservedLanguageModel), None):
             with self.subTest(model=model):
                 record = self.record(model)
                 restored = RequestRecord.model_validate_json(record.model_dump_json())
@@ -36,6 +36,10 @@ class ObservedModelTests(unittest.TestCase):
             with self.subTest(model=model), self.assertRaises(ValidationError):
                 self.record(model)
 
-    def test_observing_lfm_does_not_admit_it_as_a_native_language_checkpoint(self):
-        with self.assertRaises(ValidationError):
-            TypeAdapter(LlmModel).validate_python("lfm3-1.7b-bf16")
+    def test_retired_observations_do_not_admit_qwen_for_new_inference(self):
+        for model in get_args(ObservedLanguageModel):
+            if model == "lfm3-1.7b-bf16":
+                self.assertEqual(TypeAdapter(LlmModel).validate_python(model), model)
+            else:
+                with self.subTest(model=model), self.assertRaises(ValidationError):
+                    TypeAdapter(LlmModel).validate_python(model)

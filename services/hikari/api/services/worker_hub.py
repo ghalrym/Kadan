@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from api.pydantic_models.inference_task import InferenceTask
-from api.pydantic_models.model_store import ModelStoreStatus
+from api.pydantic_models.model_store import ModelAssignments, ModelStoreStatus
 from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
 from api.services.inference_worker import (
@@ -54,20 +54,22 @@ PROTOCOL = 4
 # Features served by an inference worker; settings go to every worker and a
 # download goes to a worker of its checkpoint's type.
 FEATURE_WORKERS = {
-    "llm": "llm",
+    "llm": "lfm3_llm",
     "decisions": "decision",
-    "tts": "tts",
+    "tts": "lfm3_audio",
     "stt": "speech",
-    "stt_formatting": "formatting",
+    "stt_formatting": "lfm3_llm",
     "image": "image",
     "video": "video",
+    "vision": "lfm3_vision",
+    "audio_call": "lfm3_audio",
 }
 
 # A checkpoint's catalog kind and the worker type that downloads and runs it.
 CHECKPOINT_WORKERS = {
-    "llm": "llm",
+    "llm": "lfm3_llm",
     "decision": "decision",
-    "speech": "tts",
+    "speech": "lfm3_audio",
     "transcription": "speech",
     "formatting": "formatting",
     "image": "image",
@@ -76,24 +78,20 @@ CHECKPOINT_WORKERS = {
     "audio": "lfm3_audio",
 }
 
-EXPERIMENTAL_MODELS = {
-    "lfm3-1.7b-bf16": ("lfm3_llm", "HIKARI_ENABLE_LFM3_TEXT"),
-    "lfm3-vl-2b-bf16": ("lfm3_vision", "HIKARI_ENABLE_LFM3_VISION"),
-    "lfm3-audio-2b-bf16": ("lfm3_audio", "HIKARI_ENABLE_LFM3_AUDIO"),
+MODEL_WORKERS = {
+    "lfm3-1.7b-bf16": "lfm3_llm",
+    "lfm3-vl-2b-bf16": "lfm3_vision",
+    "lfm3-audio-2b-bf16": "lfm3_audio",
+    "qwen-image-2.1-turbo": "image",
+    "h3-fl2va-int8-turbo": "video",
+    "whisper-medium": "speech",
+    "laya": "decision",
 }
-EXPERIMENTAL_FEATURES = {
-    "vision": "lfm3-vl-2b-bf16",
-    "audio_call": "lfm3-audio-2b-bf16",
-}
+NATIVE_MODEL_STORES = frozenset(("decision", "speech", "image", "video"))
 
 
-def experimental_worker(model: str | None) -> str | None:
-    if model not in EXPERIMENTAL_MODELS:
-        return None
-    kind, flag = EXPERIMENTAL_MODELS[model]
-    if os.getenv(flag, "").lower() not in ("1", "true", "yes"):
-        raise InferenceFailure(f"Experimental model requires {flag}=true.", 409)
-    return kind
+def model_worker(model: str | None) -> str | None:
+    return MODEL_WORKERS.get(model)
 
 
 # Jobs that have not started executing can move to another worker.
@@ -126,7 +124,6 @@ def gib(budget: list[int]) -> str:
 def settings(models: ModelStoreStatus) -> tuple:
     """What a model store snapshot says that can change a memory requirement."""
     return (
-        models.selected_tier,
         models.selected_whisper,
         models.whisper_formatting,
         tuple(
@@ -153,15 +150,21 @@ def target_worker(request: InferenceTask) -> str | None:
     """The worker type for a job; None for store work (settings, downloads)."""
     if request.operation in ("download", "configure"):
         return None
-    model = requested_model(request) or EXPERIMENTAL_FEATURES.get(request.feature)
-    experiment = experimental_worker(model)
-    if experiment is not None:
+    if request.feature == "llm":
+        if requested_model(request) not in (None, "lfm3-1.7b-bf16"):
+            raise InferenceFailure(
+                "Only the fixed LFM3 conversation model is supported.", 422
+            )
         if request.operation in ("load", "unload"):
             raise InferenceFailure(
-                "Experimental models load per request; manual residency is unavailable.",
-                422,
+                "LFM3 models load per request; manual residency is unavailable.", 422
             )
-        return experiment
+    if request.feature == "stt" and requested_model(request) not in (
+        None,
+        "medium",
+        "whisper-medium",
+    ):
+        raise InferenceFailure("The fixed transcription model is Whisper medium.", 422)
     return FEATURE_WORKERS[request.feature]
 
 
@@ -300,7 +303,7 @@ class WorkerHub:
         self.calls: dict[str, frozenset[str]] = {}
 
     def _refresh_models(self):
-        """Append opt-in checkpoints without replacing the native tier or defaults."""
+        """Merge actual checkpoints; fixed assignments never fabricate availability."""
         primary = self.workers.get(self.primary or "")
         base = primary.models if primary is not None else None
         snapshot = (
@@ -308,16 +311,21 @@ class WorkerHub:
             if base is not None
             else ModelStoreStatus(models=[])
         )
-        known = {model.id for model in snapshot.models}
+        allowed = set(ModelAssignments().model_dump().values())
+        # A native store lists every checkpoint on its volume, including kinds
+        # this process cannot execute. Only a connected owner can advertise one.
+        snapshot.models = []
+        snapshot.selected_model_id = snapshot.defaults.llm
+        known = set()
         for worker in self.workers.values():
-            if not worker.kind.startswith("lfm3_") or worker.models is None:
+            if worker.models is None:
                 continue
             for model in worker.models.models:
-                try:
-                    kind = experimental_worker(model.id)
-                except InferenceFailure:
-                    continue
-                if kind == worker.kind and model.id not in known:
+                if (
+                    model.id in allowed
+                    and model_worker(model.id) == worker.kind
+                    and model.id not in known
+                ):
                     snapshot.models.append(model.model_copy(deep=True))
                     known.add(model.id)
         self.models = snapshot if base is not None or snapshot.models else None
@@ -378,9 +386,6 @@ class WorkerHub:
             info = hello["machine"]
             computer = self.computers.get(info["id"]) or Computer(info)
             worker = Worker(websocket, hello, computer)
-            for model, (kind, _) in EXPERIMENTAL_MODELS.items():
-                if worker.kind == kind:
-                    experimental_worker(model)
         except (
             TimeoutError,
             ValueError,
@@ -541,13 +546,34 @@ class WorkerHub:
         return max(loaded or candidates, key=Worker.free_bytes)
 
     def _store_targets(self, request: InferenceTask) -> list[Worker]:
-        """Settings go to every worker; a download to one worker of its type per computer."""
+        """Route settings to their persistence owner, downloads to model owners."""
+        model = requested_model(request)
+        if request.feature == "whisper_selection":
+            if model != "medium":
+                raise InferenceFailure(
+                    "The fixed transcription model is Whisper medium.", 422
+                )
+            model = None
+        if model is not None and model not in MODEL_WORKERS:
+            raise InferenceFailure(
+                "The requested model is not in the fixed stack.", 422
+            )
         if request.operation == "configure":
-            model = requested_model(request)
-            kind = experimental_worker(model)
-            targets = self._ready(kind) if kind else self._ready()
+            if request.feature in ("whisper_formatting", "whisper_selection"):
+                targets = [
+                    worker
+                    for worker in self._ready()
+                    if worker.kind in NATIVE_MODEL_STORES
+                ]
+                if not targets:
+                    raise InferenceFailure(
+                        "No native model store is connected to save transcription settings.",
+                        503,
+                    )
+            else:
+                targets = self._ready(model_worker(model))
         else:
-            kind = experimental_worker(request.input.model_id)
+            kind = model_worker(request.input.model_id)
             for model in self.models.models if self.models is not None else []:
                 if model.id == request.input.model_id and kind is None:
                     kind = CHECKPOINT_WORKERS.get(model.kind)
@@ -776,6 +802,44 @@ class WorkerHub:
             worker.residency_known = False
             worker.resident_model = None
             worker.resident_context = {}
+        if event.state in ("audio_answer", "audio_segment"):
+            if (
+                job.request.feature != "audio_call"
+                or job.request.input.mode != "turn"
+                or not job.request.input.sentence_tts
+                or job.events is None
+            ):
+                job.stream_error = "Unexpected sentence TTS event."
+                asyncio.create_task(self.cancel(event.id))
+            elif job.stream_error is None:
+                try:
+                    payload = (
+                        {"type": "answer", "text": event.answer}
+                        if event.state == "audio_answer"
+                        else {"type": "segment", **event.audio_segment.model_dump()}
+                    )
+                    job.events.put_nowait(payload)
+                except asyncio.QueueFull:
+                    job.stream_error = "Audio turn consumer is too slow."
+                    asyncio.create_task(self.cancel(event.id))
+            return
+        if event.state == "audio_transcript":
+            if (
+                job.request.feature != "audio_call"
+                or job.request.input.mode != "turn"
+                or job.events is None
+            ):
+                job.stream_error = "Unexpected audio transcript event."
+                asyncio.create_task(self.cancel(event.id))
+            elif job.stream_error is None:
+                try:
+                    job.events.put_nowait(
+                        {"type": "transcript", "text": event.transcript}
+                    )
+                except asyncio.QueueFull:
+                    job.stream_error = "Audio turn consumer is too slow."
+                    asyncio.create_task(self.cancel(event.id))
+            return
         if event.state == "content":
             if job.events is not None and job.stream_error is None:
                 try:
@@ -831,24 +895,23 @@ class WorkerHub:
     # Settings consistency across workers
 
     async def _synchronize(self, worker: Worker):
-        """Bring a newly connected worker's settings in line with the primary."""
-        primary = self.workers.get(self.primary or "")
-        if primary is None or primary is worker:
-            return
-        source, target = primary.models, worker.models
+        """Mirror observed settings, including context owned by other LFM workers."""
+        source, target = self.models, worker.models
         if source is None or target is None:
             return
         tasks = []
-        if source.selected_tier and source.selected_tier != target.selected_tier:
-            tasks.append({"feature": "tier_selection", "tier": source.selected_tier})
         if (
-            source.selected_whisper
+            worker.kind in NATIVE_MODEL_STORES
+            and source.selected_whisper
             and source.selected_whisper != target.selected_whisper
         ):
             tasks.append(
                 {"feature": "whisper_selection", "model": source.selected_whisper}
             )
-        if source.whisper_formatting != target.whisper_formatting:
+        if (
+            worker.kind in NATIVE_MODEL_STORES
+            and source.whisper_formatting != target.whisper_formatting
+        ):
             tasks.append(
                 {"feature": "whisper_formatting", "enabled": source.whisper_formatting}
             )
@@ -929,7 +992,7 @@ class WorkerHub:
             requirement.key = requirement_key(fields)
             return requirement
         except InferenceFailure as error:
-            # Preparation reports the real problem (no tier, no download) once
+            # Preparation reports the real problem (missing checkpoint) once
             # the worker runs; a host-only budget lets it get that far.
             log.info("No memory requirement for %s: %s", worker.name, error)
             return Requirement(
@@ -1062,7 +1125,7 @@ class WorkerHub:
             key=lambda slot: (slot.priority, slot.last_used),
         )
         for slot in waiting:
-            # The unloaded language tier keeps room for its minimum.
+            # The unloaded language worker keeps room for its minimum.
             for other in slots:
                 if (
                     other.requirement is None

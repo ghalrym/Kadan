@@ -11,7 +11,7 @@ function speechError(status?: number): Error {
     )
   if (status === 422)
     return new Error(
-      'The API rejected these speech settings. Check the script and voice details.',
+      'The API rejected these speech settings. Check the script, language and voice gender.',
     )
   return new Error(
     status

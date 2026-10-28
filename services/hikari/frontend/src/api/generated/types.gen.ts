@@ -134,6 +134,7 @@ export type CheckpointStatus = {
     | 'image'
     | 'decision'
     | 'vision'
+    | 'audio'
   /**
    * License
    */
@@ -254,24 +255,6 @@ export type CompletionChoice = {
 }
 
 /**
- * CompletionMessage
- */
-export type CompletionMessage = {
-  /**
-   * Meta
-   */
-  meta?: string | null
-  /**
-   * Role
-   */
-  role: 'system' | 'user' | 'assistant'
-  /**
-   * Text
-   */
-  text: string
-}
-
-/**
  * CompletionOutputMessage
  */
 export type CompletionOutputMessage = {
@@ -302,11 +285,11 @@ export type CompletionRequest = {
   /**
    * Messages
    */
-  messages: Array<CompletionMessage | Lfm3Message>
+  messages: Array<Lfm3Message>
   /**
    * Model
    */
-  model?: string | null
+  model?: 'lfm3-1.7b-bf16' | null
   /**
    * Reuse Prefix
    *
@@ -361,24 +344,6 @@ export type ContextRequest = {
    * Total context tokens; null uses the checkpoint architecture maximum on load.
    */
   context_limit: number | null
-}
-
-/**
- * CustomVoice
- */
-export type CustomVoice = {
-  /**
-   * Instruction
-   */
-  instruction?: string
-  /**
-   * Mode
-   */
-  mode: 'custom'
-  /**
-   * Speaker
-   */
-  speaker: string
 }
 
 /**
@@ -686,6 +651,10 @@ export type Lfm3Function = {
  */
 export type Lfm3Message = {
   /**
+   * Meta
+   */
+  meta?: string | null
+  /**
    * Role
    */
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -833,6 +802,46 @@ export type MetricsResponse = {
 }
 
 /**
+ * ModelAssignments
+ *
+ * Fixed assignments; checkpoint availability is observed from workers.
+ */
+export type ModelAssignments = {
+  /**
+   * Decisions
+   */
+  decisions?: 'laya'
+  /**
+   * Formatting
+   */
+  formatting?: 'lfm3-1.7b-bf16'
+  /**
+   * Image
+   */
+  image?: 'qwen-image-2.1-turbo'
+  /**
+   * Llm
+   */
+  llm?: 'lfm3-1.7b-bf16'
+  /**
+   * Speech
+   */
+  speech?: 'lfm3-audio-2b-bf16'
+  /**
+   * Transcription
+   */
+  transcription?: 'whisper-medium'
+  /**
+   * Video
+   */
+  video?: 'h3-fl2va-int8-turbo'
+  /**
+   * Vision
+   */
+  vision?: 'lfm3-vl-2b-bf16'
+}
+
+/**
  * ModelLifecycleStatus
  */
 export type ModelLifecycleStatus = {
@@ -851,7 +860,7 @@ export type ModelLifecycleStatus = {
   /**
    * Max Output Tokens
    */
-  max_output_tokens?: number
+  max_output_tokens?: number | null
   /**
    * Memory
    */
@@ -885,11 +894,7 @@ export type ModelLoadRequest = {
   /**
    * Model Id
    */
-  model_id?:
-    | 'qwen3.6-35b-a3b-q4-k-m'
-    | 'qwen3.8-flash-next-ud-iq3-xxs'
-    | 'qwen3.8-flash-next-q3-k-xl'
-    | null
+  model_id?: 'lfm3-1.7b-bf16' | null
 }
 
 /**
@@ -1197,20 +1202,8 @@ export type ScoreQuestion = {
 
 /**
  * SettingsRequest
- *
- * Persist the hardware tier and transcription formatting.
  */
 export type SettingsRequest = {
-  /**
-   * License Acknowledged
-   *
-   * The user read the license notices of the tier's checkpoints.
-   */
-  license_acknowledged?: boolean
-  /**
-   * Tier
-   */
-  tier?: 'go' | 'plus' | 'pro' | null
   /**
    * Whisper Formatting
    */
@@ -1219,24 +1212,16 @@ export type SettingsRequest = {
 
 /**
  * SettingsResponse
- *
- * Expose the hardware tier and transcription formatting.
  */
 export type SettingsResponse = {
+  defaults: ModelAssignments
   /**
-   * Tier
-   *
-   * The selected hardware tier; null until the user chooses one.
+   * Models
    */
-  tier: 'go' | 'plus' | 'pro' | null
-  /**
-   * Tiers
-   */
-  tiers: Array<TierSetting>
+  models: Array<CheckpointStatus>
+  video_defaults: VideoDefaults
   /**
    * Whisper Formatting
-   *
-   * Normalize speech transcripts with S1-mini by Superwhisper; retain raw text.
    */
   whisper_formatting: boolean
 }
@@ -1253,10 +1238,6 @@ export type SpeechHistoryResponse = {
    * Script
    */
   script: string
-  /**
-   * Voice Description
-   */
-  voice_description: string
 }
 
 /**
@@ -1264,29 +1245,68 @@ export type SpeechHistoryResponse = {
  */
 export type SpeechModelOption = {
   /**
-   * Default Speaker
+   * Default Gender
    */
-  default_speaker?: string | null
+  default_gender?: 'female' | 'male'
+  /**
+   * Default Language
+   */
+  default_language?:
+    | 'Arabic'
+    | 'Danish'
+    | 'German'
+    | 'Greek'
+    | 'British English'
+    | 'American English'
+    | 'Finnish'
+    | 'French'
+    | 'Hebrew'
+    | 'Italian'
+    | 'Japanese'
+    | 'Korean'
+    | 'Dutch'
+    | 'Polish'
+    | 'Portuguese'
+    | 'Spanish'
+    | 'Swedish'
+    | 'Turkish'
+    | 'Chinese'
+  /**
+   * Genders
+   */
+  genders: Array<'female' | 'male'>
   /**
    * Id
    */
-  id: string
+  id: 'lfm3-audio-2b-bf16'
   /**
-   * Mode
+   * Languages
    */
-  mode: 'custom' | 'describe' | 'clone'
+  languages: Array<
+    | 'Arabic'
+    | 'Danish'
+    | 'German'
+    | 'Greek'
+    | 'British English'
+    | 'American English'
+    | 'Finnish'
+    | 'French'
+    | 'Hebrew'
+    | 'Italian'
+    | 'Japanese'
+    | 'Korean'
+    | 'Dutch'
+    | 'Polish'
+    | 'Portuguese'
+    | 'Spanish'
+    | 'Swedish'
+    | 'Turkish'
+    | 'Chinese'
+  >
   /**
    * Name
    */
   name: string
-  /**
-   * Speakers
-   */
-  speakers?: Array<string>
-  /**
-   * Supports Instruction
-   */
-  supports_instruction?: boolean
 }
 
 /**
@@ -1294,18 +1314,40 @@ export type SpeechModelOption = {
  */
 export type SpeechRequest = {
   /**
+   * Gender
+   */
+  gender?: 'female' | 'male'
+  /**
    * Language
    */
-  language?: string
+  language?:
+    | 'Arabic'
+    | 'Danish'
+    | 'German'
+    | 'Greek'
+    | 'British English'
+    | 'American English'
+    | 'Finnish'
+    | 'French'
+    | 'Hebrew'
+    | 'Italian'
+    | 'Japanese'
+    | 'Korean'
+    | 'Dutch'
+    | 'Polish'
+    | 'Portuguese'
+    | 'Spanish'
+    | 'Swedish'
+    | 'Turkish'
+    | 'Chinese'
   /**
    * Model Id
    */
-  model_id?: 'qwen-tts-1.7b-custom'
+  model_id?: 'lfm3-audio-2b-bf16'
   /**
    * Script
    */
   script: string
-  voice: CustomVoice
 }
 
 /**
@@ -1326,52 +1368,6 @@ export type SpeechUnavailable = {
 }
 
 /**
- * TierModel
- *
- * A tier's checkpoint for one modality, with its live download state.
- */
-export type TierModel = {
-  /**
-   * Modality
-   */
-  modality:
-    'llm' | 'image' | 'video' | 'speech' | 'transcription' | 'formatting'
-  /**
-   * Null while the tier assigns no checkpoint to this modality.
-   */
-  model: CheckpointStatus | null
-}
-
-/**
- * TierSetting
- *
- * A selectable hardware tier and the checkpoints it downloads.
- */
-export type TierSetting = {
-  /**
-   * Id
-   */
-  id: 'go' | 'plus' | 'pro'
-  /**
-   * Models
-   */
-  models: Array<TierModel>
-  /**
-   * Name
-   */
-  name: string
-  /**
-   * Ram Gb
-   */
-  ram_gb: number
-  video_defaults: VideoDefaults
-  /**
-   * Vram Gb
-   */
-  vram_gb: number
-}
-
-/**
  * TranscriptionRequest
  */
 export type TranscriptionRequest = {
@@ -1384,7 +1380,7 @@ export type TranscriptionRequest = {
   /**
    * Formatting
    *
-   * Null or omitted uses the saved formatting setting. Enabled uses S1-mini by Superwhisper to normalize the transcript; raw_text is always retained.
+   * Null or omitted uses the saved formatting setting. Enabled uses LFM3 to normalize the transcript; raw_text is always retained.
    */
   formatting?: boolean | null
   /**
@@ -1478,11 +1474,11 @@ export type VideoDefaults = {
   /**
    * Duration
    */
-  duration: number
+  duration?: number
   /**
    * Resolution
    */
-  resolution: '480p' | '768p'
+  resolution?: '480p' | '768p'
 }
 
 /**

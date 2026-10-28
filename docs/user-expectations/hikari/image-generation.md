@@ -2,7 +2,7 @@
 
 Hikari's Images page generates images from a text description. Users can choose an aspect, one, two or four images, and an optional seed. A seed is recorded with the result but does not guarantee identical output across models or settings.
 
-Generation uses the image model selected through Settings. Loading, downloads and available memory can delay or prevent a request. Asking for several images does not promise simultaneous generation.
+Generation uses the fixed Qwen Image Turbo model. Loading, downloads and available memory can delay or prevent a request. Asking for several images does not promise simultaneous generation.
 
 Progress distinguishes waiting, loading and generation. Percentages and remaining time are estimates. Only completed image results count as success; errors or missing image data must not become substitute artwork.
 

@@ -36,6 +36,17 @@ class BuildTests(unittest.TestCase):
         with self.assertRaises(typer.BadParameter):
             run.worker("gpu")
 
+    def test_retired_workers_cannot_start_or_build(self):
+        with (
+            patch.object(run, "build") as build,
+            patch.object(run, "start_worker") as start,
+        ):
+            for name in ("llm", "tts", "formatting"):
+                with self.subTest(name=name), self.assertRaises(typer.BadParameter):
+                    run.worker(name)
+        build.assert_not_called()
+        start.assert_not_called()
+
 
 class WorkerReloadTests(unittest.TestCase):
     def run_worker(self, filename, builds, fingerprints, exits=False):
@@ -57,7 +68,7 @@ class WorkerReloadTests(unittest.TestCase):
             patch.object(run.typer, "echo"),
             self.assertRaises(KeyboardInterrupt),
         ):
-            run.worker("llm")
+            run.worker("image")
         return build.call_count, start.call_count, stop.call_count
 
     def test_a_changed_binary_restarts_only_this_worker(self):
@@ -103,7 +114,7 @@ class WorkerReloadTests(unittest.TestCase):
             patch.object(run.typer, "echo"),
             self.assertRaises(KeyboardInterrupt),
         ):
-            run.worker("llm")
+            run.worker("image")
         self.assertEqual(build.call_count, 2)
         self.assertEqual(start.call_count, 3)
 

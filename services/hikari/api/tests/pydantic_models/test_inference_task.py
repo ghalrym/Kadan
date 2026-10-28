@@ -2,7 +2,10 @@ import unittest
 
 from pydantic import ValidationError
 
-from api.pydantic_models.inference_task import InferenceTask
+from api.pydantic_models.inference_task import (
+    InferenceTask,
+    TranscriptionFormattingTask,
+)
 
 
 class InferenceTaskTests(unittest.TestCase):
@@ -14,7 +17,8 @@ class InferenceTaskTests(unittest.TestCase):
             {
                 "feature": "tts",
                 "script": "Hello",
-                "voice": {"mode": "custom", "speaker": "Ryan"},
+                "language": "American English",
+                "gender": "female",
             },
             {"feature": "stt", "audio": "data:audio/wav;base64,AAAA"},
             {"feature": "video", "prompt": "Mountain"},
@@ -69,3 +73,10 @@ class InferenceTaskTests(unittest.TestCase):
         ):
             with self.subTest(value=value), self.assertRaises(ValidationError):
                 InferenceTask.model_validate(value)
+
+
+class NativeTranscriptionFormattingLimitTests(unittest.TestCase):
+    def test_native_transcript_formatting_keeps_its_32000_character_limit(self):
+        self.assertEqual(len(TranscriptionFormattingTask(text="x" * 32000).text), 32000)
+        with self.assertRaises(ValidationError):
+            TranscriptionFormattingTask(text="x" * 32001)

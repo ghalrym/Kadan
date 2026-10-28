@@ -2,7 +2,7 @@ import json
 import unittest
 from typing import get_args
 
-from api.pydantic_models.inference_task import LlmModel
+from api.pydantic_models.requests import ObservedLanguageModel
 from api.services.telemetry import (
     MAX_BODY_SUMMARY_BYTES,
     TelemetryMiddleware,
@@ -77,7 +77,7 @@ class RequestSummaryTests(unittest.TestCase):
         )
 
     def test_summary_keeps_curated_models_but_never_private_fields(self):
-        public_models = (*get_args(LlmModel), "lfm3-1.7b-bf16")
+        public_models = get_args(ObservedLanguageModel)
         for model in (*public_models, "Private model", "lfm3-unreleased", None, 123):
             with self.subTest(model=model):
                 summary, saved_model = self.summary(
@@ -137,7 +137,7 @@ class RequestSummaryTests(unittest.TestCase):
 
 class CompletedRequestTests(unittest.IsolatedAsyncioTestCase):
     async def test_completion_records_curated_model_without_retaining_payloads(self):
-        for model in (*get_args(LlmModel), "lfm3-1.7b-bf16", "Private model"):
+        for model in (*get_args(ObservedLanguageModel), "Private model"):
             with self.subTest(model=model):
                 body = json.dumps(
                     {

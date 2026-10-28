@@ -105,7 +105,7 @@ test("stopping playback cancels all scheduled segments and invalidates queued en
 test("capture continues during playback and onset cancels old audio before sending new speech", async () => {
   const call = await connected();
   assert.equal(socket.url, "wss://kadan.local/api/agents/test/calls");
-  assert.deepEqual(socket.sent[0], { type: "start", persona_id: "selected-persona" });
+  assert.deepEqual(socket.sent[0], { type: "start", persona_id: "selected-persona", backend: "lfm3" });
   speech(); silence();
   assert.deepEqual(socket.sent.map(event => event.type), ["start", "interrupt", "utterance"]);
   assert.equal(socket.sent[2].turn, 1);
@@ -255,7 +255,17 @@ test("starting without an additional persona sends an explicit null selection", 
   await call.start("test", null);
   socket.readyState = 1;
   socket.onopen();
-  assert.deepEqual(socket.sent[0], { type: "start", persona_id: null });
+  assert.deepEqual(socket.sent[0], { type: "start", persona_id: null, backend: "lfm3" });
+  call.end();
+});
+
+
+test("the default call selects LFM3 through the existing session transport", async () => {
+  const call = session();
+  await call.start("test", null);
+  socket.readyState = WebSocket.OPEN;
+  socket.onopen();
+  assert.deepEqual(socket.sent[0], { type: "start", persona_id: null, backend: "lfm3" });
   call.end();
 });
 

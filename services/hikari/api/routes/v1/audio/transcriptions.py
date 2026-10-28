@@ -20,7 +20,7 @@ class TranscriptionRequest(BaseModel):
     language: str | None = None
     formatting: bool | None = Field(
         default=None,
-        description="Null or omitted uses the saved formatting setting. Enabled uses S1-mini by Superwhisper to normalize the transcript; raw_text is always retained.",
+        description="Null or omitted uses the saved formatting setting. Enabled uses LFM3 to normalize the transcript; raw_text is always retained.",
     )
 
     @field_validator("audio")
@@ -58,7 +58,7 @@ class WhisperSelection(BaseModel):
 
 @router.get("/models", operation_id="getWhisperModels")
 def get_models() -> WhisperModels:
-    """List all unique official checkpoints and the persisted selection."""
+    """Report the fixed transcription checkpoint and observed model store."""
     try:
         snapshot = inference.models_status()
     except InferenceFailure as exc:
@@ -69,7 +69,7 @@ def get_models() -> WhisperModels:
             for model in snapshot.models
             if model.kind == "transcription"
         ),
-        selected=snapshot.selected_whisper,
+        selected="medium",
     )
 
 

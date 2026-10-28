@@ -31,101 +31,45 @@ def checkpoint(model_id, kind, status="not_downloaded"):
     }
 
 
-def snapshot(tier=None):
-    return ModelStoreStatus.model_validate(
-        {
-            "models": [
-                checkpoint("qwen3.6-35b-a3b-q4-k-m", "llm", "downloading"),
-                checkpoint("superwhisper-s1-mini", "formatting", "complete"),
-                checkpoint("qwen-image-2.1-turbo", "image"),
-                checkpoint("qwen-tts-1.7b-custom", "speech"),
-                checkpoint("whisper-medium", "transcription"),
-            ],
-            "tiers": [
-                {
-                    "id": "go",
-                    "name": "Go",
-                    "vram_gb": 8,
-                    "ram_gb": 32,
-                    "video_defaults": {"duration": 5, "resolution": "480p"},
-                    "models": {
-                        "llm": "qwen3.6-35b-a3b-q4-k-m",
-                        "image": "qwen-image-2.1-turbo",
-                        "video": None,
-                        "speech": "qwen-tts-1.7b-custom",
-                        "transcription": "whisper-medium",
-                        "formatting": "superwhisper-s1-mini",
-                    },
-                }
-            ],
-            "selected_tier": tier,
-            "selected_model_id": "qwen3.6-35b-a3b-q4-k-m" if tier else None,
-            "whisper_formatting": True,
-        }
+def snapshot():
+    return ModelStoreStatus(
+        models=[
+            checkpoint("lfm3-1.7b-bf16", "llm", "downloading"),
+            checkpoint("qwen-image-2.1-turbo", "image"),
+        ]
     )
 
 
 class SettingsTests(unittest.IsolatedAsyncioTestCase):
-    def test_tiers_report_assigned_checkpoints_and_progress(self):
+    def test_fixed_assignments_and_real_checkpoint_progress_are_reported(self):
         with patch.object(settings.inference, "models_status", return_value=snapshot()):
             result = settings.get_settings()
-        self.assertIsNone(result.tier)
-        tier = result.tiers[0]
-        self.assertEqual((tier.id, tier.vram_gb, tier.ram_gb), ("go", 8, 32))
-        models = {entry.modality: entry.model for entry in tier.models}
+        self.assertEqual(result.defaults.llm, "lfm3-1.7b-bf16")
+        self.assertEqual(result.models[0].status, "downloading")
+        self.assertEqual(result.models[0].downloaded_bytes, 5)
         self.assertEqual(
-            list(models),
-            ["llm", "image", "video", "speech", "transcription", "formatting"],
+            (result.video_defaults.duration, result.video_defaults.resolution),
+            (5, "480p"),
         )
-        self.assertEqual(
-            (models["llm"].id, models["llm"].status, models["llm"].downloaded_bytes),
-            ("qwen3.6-35b-a3b-q4-k-m", "downloading", 5),
-        )
-        self.assertEqual(models["formatting"].status, "complete")
-        self.assertEqual(models["image"].id, "qwen-image-2.1-turbo")
-        self.assertEqual(models["speech"].id, "qwen-tts-1.7b-custom")
-        self.assertEqual(models["transcription"].id, "whisper-medium")
-        self.assertIsNone(models["video"])
-        self.assertEqual(tier.video_defaults.duration, 5)
-        self.assertEqual(tier.video_defaults.resolution, "480p")
+        self.assertNotIn("tiers", result.model_dump())
+        self.assertEqual(len(result.models), 2)
 
-    async def test_tier_selection_saves_and_queues_downloads(self):
-        body = settings.SettingsRequest(tier="go", license_acknowledged=True)
-        with (
-            patch.object(
-                settings.inference, "models_status", return_value=snapshot(tier="go")
-            ),
-            patch.object(settings.inference, "select_tier", new=AsyncMock()) as select,
-            patch.object(
-                settings.inference, "download_tier", new=AsyncMock()
-            ) as download,
+    def test_tier_or_model_selection_controls_are_rejected(self):
+        for body in (
+            {"tier": "go"},
+            {"license_acknowledged": True},
+            {"models": {"LLM": "qwen"}},
         ):
-            result = await settings.update_settings(body)
-        select.assert_awaited_once_with("go")
-        download.assert_awaited_once_with("go", True)
-        self.assertEqual(result.tier, "go")
+            with self.subTest(body=body), self.assertRaises(ValidationError):
+                settings.SettingsRequest(**body)
 
-    def test_unknown_tier_and_model_selections_are_rejected(self):
-        with self.assertRaises(ValidationError):
-            settings.SettingsRequest(tier="max")
-        # The tier decides every model; there is no per-model selection.
-        for models in (
-            {"LLM": "qwen3.6-35b-a3b-q4-k-m"},
-            {"Image": "qwen-image-2.1-turbo"},
-        ):
-            with self.assertRaises(ValidationError):
-                settings.SettingsRequest(models=models)
-
-    async def test_formatting_saves_both_states_without_selecting_a_tier(self):
+    async def test_formatting_updates_only_the_saved_preference(self):
         for enabled in (False, True):
             status = snapshot()
             status.whisper_formatting = enabled
             with (
                 patch.object(settings.inference, "models_status", return_value=status),
                 patch.object(settings.inference, "submit", new=AsyncMock()) as submit,
-                patch.object(
-                    settings.inference, "select_tier", new=AsyncMock()
-                ) as select,
             ):
                 result = await settings.update_settings(
                     settings.SettingsRequest(whisper_formatting=enabled)
@@ -135,19 +79,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
                 feature="whisper_formatting",
                 operation="configure",
             )
-            select.assert_not_awaited()
             self.assertEqual(result.whisper_formatting, enabled)
-
-    async def test_omitted_settings_are_unchanged(self):
-        status = snapshot()
-        status.whisper_formatting = False
-        with (
-            patch.object(settings.inference, "models_status", return_value=status),
-            patch.object(settings.inference, "submit", new=AsyncMock()) as submit,
-        ):
-            result = await settings.update_settings(settings.SettingsRequest())
-        submit.assert_not_awaited()
-        self.assertFalse(result.whisper_formatting)
 
     async def test_save_failure_is_reported(self):
         with (
@@ -163,3 +95,13 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(caught.exception.status_code, 503)
         self.assertEqual(caught.exception.detail, "Cannot save setting")
+
+    async def test_empty_update_does_not_queue_work_or_downloads(self):
+        status = snapshot()
+        with (
+            patch.object(settings.inference, "models_status", return_value=status),
+            patch.object(settings.inference, "submit", new=AsyncMock()) as submit,
+        ):
+            result = await settings.update_settings(settings.SettingsRequest())
+        submit.assert_not_awaited()
+        self.assertEqual(result.models, status.models)

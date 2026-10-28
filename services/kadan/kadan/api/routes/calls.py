@@ -20,6 +20,7 @@ router = APIRouter()
 class CallStart(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["start"]
+    backend: Literal["lfm3"] = "lfm3"
     persona_id: UUID | None
 
 
@@ -47,7 +48,13 @@ async def voice_call(key: AgentKey, socket: WebSocket):
                 url, open_timeout=5, max_size=6 * 1024**2, proxy=None
             )
             await upstream.send(
-                json.dumps({"type": "start", "instruction": instruction})
+                json.dumps(
+                    {
+                        "type": "start",
+                        "instruction": instruction,
+                        "backend": start.backend,
+                    }
+                )
             )
         except (
             OSError,

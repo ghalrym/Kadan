@@ -35,6 +35,7 @@ class CheckpointStatus(BaseModel):
         "image",
         "decision",
         "vision",
+        "audio",
     ]
     display_name: str | None
     short_name: str | None = None
@@ -45,43 +46,30 @@ class CheckpointStatus(BaseModel):
     architecture_context_limit: int | None
 
 
-TierId = Literal["go", "plus", "pro"]
-TierModality = Literal["llm", "image", "video", "speech", "transcription", "formatting"]
+class ModelAssignments(BaseModel):
+    """Fixed assignments; checkpoint availability is observed from workers."""
 
-
-class TierModels(BaseModel):
-    """Checkpoint assignments for a tier, which always provides a language model."""
-
-    llm: str
-    image: str | None = None
-    video: str | None = None
-    speech: str | None = None
-    transcription: str | None = None
-    formatting: str | None = None
+    llm: Literal["lfm3-1.7b-bf16"] = "lfm3-1.7b-bf16"
+    vision: Literal["lfm3-vl-2b-bf16"] = "lfm3-vl-2b-bf16"
+    speech: Literal["lfm3-audio-2b-bf16"] = "lfm3-audio-2b-bf16"
+    image: Literal["qwen-image-2.1-turbo"] = "qwen-image-2.1-turbo"
+    video: Literal["h3-fl2va-int8-turbo"] = "h3-fl2va-int8-turbo"
+    transcription: Literal["whisper-medium"] = "whisper-medium"
+    formatting: Literal["lfm3-1.7b-bf16"] = "lfm3-1.7b-bf16"
+    decisions: Literal["laya"] = "laya"
 
 
 class VideoDefaults(BaseModel):
     """Suggested clip settings; request limits and memory admission are separate."""
 
-    duration: int = Field(ge=1, le=15)
-    resolution: Literal["480p", "768p"]
-
-
-class HardwareTier(BaseModel):
-    """A hardware profile fixing one checkpoint per modality; None is unassigned."""
-
-    id: TierId
-    name: str
-    vram_gb: int
-    ram_gb: int
-    video_defaults: VideoDefaults
-    models: TierModels
+    duration: int = Field(default=5, ge=1, le=15)
+    resolution: Literal["480p", "768p"] = "480p"
 
 
 class ModelStoreStatus(BaseModel):
     models: list[CheckpointStatus]
-    tiers: list[HardwareTier] = []
-    selected_tier: TierId | None = None
-    selected_model_id: str | None = None
+    defaults: ModelAssignments = Field(default_factory=ModelAssignments)
+    video_defaults: VideoDefaults = Field(default_factory=VideoDefaults)
+    selected_model_id: str | None = "lfm3-1.7b-bf16"
     selected_whisper: str | None = None
     whisper_formatting: bool = True

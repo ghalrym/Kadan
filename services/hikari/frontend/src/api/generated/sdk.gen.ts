@@ -182,8 +182,6 @@ export const unloadSelectedModel = <ThrowOnError extends boolean = false>(
 
 /**
  * List Speech
- *
- * Return empty speech history and blank editor defaults, without fixture audio.
  */
 export const listSpeech = <ThrowOnError extends boolean = false>(
   options?: Options<ListSpeechData, ThrowOnError>,
@@ -196,7 +194,7 @@ export const listSpeech = <ThrowOnError extends boolean = false>(
 /**
  * Generate Speech
  *
- * Queue native speech; cancellation waits for owned cleanup.
+ * Queue the approved LFM checkpoint; cancellation waits for owned cleanup.
  */
 export const generateSpeech = <ThrowOnError extends boolean = false>(
   options: Options<GenerateSpeechData, ThrowOnError>,
@@ -217,7 +215,7 @@ export const generateSpeech = <ThrowOnError extends boolean = false>(
 /**
  * List Speech Models
  *
- * Expose only enabled native checkpoint integrations.
+ * Expose the fixed audio checkpoint's supported language and gender choices.
  */
 export const listSpeechModels = <ThrowOnError extends boolean = false>(
   options?: Options<ListSpeechModelsData, ThrowOnError>,
@@ -256,7 +254,7 @@ export const transcribeAudio = <ThrowOnError extends boolean = false>(
 /**
  * Get Models
  *
- * List all unique official checkpoints and the persisted selection.
+ * Report the fixed transcription checkpoint and observed model store.
  */
 export const getWhisperModels = <ThrowOnError extends boolean = false>(
   options?: Options<GetWhisperModelsData, ThrowOnError>,
@@ -581,11 +579,6 @@ export const getRequest = <ThrowOnError extends boolean = false>(
 
 /**
  * Get Settings
- *
- * Read the shared model store, including each tier's download progress.
- *
- * Raise HTTP 503 if the worker status is unavailable; this read does not load
- * a model or configure another modality.
  */
 export const getSettings = <ThrowOnError extends boolean = false>(
   options?: Options<GetSettingsData, ThrowOnError>,
@@ -597,8 +590,6 @@ export const getSettings = <ThrowOnError extends boolean = false>(
 
 /**
  * Update Settings
- *
- * Persist the hardware tier and queue downloads of its checkpoints, and transcription formatting. The tier selects the language, image and video models and unloads a resident language model of another tier after earlier chats finish.
  */
 export const updateSettings = <ThrowOnError extends boolean = false>(
   options: Options<UpdateSettingsData, ThrowOnError>,

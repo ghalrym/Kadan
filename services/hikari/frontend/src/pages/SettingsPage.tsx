@@ -1,43 +1,32 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
-  chooseTier,
+  cancelModelDownload,
+  configureModelContext,
+  configuredModels,
+  downloadModel,
   downloadState,
-  downloadExperimentalModel,
-  fetchExperimentalModels,
   fetchSettings,
-  licenseNotices,
-  tierCanDownload,
-  tierComplete,
-  tierDownloading,
-  tierProgress,
-  type SettingsResponse,
   type CheckpointStatus,
-  type TierModel,
-  type TierSetting,
+  type SettingsResponse,
 } from '../api/settings'
-import { modalityLabels, tierCopy } from '../data/tiers'
 import './SettingsPage.css'
 
-/** Format bytes as decimal GB to match checkpoint size estimates. */
 const gigabytes = (bytes: number) => `${(bytes / 1e9).toFixed(1)} GB`
-
-function downloadSize(model: CheckpointStatus): string {
-  if (model.total_bytes > 0) return gigabytes(model.total_bytes)
-  if (model.estimated_bytes > 0) return `${gigabytes(model.estimated_bytes)} (estimated)`
-  return 'Size unknown'
-}
-
 const stateLabels = {
-  unassigned: 'Not assigned yet',
+  unassigned: 'Worker unavailable',
   not_downloaded: 'Not downloaded',
   queued: 'Queued',
   downloading: 'Downloading',
-  complete: 'Complete',
+  complete: 'Downloaded',
   failed: 'Failed',
 }
 
-/** Open a native modal on mount; Escape runs `close` instead of dismissing directly. */
-function Modal({ title, close, returnFocusId, children }: {
+function Modal({
+  title,
+  close,
+  returnFocusId,
+  children,
+}: {
   title: string
   close: () => void
   returnFocusId: string
@@ -49,184 +38,39 @@ function Modal({ title, close, returnFocusId, children }: {
     element?.showModal()
     return () => {
       element?.close()
-      // Confirmation replaces the opener with the selected tier's progress button.
       document.getElementById(returnFocusId)?.focus()
     }
   }, [returnFocusId])
   return (
     <dialog
-      className="tier-dialog"
+      className="model-dialog"
       ref={dialog}
-      aria-labelledby="tier-dialog-title"
+      aria-labelledby="model-dialog-title"
       onCancel={(event) => {
         event.preventDefault()
         close()
       }}
     >
-      <h2 id="tier-dialog-title">{title}</h2>
+      <h2 id="model-dialog-title">{title}</h2>
       {children}
     </dialog>
   )
 }
 
-function CheckIcon() {
-  return (
-    <svg className="tier-card-check" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-      <path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
+/** The fixed stack's individual checkpoints, with explicit download and context changes. */
+export function ModelDownloads() {
+  const [settings, setSettings] = useState<SettingsResponse | null>(null)
+  const [confirmModel, setConfirmModel] = useState<CheckpointStatus | null>(
+    null,
   )
-}
-
-/** A plain model name; hovering or focusing it reveals the checkpoint details. */
-function ModelName({ id, model }: { id: string; model: NonNullable<TierModel['model']> }) {
-  const tooltipId = `${id}-details`
-  const details: [string, ReactNode][] = [
-    ['Checkpoint', model.display_name ?? model.id],
-    ['Repository', <span key="repo" className="mono">{model.repo_id}</span>],
-    ['Download', downloadSize(model)],
-  ]
-  if (model.context_limit) details.push(['Context', `${model.context_limit.toLocaleString()} tokens`])
-  if (model.license) details.push(['License', model.license])
-  return (
-    <span className="model-name" tabIndex={0} aria-describedby={tooltipId}>
-      {model.short_name ?? model.display_name ?? model.id}
-      <span role="tooltip" id={tooltipId} className="model-tooltip">
-        <dl>
-          {details.map(([term, value]) => (
-            <div key={term}>
-              <dt>{term}</dt>
-              <dd>{value}</dd>
-            </div>
-          ))}
-        </dl>
-      </span>
-    </span>
-  )
-}
-
-/** A pricing-style tile; the current tier, else the recommended one, is highlighted. */
-function TierCard({ tier, current, highlighted, disabled, choose, showProgress }: {
-  tier: TierSetting
-  current: boolean
-  highlighted: boolean
-  disabled: boolean
-  choose: () => void
-  showProgress: () => void
-}) {
-  const copy = tierCopy[tier.id]
-  const badge = current ? 'Current tier' : copy.recommended ? 'Recommended' : null
-  const downloading = current && tierDownloading(tier)
-  const ready = current && tierComplete(tier)
-  return (
-    <article
-      className={`tier-card${highlighted ? ' tier-card--highlighted' : ''}${current ? ' tier-card--current' : ''}`}
-      aria-current={current || undefined}
-      aria-labelledby={`${tier.id}-name`}
-    >
-      {badge && <span className="tier-card-badge mono">{badge}</span>}
-      <header className="tier-card-header">
-        <h3 id={`${tier.id}-name`}>{tier.name}</h3>
-        <p className="muted">{copy.tagline}</p>
-      </header>
-      <div className="tier-card-price">
-        <p>
-          <span className="tier-card-amount">{tier.vram_gb} GB</span>
-          <span className="tier-card-unit">VRAM</span>
-        </p>
-        <p className="muted">with {tier.ram_gb} GB system RAM</p>
-      </div>
-      {current ? (
-        <button
-          id={`${tier.id}-action`}
-          type="button"
-          className="button tier-card-button"
-          disabled={ready}
-          onClick={showProgress}
-        >
-          {ready ? 'Your current tier' : downloading ? `Downloading… ${tierProgress(tier)}%` : 'View downloads'}
-        </button>
-      ) : (
-        <button
-          id={`${tier.id}-action`}
-          type="button"
-          className={`button tier-card-button${highlighted ? ' button--primary' : ''}`}
-          disabled={disabled}
-          onClick={choose}
-        >
-          Choose {tier.name}
-        </button>
-      )}
-      <div className="tier-card-includes">
-        <p className="tier-card-includes-label mono">Includes</p>
-        <ul>
-          {tier.models.map(({ modality, model }) => (
-            <li key={modality}>
-              <CheckIcon />
-              <span>
-                <span className="muted">{modalityLabels[modality].short}</span>{' '}
-                {model ? <ModelName id={`${tier.id}-${modality}`} model={model} /> : 'TBD'}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-    </article>
-  )
-}
-
-function DownloadProgress({ tier }: { tier: TierSetting }) {
-  return (
-    <ul className="tier-downloads">
-      {tier.models.map(({ modality, model }) => {
-        const state = downloadState(model)
-        const label = modalityLabels[modality].label
-        const size = model ? model.total_bytes || model.estimated_bytes : 0
-        return (
-          <li key={modality} className={`tier-download tier-download--${state}`}>
-            <div className="tier-download-heading">
-              <span>
-                {label}
-                {model && <span className="muted"> · {model.display_name ?? model.id}</span>}
-              </span>
-              <span className="mono tier-download-status">{stateLabels[state]}</span>
-            </div>
-            {model && (
-              <>
-                {/* A queued download is indeterminate until the worker reports its size. */}
-                <progress
-                  className="progress"
-                  aria-label={`${label} download progress`}
-                  max={size || 1}
-                  value={
-                    state === 'queued'
-                      ? undefined
-                      : state === 'complete'
-                        ? size || 1
-                        : model.downloaded_bytes
-                  }
-                />
-                <span className="mono faint">
-                  {state === 'complete' || !size
-                    ? downloadSize(model)
-                    : `${gigabytes(model.downloaded_bytes)} / ${downloadSize(model)}`}
-                </span>
-              </>
-            )}
-            {model?.error && <p role="alert" className="error">{model.error}</p>}
-          </li>
-        )
-      })}
-    </ul>
-  )
-}
-
-/** Individual opt-in models are discovered from connected experimental workers. */
-export function ExperimentalModelDownloads() {
-  const [models, setModels] = useState<CheckpointStatus[]>([])
-  const [confirmModel, setConfirmModel] = useState<CheckpointStatus | null>(null)
   const [acknowledged, setAcknowledged] = useState(false)
+  const [contextModel, setContextModel] = useState<CheckpointStatus | null>(
+    null,
+  )
+  const [contextValue, setContextValue] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState('')
+  const [readError, setReadError] = useState('')
+  const [actionError, setActionError] = useState('')
   const [needsRefresh, setNeedsRefresh] = useState(false)
   const [refresh, setRefresh] = useState(0)
   const action = useRef<AbortController | null>(null)
@@ -239,21 +83,40 @@ export function ExperimentalModelDownloads() {
     async function poll() {
       const readingVersion = version.current
       try {
-        if (!action.current) {
-          const next = await fetchExperimentalModels(controller.signal)
-          if (!controller.signal.aborted && !action.current && readingVersion === version.current) {
-            setModels(next)
-            if (next.length) timer = setTimeout(poll, 1500)
-          }
-        } else timer = setTimeout(poll, 1500)
-      } catch (failure) {
-        if (!controller.signal.aborted && readingVersion === version.current) {
-          setError(failure instanceof Error ? failure.message : 'Could not load experimental models.')
+        if (action.current) {
+          timer = setTimeout(poll, 1500)
+          return
         }
+        const next = await fetchSettings(controller.signal)
+        if (
+          !controller.signal.aborted &&
+          !action.current &&
+          readingVersion === version.current
+        ) {
+          setSettings(next)
+          setReadError('')
+          if (
+            next.models.some(
+              (model) =>
+                model.status === 'downloading' || model.status === 'cancelling',
+            )
+          )
+            timer = setTimeout(poll, 1500)
+        }
+      } catch (failure) {
+        if (!controller.signal.aborted && readingVersion === version.current)
+          setReadError(
+            failure instanceof Error
+              ? failure.message
+              : 'Could not load models.',
+          )
       }
     }
     void poll()
-    return () => { controller.abort(); clearTimeout(timer) }
+    return () => {
+      controller.abort()
+      clearTimeout(timer)
+    }
   }, [refresh])
 
   async function refreshModels() {
@@ -263,17 +126,26 @@ export function ExperimentalModelDownloads() {
     version.current++
     setSubmitting(true)
     try {
-      const next = await fetchExperimentalModels(AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]))
+      const next = await fetchSettings(
+        AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]),
+      )
       if (!controller.signal.aborted) {
-        setModels(next)
-        setError('')
+        setSettings(next)
+        setReadError('')
+        setActionError('')
         setNeedsRefresh(false)
         setConfirmModel(null)
+        setContextModel(null)
         setAcknowledged(false)
         setRefresh((value) => value + 1)
       }
     } catch (failure) {
-      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : 'Could not refresh models.')
+      if (!controller.signal.aborted)
+        setReadError(
+          failure instanceof Error
+            ? failure.message
+            : 'Could not refresh models.',
+        )
     } finally {
       action.current = null
       if (!controller.signal.aborted) setSubmitting(false)
@@ -282,25 +154,38 @@ export function ExperimentalModelDownloads() {
 
   async function download() {
     if (!confirmModel || !acknowledged || action.current || needsRefresh) return
-    const current = models.find((model) => model.id === confirmModel.id)
-    if (!current || ['complete', 'downloading', 'cancelling'].includes(current.status)) return
+    const current = settings?.models.find(
+      (model) => model.id === confirmModel.id,
+    )
+    if (
+      !current ||
+      ['complete', 'downloading', 'cancelling'].includes(current.status)
+    )
+      return
     const controller = new AbortController()
     action.current = controller
     version.current++
     setSubmitting(true)
-    setError('')
+    setActionError('')
     try {
-      const next = await downloadExperimentalModel(confirmModel.id, acknowledged,
-        AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]))
+      const models = await downloadModel(
+        confirmModel.id,
+        acknowledged,
+        AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]),
+      )
       if (!controller.signal.aborted) {
-        setModels(next)
+        setSettings((saved) => saved && { ...saved, models })
         setConfirmModel(null)
         setAcknowledged(false)
         setRefresh((value) => value + 1)
       }
     } catch (failure) {
       if (!controller.signal.aborted) {
-        setError(failure instanceof Error ? failure.message : 'Could not start model download.')
+        setActionError(
+          failure instanceof Error
+            ? failure.message
+            : 'Could not start model download.',
+        )
         setNeedsRefresh(true)
       }
     } finally {
@@ -309,157 +194,27 @@ export function ExperimentalModelDownloads() {
     }
   }
 
-  if (!models.length && !error) return null
-  const confirmed = models.find((model) => model.id === confirmModel?.id)
-  const confirmedUnavailable = !confirmed || ['complete', 'downloading', 'cancelling'].includes(confirmed.status)
-  const errorPanel = error && <div role="alert" className="error-panel">
-    <p>{error}</p>
-    {needsRefresh && <p>The download may have started. Refresh models before trying again.</p>}
-    <button className="button" type="button" disabled={submitting} onClick={() => void refreshModels()}>Refresh models</button>
-  </div>
-  return <section className="experimental-models stack" aria-labelledby="experimental-models-title">
-    <h2 id="experimental-models-title">Experimental models</h2>
-    {errorPanel}
-    <ul className="tier-downloads">
-      {models.map((model) => {
-        const state = downloadState(model)
-        const size = model.total_bytes || model.estimated_bytes
-        const active = model.status === 'downloading' || model.status === 'cancelling'
-        const name = model.display_name ?? model.id
-        return <li key={model.id} className={`tier-download tier-download--${state}`}>
-          <div className="tier-download-heading">
-            <strong>{name}</strong>
-            <span className="mono tier-download-status">{model.status === 'cancelling' ? 'Cancelling' : stateLabels[state]}</span>
-          </div>
-          <p>{model.license_notice || 'This download includes pinned model-specific Python code.'}</p>
-          <div className="experimental-model-actions">
-            {model.license_url && <a href={model.license_url} target="_blank" rel="noreferrer">{model.license === 'lfm1.0' ? 'LFM Open License v1.0' : model.license}</a>}
-            <span className="mono muted">{size ? `${gigabytes(model.downloaded_bytes)} / ${downloadSize(model)}` : 'Size unknown'}</span>
-            <button id={`${model.id}-download`} className="button" type="button"
-              aria-label={`Download ${name}`} disabled={submitting || active || model.status === 'complete' || needsRefresh}
-              onClick={() => { setAcknowledged(false); setConfirmModel(model) }}>
-              {model.status === 'complete' ? 'Downloaded' : active ? 'Downloading…' : model.status === 'failed' || model.status === 'cancelled' ? 'Retry download' : 'Download'}
-            </button>
-          </div>
-          {active && <progress className="progress" aria-label={`${name} download progress`} max={size || 1} value={model.total_bytes ? model.downloaded_bytes : undefined} />}
-          {model.error && <p className="error" role="alert">{model.error}</p>}
-        </li>
-      })}
-    </ul>
-    {confirmModel && <Modal title={`Download ${confirmModel.display_name ?? confirmModel.id}?`}
-      close={() => !submitting && setConfirmModel(null)} returnFocusId={`${confirmModel.id}-download`}>
-      <p className="tier-dialog-notice">{confirmModel.license_notice || 'This download includes pinned model-specific Python code.'}{' '}
-        {confirmModel.license_url && <a href={confirmModel.license_url} target="_blank" rel="noreferrer">LFM Open License v1.0</a>}
-      </p>
-      <label className="experimental-license-choice"><input type="checkbox" checked={acknowledged} disabled={submitting}
-        onChange={(event) => setAcknowledged(event.target.checked)} />I have reviewed and accept this model’s license.</label>
-      {errorPanel}
-      <div className="tier-dialog-actions">
-        <button className="button" type="button" autoFocus disabled={submitting} onClick={() => setConfirmModel(null)}>Cancel</button>
-        <button className="button button--primary" type="button" disabled={!acknowledged || submitting || needsRefresh || confirmedUnavailable} onClick={() => void download()}>
-          {submitting ? 'Starting…' : 'Accept and download'}
-        </button>
-      </div>
-    </Modal>}
-  </section>
-}
-
-/**
- * Choose a hardware tier, confirm its download, and follow per-model progress.
- * Settings poll only while the selected tier downloads or its progress is open.
- */
-export default function SettingsPage() {
-  const [settings, setSettings] = useState<SettingsResponse | null>(null)
-  const [error, setError] = useState('')
-  const [actionError, setActionError] = useState('')
-  const [needsRefresh, setNeedsRefresh] = useState(false)
-  const [confirmTier, setConfirmTier] = useState<TierSetting | null>(null)
-  const [progressOpen, setProgressOpen] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-  const [refresh, setRefresh] = useState(0)
-  const action = useRef<AbortController | null>(null)
-  const settingsVersion = useRef(0)
-  useEffect(() => () => action.current?.abort(), [])
-
-  const currentTier = settings?.tier ?? null
-  const selected = settings?.tiers.find((tier) => tier.id === currentTier)
-  const downloading = !!selected && tierDownloading(selected)
-
-  useEffect(() => {
-    const controller = new AbortController()
-    let timer: ReturnType<typeof setTimeout>
-    // Poll serially; a pending tier change owns the next snapshot.
-    async function poll() {
-      const version = settingsVersion.current
-      try {
-        if (!action.current) {
-          const next = await fetchSettings(controller.signal)
-          if (!controller.signal.aborted && !action.current && version === settingsVersion.current) {
-            setSettings(next)
-            setError('')
-          }
-        }
-      } catch (failure) {
-        if (!controller.signal.aborted && !action.current && version === settingsVersion.current)
-          setError(failure instanceof Error ? failure.message : 'Could not load settings')
-      }
-      if (!controller.signal.aborted && (downloading || progressOpen))
-        timer = setTimeout(poll, 1500)
-    }
-    void poll()
-    return () => {
-      controller.abort()
-      clearTimeout(timer)
-    }
-  }, [downloading, progressOpen, refresh])
-
-  async function refreshSavedSettings() {
-    if (action.current) return
-    const controller = new AbortController()
-    action.current = controller
-    settingsVersion.current++
-    setSubmitting(true)
-    setError('')
-    try {
-      const next = await fetchSettings(
-        AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]),
-      )
-      if (!controller.signal.aborted) {
-        setSettings(next)
-        setNeedsRefresh(false)
-      }
-    } catch (failure) {
-      if (!controller.signal.aborted)
-        setError(failure instanceof Error ? failure.message : 'Could not load settings')
-    } finally {
-      action.current = null
-      if (!controller.signal.aborted) setSubmitting(false)
-    }
-  }
-
-  async function confirm(tier: TierSetting) {
+  async function cancelDownload(model: CheckpointStatus) {
     if (action.current || needsRefresh) return
     const controller = new AbortController()
     action.current = controller
-    settingsVersion.current++
+    version.current++
     setSubmitting(true)
-    setError('')
     setActionError('')
     try {
-      const next = await chooseTier(
-        tier.id,
-        AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]),
-      )
+      const models = await cancelModelDownload(model.id, controller.signal)
       if (!controller.signal.aborted) {
-        setSettings(next)
-        setConfirmTier(null)
-        setProgressOpen(true)
+        setSettings((saved) => saved && { ...saved, models })
+        setRefresh((value) => value + 1)
       }
     } catch (failure) {
       if (!controller.signal.aborted) {
-        setActionError(failure instanceof Error ? failure.message : 'Could not change tier')
+        setActionError(
+          failure instanceof Error
+            ? failure.message
+            : 'Could not cancel model download.',
+        )
         setNeedsRefresh(true)
-        setConfirmTier(null)
       }
     } finally {
       action.current = null
@@ -467,110 +222,346 @@ export default function SettingsPage() {
     }
   }
 
-  const notices = confirmTier ? licenseNotices(confirmTier) : []
-  const errorPanel = (actionError || error) && (
-    <div role="alert" className="error-panel tier-alert">
-      <div>
-        {actionError && <p>{actionError}</p>}
-        {needsRefresh && <p>The change may have been saved. Refresh saved state before trying again.</p>}
-        {error && <p>{error}</p>}
-      </div>
-      {needsRefresh ? (
-        <button type="button" className="button" disabled={submitting} onClick={() => void refreshSavedSettings()}>
-          {submitting ? 'Refreshing…' : 'Refresh saved state'}
-        </button>
-      ) : error && (
-        <button type="button" className="button" disabled={submitting} onClick={() => setRefresh((value) => value + 1)}>
-          Retry
-        </button>
+  async function saveContext() {
+    if (!contextModel || action.current || needsRefresh) return
+    const limit = contextValue.trim() === '' ? null : Number(contextValue)
+    if (
+      limit !== null &&
+      (!Number.isSafeInteger(limit) ||
+        limit < 1 ||
+        (contextModel.architecture_context_limit !== null &&
+          limit > contextModel.architecture_context_limit))
+    ) {
+      setActionError(
+        'Enter a positive whole-token limit within the model maximum, or leave it blank to use the maximum.',
+      )
+      return
+    }
+    const controller = new AbortController()
+    action.current = controller
+    version.current++
+    setSubmitting(true)
+    setActionError('')
+    try {
+      const models = await configureModelContext(
+        contextModel.id,
+        limit,
+        AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]),
+      )
+      if (!controller.signal.aborted) {
+        setSettings((saved) => saved && { ...saved, models })
+        setContextModel(null)
+        setRefresh((value) => value + 1)
+      }
+    } catch (failure) {
+      if (!controller.signal.aborted) {
+        setActionError(
+          failure instanceof Error
+            ? failure.message
+            : 'Could not save context.',
+        )
+        setNeedsRefresh(true)
+      }
+    } finally {
+      action.current = null
+      if (!controller.signal.aborted) setSubmitting(false)
+    }
+  }
+
+  const errorPanel = (readError || actionError) && (
+    <div role="alert" className="error-panel">
+      {actionError && <p>{actionError}</p>}
+      {readError && <p>{readError}</p>}
+      {needsRefresh && (
+        <p>
+          The change may have been saved. Refresh models before trying again.
+        </p>
       )}
+      <button
+        className="button"
+        type="button"
+        disabled={submitting}
+        onClick={() => void refreshModels()}
+      >
+        Refresh models
+      </button>
     </div>
   )
+  const confirmed = settings?.models.find(
+    (model) => model.id === confirmModel?.id,
+  )
+  const confirmedUnavailable =
+    !confirmed ||
+    ['complete', 'downloading', 'cancelling'].includes(confirmed.status)
+  return (
+    <section className="model-downloads stack" aria-labelledby="models-title">
+      <header className="model-intro">
+        <div>
+          <h1 id="models-title">Models</h1>
+          <p className="muted">
+            One fixed stack. Review each model’s license before downloading.
+          </p>
+        </div>
+        <button
+          className="button"
+          type="button"
+          disabled={submitting}
+          onClick={() => void refreshModels()}
+        >
+          Refresh models
+        </button>
+      </header>
+      {errorPanel}
+      {!settings && !readError && <p role="status">Loading models…</p>}
+      <ul className="model-list">
+        {settings &&
+          configuredModels(settings).map(({ id, uses, checkpoint: model }) => {
+            const name = model?.display_name ?? id
+            const state = downloadState(model)
+            const size = model ? model.total_bytes || model.estimated_bytes : 0
+            const active =
+              model?.status === 'downloading' || model?.status === 'cancelling'
+            return (
+              <li
+                key={id}
+                className={`model-download model-download--${model?.status === 'cancelled' ? 'cancelled' : state}`}
+              >
+                <div className="model-download-heading">
+                  <strong>{name}</strong>
+                  <span className="mono model-download-status">
+                    {model?.status === 'cancelling'
+                      ? 'Cancelling'
+                      : model?.status === 'cancelled'
+                        ? 'Cancelled'
+                        : stateLabels[state]}
+                  </span>
+                </div>
+                <p className="muted">{uses.join(' · ')}</p>
+                {!model ? (
+                  <p role="status">
+                    Connect this model’s worker to check its download and
+                    inference status.
+                  </p>
+                ) : (
+                  <>
+                    {model.license_notice && <p>{model.license_notice}</p>}
+                    {!model.inference_available && (
+                      <p role="status">
+                        Inference is unavailable for this model.
+                      </p>
+                    )}
+                    <div className="model-actions">
+                      {model.license_url && (
+                        <a
+                          href={model.license_url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {model.license}
+                        </a>
+                      )}
+                      <span className="mono muted">
+                        {size
+                          ? `${gigabytes(model.downloaded_bytes)} / ${gigabytes(size)}${model.total_bytes ? '' : ' (estimated)'}`
+                          : 'Size unknown'}
+                      </span>
+                      {active ? (
+                        <button
+                          id={`${id}-download`}
+                          className="button"
+                          type="button"
+                          disabled={
+                            submitting ||
+                            needsRefresh ||
+                            model.status === 'cancelling'
+                          }
+                          onClick={() => void cancelDownload(model)}
+                        >
+                          {model.status === 'cancelling'
+                            ? 'Cancelling…'
+                            : 'Cancel download'}
+                        </button>
+                      ) : (
+                        <button
+                          id={`${id}-download`}
+                          className="button"
+                          type="button"
+                          aria-label={`Download ${name}`}
+                          disabled={
+                            submitting ||
+                            needsRefresh ||
+                            model.status === 'complete'
+                          }
+                          onClick={() => {
+                            setActionError('')
+                            setAcknowledged(false)
+                            setConfirmModel(model)
+                          }}
+                        >
+                          {model.status === 'complete'
+                            ? 'Downloaded'
+                            : state === 'failed'
+                              ? 'Retry download'
+                              : 'Download'}
+                        </button>
+                      )}
+                      {model.kind === 'llm' && (
+                        <button
+                          id={`${id}-context`}
+                          className="button"
+                          type="button"
+                          disabled={submitting || needsRefresh}
+                          onClick={() => {
+                            setActionError('')
+                            setContextValue(
+                              model.context_limit?.toString() ?? '',
+                            )
+                            setContextModel(model)
+                          }}
+                        >
+                          Context
+                        </button>
+                      )}
+                    </div>
+                    {model.kind === 'llm' && (
+                      <p className="faint">
+                        Saved context:{' '}
+                        {model.context_limit?.toLocaleString() ??
+                          'model maximum'}{' '}
+                        tokens
+                        {model.architecture_context_limit
+                          ? ` · Maximum ${model.architecture_context_limit.toLocaleString()}`
+                          : ''}
+                      </p>
+                    )}
+                    {active && (
+                      <progress
+                        className="progress"
+                        aria-label={`${name} download progress`}
+                        max={size || 1}
+                        value={
+                          model.total_bytes ? model.downloaded_bytes : undefined
+                        }
+                      />
+                    )}
+                    {model.error && (
+                      <p className="error" role="alert">
+                        {model.error}
+                      </p>
+                    )}
+                  </>
+                )}
+              </li>
+            )
+          })}
+      </ul>
+      {confirmModel && (
+        <Modal
+          title={`Download ${confirmModel.display_name ?? confirmModel.id}?`}
+          close={() => !submitting && setConfirmModel(null)}
+          returnFocusId={`${confirmModel.id}-download`}
+        >
+          <p className="model-dialog-notice">
+            {confirmModel.license_notice ||
+              'Review this model’s license before downloading.'}{' '}
+            {confirmModel.license_url && (
+              <a
+                href={confirmModel.license_url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {confirmModel.license}
+              </a>
+            )}
+          </p>
+          <label className="model-license-choice">
+            <input
+              type="checkbox"
+              checked={acknowledged}
+              disabled={submitting}
+              onChange={(event) => setAcknowledged(event.target.checked)}
+            />
+            I have reviewed and accept this model’s license.
+          </label>
+          {errorPanel}
+          <div className="model-dialog-actions">
+            <button
+              className="button"
+              type="button"
+              autoFocus
+              disabled={submitting}
+              onClick={() => setConfirmModel(null)}
+            >
+              Cancel
+            </button>
+            <button
+              className="button button--primary"
+              type="button"
+              disabled={
+                !acknowledged ||
+                submitting ||
+                needsRefresh ||
+                confirmedUnavailable
+              }
+              onClick={() => void download()}
+            >
+              {submitting ? 'Starting…' : 'Accept and download'}
+            </button>
+          </div>
+        </Modal>
+      )}
+      {contextModel && (
+        <Modal
+          title={`Context for ${contextModel.display_name ?? contextModel.id}`}
+          close={() => !submitting && setContextModel(null)}
+          returnFocusId={`${contextModel.id}-context`}
+        >
+          <label className="stack">
+            Token limit
+            <input
+              type="number"
+              min="1"
+              max={contextModel.architecture_context_limit ?? undefined}
+              value={contextValue}
+              disabled={submitting}
+              placeholder="Model maximum"
+              onChange={(event) => setContextValue(event.target.value)}
+            />
+          </label>
+          <p className="faint">
+            Leave blank to use the model maximum. Larger contexts need more
+            memory. This applies to later requests.
+          </p>
+          {errorPanel}
+          <div className="model-dialog-actions">
+            <button
+              className="button"
+              type="button"
+              disabled={submitting}
+              onClick={() => setContextModel(null)}
+            >
+              Cancel
+            </button>
+            <button
+              className="button button--primary"
+              type="button"
+              disabled={submitting || needsRefresh}
+              onClick={() => void saveContext()}
+            >
+              Save context
+            </button>
+          </div>
+        </Modal>
+      )}
+    </section>
+  )
+}
 
+export default function SettingsPage() {
   return (
     <div className="scroll-page">
-      {confirmTier && (
-        <Modal
-          title={`Download ${confirmTier.name} models?`}
-          close={() => !submitting && setConfirmTier(null)}
-          returnFocusId={`${confirmTier.id}-action`}
-        >
-          <p className="muted">
-            {currentTier ? `Switching to ${confirmTier.name} downloads` : 'This downloads'} the models
-            sized for {confirmTier.vram_gb} GB VRAM and {confirmTier.ram_gb} GB RAM.
-          </p>
-          {notices.map((model) => (
-            <p key={model.id} className="tier-dialog-notice">
-              <strong>{model.display_name ?? model.id}:</strong> {model.license_notice}{' '}
-              {model.license_url && (
-                <a href={model.license_url} target="_blank" rel="noreferrer">License</a>
-              )}
-            </p>
-          ))}
-          {errorPanel}
-          <div className="tier-dialog-actions">
-            <button type="button" className="button" autoFocus disabled={submitting} onClick={() => setConfirmTier(null)}>
-              No
-            </button>
-            <button type="button" className="button button--primary" disabled={submitting || needsRefresh} onClick={() => void confirm(confirmTier)}>
-              {submitting ? 'Starting…' : notices.length ? 'Accept and download' : 'Yes, download'}
-            </button>
-          </div>
-        </Modal>
-      )}
-      {progressOpen && selected && (
-        <Modal
-          title={
-            downloading
-              ? `Downloading ${selected.name} models`
-              : tierComplete(selected)
-                ? `${selected.name} models downloaded`
-                : `${selected.name} downloads`
-          }
-          close={() => setProgressOpen(false)}
-          returnFocusId={`${selected.id}-action`}
-        >
-          <DownloadProgress tier={selected} />
-          {errorPanel}
-          <div className="tier-dialog-actions">
-            {tierCanDownload(selected) && (
-              <button type="button" className="button" disabled={submitting || needsRefresh} onClick={() => void confirm(selected)}>
-                Resume downloads
-              </button>
-            )}
-            <button
-              type="button"
-              className={`button${downloading ? '' : ' button--primary'}`}
-              onClick={() => setProgressOpen(false)}
-            >
-              {downloading ? 'Continue in background' : 'Done'}
-            </button>
-          </div>
-        </Modal>
-      )}
-      <div className="settings-layout tier-layout stack">
-        <header className="tier-intro">
-          <h1>Choose your tier</h1>
-          <p className="muted">Pick the one that matches your GPU and RAM.</p>
-        </header>
-        {errorPanel}
-        {!settings && !error && <p role="status" className="muted">Loading tiers…</p>}
-        {settings && (
-          <div className="tier-cards">
-            {settings.tiers.map((tier) => (
-              <TierCard
-                key={tier.id}
-                tier={tier}
-                current={tier.id === currentTier}
-                highlighted={currentTier ? tier.id === currentTier : tierCopy[tier.id].recommended}
-                disabled={submitting || downloading || needsRefresh}
-                choose={() => setConfirmTier(tier)}
-                showProgress={() => setProgressOpen(true)}
-              />
-            ))}
-          </div>
-        )}
-        <ExperimentalModelDownloads />
+      <div className="settings-layout stack">
+        <ModelDownloads />
       </div>
     </div>
   )

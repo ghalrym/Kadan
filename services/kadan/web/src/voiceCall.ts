@@ -176,7 +176,7 @@ export class VoiceCallSession {
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       this.starting("server");
       this.socket = new WebSocket(url);
-      this.socket.onopen = () => this.send({ type: "start", persona_id: personaId });
+      this.socket.onopen = () => this.send({ type: "start", persona_id: personaId, backend: "lfm3" });
       this.socket.onmessage = (event) => this.message(event.data);
       this.socket.onerror = () => this.end("Could not connect the call. Try again.");
       this.socket.onclose = () => this.end("The call disconnected. Start a new call.");

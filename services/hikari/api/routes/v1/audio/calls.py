@@ -16,6 +16,7 @@ router = APIRouter(prefix="/v1/audio/calls", tags=["Audio"])
 class CallStart(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["start"]
+    backend: Literal["lfm3"] = "lfm3"
     instruction: str = Field(
         default="Have a spoken conversation. Keep replies short. You have no tools.",
         min_length=1,
@@ -68,8 +69,8 @@ async def voice_call(socket: WebSocket):
         async def receive():
             return call_event.validate_python(await socket.receive_json())
 
-        # The connection owns residency and cleanup, including cancellation of
-        # transcription, streamed text and buffered Qwen segments on disconnect.
+        # The connection owns the audio model's residency hint and cancellation
+        # cleanup; only fully played segments can enter the next turn's history.
         with inference.worker.full_duplex(models.participants()):
             await VoiceCall(inference, models, start.instruction, socket.send_json).run(
                 receive

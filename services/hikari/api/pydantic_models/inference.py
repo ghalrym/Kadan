@@ -9,6 +9,7 @@ Feature = Literal[
     "image",
     "video",
     "stt",
+    "audio_call",
     "stt_formatting",
     "tts",
     "decisions",

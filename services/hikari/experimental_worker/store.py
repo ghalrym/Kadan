@@ -66,18 +66,38 @@ class ModelStore:
                     "total_bytes": total,
                     "error": None,
                     "inference_available": True,
-                    "context_limit": metadata["context_limit"],
+                    "context_limit": self.context(),
                     "architecture_context_limit": metadata.get(
                         "architecture_context_limit", metadata["context_limit"]
                     ),
                 }
             ],
-            "tiers": [],
-            "selected_tier": None,
-            "selected_model_id": None,
+            "selected_model_id": "lfm3-1.7b-bf16",
             "selected_whisper": None,
             "whisper_formatting": True,
         }
+
+    def context(self) -> int | None:
+        path = self.root.parent / "context.json"
+        if not path.exists():
+            return self.metadata["context_limit"]
+        return json.loads(path.read_text())["context_limit"]
+
+    def set_context(self, value: int | None) -> None:
+        maximum = self.metadata.get(
+            "architecture_context_limit", self.metadata["context_limit"]
+        )
+        if self.metadata["kind"] != "llm" or (
+            value is not None and (type(value) is not int or not 1 <= value <= maximum)
+        ):
+            raise ValueError("Unsupported model context limit")
+        self.root.parent.mkdir(parents=True, exist_ok=True)
+        with (self.root.parent / ".context.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            target = self.root.parent / "context.json"
+            temporary = target.with_suffix(".partial")
+            temporary.write_text(json.dumps({"context_limit": value}))
+            os.replace(temporary, target)
 
     def download(self, acknowledged: bool, emit) -> dict:
         if not acknowledged:

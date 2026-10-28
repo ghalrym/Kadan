@@ -8,11 +8,11 @@ from api.routes.v1.audio.transcriptions import TranscriptionRequest, get_models
 
 
 class TranscriptionTests(unittest.TestCase):
-    def test_model_list_and_selection_come_from_worker(self):
+    def test_available_whisper_metadata_uses_the_fixed_medium_assignment(self):
         snapshot = SimpleNamespace(
             selected_whisper="tiny.en",
             models=[
-                SimpleNamespace(id="whisper-tiny.en", kind="transcription"),
+                SimpleNamespace(id="whisper-medium", kind="transcription"),
                 SimpleNamespace(id="small", kind="llm"),
             ],
         )
@@ -21,14 +21,14 @@ class TranscriptionTests(unittest.TestCase):
             return_value=snapshot,
         ):
             result = get_models()
-        self.assertEqual(result.models, ["tiny.en"])
-        self.assertEqual(result.selected, "tiny.en")
+        self.assertEqual(result.models, ["medium"])
+        self.assertEqual(result.selected, "medium")
 
-    def test_requested_model_is_forwarded_for_worker_resolution(self):
+    def test_fixed_requested_model_is_forwarded_for_worker_resolution(self):
         request = TranscriptionRequest(
-            audio="data:audio/wav;base64,AAAA", model="turbo"
+            audio="data:audio/wav;base64,AAAA", model="medium"
         )
-        self.assertEqual(request.model, "turbo")
+        self.assertEqual(request.model, "medium")
 
     def test_formatting_preference_is_deferred_to_worker_unless_overridden(self):
         for fields in (
@@ -59,9 +59,9 @@ class TranscriptionResponseTests(unittest.IsolatedAsyncioTestCase):
                 "text": raw.strip().replace("  ", " ") if enabled else raw,
                 "raw_text": raw,
                 "language": "en",
-                "model": "large-v3",
+                "model": "medium",
                 "formatting_status": "formatted" if enabled else "disabled",
-                "formatting_model": "superwhisper/s1-mini" if enabled else None,
+                "formatting_model": "lfm3-1.7b-bf16" if enabled else None,
                 "formatting_error": None,
             }
             body = TranscriptionRequest(
