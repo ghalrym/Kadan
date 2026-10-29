@@ -12,6 +12,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -144,6 +145,92 @@ InferenceRequest request(
     );
     result.id = id;
     return result;
+}
+
+void runtime_weight_requirement_units() {
+    Directory tmp;
+    const auto data = tmp.path / "data", root = tmp.path / "models";
+    auto whisper = entry("whisper-medium", Json::array());
+    whisper["kind"] = "transcription";
+    whisper["estimated_bytes"] = kadan::Bytes(0);
+    constexpr kadan::Bytes gib = 1024ULL * 1024 * 1024;
+    constexpr kadan::Bytes floor = 384ULL * 1024 * 1024 + 2 * gib;
+    constexpr kadan::Bytes runtime_bytes = 3055431680;
+    unsigned transfers = 0;
+    auto fetch = [&](
+                     const auto&, const auto&, const auto&, bool, std::uint64_t
+                 ) -> std::int64_t {
+        ++transfers;
+        throw RequestError("Memory requirements must not transfer a checkpoint");
+    };
+    assert(!CatalogEntry::parse(whisper).runtime_weight_bytes);
+    for (const Json invalid :
+         {Json(), Json(false), Json(0u), Json(-1), Json(1.5), Json("10")}) {
+        auto bad = whisper;
+        bad["runtime_weight_bytes"] = invalid;
+        rejects([&] { CatalogEntry::parse(bad); });
+    }
+    whisper["runtime_weight_bytes"] = runtime_bytes;
+    assert(CatalogEntry::parse(whisper).runtime_weight_bytes == runtime_bytes);
+    catalog(data, Json::array({whisper}));
+    ModelStore declared(root, data, fetch);
+    const auto need = worker_requirement(kadan::Workload::speech, "medium", declared);
+    assert(need["minimum"] == Json::array({gib, floor}));
+    assert(need["preferred"] == Json::array({gib, floor + runtime_bytes}));
+    assert(need["device_floor"] == floor);
+    assert(worker_requirement(kadan::Workload::speech, std::nullopt, declared) == need);
+    const auto status = declared.status().at("models").at(0);
+    assert(status["status"] == "not_downloaded" && status["estimated_bytes"] == 0);
+    assert(!status.contains("runtime_weight_bytes"));
+    assert(!fs::exists(root) && transfers == 0);
+
+    // Download estimates still control host policy and undeclared checkpoints.
+    whisper["estimated_bytes"] = kadan::Bytes(123);
+    catalog(data, Json::array({whisper}));
+    ModelStore host(root, data, fetch);
+    const auto host_need = worker_requirement(kadan::Workload::speech, "medium", host);
+    assert(host_need["preferred"] == Json::array({gib + 123, floor + runtime_bytes}));
+    whisper.erase("runtime_weight_bytes");
+    catalog(data, Json::array({whisper}));
+    ModelStore legacy(root, data, fetch);
+    assert(
+        worker_requirement(kadan::Workload::speech, "medium", legacy)["preferred"]
+        == Json::array({gib + 123, floor + 123})
+    );
+
+    const auto maximum = std::numeric_limits<kadan::Bytes>::max();
+    whisper["runtime_weight_bytes"] = maximum - floor;
+    catalog(data, Json::array({whisper}));
+    ModelStore boundary(root, data, fetch);
+    assert(
+        worker_requirement(kadan::Workload::speech, "medium", boundary)["preferred"][1]
+        == maximum
+    );
+    for (const auto too_large : {maximum - floor + 1, maximum}) {
+        whisper["runtime_weight_bytes"] = too_large;
+        catalog(data, Json::array({whisper}));
+        ModelStore overflow(root, data, fetch);
+        rejects([&] {
+            worker_requirement(kadan::Workload::speech, "medium", overflow);
+        });
+    }
+    whisper["runtime_weight_bytes"] = runtime_bytes;
+    whisper["estimated_bytes"] = maximum;
+    catalog(data, Json::array({whisper}));
+    ModelStore host_overflow(root, data, fetch);
+    rejects([&] {
+        worker_requirement(kadan::Workload::speech, "medium", host_overflow);
+    });
+
+    auto image = entry("qwen-image-2.1-turbo", Json::array());
+    image["estimated_bytes"] = kadan::Bytes(123);
+    image["runtime_weight_bytes"] = runtime_bytes;
+    catalog(data, Json::array({image}));
+    ModelStore unchanged(root, data, fetch);
+    const auto image_need =
+        worker_requirement(kadan::Workload::image, std::nullopt, unchanged);
+    assert(image_need["preferred"] == Json::array({16 * gib + 123, floor + 123}));
+    assert(!fs::exists(root) && transfers == 0);
 }
 
 void completed_checkpoint_size_units() {
@@ -283,6 +370,15 @@ void pinned_catalog_units() {
     const auto speech_need =
         worker_requirement(kadan::Workload::speech, "medium", store);
     assert(speech_need["minimum"][1] == speech_need["device_floor"]);
+    const auto& medium = store.entry("whisper-medium");
+    assert(
+        medium.revision
+        == "345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1"
+    );
+    assert(medium.estimated_bytes == 0 && medium.runtime_weight_bytes == 3055431680ULL);
+    assert(speech_need["minimum"] == Json::array({1073741824ULL, 2550136832ULL}));
+    assert(speech_need["preferred"] == Json::array({1073741824ULL, 5605568512ULL}));
+
     assert(
         worker_requirement(
             kadan::Workload::decision, std::nullopt, store
@@ -2097,6 +2193,7 @@ void tokenizer_asset_units() {
 
 int main() {
     manifest_model_units();
+    runtime_weight_requirement_units();
     completed_checkpoint_size_units();
     pinned_catalog_units();
     shared_settings_units();

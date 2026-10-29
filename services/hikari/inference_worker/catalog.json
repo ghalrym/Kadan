@@ -622,6 +622,7 @@
       "revision": "345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1",
       "license": "mit",
       "estimated_bytes": 0,
+      "runtime_weight_bytes": 3055431680,
       "kind": "transcription",
       "display_name": "Whisper medium",
       "short_name": "Whisper",

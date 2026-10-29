@@ -10,4 +10,6 @@ The page uses the saved transcription model and formatting preference. Optional 
 
 **Cancel** ignores late results while cleanup finishes. Leaving the page also aborts pending work and releases microphone access.
 
+When memory is available, Hikari requests additional GPU space to retain Whisper’s working weights. Smaller granted budgets can still run transcription by streaming weights. Available memory and transfers affect speed; Hikari does not promise a fixed response time or change the selected model to make it fit.
+
 See [Transcription architecture](../../architecture/hikari/worker-speech.md) for audio conversion, model selection and formatting fallback.

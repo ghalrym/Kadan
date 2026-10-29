@@ -33,6 +33,23 @@ native Whisper.
 - **Preferred:** checkpoint size plus those floors.
 - **Several GPUs:** each GPU it uses needs its own 2.4 GiB floor.
 
+Whisper medium's pinned catalog entry declares `runtime_weight_bytes` separately
+from its download estimate. The GPU bank retains F32 projection weights even
+when downloaded tensors are F16. Its 3,055,431,680-byte runtime inventory raises
+only the preferred GPU amount; minimum streaming headroom, the per-device floor
+and host-memory policy stay unchanged. The complete preferred amount is
+5,605,568,512 bytes including the compute context and streaming scratch allowance.
+It is a scheduling preference, not a fixed VRAM requirement or a guarantee that
+the bank will fit under concurrent physical pressure. Smaller grants still use
+the existing streaming path and physical allocation checks.
+
+This positive integer is native catalog metadata, omitted from model-status and
+download-size responses. Entries without it retain their existing estimate-based
+policy. Requirement calculation does not read or create a converted checkpoint,
+fetch a model, or establish download approval or verification. The pinned
+declaration is available before the first export, so requirement caching cannot
+leave the worker at its streaming floor merely because conversion happened later.
+
 ## Scheduling
 
 - Priority 3, shared with formatting.

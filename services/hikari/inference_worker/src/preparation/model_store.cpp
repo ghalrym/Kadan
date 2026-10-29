@@ -350,6 +350,14 @@ CatalogEntry CatalogEntry::parse(const Json& value) {
     );
     entry.license = value.value("license", std::string());
     entry.estimated_bytes = value.value("estimated_bytes", std::uint64_t(0));
+    if (const auto runtime = value.find("runtime_weight_bytes");
+        runtime != value.end()) {
+        preparation_check(
+            runtime->is_number_unsigned() && *runtime > 0,
+            "Invalid runtime weight byte count"
+        );
+        entry.runtime_weight_bytes = runtime->get<Bytes>();
+    }
     const auto optional_text = [&](const char* name) -> std::optional<std::string> {
         const auto found = value.find(name);
         if (found == value.end() || found->is_null())
