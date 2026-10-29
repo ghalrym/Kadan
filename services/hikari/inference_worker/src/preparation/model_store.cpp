@@ -353,7 +353,7 @@ CatalogEntry CatalogEntry::parse(const Json& value) {
     if (const auto runtime = value.find("runtime_weight_bytes");
         runtime != value.end()) {
         preparation_check(
-            runtime->is_number_unsigned() && *runtime > 0,
+            runtime->is_number_unsigned() && runtime->get<Bytes>() > 0,
             "Invalid runtime weight byte count"
         );
         entry.runtime_weight_bytes = runtime->get<Bytes>();

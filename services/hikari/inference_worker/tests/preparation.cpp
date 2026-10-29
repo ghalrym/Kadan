@@ -164,7 +164,7 @@ void runtime_weight_requirement_units() {
         throw RequestError("Memory requirements must not transfer a checkpoint");
     };
     assert(!CatalogEntry::parse(whisper).runtime_weight_bytes);
-    for (const Json invalid :
+    for (const Json& invalid :
          {Json(), Json(false), Json(0u), Json(-1), Json(1.5), Json("10")}) {
         auto bad = whisper;
         bad["runtime_weight_bytes"] = invalid;
