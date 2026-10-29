@@ -106,47 +106,6 @@ struct ResidentDenoising {
     }
 };
 
-const char* fallback_phase(PlanFailure reason) {
-    switch (reason) {
-    case PlanFailure::capacity:
-        return "denoiser_host_capacity";
-    case PlanFailure::topology:
-        return "denoiser_host_topology";
-    case PlanFailure::unsupported_layout:
-        return "denoiser_host_unsupported";
-    case PlanFailure::invalid_shape:
-        return "denoiser_host_invalid_shape";
-    }
-    throw std::invalid_argument("h3_resident_plan_failure");
-}
-
-const char* refiner_fallback_phase(PlanFailure reason) {
-    switch (reason) {
-    case PlanFailure::capacity:
-        return "denoiser_refiner_host_capacity";
-    case PlanFailure::topology:
-        return "denoiser_refiner_host_topology";
-    case PlanFailure::unsupported_layout:
-        return "denoiser_refiner_host_unsupported";
-    case PlanFailure::invalid_shape:
-        return "denoiser_refiner_host_invalid_shape";
-    }
-    throw std::invalid_argument("h3_resident_plan_failure");
-}
-
-const char* attention_fallback_phase(PlanFailure reason) {
-    switch (reason) {
-    case PlanFailure::capacity:
-        return "denoiser_attention_host_capacity";
-    case PlanFailure::topology:
-        return "denoiser_attention_host_topology";
-    case PlanFailure::unsupported_layout:
-        return "denoiser_attention_host_unsupported";
-    case PlanFailure::invalid_shape:
-        return "denoiser_attention_host_invalid_shape";
-    }
-    throw std::invalid_argument("h3_resident_plan_failure");
-}
 #endif
 
 struct Admission {
@@ -636,17 +595,11 @@ void H3Generation::execute(
             }
             if (state.refiner_rejected) {
                 refiner = false;
-                if (hook)
-                    hook(refiner_fallback_phase(state.refiner_rejected->reason), 0);
             }
             if (state.attention_rejected) {
                 attention = false;
-                if (hook)
-                    hook(attention_fallback_phase(state.attention_rejected->reason), 0);
             }
             if (state.rejected) {
-                if (hook)
-                    hook(fallback_phase(state.rejected->reason), 0);
                 resident->close();
                 resident.reset();
             }

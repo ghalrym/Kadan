@@ -45,6 +45,7 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "gguf-checkpoint-tests",
     "h3-profile-tests",
     "worker-compute-tests",
+    "h3-wall-timing-tests",
     "device-workspace-tests",
     "device-weight-tests",
     "packed-read-team-tests",
