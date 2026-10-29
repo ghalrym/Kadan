@@ -10,6 +10,13 @@ The documented runtime is Transformers 5.21.0 or newer, PyTorch, torchvision and
 
 Each request uses an isolated model process. There is no prefix cache, persistent loaded model, video understanding, multi-image input, or direct desktop control in this adapter. Hikari cancels through the worker owner; the process must finish or be killed and joined before resources are released. Maximum-context fit and broader screenshot quality require further manual trials.
 
+Before queue admission, the screenshot endpoint decodes and bounds the payload
+and checks that its PNG or JPEG signature matches `media_type`. A mismatch returns
+422 without submitting inference. The shared check also runs in the executor
+before inference dependencies load. These signatures match Pillow's format
+classification; they do not establish that the complete image is valid. Pillow
+decoding, format verification and the pixel limit remain in the worker.
+
 The worker uses its own `lfm3_vision_models` volume; it does not mount the native model store. The API and worker require `HIKARI_ENABLE_LFM3_VISION=true`. Kadan's runner additionally requires `KADAN_EXPERIMENTAL_LFM3_VISION=true`. Only then, and only with a configured computer, does it bind `computer_look`. The tool captures the computer's current screenshot itself and sends its bytes to Hikari. The runner's existing command validation, saved transcript, ownership, cancellation and result-size limits remain in charge. In particular, `computer_look` still marks and limits its tool observation to the shared 4,000-character transcript policy; the direct Hikari vision API returns the complete model description. That agent-tool policy is separate from the model's output budget and is not a claim that the checkpoint supports only 4,000 characters. Disabling the flag removes the tool from later model decisions and rejects an older saved vision command before screenshot capture.
 
 The [shared worker setup](../../../services/hikari/experimental_worker/README.md) uses the existing Compose project and usual Hikari and Kadan URLs. The vision worker needs no profile; Compose defaults `HIKARI_ENABLE_LFM3_VISION` and `KADAN_EXPERIMENTAL_LFM3_VISION` to true. Explicit overrides still apply. Unit tests use mocked processors and queues and run no inference.

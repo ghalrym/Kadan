@@ -40,6 +40,8 @@ Models retained between requests unload after one hour without work, measured fr
 
 A queued request has been accepted, not completed. Hikari must not silently truncate chat history or reduce requested media settings to force a fit. Invalid inputs, unavailable checkpoints and execution failures must produce explicit errors rather than fabricated results. Cancellation must finish cleanup before the released resources are reused.
 
+For screenshot understanding, PNG and JPEG images must match their stated format. A format mismatch fails before model work starts. Damaged images can still fail during decoding.
+
 Concurrent throughput, model quality and physical memory fit require manual validation on the target machine. Hikari does not guarantee a fixed response time or that every combination of inference requests fits.
 
 ## Conversation prefix reuse

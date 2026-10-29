@@ -2,6 +2,7 @@
 
 import base64
 import unittest
+from unittest.mock import patch
 
 from experimental_worker.vision import (
     MAX_CONTEXT,
@@ -59,12 +60,58 @@ class VisionWorkerTests(unittest.TestCase):
             validate_context(-1, 1024)
 
     def test_binary_screenshot_is_recovered_without_interpreting_paths_or_urls(self):
-        self.assertEqual(
-            image_bytes({"media_type": "image/png", "image_base64": "YWJj"}), b"abc"
-        )
+        for media_type, content in (
+            ("image/png", b"\x89PNG\r\n\x1a\nunit payload"),
+            ("image/jpeg", b"\xff\xd8\xff\xe1unit payload"),
+        ):
+            with self.subTest(media_type=media_type):
+                self.assertEqual(
+                    image_bytes(
+                        {
+                            "media_type": media_type,
+                            "image_base64": base64.b64encode(content).decode(),
+                        }
+                    ),
+                    content,
+                )
         for value in ("https://example.com/screenshot.png", "/tmp/screenshot.png", ""):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 image_bytes({"media_type": "image/png", "image_base64": value})
+
+    def test_mismatched_or_truncated_signatures_are_rejected(self):
+        for media_type, content in (
+            ("image/png", b"\xff\xd8\xff\xe1jpeg payload"),
+            ("image/jpeg", b"\x89PNG\r\n\x1a\npng payload"),
+            ("image/png", b"\x89PNG"),
+            ("image/jpeg", b"\xff\xd8"),
+            ("image/png", b"abc"),
+        ):
+            with (
+                self.subTest(media_type=media_type, content=content),
+                self.assertRaisesRegex(ValueError, "signature"),
+            ):
+                image_bytes(
+                    {
+                        "media_type": media_type,
+                        "image_base64": base64.b64encode(content).decode(),
+                    }
+                )
+
+    def test_matching_signature_keeps_the_exact_compressed_byte_limit(self):
+        limit = 2 * 1024**2
+        prefix = b"\x89PNG\r\n\x1a\n"
+        for size in (limit, limit + 1):
+            content = prefix + b"x" * (size - len(prefix))
+            task = {
+                "media_type": "image/png",
+                "image_base64": base64.b64encode(content).decode(),
+            }
+            with self.subTest(size=size):
+                if size == limit:
+                    self.assertEqual(image_bytes(task), content)
+                else:
+                    with self.assertRaisesRegex(ValueError, "2 MiB"):
+                        image_bytes(task)
 
     def test_screenshot_payload_is_bounded_and_supported_media_only(self):
         for task in (
@@ -115,6 +162,23 @@ class VisionWorkerTests(unittest.TestCase):
 
     def test_blank_question_is_rejected_before_loading_runtime_dependencies(self):
         self.assert_invalid_work(question=" ")
+
+    def test_wrong_image_signature_never_imports_inference_dependencies(self):
+        with (
+            patch("builtins.__import__") as imports,
+            self.assertRaisesRegex(ValueError, "signature"),
+        ):
+            execute(
+                {
+                    "question": "Describe",
+                    "media_type": "image/png",
+                    "image_base64": base64.b64encode(b"\xff\xd8\xffjpeg").decode(),
+                },
+                "generate",
+                "/unused",
+                lambda event: None,
+            )
+        imports.assert_not_called()
 
     def test_excessive_output_is_rejected_before_loading_runtime_dependencies(self):
         self.assert_invalid_work(max_new_tokens=128000)

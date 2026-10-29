@@ -80,6 +80,11 @@ def image_bytes(task: dict) -> bytes:
         raise ValueError("Screenshot must contain valid base64 image bytes.") from error
     if not content or len(content) > MAX_IMAGE_BYTES:
         raise ValueError("Screenshot must contain at most 2 MiB of image bytes.")
+    signature = (
+        b"\x89PNG\r\n\x1a\n" if task["media_type"] == "image/png" else b"\xff\xd8\xff"
+    )
+    if not content.startswith(signature):
+        raise ValueError("Screenshot signature does not match its declared media type.")
     return content
 
 
