@@ -62,6 +62,7 @@ export default function App() {
   const [renaming, setRenaming] = useState(false);
   const [assigningRunner, setAssigningRunner] = useState(false);
   const petSelectionRevision = useRef(0);
+  const petReadRevision = useRef(0);
   const pendingPetSelection = useRef(0);
   const [personas, setPersonas] = useState<Resource[]>([]);
   // The agent has one continuous conversation rather than separate threads.
@@ -83,17 +84,26 @@ export default function App() {
   const [hatched, setHatched] = useState(false);
   const [resourceRevision, setResourceRevision] = useState(0);
   const key = agent?.key ?? "";
+  const currentAgentKey = useRef(key);
+  currentAgentKey.current = key;
 
-  const refreshPetSelection = useCallback(async (agentKey: string, current: () => boolean = () => true) => {
+  const refreshPetSelection = useCallback(async (agentKey: string, current: () => boolean = () => true, reportError = false) => {
     if (pendingPetSelection.current) return false;
     const revision = petSelectionRevision.current;
-    const pet = await api<PetJob | null>(`${agentPath(agentKey)}/pet`);
-    if (current() && revision === petSelectionRevision.current && !pendingPetSelection.current) {
+    const read = ++petReadRevision.current;
+    const isCurrent = () => current() && agentKey === currentAgentKey.current
+      && read === petReadRevision.current && revision === petSelectionRevision.current && !pendingPetSelection.current;
+    try {
+      const pet = await api<PetJob | null>(`${agentPath(agentKey)}/pet`);
+      if (!isCurrent()) return false;
       setPets((rows) => rows[agentKey]?.id === pet?.id && rows[agentKey]?.version === pet?.version
         ? rows : { [agentKey]: pet });
+      setPetError("");
       return true;
+    } catch (error) {
+      if (reportError && isCurrent()) setPetError(`Could not load the selected pet: ${(error as Error).message}`);
+      throw error;
     }
-    return false;
   }, []);
 
   const selectPet = useCallback(async (agentKey: string, id: string | null) => {
@@ -184,11 +194,7 @@ export default function App() {
   useEffect(() => {
     if (!key) return;
     let current = true;
-    void refreshPetSelection(key, () => current).then((loaded) => {
-      if (current && loaded) setPetError("");
-    }).catch((error: Error) => {
-      if (current) setPetError(`Could not load the selected pet: ${error.message}`);
-    });
+    void refreshPetSelection(key, () => current, true).catch(() => {});
     return () => { current = false; };
   }, [key, refreshPetSelection, petRetry]);
   useEffect(() => {

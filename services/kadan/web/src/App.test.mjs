@@ -11,6 +11,12 @@ const source = ts.transpileModule(
 const agent = { key: "guide", name: "Guide" };
 const persona = { id: "persona", agent_key: agent.key, kind: "persona", markdown: "Be precise." };
 const chain = { id: "chain", agent_key: agent.key, kind: "conversation" };
+const settle = () => new Promise(resolve => setImmediate(resolve));
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
 
 // Call App with in-memory hooks and service boundaries; no browser or mounted UI.
 async function app(petResponses = []) {
@@ -172,4 +178,35 @@ test("a failed pet retry stays visible and can be retried again", async () => {
   }
   assert.equal(banner(), undefined);
   assert.equal(view.requests.filter(request => request.path?.endsWith("/pet")).length, 3);
+});
+
+function openPetEditor(view) {
+  const button = view.findAll(node => node.type === "button"
+    && Array.isArray(node.props.children) && node.props.children.includes("Edit pet"))[0];
+  button.props.onClick();
+  view.render();
+  return view.findAll(node => node.type === "PetEditor")[0];
+}
+
+test("a successful editor refresh clears an initial selected-pet load error", async () => {
+  const selected = { id: "fox", version: 1 };
+  const view = await app([new Error("Storage unavailable"), selected]);
+  assert.match(view.findAll(node => node.props?.role === "alert")[0].props.children[0], /Storage unavailable/);
+  await openPetEditor(view).props.onRefreshSelection();
+  view.render();
+  assert.equal(view.findAll(node => node.props?.role === "alert").length, 0);
+  assert.equal(view.findAll(node => node.type === "PetProvider")[0].props.value.guide, selected);
+});
+
+test("an older effect failure cannot restore the error after an editor refresh succeeds", async () => {
+  const initial = deferred();
+  const selected = { id: "fox", version: 1 };
+  const view = await app([initial.promise, selected]);
+  await openPetEditor(view).props.onRefreshSelection();
+  view.render();
+  initial.reject(new Error("Old request failed"));
+  await settle();
+  view.render();
+  assert.equal(view.findAll(node => node.props?.role === "alert").length, 0);
+  assert.equal(view.findAll(node => node.type === "PetProvider")[0].props.value.guide, selected);
 });
