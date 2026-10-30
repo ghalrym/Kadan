@@ -97,6 +97,43 @@ computer restart. Kadan does not attempt to undo edits or replay uncertain work.
 Resume requires a terminal prior job with confirmed cleanup, a recorded session
 ID and the same resolved directory. It invokes `codex exec resume` with that
 explicit ID, never `--last`, and does not create a replacement session on failure.
+
+The Coding panel's explicit continuation reuses the conversation run submission
+route with `resume_coding_job_id`. Kadan resolves the prior job's directory rather
+than accepting a browser-supplied directory. Tsuchi atomically saves the user
+message and immutable `coding_task` alongside the queued run; retries compare the
+task as well as the message identity. The browser uses the conversation's existing
+outbox to retain the same job, prompt and message ID after an uncertain submission.
+Messages can retry that same typed request without downgrading it to ordinary chat.
+
+For these explicit runs, the runner saves `codex_start` directly and uses the same
+delegation wait, ownership fencing and request ID recovery as model-selected jobs.
+It then validates the persisted result's action ID and renders a fixed status
+report with the returned summary and identifiers. It does not call Hikari to select
+the action or write the report. Saved command and delivery identities still dedupe
+recovery before and after either checkpoint. Ordinary model-directed chat is
+unchanged: a free-form reply can omit a requested action and is not execution
+evidence. This is why continuation has a separate explicit user action rather than
+phrase detection or a stronger prompt alone.
+
+Deploy Kadan API/runner/web and Tsuchi together for this contract. The task is an
+optional field in Tsuchi's JSON run records, with no SQL schema migration. Older
+strict Tsuchi versions cannot read records containing that field, including
+`coding_task: null` written for ordinary runs. New readers accept old records with
+the field absent. Old Kadan runners ignore the field and could process a pending
+continuation as ordinary chat, so mixed runner versions are unsafe.
+
+Cutover requires quiescing submissions and runners after coordinating active
+work, taking a consistent SQLite backup including WAL state, then updating Tsuchi
+and Kadan API/runner/web before reopening submissions. The sandbox execution
+protocol is unchanged. Container-only rollback after writes is unsafe: retain the
+compatible storage reader and prevent old runners from claiming pending typed
+tasks. A complete old-version rollback requires a separately reviewed data
+conversion/archive plan preserving tasks, run IDs, transcripts and delivery
+receipts. Removing a pending task's field loses its execution intent; restoring a
+pre-cutover database loses subsequent user work. No downgrade conversion is
+implemented by this change.
+
 Raw tool output, command lines and authentication diagnostics are discarded by the
 supervisor. The final assistant summary is bounded and common credential formats
 are redacted; this is not a guarantee against arbitrary sensitive text. Codex's

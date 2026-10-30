@@ -17,6 +17,7 @@ from .models import (
     AgentRun,
     AgentRunState,
     Asset,
+    CodingContinuation,
     ExportManifest,
     ExportRevision,
     ImageJob,
@@ -423,6 +424,7 @@ class Repository:
         message: Message,
         expected_version: int,
         persona_id: UUID | None = None,
+        coding_task: CodingContinuation | None = None,
     ) -> AgentRun:
         if message.role != "user":
             raise StorageError("An agent run must start with a user message", 409)
@@ -438,6 +440,7 @@ class Repository:
                     and existing.conversation_id == conversation_id
                     and existing.trigger_message_id == message.id
                     and existing.persona_id == persona_id
+                    and existing.coding_task == coding_task
                     and any(
                         item.model_dump(exclude={"created_at"})
                         == message.model_dump(exclude={"created_at"})
@@ -461,6 +464,7 @@ class Repository:
                 conversation_id=conversation_id,
                 trigger_message_id=message.id,
                 persona_id=persona_id,
+                coding_task=coding_task,
                 version=1,
                 created_at=now,
                 updated_at=now,

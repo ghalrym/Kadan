@@ -20,9 +20,10 @@ const run = (id, status, error = null) => ({
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
 // Exercise Chat's poll, send and Stop handlers with in-memory hooks and API boundaries.
-async function chat(initialRuns, initialConversation = chain) {
+async function chat(initialRuns, initialConversation = chain, storedPending = null) {
   const slots = [], effects = [], timers = [], requests = [];
   const storage = new Map();
+  if (storedPending) storage.set(outbox.chatStorageKeys("guide", initialConversation.id).pending, JSON.stringify(storedPending));
   let cursor = 0, tree, snapshotRuns = initialRuns, sendResponse, replacementResponse;
   let selectedChain = initialConversation;
   const react = {
@@ -116,7 +117,8 @@ async function chat(initialRuns, initialConversation = chain) {
   await settle();
   render();
   return {
-    render, requests,
+    render, requests, storage,
+    retry: () => elements().find(node => node.type === "button" && node.props.children === "Retry").props.onClick(),
     notices: () => elements().filter(node => node.props?.className === "notice").map(node => node.props.children),
     alerts: () => elements().filter(node => node.props?.role === "alert").map(node => node.props.children[0]),
     receipts: () => elements().filter(node => node.props?.className === "receipt").map(node => node.props.children),
@@ -279,4 +281,53 @@ test("confirmed messages are Delivered before and after a normal reply", async (
 test("assistant-only history has no user delivery receipt", async () => {
   const view = await chat([], { ...chain, messages: [message("reply", "assistant", "Hello")] });
   assert.deepEqual(view.receipts(), []);
+});
+
+test("Messages retries a recovered explicit coding continuation without turning it into model-directed chat", async () => {
+  const pending = { id: "continuation-request", content: "Check the fix", generate: true, persona: "", resume_coding_job_id: "recorded-job" };
+  const view = await chat([], chain, pending);
+  const finishSend = view.holdSend();
+  view.retry();
+  const request = view.requests.find(row => row.body);
+  assert.equal(request.path, "/agents/guide/conversations/conversation/runs");
+  assert.equal(request.body.message_id, pending.id);
+  assert.equal(request.body.resume_coding_job_id, pending.resume_coding_job_id);
+  assert.equal(request.body.content, pending.content);
+  finishSend({ run: run(pending.id, "queued"), conversation: { ...chain, version: 2, messages: [message(pending.id, "user", pending.content)] } });
+  await settle();
+  view.render();
+  assert.equal(view.requests.filter(row => row.body).length, 1);
+});
+
+test("an already-mounted Messages poll preserves a continuation queued by Coding until its message is confirmed", async () => {
+  const view = await chat([]);
+  const pending = { id: "coding-request", content: "Check the fix", generate: true, persona: "", resume_coding_job_id: "recorded-job" };
+  const key = outbox.chatStorageKeys("guide", chain.id).pending;
+  // Coding queues into the same session outbox while Chat remains mounted.
+  view.storage.set(key, JSON.stringify(pending));
+  await view.poll([]);
+  assert.deepEqual(JSON.parse(view.storage.get(key)), pending);
+  assert.equal(view.requests.filter(row => row.body).length, 0);
+  const finishSend = view.holdSend();
+  view.retry();
+  assert.equal(view.requests.at(-1).body.message_id, pending.id);
+  assert.equal(view.requests.at(-1).body.resume_coding_job_id, pending.resume_coding_job_id);
+  const accepted = { ...chain, version: 2, messages: [message(pending.id, "user", pending.content)] };
+  finishSend({ run: run(pending.id, "queued"), conversation: accepted });
+  await settle(); view.render();
+  assert.equal(view.storage.has(key), false);
+  await view.poll([], accepted);
+  assert.equal(view.storage.has(key), false);
+  assert.equal(view.requests.filter(row => row.body).length, 1);
+});
+
+test("a stale mounted Messages sender cannot replace a continuation from Coding", async () => {
+  const view = await chat([]);
+  const pending = { id: "coding-request", content: "Check only", generate: true, persona: "", resume_coding_job_id: "recorded-job" };
+  const key = outbox.chatStorageKeys("guide", chain.id).pending;
+  view.storage.set(key, JSON.stringify(pending));
+  view.composer().onChange("A different message"); view.render();
+  view.composer().onSend(true); await settle(); view.render();
+  assert.deepEqual(JSON.parse(view.storage.get(key)), pending);
+  assert.equal(view.requests.filter(row => row.body).length, 0);
 });

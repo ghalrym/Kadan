@@ -502,7 +502,10 @@ export default function App() {
           restoreFocus();
         }}
       />}
-      {coding && <Coding onClose={() => { setCoding(false); restoreFocus(); }} />}
+      {coding && <Coding key={`${key}:${chain?.id}`} agentKey={key}
+        conversation={chain?.agent_key === key ? chain : null}
+        onQueued={value => { updateChain(value); show("chat"); }}
+        onClose={() => { setCoding(false); restoreFocus(); }} />}
       {assigningRunner && agent && <RunnerAssignment
         agent={agent}
         onClose={() => {

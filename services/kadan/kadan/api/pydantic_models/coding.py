@@ -57,3 +57,24 @@ class CodingTask(BaseModel):
 
 class CodingStart(CodingTask):
     request_id: UUID
+
+
+class CodingContinuation(CodingTask):
+    resume_job_id: UUID
+
+
+class CodingOutcome(BaseModel):
+    job_id: UUID
+    status: Literal[
+        "completed",
+        "failed",
+        "cancelled",
+        "timed_out",
+        "interrupted",
+        "cleanup_required",
+        "unconfirmed",
+        "rejected",
+    ] = "rejected"
+    session_id: str | None = None
+    message: str = ""
+    error: str | None = None

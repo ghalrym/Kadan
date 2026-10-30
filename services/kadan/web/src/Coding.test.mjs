@@ -13,7 +13,7 @@ const hooksUrl = `data:text/javascript,${encodeURIComponent(`
   export function reset() { slots.length = 0; cleanups.length = 0; index = 0; }
   export function useState(initial) {
     const slot = index++;
-    if (!(slot in slots)) slots[slot] = initial;
+    if (!(slot in slots)) slots[slot] = typeof initial === 'function' ? initial() : initial;
     return [slots[slot], value => { slots[slot] = typeof value === 'function' ? value(slots[slot]) : value; }];
   }
   export function useRef(current) {
@@ -57,10 +57,15 @@ loader.deregister();
 
 
 let closed;
+let queued;
+const conversation = { id: "conversation-a", agent_key: "agent-a", version: 1, messages: [] };
+const storage = new Map();
+const originalStorage = globalThis.sessionStorage;
 let interval;
 const originalInterval = globalThis.setInterval;
 const originalClear = globalThis.clearInterval;
-function render() { hooks.render(); return Coding({ onClose: () => closed++ }); }
+let currentConversation;
+function render() { hooks.render(); return Coding({ agentKey: "agent-a", conversation: currentConversation, onQueued: value => queued.push(value), onClose: () => closed++ }); }
 function nodes(node, type) {
   if (!node || typeof node !== "object") return [];
   return [ ...(node.type === type ? [node] : []),
@@ -77,7 +82,9 @@ const first = { id: "job-a", status: "running", cwd: "/home/gem/project", sessio
 function status(jobs = [first], setup = { state: "ready", message: "Credentials present; execution unverified." }) { return { setup, jobs }; }
 async function open(result = status()) { replies.push(() => Promise.resolve(result)); render(); await settle(); }
 beforeEach(() => {
-  hooks.reset(); calls.length = replies.length = 0; closed = 0;
+  hooks.reset(); calls.length = replies.length = 0; closed = 0; queued = []; storage.clear();
+  currentConversation = conversation;
+  globalThis.sessionStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) };
   globalThis.setInterval = fn => { interval = fn; return 1; };
   globalThis.clearInterval = () => { interval = undefined; };
 });
@@ -85,6 +92,7 @@ afterEach(() => {
   for (const cleanup of hooks.cleanups) cleanup?.();
   globalThis.setInterval = originalInterval;
   globalThis.clearInterval = originalClear;
+  globalThis.sessionStorage = originalStorage;
 });
 
 test("setup failure is not an empty job history and refresh can recover", async () => {
@@ -222,4 +230,127 @@ test("the project is visible before stopping and state changes have a polite ann
   assert.equal(state.props.role, "status");
   assert.match(text(render()), /Stop response in Messages prevents that reply and leaves coding running/);
   assert.match(text(render()), /Stop coding ends the coding task; file changes remain/);
+});
+
+const completed = { ...first, status: "completed", message: "Earlier turn completed." };
+const pendingKey = "kadan.draft.agent-a.conversation-a.pending";
+function followup(value) { nodes(render(), "textarea")[0].props.onChange({ target: { value } }); }
+function submit() { nodes(render(), "form")[0].props.onSubmit({ preventDefault() {} }); }
+
+test("explicit continuation queues a scoped durable request and shows its allowance impact", async () => {
+  await open(status([completed]));
+  followup("Rerun the unit tests");
+  assert.match(text(render()), /queues this task directly in Messages/);
+  assert.match(text(render()), /uses your Codex allowance/);
+  replies.push(() => Promise.resolve(conversation), () => Promise.resolve({ conversation: { ...conversation, version: 2 } }));
+  submit(); submit();
+  await settle();
+  assert.equal(calls[1][0], "/agents/agent-a/resources/conversation-a");
+  const posts = calls.filter(call => call[1]);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0][0], "/agents/agent-a/conversations/conversation-a/runs");
+  assert.equal(posts[0][1].resume_coding_job_id, completed.id);
+  assert.equal(posts[0][1].content, "Rerun the unit tests");
+  assert.equal(posts[0][1].expected_version, 1);
+  assert.equal(posts[0][1].persona_id, null);
+  assert.equal(closed, 1); assert.equal(queued.length, 1);
+  assert.equal(storage.has(pendingKey), false);
+});
+
+test("uncertain continuation retries the frozen ID, job and prompt rather than submitting new work", async () => {
+  await open(status([completed])); followup("Check the fix");
+  replies.push(() => Promise.resolve(conversation), () => Promise.reject(new Error("Response lost")));
+  submit(); await settle();
+  const firstPost = calls.find(call => call[1])[1];
+  assert.match(text(render()), /Continuation is unconfirmed/);
+  assert.equal(nodes(render(), "textarea")[0].props.disabled, true);
+  assert.equal(nodes(render(), "select")[0].props.disabled, true);
+  assert.equal(JSON.parse(storage.get(pendingKey)).id, firstPost.message_id);
+  replies.push(() => Promise.resolve({ ...conversation, version: 2 }), () => Promise.resolve({ conversation }));
+  submit(); await settle();
+  const lastPost = calls.filter(call => call[1]).at(-1)[1];
+  assert.deepEqual(lastPost, { ...firstPost, expected_version: 2 });
+  assert.equal(storage.has(pendingKey), false);
+});
+
+test("reopening restores only this conversation's unconfirmed continuation", async () => {
+  const pending = { id: "same-request", content: "Check only", generate: true, persona: "", resume_coding_job_id: completed.id };
+  storage.set(pendingKey, JSON.stringify(pending));
+  await open(status([completed]));
+  assert.equal(nodes(render(), "textarea")[0].props.value, pending.content);
+  assert.equal(button("Retry same continuation").props.disabled, false);
+  replies.push(() => Promise.resolve(conversation), () => Promise.resolve({ conversation }));
+  submit(); await settle();
+  assert.equal(calls.find(call => call[1])[1].message_id, pending.id);
+});
+
+test("closing during preflight prevents a late write or a callback into another conversation", async () => {
+  await open(status([completed])); followup("Check only");
+  let finish;
+  replies.push(() => new Promise(resolve => { finish = resolve; }));
+  submit(); button("Close").props.onClick();
+  finish(conversation); await settle();
+  assert.equal(calls.filter(call => call[1]).length, 0);
+  assert.equal(queued.length, 0); assert.equal(closed, 1);
+  assert.equal(JSON.parse(storage.get(pendingKey)).resume_coding_job_id, completed.id);
+});
+
+test("a mismatched conversation cannot accept a continuation or clear its recovery", async () => {
+  await open(status([completed])); followup("Check only");
+  replies.push(() => Promise.resolve({ ...conversation, id: "other" }));
+  submit(); await settle();
+  assert.equal(calls.filter(call => call[1]).length, 0);
+  assert.equal(queued.length, 0); assert.ok(storage.has(pendingKey));
+  assert.match(text(render()), /conversation changed/);
+});
+
+test("unrelated pending chat is preserved and blocks a continuation", async () => {
+  const pending = { id: "ordinary-chat", content: "Existing work", generate: true, persona: "" };
+  storage.set(pendingKey, JSON.stringify(pending));
+  await open(status([completed])); followup("Check only"); submit(); await settle();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(JSON.parse(storage.get(pendingKey)), pending);
+  assert.equal(queued.length, 0);
+});
+
+test("a new continuation is disabled while another job or unconfirmed cleanup owns the computer", async () => {
+  await open(status([completed, { ...first, id: "other", status: "cleanup_required" }]));
+  followup("Check only");
+  assert.equal(button("Continue with Codex").props.disabled, true);
+  assert.equal(calls.filter(call => call[1]).length, 0);
+});
+
+test("jobs without a recorded session do not offer a fresh-session fallback", async () => {
+  await open(status([{ ...completed, session_id: null }]));
+  assert.equal(nodes(render(), "form").length, 0);
+  assert.equal(button("Continue with Codex"), undefined);
+});
+
+test("unsent follow-ups survive closing, Escape and reopening without crossing conversations", async () => {
+  await open(status([completed])); followup("Keep my draft");
+  nodes(render(), "dialog")[0].props.onCancel({ preventDefault() {} });
+  for (const cleanup of hooks.cleanups) cleanup?.();
+  hooks.reset();
+  await open(status([completed]));
+  assert.equal(nodes(render(), "textarea")[0].props.value, "Keep my draft");
+  button("Close").props.onClick();
+  for (const cleanup of hooks.cleanups) cleanup?.();
+  hooks.reset(); currentConversation = { ...conversation, id: "conversation-b" };
+  await open(status([completed]));
+  assert.equal(nodes(render(), "textarea")[0].props.value, "");
+  assert.equal(calls.filter(call => call[1]).length, 0);
+});
+
+test("switching jobs preserves separate drafts and queuing moves only the selected draft to recovery", async () => {
+  const other = { ...completed, id: "job-b" };
+  await open(status([completed, other])); followup("First draft");
+  nodes(render(), "select")[0].props.onChange({ target: { value: other.id } });
+  assert.equal(nodes(render(), "textarea")[0].props.value, "");
+  followup("Second draft");
+  nodes(render(), "select")[0].props.onChange({ target: { value: completed.id } });
+  assert.equal(nodes(render(), "textarea")[0].props.value, "First draft");
+  replies.push(() => Promise.resolve(conversation), () => Promise.reject(new Error("Response lost")));
+  submit(); await settle();
+  assert.equal(JSON.parse(storage.get(pendingKey)).content, "First draft");
+  assert.deepEqual(JSON.parse(storage.get(`${pendingKey}.coding-drafts`)), { "job-b": "Second draft" });
 });

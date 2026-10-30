@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
+from .coding import CodingContinuation
+
 from .resources import AgentKey
 
 
@@ -46,6 +48,7 @@ class AgentRun(AgentRunState):
     trigger_message_id: UUID | None = None
     trigger_job_id: UUID | None = None
     persona_id: UUID | None = None
+    coding_task: CodingContinuation | None = None
     delivered_message_ids: list[UUID] = Field(default_factory=list)
     version: int = Field(ge=1)
     created_at: datetime

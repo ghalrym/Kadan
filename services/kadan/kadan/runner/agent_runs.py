@@ -26,7 +26,7 @@ from pydantic import BaseModel, ValidationError
 
 from ..api.config import ServiceError
 from ..api.coding_client import CodingClient
-from ..api.pydantic_models.coding import CodingStart, CodingTask
+from ..api.pydantic_models.coding import CodingOutcome, CodingStart, CodingTask
 from ..api.pydantic_models.agent_runs import (
     AgentRun,
     AgentRunState,
@@ -135,6 +135,49 @@ def validate(command: ToolCommand, tools: list[StructuredTool]) -> None:
         ) from error
 
 
+def coding_continuation_command(
+    run: AgentRun, transcript: list[RunMessage]
+) -> ToolCommand:
+    task = run.coding_task
+    assert task is not None
+    start = ToolCommand(tool="codex_start", arguments=task.model_dump(mode="json"))
+    if not transcript:
+        return start
+    if (
+        len(transcript) != 2
+        or transcript[0].role != "assistant"
+        or parse_command(transcript[0].content) != start
+        or transcript[1].role != "user"
+        or not transcript[1].content.startswith(TOOL_RESULT)
+    ):
+        raise ServiceError("The saved coding continuation has an invalid result.", 502)
+    result = CodingOutcome.model_validate_json(
+        transcript[1].content.removeprefix(TOOL_RESULT)
+    )
+    if result.job_id != uuid5(run.id, "command:1"):
+        raise ServiceError("The coding result belongs to another action.", 502)
+    labels = {
+        "completed": "Codex completed the continuation.",
+        "failed": "Codex could not finish the continuation.",
+        "cancelled": "Codex continuation was cancelled; file changes remain.",
+        "timed_out": "Codex continuation timed out; inspect partial changes.",
+        "interrupted": "Codex continuation was interrupted; inspect partial changes.",
+        "cleanup_required": "Codex cleanup needs attention. Further coding is blocked.",
+        "unconfirmed": "Codex continuation could not be confirmed. Do not resubmit automatically.",
+        "rejected": "Codex continuation could not start.",
+    }
+    content = labels[result.status]
+    if result.error or result.message:
+        content += "\n\n" + (result.error or result.message)
+    content += f"\n\nJob: `{result.job_id}`"
+    if result.session_id:
+        content += f"\nCodex session: `{result.session_id}`"
+    content += f"\nContinued job: `{task.resume_job_id}`"
+    return ToolCommand(
+        tool="send_message", arguments={"content": content, "end_run": True}
+    )
+
+
 class RunConversation:
     """The conversation tools' view of one run, at the step being executed."""
 
@@ -148,7 +191,10 @@ class RunConversation:
 
     async def delegate_coding(self, args: CodingTask) -> dict:
         if not self.runs.services.sandbox.configured:
-            return {"error": "No computer is configured for this agent."}
+            return {
+                "job_id": str(self.action_id),
+                "error": "No computer is configured for this agent.",
+            }
         client = CodingClient(self.runs.services.sandbox)
         request = CodingStart(request_id=self.action_id, **args.model_dump())
         # The saved action stays pending in Tsuchi throughout this wait. Recovery
@@ -575,7 +621,7 @@ class AgentRuns(RunClient):
 
     async def prepare(self, state: RunState) -> dict:
         run = state.run
-        if not run.transcript:
+        if not run.transcript and run.coding_task is None:
             status = await self.services.inference_status()
             limit = self.transcript_limit(status)
             run = await self.update(run, transcript=await self.context(run, limit))
@@ -585,8 +631,16 @@ class AgentRuns(RunClient):
     async def infer_command(self, state: RunState) -> dict:
         run = state.run
         run = await self.owned(run)
-        replayed = run.transcript[-1].role == "assistant"
-        if replayed:
+        replayed = bool(run.transcript) and run.transcript[-1].role == "assistant"
+        if run.coding_task is not None:
+            # An explicit UI continuation is durable work, not a model decision.
+            prefix = run.transcript[:-1] if replayed else run.transcript
+            command = coding_continuation_command(run, prefix)
+            if replayed and parse_command(run.transcript[-1].content) != command:
+                raise ServiceError(
+                    "The saved coding continuation command changed.", 502
+                )
+        elif replayed:
             command = parse_command(run.transcript[-1].content)
         else:
             if (
@@ -625,6 +679,7 @@ class AgentRuns(RunClient):
                     datetime.now(UTC).isoformat(),
                     monotonic() - started,
                 )
+        if not replayed:
             # Persist the action before side effects. Recovery reuses its derived ID.
             run = await self.update(
                 run,

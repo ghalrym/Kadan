@@ -1881,3 +1881,146 @@ def test_restart_cannot_extend_expired_coding_wait(boundary, coding_boundary):
     assert coding_result(boundary)["status"] == "unconfirmed"
     assert coding_boundary.reads == 0
     assert len(coding_boundary.attempts) == len(boundary.deliveries) == 1
+
+
+def explicit_coding_continuation(boundary):
+    from kadan.api.pydantic_models.coding import CodingContinuation
+
+    task = CodingContinuation(
+        prompt="Rerun the existing unit tests without editing files.",
+        cwd="/home/gem/project",
+        resume_job_id=uuid4(),
+        timeout_seconds=60,
+    )
+    boundary.current = boundary.current.model_copy(update={"coding_task": task})
+    # Reproduce the failed trial's model decision: an unsupported success claim.
+    boundary.controller.inference = Commands(
+        send(content="I resumed the session and reran the tests.", end_run=True)
+    )
+    return task
+
+
+def test_explicit_continuation_cannot_be_skipped_by_a_fabricated_model_reply(
+    boundary, coding_boundary
+):
+    task = explicit_coding_continuation(boundary)
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.controller.inference.calls == []
+    assert len(coding_boundary.attempts) == len(boundary.deliveries) == 1
+    request = coding_boundary.attempts[0]
+    assert request.resume_job_id == task.resume_job_id
+    assert request.cwd == task.cwd and request.prompt == task.prompt
+    result = coding_boundary.jobs[request.request_id]
+    message = boundary.deliveries[0].content
+    assert message.startswith("Codex completed the continuation.")
+    assert str(result.id) in message and result.session_id in message
+    assert str(task.resume_job_id) in message
+    assert "Changed the requested file; unit tests passed." in message
+    assert "I resumed the session" not in message
+    assert boundary.current.status == "completed"
+
+
+@pytest.mark.parametrize(
+    "status", ["failed", "cancelled", "timed_out", "interrupted", "cleanup_required"]
+)
+def test_explicit_continuation_reports_actual_unsuccessful_outcome(
+    boundary, coding_boundary, status
+):
+    explicit_coding_continuation(boundary)
+    coding_boundary.results = [status]
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.controller.inference.calls == []
+    assert not boundary.deliveries[0].content.startswith("Codex completed")
+    assert coding_result(boundary)["status"] == status
+    assert boundary.current.status == "completed"
+
+
+def test_explicit_continuation_setup_rejection_is_not_a_success(
+    boundary, coding_boundary
+):
+    explicit_coding_continuation(boundary)
+
+    async def reject(_request):
+        raise ServiceError("No recorded session is available.", 409)
+
+    coding_boundary.start = reject
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.controller.inference.calls == []
+    assert boundary.deliveries[0].content.startswith(
+        "Codex continuation could not start."
+    )
+    assert "No recorded session" in boundary.deliveries[0].content
+
+
+def test_explicit_continuation_restart_reattaches_same_job_and_grounded_reply(
+    boundary, coding_boundary
+):
+    task = explicit_coding_continuation(boundary)
+    coding_boundary.after_start = lambda: (_ for _ in ()).throw(
+        asyncio.CancelledError()
+    )
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(boundary.controller.process(boundary.current))
+    first = coding_boundary.attempts[0]
+    boundary.current = boundary.current.model_copy(
+        update={"lease_expires_at": datetime.now(UTC) - timedelta(seconds=1)}
+    )
+    boundary.controller = AgentRuns(boundary, boundary.controller.owner)
+    boundary.controller.inference = Commands(
+        AssertionError("No inference for explicit work")
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert len(coding_boundary.jobs) == len(boundary.deliveries) == 1
+    assert coding_boundary.attempts == [first, first]
+    assert first.resume_job_id == task.resume_job_id
+    assert boundary.controller.inference.calls == []
+
+
+def test_explicit_continuation_uncertain_delivery_does_not_repeat_coding_or_message(
+    boundary, coding_boundary
+):
+    explicit_coding_continuation(boundary)
+    boundary.crash_after_delivery = True
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(boundary.controller.process(boundary.current))
+    boundary.current = boundary.current.model_copy(
+        update={"lease_expires_at": datetime.now(UTC) - timedelta(seconds=1)}
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert len(coding_boundary.attempts) == len(boundary.deliveries) == 1
+    assert len(boundary.delivery_attempts) == 2
+    assert boundary.current.status == "completed"
+
+
+def test_explicit_continuation_cancel_during_wait_never_delivers_a_result(
+    boundary, coding_boundary
+):
+    explicit_coding_continuation(boundary)
+
+    async def stop():
+        boundary.cancel()
+
+    coding_boundary.before_read = stop
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "cancelled"
+    assert boundary.deliveries == []
+    assert len(coding_boundary.attempts) == 1
+    assert boundary.controller.inference.calls == []
+
+
+def test_explicit_continuation_rejects_a_result_from_another_action(
+    boundary, coding_boundary
+):
+    explicit_coding_continuation(boundary)
+    coding_boundary.results = ["completed"]
+    original = coding_boundary.start
+
+    async def wrong_action(request):
+        job = await original(request)
+        return job.model_copy(update={"id": uuid4()})
+
+    coding_boundary.start = wrong_action
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert "another action" in boundary.current.error
+    assert boundary.deliveries == []

@@ -70,7 +70,24 @@ and further coding is blocked. An operator must restart the computer to establis
 that its old processes have ended. A computer restart marks unfinished work as
 interrupted; it never automatically replays the task. The owner should inspect
 partial changes before continuing. A recorded Codex session can be continued with
-a new scoped follow-up in the same directory after cleanup is confirmed. A saved
+a new scoped follow-up in the same directory after cleanup is confirmed. In
+**Coding**, select its job, enter the follow-up and choose **Continue with Codex**.
+Kadan queues that explicit request in Messages, runs it without asking the chat
+model to choose a tool, and posts the recorded outcome with its actual job and
+session identifiers. A failed, rejected or unconfirmed continuation is reported as
+such. This path does not require Hikari conversation inference.
+
+An uncertain submission retains the original follow-up and request identity for
+retry in Coding or Messages. Closing the panel leaves accepted work running;
+retrying the same request does not create another turn. Finish or discard an
+unsent message before submitting a different continuation. Unsubmitted follow-up
+drafts survive closing and reopening the panel in the same browser tab, separately
+for each conversation and job.
+
+Ordinary Messages remain model-directed: an assistant can omit a requested tool
+or make an unsupported claim. Typing a resume request alone does not establish
+that a continuation ran. Use **Continue with Codex** and the recorded job outcome
+for that confirmation. A saved
 session ID does not guarantee that Codex's session files or authentication are
 still available; a failed resume reports failure instead of starting a fresh session.
 

@@ -935,3 +935,64 @@ def test_stored_image_jobs_default_to_upload_not_started(repository):
     stored = job.model_dump_json(exclude={"upload_status"})
     assert ImageJob.model_validate_json(stored) == job
     assert job.upload_status == "not_started"
+
+
+def test_coding_continuation_intent_is_durable_immutable_and_part_of_retry_identity(
+    repository,
+):
+    from tsuchi.models import CodingContinuation
+
+    resource = conversation(repository)
+    user = message(content="Rerun the unit tests")
+    task = CodingContinuation(
+        prompt=user.content, cwd="/home/gem/project", resume_job_id=uuid4()
+    )
+    run = repository.create_run(
+        "alpha", resource.id, user, resource.version, coding_task=task
+    )
+    assert repository.get_run("alpha", run.id).coding_task == task
+    assert (
+        repository.create_run(
+            "alpha", resource.id, user, resource.version, coding_task=task
+        )
+        == run
+    )
+    for changed in [
+        None,
+        task.model_copy(update={"resume_job_id": uuid4()}),
+        task.model_copy(update={"prompt": "Different task"}),
+    ]:
+        with pytest.raises(StorageError, match="already in use"):
+            repository.create_run(
+                "alpha", resource.id, user, resource.version, coding_task=changed
+            )
+    owned = claim(repository, run)
+    updated = repository.update_run(
+        "alpha",
+        run.id,
+        run_state(
+            owned, transcript=[RunMessage(role="assistant", content="Saved command")]
+        ),
+        owned.version,
+        owned.owner_id,
+    )
+    assert updated.coding_task == task
+    assert len(repository.get_resource("alpha", resource.id).messages) == 1
+
+
+def test_coding_continuation_requires_explicit_session_and_scoped_directory():
+    from tsuchi.models import CodingContinuation
+
+    valid = {
+        "prompt": "Run tests",
+        "cwd": "/home/gem/project",
+        "resume_job_id": str(uuid4()),
+    }
+    for changed in [
+        {"resume_job_id": None},
+        {"cwd": "relative"},
+        {"prompt": " "},
+        {"timeout_seconds": True},
+    ]:
+        with pytest.raises(ValidationError):
+            CodingContinuation.model_validate({**valid, **changed})

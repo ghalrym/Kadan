@@ -251,9 +251,13 @@ export default function Chat({
     else sessionStorage.removeItem(draftKey);
   }, [draft, draftKey]);
   useEffect(() => {
-    savePending(confirmSend(pending.current, chain.messages));
+    syncPending(chain.messages);
   }, [chain.messages]);
 
+  function syncPending(messages: Resource["messages"]) {
+    // Coding shares this outbox while Messages stays mounted behind its dialog.
+    savePending(confirmSend(readPending(sessionStorage.getItem(pendingKey)), messages));
+  }
   function savePending(value: PendingMessage | null) {
     pending.current = value;
     setRecovery(value);
@@ -262,7 +266,7 @@ export default function Chat({
   }
   function accept(value: Resource) {
     const latest = latestConversation(currentChain.current, value);
-    savePending(confirmSend(pending.current, latest.messages));
+    syncPending(latest.messages);
     if (!pending.current) setOutgoing(null);
     if (latest !== currentChain.current) {
       currentChain.current = latest;
@@ -272,7 +276,8 @@ export default function Chat({
   async function send(generate: boolean, retry?: PendingMessage) {
     const text = retry?.content ?? draft.trim();
     if (!text || sendLock.current || sending || blocked) return;
-    if (!retry && pending.current) {
+    syncPending(currentChain.current.messages);
+    if (pending.current && (!retry || retry.id !== pending.current.id)) {
       setError("Retry or discard the unsent message before sending another.");
       return;
     }
@@ -318,6 +323,7 @@ export default function Chat({
           expected_version: currentChain.current.version,
           persona_id: personaId || null,
           message_id: messageId,
+          ...(message.resume_coding_job_id ? { resume_coding_job_id: message.resume_coding_job_id } : {}),
         });
         accept(result.conversation);
         setRuns((previous) => [...previous.filter((run) => run.id !== result.run.id), result.run]);
@@ -611,10 +617,10 @@ export default function Chat({
       {recovery && !sending && (
         <div className="banner inline" role="status">
           <div>
-            <strong>Unsent message</strong>
+            <strong>{recovery.resume_coding_job_id ? "Unconfirmed Codex continuation" : "Unsent message"}</strong>
             <p>{recovery.content}</p>
           </div>
-          <button disabled={blocked || !ready.storage || (recovery.generate && !ready.chat)}
+          <button disabled={blocked || !ready.storage || (recovery.generate && !recovery.resume_coding_job_id && !ready.chat)}
             onClick={() => void send(recovery.generate, recovery)}>Retry</button>
           <button disabled={blocked} onClick={() => savePending(null)}>Discard</button>
         </div>
