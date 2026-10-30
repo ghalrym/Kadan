@@ -4,12 +4,12 @@ import { stripTypeScriptTypes } from 'node:module'
 import { test } from 'node:test'
 import { SourceTextModule, SyntheticModule } from 'node:vm'
 
-async function videoApi(settings = { tier: "go", tiers: [{ id: "go", video_defaults: { duration: 5, resolution: "480p" } }] }) {
+async function videoApi() {
   const calls = []
   const job = { id: 'job', prompt: 'scene', status: 'Queued', progress: 0 }
-  const sdk = new SyntheticModule(['cancelVideo', 'generateVideo', 'getSettings', 'getVideo', 'listVideos'], function () {
-    for (const name of ['cancelVideo', 'generateVideo', 'getSettings', 'getVideo', 'listVideos'])
-      this.setExport(name, async args => { calls.push(args); return { response: { ok: true }, data: name === 'getSettings' ? settings : { job } } })
+  const sdk = new SyntheticModule(['cancelVideo', 'generateVideo', 'getVideo', 'listVideos'], function () {
+    for (const name of ['cancelVideo', 'generateVideo', 'getVideo', 'listVideos'])
+      this.setExport(name, async args => { calls.push(args); return { response: { ok: true }, data: { job } } })
   })
   const source = await readFile(new URL('../src/api/video.ts', import.meta.url), 'utf8')
   const module = new SourceTextModule(stripTypeScriptTypes(source))
@@ -35,20 +35,7 @@ test('rejects unsupported durations before contacting the API', async () => {
 })
 
 
-test('reads defaults from the selected tier without a second frontend policy', async () => {
-  const { api } = await videoApi({ tier: 'plus', tiers: [
-    { id: 'go', video_defaults: { duration: 5, resolution: '480p' } },
-    { id: 'plus', video_defaults: { duration: 8, resolution: '480p' } },
-  ] })
-  assert.deepEqual(await api.loadVideoDefaults(new AbortController().signal), { duration: 8, resolution: '480p' })
-})
-
-test('asks for a tier when none is selected', async () => {
-  const { api } = await videoApi({ tier: null, tiers: [] })
-  await assert.rejects(api.loadVideoDefaults(new AbortController().signal), /Choose a hardware tier/)
-})
-
-test('leaves omitted clip settings for the selected tier and accepts full explicit choices', async () => {
+test('leaves omitted clip settings to the API and accepts full explicit choices', async () => {
   const { api, calls } = await videoApi()
   await api.submitVideo({ prompt: 'scene' }, new AbortController().signal)
   assert.deepEqual(calls.at(-1).body, { prompt: 'scene' })
