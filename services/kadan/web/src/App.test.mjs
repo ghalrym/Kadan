@@ -63,6 +63,7 @@ async function app(petResponses = [], agentResponses = [[agent]]) {
     "./Personas": { default: "Personas" },
     "./RenameAgent": { default: "RenameAgent" },
     "./RunnerAssignment": { default: "RunnerAssignment" },
+    "./Coding": { default: "Coding" },
     "./agentRuns": { latestConversation: (current, incoming) => current.id === incoming.id && incoming.version > current.version ? incoming : current },
     "./Hatch": { default: "Hatch" },
     "./Pet": { agentPet: () => ({ url: "hatchling" }) },
@@ -122,19 +123,19 @@ test("navigation offers Messages and Workspace without a standalone Persona view
   const view = await app();
   const navigation = view.findAll(node => node.props?.["aria-label"] === "Views")[0];
   const buttons = view.findAll(node => node.type === "button", navigation);
-  assert.deepEqual(buttons.map(node => node.props.children.at(-1)), ["Messages", "Workspace"]);
+  assert.deepEqual(buttons.map(node => node.props.children.at(-1)), ["Messages", "Workspace", "Coding"]);
   const settings = view.findAll(node => node.props?.["aria-label"] === "Agent settings")[0];
   assert.deepEqual(
     view.findAll(node => node.type === "button", settings).map(node => node.props.children.at(-1)),
     ["Edit pet", "Rename agent", "Runner assignment"],
   );
   assert.equal(view.findAll(node => node.type === "Personas").length, 0);
-  buttons.at(-1).props.onClick();
+  buttons[1].props.onClick();
   view.render();
   assert.equal(view.findAll(node => node.type === "Workspace").length, 1);
   assert.equal(view.findAll(node => node.props?.className === "workspace-pane")[0].props.hidden, false);
   assert.equal(view.findAll(node => node.type === "Chat").length, 0);
-  buttons.at(-2).props.onClick();
+  buttons[0].props.onClick();
   view.render();
   assert.equal(view.findAll(node => node.type === "Chat").length, 1);
   assert.equal(view.findAll(node => node.type === "Workspace").length, 1);

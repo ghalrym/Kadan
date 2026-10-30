@@ -73,3 +73,11 @@ test("malformed outbox records do not become sends", () => {
     assert.equal(readPending(raw), null);
   }
 });
+
+test("explicit coding continuation keeps its original job on reconnect and retry", () => {
+  const pending = { ...first, resume_coding_job_id: "saved-job" };
+  assert.deepEqual(readPending(JSON.stringify(pending)), pending);
+  assert.deepEqual(queueSend(pending, { ...pending, content: "Changed prompt", resume_coding_job_id: "other-job" }), pending);
+  assert.equal(readPending(JSON.stringify({ ...pending, generate: false })), null);
+  assert.equal(readPending(JSON.stringify({ ...pending, resume_coding_job_id: 42 })), null);
+});

@@ -19,6 +19,7 @@ Saved work can continue after the browser closes. A queued message does not prom
 | [Personas](personas.md) | Let agents maintain saved response instructions, with optional additional named personas. |
 | [Shared agent instructions](agent-instructions.md) | Change operator-maintained instructions for subsequent agent work. |
 | [Agent actions](agent-actions.md) | Ask agents to browse, change files and run commands, with explicit limits on recovery. |
+| [Coding with Codex](coding.md) | Delegate coding in the shared computer with saved job status, explicit resume and separate cancellation. |
 | [Computer](computer.md) | Watch or control the shared computer without pausing the agent. |
 | [Images in conversations](image-generation.md) | Continue chatting while images generate and receive saved results later. |
 | [Pets](pets.md) | Create, import, preview, repair and explicitly select animated pets. |

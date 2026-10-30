@@ -36,12 +36,12 @@ const mocks = {
   react: reactUrl,
   "react/jsx-runtime": jsxUrl,
   "react-dom": moduleUrl("export const flushSync = callback => callback();"),
-  "lucide-react": moduleUrl("export const Egg='', FolderOpen='', Menu='', MessageCircle='', Palette='', Pencil='', Server='', RefreshCw='', X='';"),
+  "lucide-react": moduleUrl("export const Egg='', FolderOpen='', Menu='', MessageCircle='', Palette='', Pencil='', Server='', Code2='', RefreshCw='', X='';"),
   "./api": moduleUrl("export const agentPath = () => ''; export const api = () => { throw Error('Unexpected request'); }; export const allResources = api;"),
   "./Pet": moduleUrl("export default 'Pet'; export const agentPet = () => null; export const useMood = () => [];"),
   "./pet": moduleUrl("export const agentHue = () => 0;"),
   "./PetContext": moduleUrl("export const PetContext = { Provider: 'Provider' }; export const useAgentPet = () => null;"),
-  ...Object.fromEntries(["Chat", "Workspace", "Personas", "Hatch", "PetEditor", "RenameAgent", "RunnerAssignment"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
+  ...Object.fromEntries(["Chat", "Workspace", "Personas", "Hatch", "PetEditor", "RenameAgent", "RunnerAssignment", "Coding"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
 };
 const loader = registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -66,14 +66,14 @@ loader.deregister();
 
 const originals = new Map(["matchMedia"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 // Slots follow App's useState calls; refs and effects do not consume these slots.
-const AGENT = 0, RENAMING = 3, ASSIGNING_RUNNER = 4, CHAIN = 6, LOADING = 13, BUSY = 14;
+const AGENT = 0, RENAMING = 3, ASSIGNING_RUNNER = 4, CODING = 5, CHAIN = 7, LOADING = 14, BUSY = 15;
 const original = { id: "original", agent_key: "agent", version: 3, messages: [] };
 const replacement = { ...original, id: "replacement", version: 1 };
 beforeEach(() => {
   state.length = 0;
   state[AGENT] = { key: "agent", name: "Agent" };
   state[CHAIN] = original;
-  state[20] = "agent";
+  state[21] = "agent";
   Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: () => ({ matches: false }) });
 });
 afterEach(() => {
@@ -171,4 +171,20 @@ test("hatching is only offered while there is no agent", () => {
   App();
   assert.equal(elements.some(element => element.type === "Hatch"), true);
   assert.equal(elements.some(element => element.type === "Chat"), false);
+});
+
+test("coding status opens while chat is busy and closing keeps the conversation", () => {
+  state[BUSY] = true;
+  const previous = chat();
+  const open = elements.find(element => element.type === "button"
+    && Array.isArray(element.props.children) && element.props.children.includes("Coding"));
+  assert.equal(open.props.disabled, false);
+  open.props.onClick();
+  chat();
+  const panel = elements.find(element => element.type === "Coding");
+  assert.ok(panel);
+  panel.props.onClose();
+  assert.equal(state[CODING], false);
+  assert.equal(chat().key, previous.key);
+  assert.equal(state[CHAIN], original);
 });

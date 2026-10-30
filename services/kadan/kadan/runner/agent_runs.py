@@ -25,6 +25,13 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ValidationError
 
 from ..api.config import ServiceError
+from ..api.coding_client import CodingClient
+from ..api.pydantic_models.coding import (
+    CodingContinuation,
+    CodingOutcome,
+    CodingStart,
+    CodingTask,
+)
 from ..api.pydantic_models.agent_runs import (
     AgentRun,
     AgentRunState,
@@ -48,6 +55,7 @@ from .conversation_history import (
 from .memories import AgentMemories
 from .tools import (
     ALL_TOOLS,
+    CODING_TOOLS,
     CONVERSATION_TOOLS,
     MEMORY_TOOLS,
     PERSONA_TOOLS,
@@ -71,6 +79,8 @@ MAX_CONTEXT = 48000
 CHARACTERS_PER_TOKEN = 3
 RESERVED_TOKENS = 1024
 TOOL_RESULT = "Tool result: "
+CODING_POLL_SECONDS = 2
+CODING_RECOVERY_SECONDS = 120
 
 
 def context_characters(context_limit: int | None) -> int:
@@ -130,6 +140,47 @@ def validate(command: ToolCommand, tools: list[StructuredTool]) -> None:
         ) from error
 
 
+def coding_continuation_command(
+    run: AgentRun, start: ToolCommand, transcript: list[RunMessage]
+) -> ToolCommand:
+    task = CodingContinuation.model_validate(start.arguments)
+    if not transcript:
+        return start
+    if (
+        len(transcript) != 2
+        or transcript[0].role != "assistant"
+        or parse_command(transcript[0].content) != start
+        or transcript[1].role != "user"
+        or not transcript[1].content.startswith(TOOL_RESULT)
+    ):
+        raise ServiceError("The saved coding continuation has an invalid result.", 502)
+    result = CodingOutcome.model_validate_json(
+        transcript[1].content.removeprefix(TOOL_RESULT)
+    )
+    if result.job_id != uuid5(run.id, "command:1"):
+        raise ServiceError("The coding result belongs to another action.", 502)
+    labels = {
+        "completed": "Codex completed the continuation.",
+        "failed": "Codex could not finish the continuation.",
+        "cancelled": "Codex continuation was cancelled; file changes remain.",
+        "timed_out": "Codex continuation timed out; inspect partial changes.",
+        "interrupted": "Codex continuation was interrupted; inspect partial changes.",
+        "cleanup_required": "Codex cleanup needs attention. Further coding is blocked.",
+        "unconfirmed": "Codex continuation could not be confirmed. Do not resubmit automatically.",
+        "rejected": "Codex continuation could not start.",
+    }
+    content = labels[result.status]
+    if result.error or result.message:
+        content += "\n\n" + (result.error or result.message)
+    content += f"\n\nJob: `{result.job_id}`"
+    if result.session_id:
+        content += f"\nCodex session: `{result.session_id}`"
+    content += f"\nContinued job: `{task.resume_job_id}`"
+    return ToolCommand(
+        tool="send_message", arguments={"content": content, "end_run": True}
+    )
+
+
 class RunConversation:
     """The conversation tools' view of one run, at the step being executed."""
 
@@ -140,6 +191,67 @@ class RunConversation:
         self.end_run = False
         self.finished = False
         self.replayed = replayed
+
+    async def delegate_coding(self, args: CodingTask) -> dict:
+        if not self.runs.services.sandbox.configured:
+            return {
+                "job_id": str(self.action_id),
+                "error": "No computer is configured for this agent.",
+            }
+        client = CodingClient(self.runs.services.sandbox)
+        request = CodingStart(request_id=self.action_id, **args.model_dump())
+        # The saved action stays pending in Tsuchi throughout this wait. Recovery
+        # uses the same idempotent submission, never a new continuation run.
+        deadline = monotonic() + args.timeout_seconds + CODING_RECOVERY_SECONDS
+        job = None
+        while True:
+            await self.runs.owned(self.run)
+            if monotonic() >= deadline:
+                return {
+                    "job_id": str(self.action_id),
+                    "status": "unconfirmed",
+                    "error": "Coding status could not be confirmed before the recovery deadline. "
+                    "The job may have changed files. Do not resubmit it automatically.",
+                }
+            try:
+                job = (
+                    await client.start(request)
+                    if job is None
+                    else await client.job(self.action_id)
+                )
+            except ServiceError as error:
+                if error.code != "coding_unconfirmed":
+                    return {"job_id": str(self.action_id), "error": str(error)}
+                # Retrying this ID can only recover its existing submission.
+                # Transport reconnects require no model decision or new action.
+            await self.runs.owned(self.run)
+            if job is not None:
+                try:
+                    created = datetime.fromisoformat(job.created_at)
+                except ValueError as error:
+                    raise ServiceError(
+                        "The computer returned an invalid coding timestamp.", 502
+                    ) from error
+                if created.utcoffset() is None:
+                    raise ServiceError(
+                        "The computer returned an invalid coding timestamp.", 502
+                    )
+                remaining = (
+                    (created - datetime.now(UTC)).total_seconds()
+                    + args.timeout_seconds
+                    + CODING_RECOVERY_SECONDS
+                )
+                deadline = min(deadline, monotonic() + max(0, remaining))
+                if job.status not in {"starting", "running", "stopping"}:
+                    return {
+                        "job_id": str(job.id),
+                        "status": job.status,
+                        "session_id": job.session_id,
+                        "message": job.message,
+                    }
+            await asyncio.sleep(
+                min(CODING_POLL_SECONDS, max(0, deadline - monotonic()))
+            )
 
     async def send_message(self, args: SendMessageArguments) -> dict:
         message = Message(id=self.action_id, role="assistant", content=args.content)
@@ -326,7 +438,9 @@ class AgentRuns(RunClient):
     async def owned(self, run: AgentRun) -> AgentRun:
         current = await self.get(run.agent_key, run.id)
         if (
-            current.status != "running"
+            (current.id, current.agent_key, current.conversation_id)
+            != (run.id, run.agent_key, run.conversation_id)
+            or current.status != "running"
             or current.owner_id != self.owner
             or current.lease_expires_at is None
             or current.lease_expires_at <= datetime.now(UTC)
@@ -520,8 +634,23 @@ class AgentRuns(RunClient):
     async def infer_command(self, state: RunState) -> dict:
         run = state.run
         run = await self.owned(run)
-        replayed = run.transcript[-1].role == "assistant"
-        if replayed:
+        replayed = bool(run.transcript) and run.transcript[-1].role == "assistant"
+        initial = (
+            parse_command(run.initial_command.content) if run.initial_command else None
+        )
+        if (
+            initial is not None
+            and initial.tool == "codex_start"
+            and initial.arguments.get("resume_job_id") is not None
+        ):
+            # An explicit UI continuation is durable work, not a model decision.
+            prefix = run.transcript[:-1] if replayed else run.transcript
+            command = coding_continuation_command(run, initial, prefix)
+            if replayed and parse_command(run.transcript[-1].content) != command:
+                raise ServiceError(
+                    "The saved coding continuation command changed.", 502
+                )
+        elif replayed:
             command = parse_command(run.transcript[-1].content)
         else:
             if (
@@ -560,6 +689,7 @@ class AgentRuns(RunClient):
                     datetime.now(UTC).isoformat(),
                     monotonic() - started,
                 )
+        if not replayed:
             # Persist the action before side effects. Recovery reuses its derived ID.
             run = await self.update(
                 run,
@@ -617,7 +747,7 @@ class AgentRuns(RunClient):
 
         elif tool in MEMORY_TOOLS:
             result = await self.use_memory(tool, command, run, state.replayed)
-        elif tool in CONVERSATION_TOOLS:
+        elif tool in CONVERSATION_TOOLS or tool in CODING_TOOLS:
             result = await tool.ainvoke(
                 command.arguments,
                 config={"configurable": {"conversation": conversation}},

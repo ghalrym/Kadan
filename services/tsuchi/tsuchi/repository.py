@@ -37,6 +37,7 @@ from .models import (
     ResourceRecord,
     ResourceVersion,
     Runner,
+    RunMessage,
     Stats,
     resource_adapter,
     resource_input_adapter,
@@ -423,9 +424,14 @@ class Repository:
         message: Message,
         expected_version: int,
         persona_id: UUID | None = None,
+        initial_command: RunMessage | None = None,
     ) -> AgentRun:
         if message.role != "user":
             raise StorageError("An agent run must start with a user message", 409)
+        if initial_command is not None and initial_command.role != "assistant":
+            raise StorageError(
+                "An initial command must be an assistant checkpoint", 409
+            )
         with self.connect(write=True) as db:
             conversation = self._conversation(db, key, conversation_id)
             row = db.execute(
@@ -438,6 +444,7 @@ class Repository:
                     and existing.conversation_id == conversation_id
                     and existing.trigger_message_id == message.id
                     and existing.persona_id == persona_id
+                    and existing.initial_command == initial_command
                     and any(
                         item.model_dump(exclude={"created_at"})
                         == message.model_dump(exclude={"created_at"})
@@ -461,6 +468,7 @@ class Repository:
                 conversation_id=conversation_id,
                 trigger_message_id=message.id,
                 persona_id=persona_id,
+                transcript=[initial_command] if initial_command is not None else [],
                 version=1,
                 created_at=now,
                 updated_at=now,
@@ -522,6 +530,8 @@ class Repository:
             current = self._run(db, key, run_id)
             self._assigned_worker(db, key, worker_id)
             self._check_version(current, expected_version)
+            if value.transcript[: len(current.transcript)] != current.transcript:
+                raise StorageError("Persisted agent transcript is immutable", 409)
             now = utc_now()
             claiming = current.status == "queued" or (
                 current.status == "running" and current.lease_expires_at <= now
@@ -540,8 +550,6 @@ class Repository:
                 self._owned_run(db, current, worker_id)
                 if value.status not in {"running", "completed", "failed", "cancelled"}:
                     raise StorageError("Invalid agent run state transition", 409)
-                if value.transcript[: len(current.transcript)] != current.transcript:
-                    raise StorageError("Persisted agent transcript is immutable", 409)
             if value.status == "running":
                 if value.owner_id != worker_id:
                     raise StorageError("A worker must own its agent run lease", 409)

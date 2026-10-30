@@ -6,7 +6,8 @@ shared Compose network, and lets the owner watch or take over that computer from
 ## Components
 
 - `kadan-sandbox`: the pinned AIO Sandbox image (`ghcr.io/agent-infra/sandbox`).
-  It owns execution. Kadan installs nothing into it and keeps no copy of its API.
+  It owns execution. The image also includes the pinned Codex CLI and Kadan's
+  [coding supervisor](coding.md); Kadan keeps no copy of the sandbox's API.
 - `kadan/api/sandbox_client.py`: the only client of the sandbox's HTTP API.
 - `kadan/runner/tools/`: one hand-written LangChain tool per sandbox route, with
   a Pydantic argument model. Each module's `TOOLS` list selects the enabled tools.
@@ -31,6 +32,8 @@ shared Compose network, and lets the owner watch or take over that computer from
   results, not run failures.
 - The sandbox has no idempotency keys. A command saved before a restart is never
   re-executed unless it is a GET.
+  Coding submissions additionally have supervisor-owned request IDs, but are still
+  inspected explicitly after an interrupted conversation action.
 
 ## Shared viewing and recovery
 
