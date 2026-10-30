@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Browser
+Exec=python3 /opt/kadan/desktop/launch.py browser
+Icon=/opt/browser/product_logo_48.png
+Terminal=false

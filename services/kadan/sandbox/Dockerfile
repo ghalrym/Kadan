@@ -32,3 +32,11 @@ RUN rm /opt/nodejs/20 \
     && ln -s /opt/nodejs/22 /opt/nodejs/20 \
     && ln -sfn /opt/nodejs/22/bin/node /usr/local/bin/node20 \
     && rm -rf /opt/fnm/node-versions/v20.20.2
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tint2 wmctrl gsettings-desktop-schemas \
+    && rm -rf /var/lib/apt/lists/*
+COPY desktop /opt/kadan/desktop
+RUN python3 /opt/kadan/desktop/configure_desktop.py
+# Closing the last window must not make the upstream supervisor reopen it.
+ENV BROWSER_EXTRA_ARGS="${BROWSER_EXTRA_ARGS} --keep-alive-for-test"

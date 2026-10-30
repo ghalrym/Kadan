@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu xmlns="http://openbox.org/">
+  <menu id="root-menu" label="Applications">
+    <item label="Browser"><action name="Execute"><command>python3 /opt/kadan/desktop/launch.py browser</command></action></item>
+    <item label="Terminal"><action name="Execute"><command>python3 /opt/kadan/desktop/launch.py terminal</command></action></item>
+    <separator/>
+    <item label="Windows"><action name="ShowMenu"><menu>client-list-combined-menu</menu></action></item>
+    <item label="Show desktop"><action name="ToggleShowDesktop"/></item>
+  </menu>
+</openbox_menu>
