@@ -1189,6 +1189,18 @@ dialog::backdrop {
 .runner-assignment {
   overflow-y: auto;
 }
+.coding-dialog { width: min(640px, calc(100vw - 32px)); overflow-y: auto; }
+.coding-content { display: flex; flex-direction: column; gap: 16px; padding: 24px; overflow-wrap: anywhere; }
+.coding-content p, .coding-content h2 { margin: 0; }
+.coding-content label { display: flex; flex-direction: column; gap: 8px; }
+.coding-setup { display: grid; gap: 12px; }
+.coding-state { font-weight: 600; }
+.coding-message { white-space: pre-wrap; }
+.coding-events { padding-left: 20px; margin: 0; color: var(--muted); max-height: 160px; overflow-y: auto; }
+.coding-content dd { margin: 0 0 8px; }
+.coding-content dt { color: var(--muted); }
+.coding-content .field-hint { color: var(--muted); }
+.coding-content > button { border-color: var(--line-strong); align-self: flex-start; }
 .rename-agent form,
 .runner-assignment form {
   display: flex;

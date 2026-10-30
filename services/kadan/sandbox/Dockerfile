@@ -1,9 +1,14 @@
 FROM node:22.23.4-bookworm-slim AS node22
+# Install only the official pinned CLI and its platform package in the image build.
+RUN npm install --global --ignore-scripts @openai/codex@0.162.1
 FROM node:24.22.1-bookworm-slim AS node24
 FROM ghcr.io/astral-sh/uv:0.13.5 AS uv
 FROM ghcr.io/agent-infra/sandbox:1.11.0@sha256:6328d7fd2f0ff0b4c147c3d05b3df1ce331f4a482eb6e550ecd64ed1fcf906e7
 
 COPY --from=node22 /usr/local/bin/node /opt/nodejs/22/bin/node
+COPY --from=node22 /usr/local/lib/node_modules/@openai/codex /opt/kadan/codex
+RUN ln -sfn /opt/kadan/codex/bin/codex.js /opt/nodejs/22/bin/codex
+COPY coding_jobs.py /opt/kadan/coding_jobs.py
 COPY --from=node22 /usr/local/bin/node /usr/local/code-server-4.104.0/lib/node
 COPY --from=node24 /usr/local/bin/node /opt/nodejs/24/bin/node
 COPY --from=uv /uv /usr/local/bin/uv

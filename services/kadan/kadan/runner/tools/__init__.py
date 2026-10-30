@@ -6,6 +6,7 @@ from . import (
     bash,
     browser,
     code,
+    coding,
     conversation,
     display,
     file,
@@ -32,6 +33,7 @@ CONVERSATION_TOOLS: list[StructuredTool] = [
 MEMORY_TOOLS: list[StructuredTool] = memory.TOOLS
 PERSONA_TOOLS: list[StructuredTool] = persona.TOOLS
 COMPUTER_TOOLS: list[StructuredTool] = [
+    *coding.TOOLS,
     *browser.TOOLS,
     *shell.TOOLS,
     *bash.TOOLS,
