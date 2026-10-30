@@ -57,6 +57,13 @@ standard window mouse bindings and Alt+Tab while restoring decorations, one
 desktop and a small Applications menu. Configuration lives outside `/home/gem`,
 so an existing home volume does not hide it or need its settings overwritten.
 
+Openbox runs the root background command through its `--startup` hook after it
+has connected to X and initialized the window manager. Running that command
+before Openbox races Xvnc startup: the color setter can fail just before Openbox
+connects successfully, leaving a usable desktop with a black background. Openbox
+remains the supervised process, so an unavailable display still uses its existing
+restart behavior without a separate waiting process or background service.
+
 The pinned browser still owns its existing `.config/browser` profile and CDP
 endpoint. Chromium's `--keep-alive-for-test` keeps that process alive after the
 last window closes, preventing the upstream supervisor from immediately reopening

@@ -45,8 +45,9 @@ def configure_openbox(source: str) -> str:
 
 if __name__ == "__main__":
     Path("/opt/gem/openbox.sh").write_text(
-        '#!/bin/sh\nxsetroot -solid "#0e0f12"\n'
-        "exec /usr/bin/openbox --config-file /opt/gem/openbox.xml\n"
+        "#!/bin/sh\n"
+        "exec /usr/bin/openbox --config-file /opt/gem/openbox.xml "
+        "--startup 'xsetroot -solid \"#0e0f12\"'\n"
     )
     Path("/opt/gem/openbox.xml").write_text(
         configure_openbox(Path("/etc/xdg/openbox/rc.xml").read_text())

@@ -12,6 +12,8 @@ The computer has a desktop with an always-visible bottom taskbar in normal windo
 
 Windows have familiar minimize, maximize, restore and close controls. Users can move and resize them, switch using taskbar entries or Alt+Tab, and use Show desktop to reveal the desktop. Closing the browser's last window leaves its background process available for agent tools; the Browser launcher opens a window again. Agent actions may also open or change browser windows. Fullscreen applications can cover the taskbar; leave fullscreen to reach it again.
 
+When desktop startup finishes, the background has the same dark color after a computer restart without needing a manual reset.
+
 Closing or reconnecting the computer view leaves desktop apps running. The computer's home files and browser profile are retained when its container is replaced using the same persistent home. This does not guarantee that every website keeps a sign-in valid. Replacing or deleting that home loses its files and saved sign-ins.
 
 After a computer replacement, a browser profile left locked by the old instance can prevent the browser from starting. Applications and Terminal remain reachable. An operator must confirm that the old browser has stopped before clearing a stale profile lock; resetting the profile is unnecessary.
