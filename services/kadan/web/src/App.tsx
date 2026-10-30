@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import {
+  Egg,
   FolderOpen,
   Menu,
   MessageCircle,
-  Plus,
   Palette,
   Pencil,
   Server,
@@ -31,49 +31,40 @@ function transition(update: () => void) {
   document.startViewTransition(() => flushSync(update));
 }
 
-function RosterPet({
-  agent,
-  selected,
-  disabled,
-  onSelect,
-}: {
-  agent: Agent;
-  selected: boolean;
-  disabled: boolean;
-  onSelect: () => void;
-}) {
+function AgentIdentity({ agent, onSelect }: { agent: Agent; onSelect: () => void }) {
   const [mood, react] = useMood("idle");
   const sheet = useAgentPet(agent.key);
   return (
     <button
-      className={`roster-pet ${selected ? "selected" : ""}`}
-      style={{ "--agent-h": agentHue(agent.key) } as React.CSSProperties}
-      aria-pressed={selected}
-      aria-label={agent.name}
-      title={agent.name}
-      disabled={disabled}
+      className="agent-identity"
       onPointerEnter={() => react("waving")}
       onClick={() => {
         react("jumping");
         onSelect();
       }}
     >
-      <Pet sheet={sheet} state={mood} size={48} look />
+      <span className="agent-identity-pet">
+        <Pet sheet={sheet} state={mood} size={48} look />
+      </span>
+      <span className="agent-identity-text">
+        <strong>{agent.name}</strong>
+        <code>{agent.key}</code>
+      </span>
     </button>
   );
 }
 
 export default function App() {
-  const [agents, setAgents] = useState<Agent[]>([]);
+  // Kadan has a single agent: the first one the API returns.
+  const [agent, setAgent] = useState<Agent | null>(null);
   const [pets, setPets] = useState<Record<string, PetJob | null>>({});
   const [editingPet, setEditingPet] = useState(false);
-  const [renamingAgent, setRenamingAgent] = useState("");
-  const [runnerAgent, setRunnerAgent] = useState("");
-  const petSelectionRevision = useRef<Record<string, number>>({});
-  const pendingPetSelection = useRef<Record<string, number>>({});
-  const [key, setKey] = useState(localStorage.getItem("kadan.agent") || "");
+  const [renaming, setRenaming] = useState(false);
+  const [assigningRunner, setAssigningRunner] = useState(false);
+  const petSelectionRevision = useRef(0);
+  const pendingPetSelection = useRef(0);
   const [personas, setPersonas] = useState<Resource[]>([]);
-  // Each agent has one continuous conversation rather than separate threads.
+  // The agent has one continuous conversation rather than separate threads.
   const [chain, setChain] = useState<Resource | null>(null);
   const [view, setView] = useState<"chat" | "workspace">("chat");
   const [workspaceVisited, setWorkspaceVisited] = useState(false);
@@ -87,30 +78,26 @@ export default function App() {
   const openNavigation = useRef<HTMLButtonElement>(null);
   const closeNavigation = useRef<HTMLButtonElement>(null);
   const [creating, setCreating] = useState(false);
-  const [hatched, setHatched] = useState("");
+  const [hatched, setHatched] = useState(false);
   const [resourceRevision, setResourceRevision] = useState(0);
-  const activeAgent = useRef(key);
-  activeAgent.current = key;
-  const selectedAgent = agents.find((agent) => agent.key === key);
+  const key = agent?.key ?? "";
 
   const refreshPetSelection = useCallback(async (agentKey: string) => {
-    if (pendingPetSelection.current[agentKey]) return;
-    const revision = petSelectionRevision.current[agentKey] ?? 0;
+    if (pendingPetSelection.current) return;
+    const revision = petSelectionRevision.current;
     const pet = await api<PetJob | null>(`${agentPath(agentKey)}/pet`);
-    if (revision === (petSelectionRevision.current[agentKey] ?? 0) && !pendingPetSelection.current[agentKey]) {
+    if (revision === petSelectionRevision.current && !pendingPetSelection.current) {
       setPets((rows) => rows[agentKey]?.id === pet?.id && rows[agentKey]?.version === pet?.version
-        ? rows : { ...rows, [agentKey]: pet });
+        ? rows : { [agentKey]: pet });
     }
   }, []);
 
   const selectPet = useCallback(async (agentKey: string, id: string | null) => {
-    const revision = (petSelectionRevision.current[agentKey] ?? 0) + 1;
-    petSelectionRevision.current[agentKey] = revision;
-    pendingPetSelection.current[agentKey] = revision;
+    const revision = petSelectionRevision.current + 1;
+    petSelectionRevision.current = revision;
+    pendingPetSelection.current = revision;
     const apply = (pet: PetJob | null) => {
-      if (revision === petSelectionRevision.current[agentKey]) {
-        setPets((rows) => ({ ...rows, [agentKey]: pet }));
-      }
+      if (revision === petSelectionRevision.current) setPets({ [agentKey]: pet });
     };
     try {
       try {
@@ -122,11 +109,10 @@ export default function App() {
         if ((saved?.id ?? null) !== id) throw error;
       }
     } finally {
-      if (pendingPetSelection.current[agentKey] === revision) delete pendingPetSelection.current[agentKey];
+      if (pendingPetSelection.current === revision) pendingPetSelection.current = 0;
     }
   }, []);
   const refreshEditedPet = useCallback(() => refreshPetSelection(key), [key, refreshPetSelection]);
-
 
   useEffect(() => {
     const query = matchMedia("(max-width: 760px)");
@@ -172,47 +158,33 @@ export default function App() {
       }));
     }
   }
-  async function refreshAgents() {
+  async function refreshAgent() {
     setError("");
     setLoading(true);
     try {
-      const rows = await api<Agent[]>("/agents");
-      setAgents(rows);
-      setKey((current) =>
-        rows.some((a) => a.key === current) ? current : rows[0]?.key || "",
-      );
+      const [first] = await api<Agent[]>("/agents");
+      setAgent(first ?? null);
       setResourceRevision((revision) => revision + 1);
-      if (!rows.length) setLoading(false);
+      if (!first) setLoading(false);
     } catch (e) {
       setError((e as Error).message);
       setLoading(false);
     }
   }
   useEffect(() => {
-    void refreshAgents();
+    void refreshAgent();
     void refreshStatus();
     const timer = setInterval(() => void refreshStatus(), 30000);
     return () => clearInterval(timer);
   }, []);
   useEffect(() => {
+    if (!key) return;
     let current = true;
-    for (const agent of agents) {
-      refreshPetSelection(agent.key)
-        .catch((error: Error) => {
-          if (current) setError(`Could not load ${agent.name}’s selected pet: ${error.message}`);
-        });
-    }
+    refreshPetSelection(key).catch((error: Error) => {
+      if (current) setError(`Could not load the selected pet: ${error.message}`);
+    });
     return () => { current = false; };
-  }, [agents, refreshPetSelection]);
-  useEffect(() => {
-    setEditingPet(false);
-    setRenamingAgent("");
-    setRunnerAgent("");
-    localStorage.setItem("kadan.agent", key);
-    setChain(null);
-    setPersonas([]);
-    setError("");
-  }, [key]);
+  }, [key, refreshPetSelection]);
   useEffect(() => {
     if (!key) return;
     let current = true;
@@ -239,14 +211,15 @@ export default function App() {
   }, [key, resourceRevision]);
 
   function updateChain(value: Resource) {
-    if (value.agent_key === activeAgent.current) {
-      setChain((current) => current ? latestConversation(current, value) : current);
-    }
+    setChain((current) => current ? latestConversation(current, value) : current);
   }
   function show(next: typeof view) {
     setMenu(false);
     if (next === "workspace") setWorkspaceVisited(true);
     transition(() => setView(next));
+  }
+  function restoreFocus() {
+    if (mobile && !menu) openNavigation.current?.focus();
   }
   const disabled = busy || loading;
   const hue = key ? agentHue(key) : 252;
@@ -293,111 +266,92 @@ export default function App() {
         className={`sidebar ${menu ? "is-open" : ""}`}
         aria-label="Navigation"
       >
-        <div className="rail">
-          <span className="logo" aria-hidden="true">
-            <i />
-            <i />
-            <i />
-            <i />
-          </span>
-          <nav className="roster" aria-label="Agents">
-            {agents.map((agent) => (
-              <RosterPet
-                key={agent.key}
-                agent={agent}
-                selected={agent.key === key}
-                disabled={disabled}
-                onSelect={() => {
-                  if (agent.key !== key) transition(() => setKey(agent.key));
-                  else show("chat");
-                }}
-              />
-            ))}
-            <button
-              className="roster-add"
-              aria-label="Hatch agent"
-              title="Hatch agent"
-              disabled={disabled}
-              onClick={() => setCreating(true)}
-            >
-              <Plus size={20} />
-            </button>
-          </nav>
-          <div className="services">
-            <a
-              href={status?.tsuchi.browser_url ?? undefined}
-              aria-disabled={!status?.tsuchi.browser_url}
-              target="_blank"
-              rel="noreferrer"
-              title={`Tsuchi · ${status?.tsuchi.message ?? "Checking"}`}
-            >
-              <span className={`dot ${status?.tsuchi.state === "ready" ? "ready" : status ? "down" : ""}`} />
-              <span className="sr-only">
-                Tsuchi {!status ? "checking" : status.tsuchi.state === "ready" ? "connected" : "unavailable"}
+        <header className="panel-head">
+          {agent ? (
+            <AgentIdentity agent={agent} onSelect={() => show("chat")} />
+          ) : (
+            <span className="brand">
+              <span className="logo" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+                <i />
               </span>
-            </a>
-            <a
-              href={status?.hikari.settings_url ?? undefined}
-              aria-disabled={!status?.hikari.settings_url}
-              target="_blank"
-              rel="noreferrer"
-              title={`Hikari · ${status?.hikari.message ?? "Checking"}`}
-            >
-              <span
-                className={`dot ${status?.hikari.state === "ready" ? "ready" : status?.hikari.state === "unavailable" ? "down" : status ? "warn" : ""}`}
-              />
-              <span className="sr-only">
-                Hikari {!status ? "checking" : status.hikari.state === "ready" ? "ready" : "needs attention"}
-              </span>
-            </a>
-          </div>
-        </div>
-        <div className="panel">
-          <header className="panel-head">
-            <button className="agent-title" disabled={!key} onClick={() => show("chat")}>
-              <strong>{selectedAgent?.name || "Kadan"}</strong>
-              {selectedAgent && <code>{selectedAgent.key}</code>}
-            </button>
-            <button
-              className="icon mobile-only"
-              aria-label="Close navigation"
-              ref={closeNavigation}
-              onClick={() => setMenu(false)}
-            >
-              <X size={18} />
-            </button>
-          </header>
-          <nav className="panel-nav" aria-label="Agent views">
-            <button disabled={!selectedAgent || disabled} onClick={() => { setMenu(false); setRunnerAgent(key); }}>
-              <Server size={17} />
-              Runner assignment
-            </button>
-            <button disabled={!selectedAgent || disabled} onClick={() => { setMenu(false); setRenamingAgent(key); }}>
-              <Pencil size={17} />
-              Rename agent
-            </button>
-            <button disabled={!key} onClick={() => { setMenu(false); setEditingPet(true); }}>
-              <Palette size={17} />
-              Edit pet
-            </button>
-            <button
-              className={key && view === "chat" ? "selected" : ""}
-              disabled={!key}
-              onClick={() => show("chat")}
-            >
-              <MessageCircle size={17} />
-              Messages
-            </button>
-            <button
-              className={view === "workspace" ? "selected" : ""}
-              disabled={!key || disabled}
-              onClick={() => show("workspace")}
-            >
-              <FolderOpen size={17} />
-              Workspace
-            </button>
-          </nav>
-        </div>
+              Kadan
+            </span>
+          )}
+          <button
+            className="icon mobile-only"
+            aria-label="Close navigation"
+            ref={closeNavigation}
+            onClick={() => setMenu(false)}
+          >
+            <X size={18} />
+          </button>
+        </header>
+        <nav className="panel-nav" aria-label="Views">
+          <button
+            className={key && view === "chat" ? "selected" : ""}
+            disabled={!key}
+            onClick={() => show("chat")}
+          >
+            <MessageCircle size={17} />
+            Messages
+          </button>
+          <button
+            className={view === "workspace" ? "selected" : ""}
+            disabled={!key || disabled}
+            onClick={() => show("workspace")}
+          >
+            <FolderOpen size={17} />
+            Workspace
+          </button>
+        </nav>
+        <nav className="panel-nav" aria-label="Agent settings">
+          <h2 className="panel-label">Agent</h2>
+          <button disabled={!key} onClick={() => { setMenu(false); setEditingPet(true); }}>
+            <Palette size={17} />
+            Edit pet
+          </button>
+          <button disabled={!key || disabled} onClick={() => { setMenu(false); setRenaming(true); }}>
+            <Pencil size={17} />
+            Rename agent
+          </button>
+          <button disabled={!key || disabled} onClick={() => { setMenu(false); setAssigningRunner(true); }}>
+            <Server size={17} />
+            Runner assignment
+          </button>
+        </nav>
+        <footer className="services">
+          <a
+            href={status?.tsuchi.browser_url ?? undefined}
+            aria-disabled={!status?.tsuchi.browser_url}
+            target="_blank"
+            rel="noreferrer"
+            title={status?.tsuchi.message ?? "Checking"}
+          >
+            <span className={`dot ${status?.tsuchi.state === "ready" ? "ready" : status ? "down" : ""}`} />
+            Tsuchi
+            <span className="sr-only">
+              {!status ? "checking" : status.tsuchi.state === "ready" ? "connected" : "unavailable"}
+            </span>
+          </a>
+          <a
+            href={status?.hikari.settings_url ?? undefined}
+            aria-disabled={!status?.hikari.settings_url}
+            target="_blank"
+            rel="noreferrer"
+            title={status?.hikari.message ?? "Checking"}
+          >
+            <span
+              className={`dot ${status?.hikari.state === "ready" ? "ready" : status?.hikari.state === "unavailable" ? "down" : status ? "warn" : ""}`}
+            />
+            Hikari
+            <span className="sr-only">
+              {!status ? "checking" : status.hikari.state === "ready" ? "ready" : "needs attention"}
+            </span>
+          </a>
+        </footer>
       </aside>
       <main id="main" tabIndex={-1} inert={mobile && menu}>
         <header className="topbar">
@@ -412,15 +366,15 @@ export default function App() {
             <Menu size={20} />
           </button>
           <h1>
-            {view === "workspace" ? "Workspace" : selectedAgent?.name || "Kadan"}
+            {view === "workspace" ? "Workspace" : agent?.name || "Kadan"}
           </h1>
           <button
             className="icon"
-            aria-label="Refresh services and agents"
+            aria-label="Refresh services and agent"
             title="Refresh"
             disabled={disabled}
             onClick={() => {
-              void refreshAgents();
+              void refreshAgent();
               void refreshStatus();
             }}
           >
@@ -430,7 +384,7 @@ export default function App() {
         {error && (
           <div className="banner" role="alert">
             {error}
-            <button disabled={disabled} onClick={() => void refreshAgents()}>
+            <button disabled={disabled} onClick={() => void refreshAgent()}>
               Retry
             </button>
           </div>
@@ -442,7 +396,7 @@ export default function App() {
         )}
         {loading && !key ? (
           <div className="center-empty" role="status">
-            <span className="sr-only">Loading agents</span>
+            <span className="sr-only">Loading agent</span>
             <span className="loader" aria-hidden="true">
               <i />
               <i />
@@ -452,21 +406,22 @@ export default function App() {
         ) : !key ? (
           <div className="center-empty">
             <Pet sheet={agentPet("kadan")} state="waiting" size={144} look grounded className="hero-pet" />
-            <h2>No agents yet</h2>
-            <button className="primary" onClick={() => setCreating(true)}>
-              <Plus size={16} />
-              Hatch agent
+            <h2>Meet your agent</h2>
+            <p className="center-hint">Give it a name to get started.</p>
+            <button className="primary" disabled={!!error} onClick={() => setCreating(true)}>
+              <Egg size={16} />
+              Hatch your agent
             </button>
           </div>
         ) : view === "workspace" ? null : chain ? (
           <Chat
             key={`${key}:${chain.id}`}
             agentKey={key}
-            agentName={selectedAgent?.name || key}
+            agentName={agent?.name || key}
             chain={chain}
             personas={personas}
             status={status}
-            entrance={hatched === key ? "jumping" : "waving"}
+            entrance={hatched ? "jumping" : "waving"}
             onChange={updateChain}
             onBusy={setBusy}
             onEditPet={() => setEditingPet(true)}
@@ -484,52 +439,44 @@ export default function App() {
           </div>
         )}
       </main>
-      {renamingAgent === key && selectedAgent && <RenameAgent
-        key={key}
-        agent={selectedAgent}
-        onUpdated={(saved) => {
-          if (activeAgent.current !== saved.key) return;
-          setAgents((rows) => rows.map((agent) => agent.key === saved.key
-            ? { ...agent, name: saved.name } : agent));
-        }}
+      {renaming && agent && <RenameAgent
+        agent={agent}
+        onUpdated={(saved) => setAgent((current) => current && { ...current, name: saved.name })}
         onClose={() => {
-          setRenamingAgent("");
-          if (mobile && !menu) openNavigation.current?.focus();
+          setRenaming(false);
+          restoreFocus();
         }}
       />}
-      {runnerAgent === key && selectedAgent && <RunnerAssignment
-        key={key}
-        agent={selectedAgent}
+      {assigningRunner && agent && <RunnerAssignment
+        agent={agent}
         onClose={() => {
-          setRunnerAgent("");
-          if (mobile && !menu) openNavigation.current?.focus();
+          setAssigningRunner(false);
+          restoreFocus();
         }}
       />}
-      {editingPet && selectedAgent && <PetEditor
-        key={key}
+      {editingPet && agent && <PetEditor
         agentKey={key}
-        agentName={selectedAgent.name}
+        agentName={agent.name}
         selected={pets[key] ?? null}
         onSelect={(id) => selectPet(key, id)}
         onRefreshSelection={refreshEditedPet}
         onClose={() => setEditingPet(false)}
       />}
-      <Hatch
+      {!agent && <Hatch
         open={creating}
         onClose={() => {
           setCreating(false);
-          if (mobile && !menu) openNavigation.current?.focus();
+          restoreFocus();
         }}
-        onHatched={(agent) => {
-          setAgents((rows) => [...rows, agent]);
-          setHatched(agent.key);
+        onHatched={(created) => {
+          setHatched(true);
           setCreating(false);
           transition(() => {
-            setKey(agent.key);
+            setAgent(created);
             setView("chat");
           });
         }}
-      />
+      />}
     </div>
     </PetContext.Provider>
   );
