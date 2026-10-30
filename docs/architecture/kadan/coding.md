@@ -101,12 +101,14 @@ explicit ID, never `--last`, and does not create a replacement session on failur
 The Coding panel's explicit continuation reuses the conversation run submission
 route with `resume_coding_job_id`. Kadan resolves the prior job's directory rather
 than accepting a browser-supplied directory. Tsuchi atomically saves the user
-message and immutable `coding_task` alongside the queued run; retries compare the
-task as well as the message identity. The browser uses the conversation's existing
+message and initial `codex_start` assistant command in the existing transcript in
+one transaction. The enqueue input is `initial_command`; it is not a persisted
+field. Retries compare that immutable first checkpoint as well as the message
+identity, even after the run advances. The browser uses the conversation's existing
 outbox to retain the same job, prompt and message ID after an uncertain submission.
 Messages can retry that same typed request without downgrading it to ordinary chat.
 
-For these explicit runs, the runner saves `codex_start` directly and uses the same
+For these explicit runs, the runner replays the seeded `codex_start` and uses the same
 delegation wait, ownership fencing and request ID recovery as model-selected jobs.
 It then validates the persisted result's action ID and renders a fixed status
 report with the returned summary and identifiers. It does not call Hikari to select
@@ -116,23 +118,31 @@ unchanged: a free-form reply can omit a requested action and is not execution
 evidence. This is why continuation has a separate explicit user action rather than
 phrase detection or a stronger prompt alone.
 
-Deploy Kadan API/runner/web and Tsuchi together for this contract. The task is an
-optional field in Tsuchi's JSON run records, with no SQL schema migration. Older
-strict Tsuchi versions cannot read records containing that field, including
-`coding_task: null` written for ordinary runs. New readers accept old records with
-the field absent. Old Kadan runners ignore the field and could process a pending
-continuation as ordinary chat, so mixed runner versions are unsafe.
+Tsuchi treats the initial command as an opaque assistant checkpoint; Kadan owns
+its tool schema. A leading assistant `codex_start` with an explicit previous job
+identifies a continuation. Ordinary model-directed runs start with their system
+context. Neither user prose nor special identifiers select this path. Tsuchi
+protects the saved prefix on the first claim as well as later updates; recovery
+of an expired lease cannot change the transcript at all.
+
+Deploy Kadan API/runner/web and Tsuchi together for this contract. Tsuchi needs
+the optional enqueue input and first-claim prefix protection. Older enqueue APIs
+reject the new input before creating work; ordinary submissions omit it. Stored
+JSON and SQL schemas are unchanged, and old strict readers can deserialize the
+seeded records without conversion. `initial_command` is a computed property, not
+a serialized field.
 
 Cutover requires quiescing submissions and runners after coordinating active
 work, taking a consistent SQLite backup including WAL state, then updating Tsuchi
 and Kadan API/runner/web before reopening submissions. The sandbox execution
-protocol is unchanged. Container-only rollback after writes is unsafe: retain the
-compatible storage reader and prevent old runners from claiming pending typed
-tasks. A complete old-version rollback requires a separately reviewed data
-conversion/archive plan preserving tasks, run IDs, transcripts and delivery
-receipts. Removing a pending task's field loses its execution intent; restoring a
-pre-cutover database loses subsequent user work. No downgrade conversion is
-implemented by this change.
+protocol is unchanged. Reader compatibility does not make mixed runners safe:
+old runners can execute the saved command, then use model-written reporting
+instead of the new fixed result report, and old storage has weaker first-claim
+protection. Before rollback, stop new continuation submissions, coordinate and
+drain or cancel pending runs, preserve their checkpoints and delivery receipts,
+and separately reconcile external coding jobs. Do not strip transcripts or
+restore a pre-cutover database over subsequent user work. No data conversion is
+needed for this stored format; rollback behavior still needs a manual rehearsal.
 
 Raw tool output, command lines and authentication diagnostics are discarded by the
 supervisor. The final assistant summary is bounded and common credential formats

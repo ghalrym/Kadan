@@ -7,7 +7,7 @@ from uuid import UUID
 
 from .config import ServiceError
 from .coding_client import CodingClient
-from .pydantic_models.agent_runs import AgentRun
+from .pydantic_models.agent_runs import AgentRun, RunMessage, ToolCommand
 from .pydantic_models.coding import CodingContinuation
 from .pydantic_models.resources import Message
 
@@ -36,6 +36,7 @@ class RunClient:
         self, key: str, conversation_id: UUID, value: RunInput
     ) -> AgentRun:
         coding_task = None
+        initial_command = None
         if value.resume_coding_job_id is not None:
             job = await CodingClient(self.services.sandbox).job(
                 value.resume_coding_job_id
@@ -50,6 +51,12 @@ class RunClient:
                 )
             coding_task = CodingContinuation(
                 prompt=value.content, cwd=job.cwd, resume_job_id=job.id
+            )
+            initial_command = RunMessage(
+                role="assistant",
+                content=ToolCommand(
+                    tool="codex_start", arguments=coding_task.model_dump(mode="json")
+                ).model_dump_json(),
             )
         message = Message(
             id=value.message_id,
@@ -66,8 +73,8 @@ class RunClient:
             "expected_version": value.expected_version,
             "persona_id": str(value.persona_id) if value.persona_id else None,
         }
-        if coding_task is not None:
-            body["coding_task"] = coding_task.model_dump(mode="json")
+        if initial_command is not None:
+            body["initial_command"] = initial_command.model_dump(mode="json")
         try:
             saved = await self.services.json_request(
                 "Tsuchi",
@@ -84,11 +91,11 @@ class RunClient:
                 ) from error
             raise
         run = AgentRun.model_validate(saved)
-        if (run.agent_key, run.conversation_id, run.id, run.coding_task) != (
+        if (run.agent_key, run.conversation_id, run.id, run.initial_command) != (
             key,
             conversation_id,
             value.message_id,
-            coding_task,
+            initial_command,
         ):
             raise ServiceError(
                 "Storage did not confirm the requested response work. Inspect Messages before retrying.",

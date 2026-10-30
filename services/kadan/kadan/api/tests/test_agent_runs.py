@@ -1892,7 +1892,18 @@ def explicit_coding_continuation(boundary):
         resume_job_id=uuid4(),
         timeout_seconds=60,
     )
-    boundary.current = boundary.current.model_copy(update={"coding_task": task})
+    boundary.current = boundary.current.model_copy(
+        update={
+            "transcript": [
+                RunMessage(
+                    role="assistant",
+                    content=command(
+                        "codex_start", **task.model_dump(mode="json")
+                    ).model_dump_json(),
+                )
+            ]
+        }
+    )
     # Reproduce the failed trial's model decision: an unsupported success claim.
     boundary.controller.inference = Commands(
         send(content="I resumed the session and reran the tests.", end_run=True)
@@ -2024,3 +2035,69 @@ def test_explicit_continuation_rejects_a_result_from_another_action(
     assert boundary.current.status == "failed"
     assert "another action" in boundary.current.error
     assert boundary.deliveries == []
+
+
+@pytest.mark.parametrize(
+    "checkpoint", ["claim", "before_result", "after_result", "reply"]
+)
+def test_seeded_continuation_recovers_each_checkpoint_without_new_job_or_inference(
+    boundary, coding_boundary, checkpoint
+):
+    explicit_coding_continuation(boundary)
+    coding_boundary.results = ["completed"]
+    original = boundary.json_request
+    crashed = False
+
+    async def crash(service, method, path, **kwargs):
+        nonlocal crashed
+        body = kwargs.get("json", {})
+        count = len(body.get("transcript", []))
+        target = (
+            method == "PUT"
+            and not crashed
+            and (
+                (checkpoint == "claim" and count == 1)
+                or (checkpoint in {"before_result", "after_result"} and count == 2)
+                or (checkpoint == "reply" and count == 3)
+            )
+        )
+        if target and checkpoint == "before_result":
+            crashed = True
+            raise asyncio.CancelledError()
+        result = await original(service, method, path, **kwargs)
+        if target:
+            crashed = True
+            raise asyncio.CancelledError()
+        return result
+
+    boundary.json_request = crash
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(boundary.controller.process(boundary.current))
+    assert crashed
+    assert boundary.deliveries == []
+    boundary.current = boundary.current.model_copy(
+        update={"lease_expires_at": datetime.now(UTC) - timedelta(seconds=1)}
+    )
+    boundary.controller = AgentRuns(boundary)
+    boundary.controller.inference = Commands(
+        AssertionError("A saved continuation never needs inference")
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert len(coding_boundary.jobs) == len(boundary.deliveries) == 1
+    assert coding_boundary.attempts[0].request_id == uuid5(
+        boundary.current.id, "command:1"
+    )
+    assert len(coding_boundary.attempts) == (2 if checkpoint == "before_result" else 1)
+    assert boundary.controller.inference.calls == []
+
+
+def test_cancelling_a_seeded_run_before_claim_cannot_start_coding(
+    boundary, coding_boundary
+):
+    explicit_coding_continuation(boundary)
+    boundary.cancel()
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "cancelled"
+    assert coding_boundary.attempts == [] and boundary.deliveries == []
+    assert boundary.controller.inference.calls == []

@@ -8,10 +8,16 @@ The append checks the resource version and rejects conflicts instead of overwrit
 
 Multiple conversations can coexist in a namespace. Kadan selects the oldest active conversation, so trash and restore affect selection without adding a thread interface. The storage API does not impose Kadan's single-chat presentation on other clients.
 
-Kadan's append-and-enqueue operation can include an explicit coding continuation
-task. Its prompt, resolved directory, deadline and previous job ID are saved in
-the run's JSON record in the same transaction as the user message. The task is
-immutable across run-state updates and part of submission retry identity; reusing
-the message ID with another task is a conflict. Tsuchi stores this intent but does
-not contact Codex or decide whether the external session can resume. Kadan's
-[coding workflow](../kadan/coding.md) owns execution and result delivery.
+The append-and-enqueue input can include an `initial_command`: one assistant
+checkpoint saved as the first entry of the existing transcript, atomically with
+the user message and queued run. Tsuchi stores its opaque content; Kadan owns the
+tool protocol and [coding workflow](../kadan/coding.md). It adds no persisted
+fields. Enqueue retries compare the original first assistant checkpoint even
+after later actions append results; omitting or changing that seed conflicts.
+Ordinary runs start empty and prepare system context after claim.
+
+The transcript prefix is immutable on the first queued claim and every later
+update. Expired-lease recovery must retain the whole saved transcript. Older
+strict record readers remain compatible, but older enqueue APIs reject the new
+input and older storage does not enforce first-claim prefix protection. Coordinate
+the API and runner rollout before accepting explicit continuations.

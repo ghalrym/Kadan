@@ -621,13 +621,6 @@ class AgentRunState(Model):
         return self
 
 
-class CodingContinuation(Model):
-    prompt: str = Field(min_length=1, max_length=16000, pattern=r"\S")
-    cwd: str = Field(pattern=r"^/", max_length=4096)
-    timeout_seconds: int = Field(default=1800, ge=60, le=3600, strict=True)
-    resume_job_id: UUID
-
-
 class AgentRun(AgentRunState):
     trace_parent: str | None = Field(
         default=None, pattern=r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
@@ -638,11 +631,16 @@ class AgentRun(AgentRunState):
     trigger_message_id: UUID | None = None
     trigger_job_id: UUID | None = None
     persona_id: UUID | None = None
-    coding_task: CodingContinuation | None = None
     delivered_message_ids: list[UUID] = Field(default_factory=list)
     version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
+
+    @property
+    def initial_command(self) -> RunMessage | None:
+        if self.transcript and self.transcript[0].role == "assistant":
+            return self.transcript[0]
+        return None
 
 
 class ImageJobState(Model):

@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from kadan.api.config import ServiceError
-from kadan.api.pydantic_models.agent_runs import AgentRun
+from kadan.api.pydantic_models.agent_runs import AgentRun, RunMessage, ToolCommand
 from kadan.api.pydantic_models.coding import CodingJob
 from kadan.api.routes.agents.conversations.runs import RunInput
 from kadan.api.run_client import RunClient
@@ -50,7 +50,9 @@ def submission(monkeypatch):
             agent_key="test",
             conversation_id=conversation_id,
             trigger_message_id=value.message_id,
-            coding_task=json.get("coding_task"),
+            transcript=[RunMessage.model_validate(json["initial_command"])]
+            if "initial_command" in json
+            else [],
             version=1,
             created_at=now,
             updated_at=now,
@@ -75,15 +77,16 @@ def test_submission_resolves_directory_from_saved_job_and_persists_explicit_inte
     s = submission
     run = asyncio.run(s.client.enqueue("test", s.conversation_id, s.value))
     s.computer.job.assert_awaited_once_with(s.job.id)
-    task = run.coding_task
-    assert task.cwd == s.job.cwd and task.resume_job_id == s.job.id
-    assert task.prompt == s.value.content
+    task = ToolCommand.model_validate_json(run.initial_command.content).arguments
+    assert task["cwd"] == s.job.cwd and task["resume_job_id"] == str(s.job.id)
+    assert task["prompt"] == s.value.content
     body = s.services.json_request.call_args.kwargs["json"]
     assert body["message"]["id"] == str(s.value.message_id)
     assert body["message"]["content"].startswith(
         "Continue with Codex in `/home/gem/project`:"
     )
-    assert body["coding_task"] == task.model_dump(mode="json")
+    assert body["initial_command"] == run.initial_command.model_dump(mode="json")
+    assert "coding_task" not in run.model_dump()
 
 
 @pytest.mark.parametrize(
@@ -113,7 +116,7 @@ def test_storage_must_confirm_the_same_conversation_and_intent(submission):
 
     async def wrong(*args, **kwargs):
         run = await original(*args, **kwargs)
-        run["coding_task"] = None
+        run["transcript"] = []
         return run
 
     s.services.json_request.side_effect = wrong
@@ -127,16 +130,19 @@ def test_plain_chat_submission_keeps_existing_behavior_without_computer_reads(
     s = submission
     s.value.resume_coding_job_id = None
     run = asyncio.run(s.client.enqueue("test", s.conversation_id, s.value))
-    assert run.coding_task is None
+    assert run.initial_command is None
     s.computer.job.assert_not_awaited()
     body = s.services.json_request.call_args.kwargs["json"]
-    assert "coding_task" not in body and body["message"]["content"] == s.value.content
+    assert (
+        "initial_command" not in body and body["message"]["content"] == s.value.content
+    )
 
 
 def test_client_cannot_supply_its_own_coding_directory_or_action(submission):
     value = submission.value.model_dump()
-    with pytest.raises(ValidationError):
-        RunInput.model_validate({**value, "coding_task": {"cwd": "/elsewhere"}})
+    for field in ["coding_task", "initial_command"]:
+        with pytest.raises(ValidationError):
+            RunInput.model_validate({**value, field: {"cwd": "/elsewhere"}})
 
 
 def test_older_storage_rejection_has_actionable_update_guidance(submission):
@@ -158,3 +164,32 @@ def test_followup_limit_is_validated_at_request_boundary_without_reducing_chat_l
         RunInput.model_validate({**value, "content": "x" * 16001})
     chat = {**value, "content": "x" * 32000, "resume_coding_job_id": None}
     assert len(RunInput.model_validate(chat).content) == 32000
+
+
+def test_uncertain_enqueue_recovers_same_seed_after_runner_advanced_without_reenqueue_side_effects(
+    submission,
+):
+    s = submission
+    original = s.services.json_request.side_effect
+    persisted = None
+
+    async def uncertain(*args, **kwargs):
+        nonlocal persisted
+        if persisted is None:
+            persisted = await original(*args, **kwargs)
+            raise ServiceError("Enqueue response lost", 503)
+        seed = persisted["transcript"][0]
+        assert kwargs["json"]["initial_command"] == seed
+        return {
+            **persisted,
+            "transcript": [seed, {"role": "user", "content": "Tool result: completed"}],
+        }
+
+    s.services.json_request.side_effect = uncertain
+    with pytest.raises(ServiceError, match="response lost"):
+        asyncio.run(s.client.enqueue("test", s.conversation_id, s.value))
+    recovered = asyncio.run(s.client.enqueue("test", s.conversation_id, s.value))
+    assert recovered.id == s.value.message_id
+    assert recovered.initial_command.content == persisted["transcript"][0]["content"]
+    assert len(recovered.transcript) == 2
+    assert s.services.json_request.await_count == 2

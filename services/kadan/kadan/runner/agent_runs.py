@@ -26,7 +26,12 @@ from pydantic import BaseModel, ValidationError
 
 from ..api.config import ServiceError
 from ..api.coding_client import CodingClient
-from ..api.pydantic_models.coding import CodingOutcome, CodingStart, CodingTask
+from ..api.pydantic_models.coding import (
+    CodingContinuation,
+    CodingOutcome,
+    CodingStart,
+    CodingTask,
+)
 from ..api.pydantic_models.agent_runs import (
     AgentRun,
     AgentRunState,
@@ -136,11 +141,9 @@ def validate(command: ToolCommand, tools: list[StructuredTool]) -> None:
 
 
 def coding_continuation_command(
-    run: AgentRun, transcript: list[RunMessage]
+    run: AgentRun, start: ToolCommand, transcript: list[RunMessage]
 ) -> ToolCommand:
-    task = run.coding_task
-    assert task is not None
-    start = ToolCommand(tool="codex_start", arguments=task.model_dump(mode="json"))
+    task = CodingContinuation.model_validate(start.arguments)
     if not transcript:
         return start
     if (
@@ -621,7 +624,7 @@ class AgentRuns(RunClient):
 
     async def prepare(self, state: RunState) -> dict:
         run = state.run
-        if not run.transcript and run.coding_task is None:
+        if not run.transcript:
             status = await self.services.inference_status()
             limit = self.transcript_limit(status)
             run = await self.update(run, transcript=await self.context(run, limit))
@@ -632,10 +635,17 @@ class AgentRuns(RunClient):
         run = state.run
         run = await self.owned(run)
         replayed = bool(run.transcript) and run.transcript[-1].role == "assistant"
-        if run.coding_task is not None:
+        initial = (
+            parse_command(run.initial_command.content) if run.initial_command else None
+        )
+        if (
+            initial is not None
+            and initial.tool == "codex_start"
+            and initial.arguments.get("resume_job_id") is not None
+        ):
             # An explicit UI continuation is durable work, not a model decision.
             prefix = run.transcript[:-1] if replayed else run.transcript
-            command = coding_continuation_command(run, prefix)
+            command = coding_continuation_command(run, initial, prefix)
             if replayed and parse_command(run.transcript[-1].content) != command:
                 raise ServiceError(
                     "The saved coding continuation command changed.", 502
