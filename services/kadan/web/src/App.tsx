@@ -71,7 +71,7 @@ export default function App() {
   const [workspaceVisited, setWorkspaceVisited] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState("");
-  const [petError, setPetError] = useState("");
+  const [petError, setPetError] = useState<{ key: string; message: string } | null>(null);
   const [petRetry, setPetRetry] = useState(0);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -98,20 +98,24 @@ export default function App() {
       if (!isCurrent()) return false;
       setPets((rows) => rows[agentKey]?.id === pet?.id && rows[agentKey]?.version === pet?.version
         ? rows : { [agentKey]: pet });
-      setPetError("");
+      setPetError(null);
       return true;
     } catch (error) {
-      if (reportError && isCurrent()) setPetError(`Could not load the selected pet: ${(error as Error).message}`);
+      if (reportError && isCurrent()) setPetError({ key: agentKey, message: `Could not load the selected pet: ${(error as Error).message}` });
       throw error;
     }
   }, []);
 
   const selectPet = useCallback(async (agentKey: string, id: string | null) => {
+    if (agentKey !== currentAgentKey.current) return;
     const revision = petSelectionRevision.current + 1;
     petSelectionRevision.current = revision;
     pendingPetSelection.current = revision;
     const apply = (pet: PetJob | null) => {
-      if (revision === petSelectionRevision.current) setPets({ [agentKey]: pet });
+      if (agentKey === currentAgentKey.current && revision === petSelectionRevision.current) {
+        setPets({ [agentKey]: pet });
+        setPetError(null);
+      }
     };
     try {
       try {
@@ -191,6 +195,11 @@ export default function App() {
     const timer = setInterval(() => void refreshStatus(), 30000);
     return () => clearInterval(timer);
   }, []);
+  useEffect(() => {
+    ++petSelectionRevision.current;
+    pendingPetSelection.current = 0;
+    setPetError(null);
+  }, [key]);
   useEffect(() => {
     if (!key) return;
     let current = true;
@@ -401,9 +410,9 @@ export default function App() {
             </button>
           </div>
         )}
-        {petError && (
+        {petError?.key === key && (
           <div className="banner" role="alert">
-            {petError}
+            {petError.message}
             <button onClick={() => setPetRetry((revision) => revision + 1)}>Retry</button>
           </div>
         )}

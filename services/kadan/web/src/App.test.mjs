@@ -19,7 +19,7 @@ function deferred() {
 }
 
 // Call App with in-memory hooks and service boundaries; no browser or mounted UI.
-async function app(petResponses = []) {
+async function app(petResponses = [], agentResponses = [[agent]]) {
   const slots = [], effects = [], requests = [];
   let cursor = 0, tree;
   const react = {
@@ -64,7 +64,7 @@ async function app(petResponses = []) {
     "./RunnerAssignment": { default: "RunnerAssignment" },
     "./agentRuns": { latestConversation: (current, incoming) => current.id === incoming.id && incoming.version > current.version ? incoming : current },
     "./Hatch": { default: "Hatch" },
-    "./Pet": {},
+    "./Pet": { agentPet: () => ({ url: "hatchling" }) },
     "./pet": { agentHue: () => 252 },
     "./PetEditor": { default: "PetEditor" },
     "./PetContext": { PetContext: { Provider: "PetProvider" } },
@@ -74,11 +74,11 @@ async function app(petResponses = []) {
         requests.push({ key, kind });
         return [persona];
       },
-      async api(path) {
-        if (path === "/agents") return [agent];
-        if (path === `/agents/${agent.key}/chain`) return chain;
+      async api(path, body, method) {
+        if (path === "/agents") return agentResponses.shift() ?? [agent];
+        if (path.endsWith("/chain")) return chain;
         if (path.endsWith("/pet")) {
-          requests.push({ path });
+          requests.push({ path, body, method });
           const response = petResponses.shift();
           if (response instanceof Error) throw response;
           return response ?? null;
@@ -209,4 +209,71 @@ test("an older effect failure cannot restore the error after an editor refresh s
   view.render();
   assert.equal(view.findAll(node => node.props?.role === "alert").length, 0);
   assert.equal(view.findAll(node => node.type === "PetProvider")[0].props.value.guide, selected);
+});
+
+for (const reconciled of [false, true]) {
+  test(`${reconciled ? "reconciled" : "successful"} pet selection clears an initial load error`, async () => {
+    const selected = { id: "fox", version: 1 };
+    const responses = [new Error("Storage unavailable"), ...(reconciled ? [new Error("Response lost"), selected] : [selected])];
+    const view = await app(responses);
+    assert.equal(view.findAll(node => node.props?.role === "alert").length, 1);
+    await openPetEditor(view).props.onSelect("fox");
+    view.render();
+    assert.equal(view.findAll(node => node.props?.role === "alert").length, 0);
+    assert.equal(view.findAll(node => node.type === "PetProvider")[0].props.value.guide, selected);
+  });
+}
+
+async function switchAgent(view) {
+  view.findAll(node => node.type === "button" && node.props.title === "Refresh")[0].props.onClick();
+  await settle();
+  view.render();
+  await settle();
+  view.render();
+}
+
+for (const next of [[], [{ key: "other", name: "Other" }]]) {
+  test(`switching to ${next.length ? "another agent" : "no agent"} clears the previous pet error`, async () => {
+    const view = await app([new Error("Old error"), null], [[agent], next]);
+    assert.equal(view.findAll(node => node.props?.role === "alert").length, 1);
+    await switchAgent(view);
+    assert.equal(view.findAll(node => node.props?.role === "alert").length, 0);
+  });
+}
+
+test("a delayed selection from the old agent cannot block or replace the new agent's pet", async () => {
+  const delayed = deferred();
+  const selected = { id: "otter", version: 1 };
+  const view = await app([null, delayed.promise, selected], [[agent], [{ key: "other", name: "Other" }]]);
+  const pending = openPetEditor(view).props.onSelect("fox");
+  await switchAgent(view);
+  assert.equal(view.findAll(node => node.type === "PetProvider")[0].props.value.other, selected);
+  delayed.resolve({ id: "fox", version: 1 });
+  await pending;
+  view.render();
+  assert.equal(view.findAll(node => node.type === "PetProvider")[0].props.value.other, selected);
+});
+
+test("a delayed failed read from an old agent cannot restore its error after a switch", async () => {
+  const delayed = deferred();
+  const view = await app([delayed.promise, null], [[agent], [{ key: "other", name: "Other" }]]);
+  await switchAgent(view);
+  delayed.reject(new Error("Old error"));
+  await settle();
+  view.render();
+  assert.equal(view.findAll(node => node.props?.role === "alert").length, 0);
+});
+
+test("a delayed selection remains stale after switching away and back to the same agent", async () => {
+  const delayed = deferred();
+  const current = { id: "new-fox", version: 2 };
+  const view = await app([null, delayed.promise, null, current], [[agent], [{ key: "other", name: "Other" }], [agent]]);
+  const pending = openPetEditor(view).props.onSelect("old-fox");
+  await switchAgent(view);
+  await switchAgent(view);
+  assert.equal(view.findAll(node => node.type === "PetProvider")[0].props.value.guide, current);
+  delayed.resolve({ id: "old-fox", version: 1 });
+  await pending;
+  view.render();
+  assert.equal(view.findAll(node => node.type === "PetProvider")[0].props.value.guide, current);
 });
