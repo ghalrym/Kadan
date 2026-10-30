@@ -2,7 +2,7 @@
 
 Kadan lets users hatch an agent and return to one continuous chat with it. Creating an agent saves its records in Tsuchi without downloading or running a model. Users can [rename agents](renaming-agents.md); deleting agents is not available.
 
-Hatching requires a name and a unique permanent key. Invalid or duplicate keys produce an error without replacing an existing agent. After an uncertain creation, refresh the agent list before trying again. Agents created in Tsuchi appear in Kadan after refreshing; both applications use the same [namespaces](../tsuchi/namespaces.md).
+Hatching requires a name and a unique permanent key. Invalid or duplicate keys produce an error without replacing an existing agent. After an uncertain creation, refresh the agent list before trying again. Kadan opens the first agent returned by Tsuchi after refreshing; other existing agents are not selectable in Kadan. Both applications use the same [namespaces](../tsuchi/namespaces.md).
 
 Each agent has its own saved conversation. Drafts are kept separately in the current browser tab and can be lost when the tab closes; they are not saved messages.
 

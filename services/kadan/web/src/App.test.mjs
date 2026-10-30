@@ -73,7 +73,6 @@ async function app() {
   runInNewContext(source, {
     exports,
     require: name => { assert.ok(name in modules, name); return modules[name]; },
-    localStorage: { getItem: () => agent.key, setItem() {} },
     document: {},
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
     setInterval: () => 0,
@@ -98,11 +97,16 @@ async function app() {
   return { render, findAll, requests };
 }
 
-test("agent navigation offers Messages and Workspace without a standalone Persona view", async () => {
+test("navigation offers Messages and Workspace without a standalone Persona view", async () => {
   const view = await app();
-  const navigation = view.findAll(node => node.props?.["aria-label"] === "Agent views")[0];
+  const navigation = view.findAll(node => node.props?.["aria-label"] === "Views")[0];
   const buttons = view.findAll(node => node.type === "button", navigation);
-  assert.deepEqual(buttons.map(node => node.props.children.at(-1)), ["Runner assignment", "Rename agent", "Edit pet", "Messages", "Workspace"]);
+  assert.deepEqual(buttons.map(node => node.props.children.at(-1)), ["Messages", "Workspace"]);
+  const settings = view.findAll(node => node.props?.["aria-label"] === "Agent settings")[0];
+  assert.deepEqual(
+    view.findAll(node => node.type === "button", settings).map(node => node.props.children.at(-1)),
+    ["Edit pet", "Rename agent", "Runner assignment"],
+  );
   assert.equal(view.findAll(node => node.type === "Personas").length, 0);
   buttons.at(-1).props.onClick();
   view.render();
