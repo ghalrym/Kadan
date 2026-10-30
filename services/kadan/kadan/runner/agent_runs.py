@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
@@ -72,6 +73,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 60
 MAX_COMMANDS = 24
+MAX_ARGUMENT_CORRECTIONS = 2
+ARGUMENT_REJECTION = "Rejected tool arguments: "
 # Transcript budget in characters when Hikari does not report a context window.
 MAX_CONTEXT = 48000
 # Tool results are JSON, which tokenizes densely; three characters per token
@@ -126,18 +129,50 @@ def transcript_messages(transcript: list[RunMessage]) -> list[BaseMessage]:
     return messages
 
 
-def validate(command: ToolCommand, tools: list[StructuredTool]) -> None:
-    """Reject unknown tools and invalid arguments before the call is saved."""
+class ArgumentProblem(BaseModel):
+    field: str
+    code: str
+
+
+class ArgumentRejection(BaseModel):
+    tool: str
+    problems: list[ArgumentProblem]
+    error: str = (
+        "No tool was executed. Correct the arguments using the bound tool schema; "
+        "do not repeat the unchanged call."
+    )
+
+
+def validate(
+    command: ToolCommand, tools: list[StructuredTool]
+) -> ArgumentRejection | None:
+    """Reject before execution, retaining field diagnostics without input values."""
     if command.tool not in {tool.name for tool in tools}:
         raise ServiceError(f"unknown tool {command.tool!r}", 502, "invalid_command")
     try:
         TOOLS_BY_NAME[command.tool].args_schema.model_validate(command.arguments)
     except ValidationError as error:
-        raise ServiceError(
-            f"invalid {command.tool} arguments: {error.errors()[0]['msg']}",
-            502,
-            "invalid_command",
-        ) from error
+        return ArgumentRejection(
+            tool=command.tool,
+            problems=[
+                ArgumentProblem(
+                    field=".".join(
+                        str(part)
+                        if re.fullmatch(
+                            r"[A-Za-z_][A-Za-z0-9_]{0,63}|[0-9]{1,6}", str(part)
+                        )
+                        else "[redacted]"
+                        for part in problem["loc"][:4]
+                    )
+                    or "arguments",
+                    code=problem["type"],
+                )
+                for problem in error.errors(
+                    include_url=False, include_input=False, include_context=False
+                )[:5]
+            ],
+        )
+    return None
 
 
 def coding_continuation_command(
@@ -415,7 +450,7 @@ class AgentRuns(RunClient):
         graph.add_node("tool", self.invoke_tool)
         graph.add_edge(START, "prepare")
         graph.add_edge("prepare", "model")
-        graph.add_edge("model", "tool")
+        graph.add_conditional_edges("model", self.after_model)
         graph.add_conditional_edges("tool", self.after_tool)
         # Tsuchi owns checkpoints and side-effect receipts. A second persistence
         # store here would compete with its version/lease fencing.
@@ -622,6 +657,9 @@ class AgentRuns(RunClient):
     async def after_tool(self, state: RunState) -> str:
         return END if state.run.status == "completed" else "model"
 
+    async def after_model(self, state: RunState) -> str:
+        return "tool" if state.command is not None else "model"
+
     async def prepare(self, state: RunState) -> dict:
         run = state.run
         if not run.transcript:
@@ -653,11 +691,29 @@ class AgentRuns(RunClient):
         elif replayed:
             command = parse_command(run.transcript[-1].content)
         else:
+            rejections = [
+                item.content.removeprefix(ARGUMENT_REJECTION)
+                for item in run.transcript
+                if item.role == "user" and item.content.startswith(ARGUMENT_REJECTION)
+            ]
+            if len(rejections) > MAX_ARGUMENT_CORRECTIONS:
+                rejection = ArgumentRejection.model_validate_json(rejections[-1])
+                detail = "; ".join(
+                    f"{problem.field}: {problem.code}" for problem in rejection.problems
+                )
+                raise ServiceError(
+                    f"The agent exhausted its {MAX_ARGUMENT_CORRECTIONS} tool-argument "
+                    f"correction attempts. Invalid {rejection.tool} arguments: {detail}. "
+                    "Check the tool schema before trying again.",
+                    502,
+                    "invalid_command",
+                )
             if (
                 sum(
                     item.role == "assistant" and item.content.startswith('{"tool":')
                     for item in run.transcript
                 )
+                + len(rejections)
                 >= MAX_COMMANDS
             ):
                 raise ServiceError("The agent reached its 24-command run limit.", 422)
@@ -681,7 +737,7 @@ class AgentRuns(RunClient):
                     f"kadan:{run.agent_key}:{run.conversation_id}",
                     tools,
                 )
-                validate(command, tools)
+                rejection = validate(command, tools)
             finally:
                 logger.info(
                     "Agent inference ended run=%s at=%s elapsed_seconds=%.3f",
@@ -689,6 +745,20 @@ class AgentRuns(RunClient):
                     datetime.now(UTC).isoformat(),
                     monotonic() - started,
                 )
+            if rejection is not None:
+                # A rejection is feedback, never a pending assistant action. Save
+                # it atomically so restart cannot replay it or reset the budget.
+                run = await self.update(
+                    run,
+                    transcript=[
+                        *run.transcript,
+                        RunMessage(
+                            role="user",
+                            content=ARGUMENT_REJECTION + rejection.model_dump_json(),
+                        ),
+                    ],
+                )
+                return {"run": run, "command": None, "replayed": False}
         if not replayed:
             # Persist the action before side effects. Recovery reuses its derived ID.
             run = await self.update(
