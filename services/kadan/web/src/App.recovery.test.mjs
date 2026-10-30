@@ -66,7 +66,7 @@ loader.deregister();
 
 const originals = new Map(["matchMedia"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 // Slots follow App's useState calls; refs and effects do not consume these slots.
-const AGENT = 0, RENAMING = 3, ASSIGNING_RUNNER = 4, CHAIN = 6, LOADING = 11, BUSY = 12;
+const AGENT = 0, RENAMING = 3, ASSIGNING_RUNNER = 4, CHAIN = 6, LOADING = 13, BUSY = 14;
 const original = { id: "original", agent_key: "agent", version: 3, messages: [] };
 const replacement = { ...original, id: "replacement", version: 1 };
 beforeEach(() => {

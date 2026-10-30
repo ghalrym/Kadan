@@ -13,7 +13,7 @@ const persona = { id: "persona", agent_key: agent.key, kind: "persona", markdown
 const chain = { id: "chain", agent_key: agent.key, kind: "conversation" };
 
 // Call App with in-memory hooks and service boundaries; no browser or mounted UI.
-async function app() {
+async function app(petResponses = []) {
   const slots = [], effects = [], requests = [];
   let cursor = 0, tree;
   const react = {
@@ -28,12 +28,20 @@ async function app() {
       const index = cursor++;
       return slots[index] ??= { current: initial };
     },
-    useCallback: callback => callback,
+    useCallback(callback, dependencies) {
+      const index = cursor++;
+      const previous = slots[index];
+      if (!previous || dependencies.some((value, i) => value !== previous.dependencies[i])) {
+        slots[index] = { dependencies, callback };
+      }
+      return slots[index].callback;
+    },
     useEffect(effect, dependencies) {
       const index = cursor++;
-      if (!slots[index] || dependencies.some((value, i) => value !== slots[index][i])) {
-        slots[index] = dependencies;
-        effects.push(effect);
+      const previous = slots[index];
+      if (!previous || dependencies.some((value, i) => value !== previous.dependencies[i])) {
+        const slot = slots[index] = { dependencies };
+        effects.push(() => { previous?.cleanup?.(); slot.cleanup = effect(); });
       }
     },
   };
@@ -63,7 +71,12 @@ async function app() {
       async api(path) {
         if (path === "/agents") return [agent];
         if (path === `/agents/${agent.key}/chain`) return chain;
-        if (path.endsWith("/pet")) return null;
+        if (path.endsWith("/pet")) {
+          requests.push({ path });
+          const response = petResponses.shift();
+          if (response instanceof Error) throw response;
+          return response ?? null;
+        }
         if (path === "/status") return null;
         assert.fail(`Unexpected API call: ${path}`);
       },
@@ -123,11 +136,40 @@ test("navigation offers Messages and Workspace without a standalone Persona view
 test("hiding the editor preserves agent-scoped persona loading for chat", async () => {
   const view = await app();
   assert.ok(view.requests.length > 0);
-  for (const request of view.requests) {
+  for (const request of view.requests.filter(request => request.kind)) {
     assert.deepEqual(request, { key: agent.key, kind: "persona" });
   }
   const chat = view.findAll(node => node.type === "Chat")[0];
   assert.equal(chat.props.agentKey, agent.key);
   assert.equal(chat.props.chain, chain);
   assert.equal(chat.props.personas[0], persona);
+});
+
+test("retry reloads the selected pet after a failed effect and clears its error on success", async () => {
+  const selected = { id: "fox", version: 1 };
+  const view = await app([new Error("Storage unavailable"), selected]);
+  const banner = () => view.findAll(node => node.props?.role === "alert")[0];
+  assert.match(banner().props.children[0], /Storage unavailable/);
+  assert.equal(view.requests.filter(request => request.path?.endsWith("/pet")).length, 1);
+  view.findAll(node => node.type === "button", banner())[0].props.onClick();
+  view.render();
+  await new Promise(resolve => setImmediate(resolve));
+  view.render();
+  assert.equal(view.requests.filter(request => request.path?.endsWith("/pet")).length, 2);
+  assert.equal(banner(), undefined);
+  assert.equal(view.findAll(node => node.type === "PetProvider")[0].props.value.guide, selected);
+});
+
+test("a failed pet retry stays visible and can be retried again", async () => {
+  const view = await app([new Error("First failure"), new Error("Still unavailable"), null]);
+  const banner = () => view.findAll(node => node.props?.role === "alert")[0];
+  for (const message of [/First failure/, /Still unavailable/]) {
+    assert.match(banner().props.children[0], message);
+    view.findAll(node => node.type === "button", banner())[0].props.onClick();
+    view.render();
+    await new Promise(resolve => setImmediate(resolve));
+    view.render();
+  }
+  assert.equal(banner(), undefined);
+  assert.equal(view.requests.filter(request => request.path?.endsWith("/pet")).length, 3);
 });

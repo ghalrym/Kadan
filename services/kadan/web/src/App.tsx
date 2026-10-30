@@ -70,6 +70,8 @@ export default function App() {
   const [workspaceVisited, setWorkspaceVisited] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState("");
+  const [petError, setPetError] = useState("");
+  const [petRetry, setPetRetry] = useState(0);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -82,14 +84,16 @@ export default function App() {
   const [resourceRevision, setResourceRevision] = useState(0);
   const key = agent?.key ?? "";
 
-  const refreshPetSelection = useCallback(async (agentKey: string) => {
-    if (pendingPetSelection.current) return;
+  const refreshPetSelection = useCallback(async (agentKey: string, current: () => boolean = () => true) => {
+    if (pendingPetSelection.current) return false;
     const revision = petSelectionRevision.current;
     const pet = await api<PetJob | null>(`${agentPath(agentKey)}/pet`);
-    if (revision === petSelectionRevision.current && !pendingPetSelection.current) {
+    if (current() && revision === petSelectionRevision.current && !pendingPetSelection.current) {
       setPets((rows) => rows[agentKey]?.id === pet?.id && rows[agentKey]?.version === pet?.version
         ? rows : { [agentKey]: pet });
+      return true;
     }
+    return false;
   }, []);
 
   const selectPet = useCallback(async (agentKey: string, id: string | null) => {
@@ -112,7 +116,7 @@ export default function App() {
       if (pendingPetSelection.current === revision) pendingPetSelection.current = 0;
     }
   }, []);
-  const refreshEditedPet = useCallback(() => refreshPetSelection(key), [key, refreshPetSelection]);
+  const refreshEditedPet = useCallback(async () => { await refreshPetSelection(key); }, [key, refreshPetSelection]);
 
   useEffect(() => {
     const query = matchMedia("(max-width: 760px)");
@@ -180,11 +184,13 @@ export default function App() {
   useEffect(() => {
     if (!key) return;
     let current = true;
-    refreshPetSelection(key).catch((error: Error) => {
-      if (current) setError(`Could not load the selected pet: ${error.message}`);
+    void refreshPetSelection(key, () => current).then((loaded) => {
+      if (current && loaded) setPetError("");
+    }).catch((error: Error) => {
+      if (current) setPetError(`Could not load the selected pet: ${error.message}`);
     });
     return () => { current = false; };
-  }, [key, refreshPetSelection]);
+  }, [key, refreshPetSelection, petRetry]);
   useEffect(() => {
     if (!key) return;
     let current = true;
@@ -387,6 +393,12 @@ export default function App() {
             <button disabled={disabled} onClick={() => void refreshAgent()}>
               Retry
             </button>
+          </div>
+        )}
+        {petError && (
+          <div className="banner" role="alert">
+            {petError}
+            <button onClick={() => setPetRetry((revision) => revision + 1)}>Retry</button>
           </div>
         )}
         {key && workspaceVisited && (
