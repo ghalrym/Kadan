@@ -18,7 +18,7 @@ const conversation = (messages, id = "conversation") => ({ id, version: 1, messa
 // Exercise Chat handlers and effects with in-memory hooks and service/DOM boundaries.
 function chat(chain, storageValues = {}) {
   const slots = [], effects = [], layouts = [], scrolls = [], focuses = [], timers = [];
-  let viewportNode, scrollTop = 1500;
+  let viewportNode, resize, scrollTop = 1500;
   const viewport = {
     scrollHeight: 2000, clientHeight: 500,
     get scrollTop() { return scrollTop; },
@@ -60,6 +60,7 @@ function chat(chain, storageValues = {}) {
     "lucide-react": {},
     "./Markdown": { default: "Markdown" },
     "./Activity": { default: "Activity" },
+    "./CodingIndicator": { default: "CodingIndicator" },
     "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true }) },
     "./Pet": { default: "Pet", useMood: () => ["idle", reactToMood] },
     "./AgentCard": { default: "AgentCard" },
@@ -74,6 +75,7 @@ function chat(chain, storageValues = {}) {
   };
   const exports = {};
   runInNewContext(source, {
+    ResizeObserver: class { constructor(callback) { resize = callback; } observe() {} disconnect() {} },
     exports, require: name => { assert.ok(name in modules, name); return modules[name]; },
     sessionStorage: {
       getItem: key => storage.get(key) ?? null,
@@ -141,6 +143,7 @@ function chat(chain, storageValues = {}) {
   render();
   return {
     all, render, named, keyDown, field, status, search, scrolls, focuses, storage, props, viewport,
+    resize(height) { viewport.clientHeight = height; resize(); },
     scroll(distance) {
       viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight - distance;
       named("Conversation messages").props.onScroll({ currentTarget: viewport });
@@ -426,4 +429,20 @@ test("changing conversation resets search and follow even when the message count
   view.scrolls.length = 0;
   appendMessage(view);
   assert.equal(view.scrolls.at(-1).top, view.viewport.scrollHeight);
+});
+
+
+test("Activity resizing keeps the latest message in view only while following", () => {
+  const view = chat(conversation([message("latest", "Hello")]));
+  view.scrolls.length = 0;
+  view.resize(200);
+  assert.equal(view.scrolls.at(-1).top, 2000);
+  view.scroll(300);
+  view.scrolls.length = 0;
+  view.resize(100);
+  assert.equal(view.scrolls.length, 0);
+  view.search("Hello");
+  view.scrolls.length = 0;
+  view.resize(150);
+  assert.equal(view.scrolls.length, 0);
 });

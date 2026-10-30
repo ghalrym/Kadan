@@ -3,6 +3,14 @@ import type { AgentRun, Asset, ImageJob, Resource, Status } from "./types.ts";
 export const activeRun = (run: AgentRun) => run.status === "queued" || run.status === "running";
 export const cancellableImage = (job: ImageJob) => job.status === "queued" || job.status === "running";
 
+export function currentResponseOutcome(conversation: Resource, runs: AgentRun[]): AgentRun | undefined {
+  const latest = runs.filter(run => run.conversation_id === conversation.id).at(-1);
+  if (!latest || (latest.status !== "failed" && latest.status !== "cancelled")) return;
+  const lastUser = conversation.messages.filter(message => message.role === "user").at(-1);
+  if (lastUser && latest.trigger_message_id !== lastUser.id && lastUser.created_at > latest.created_at) return;
+  return latest;
+}
+
 export function responseProgress(runs: AgentRun[], hikari: Status["hikari"] | undefined): string | null {
   if (!runs.some(activeRun)) return null;
   if (hikari?.state === "model_required" && hikari.download_state === "downloading")
