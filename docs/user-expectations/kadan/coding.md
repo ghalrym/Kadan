@@ -13,6 +13,14 @@ the computer into Codex. The panel explains terminal sign-in; never paste
 credentials into chat. A signed-in status reports local credentials, not verified
 model access, available credit or a successful coding run. Missing packages,
 incompatible versions and unavailable computers remain distinguishable from readiness.
+Missing or incompatible software directs users to the person running Kadan to
+update the computer; it does not ask users to install software through chat.
+
+Sign-in guidance explains how to open the agent's computer and its terminal.
+Expandable **Codex access and usage** guidance links to Codex sign-in help and
+explains model access, usage limits and possible API-key charges. It does not
+start a login or a paid request. When setup is ready and no jobs exist, Kadan
+suggests a first task that inspects an existing project without editing it.
 
 Ask the agent to work in a project directory on the computer and describe the
 change and constraints. Kadan accepts one coding job at a time on the shared
@@ -35,7 +43,7 @@ reconnects do not create another continuation or move it to the currently displa
 conversation. Later messages queue behind the waiting task. Closing the browser
 does not suppress its eventual reply.
 
-Chat Stop cancels the response and suppresses this automatic continuation. It
+**Stop response** in Messages cancels the response and suppresses this automatic continuation. It
 does not stop the coding process, undo changes or cause a later completion to
 revive that cancelled response. The user can send a new message after stopping.
 **Stop coding** remains the separate process control. A lost runner assignment,
@@ -53,6 +61,9 @@ Cancellation, timeout and failure leave edits already made on disk. Jobs have a
 deadline of at most one hour; the default is thirty minutes. A successful Codex
 turn confirms execution and cleanup, not that every requested change works.
 Inspect the files and the reported validation before relying on them.
+The project folder is visible beside the job state before the stop control.
+State changes are announced to assistive technology; identifiers remain available
+under Job details.
 
 If the supervisor disappears or cannot confirm cleanup, the job needs attention
 and further coding is blocked. An operator must restart the computer to establish

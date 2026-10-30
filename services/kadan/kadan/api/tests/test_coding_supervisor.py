@@ -541,3 +541,43 @@ def test_retry_reads_original_job_after_directory_symlink_retargeted(store, tmp_
     with patch.object(supervisor.subprocess, "Popen") as spawn:
         assert store.start(body)["cwd"] == str(first)
         spawn.assert_not_called()
+
+
+def test_saved_sign_in_check_does_not_claim_model_entitlement_or_run_inference():
+    with (
+        patch.object(supervisor.shutil, "which", return_value="/bin/codex"),
+        patch.object(
+            supervisor.subprocess,
+            "run",
+            side_effect=[
+                SimpleNamespace(returncode=0, stdout=b"codex-cli 0.162.1\n"),
+                SimpleNamespace(returncode=0),
+            ],
+        ) as run,
+    ):
+        result = supervisor.setup_status()
+    assert result["state"] == "ready"
+    assert "saved sign-in" in result["message"]
+    assert "model access and available usage" in result["message"]
+    assert [call.args[0] for call in run.call_args_list] == [
+        ["/bin/codex", "--version"],
+        ["/bin/codex", "login", "status"],
+    ]
+
+
+def test_setup_failure_gives_recovery_without_exposing_diagnostics():
+    with (
+        patch.object(supervisor.shutil, "which", return_value="/bin/codex"),
+        patch.object(
+            supervisor.subprocess,
+            "run",
+            side_effect=supervisor.subprocess.TimeoutExpired(
+                "private-command", 5, stderr=b"private-secret"
+            ),
+        ),
+    ):
+        result = supervisor.setup_status()
+    assert result["state"] == "unavailable"
+    assert "Refresh" in result["message"]
+    assert "person who runs Kadan" in result["message"]
+    assert "private" not in json.dumps(result)

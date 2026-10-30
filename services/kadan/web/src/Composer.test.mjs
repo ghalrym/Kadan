@@ -115,3 +115,18 @@ test("missing settings link keeps guidance visible without a dead action", () =>
   assert.ok(prompt(tree));
   assert.equal(find(prompt(tree), "a"), undefined);
 });
+
+
+test("response cancellation has a visible label and explains independent coding cancellation", () => {
+  let stopped = 0;
+  const tree = compose({ onStop: () => stopped++ });
+  const stop = elements(tree).find(node => node.props?.["aria-label"] === "Stop response");
+  assert.ok(stop.props.children.includes("Stop response"));
+  const help = elements(tree).find(node => node.props?.id === stop.props["aria-describedby"]);
+  assert.match(help.props.children, /Coding keeps running; use Stop coding in Coding/);
+  stop.props.onClick();
+  assert.equal(stopped, 1);
+  const pending = elements(compose({ onStop() {}, stopping: true })).find(node => node.props?.["aria-label"] === "Stop response");
+  assert.equal(pending.props.disabled, true);
+  assert.ok(pending.props.children.includes("Stopping…"));
+});

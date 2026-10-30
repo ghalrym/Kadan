@@ -85,13 +85,23 @@ export default function Coding({ onClose }: { onClose: () => void }) {
     <div className="coding-content">
       <h2 id="coding-title">Coding</h2>
       {!status ? <p role="status">{loading ? "Checking computer and Codex…" : "Coding status unavailable"}</p> : <>
-        <p role="status">{status.setup.message}</p>
+        <p role="status">{error ? "Last checked: " : ""}{status.setup.message}</p>
         {status.setup.state === "auth_required" && <div className="coding-setup">
-          <p>In the computer’s terminal, sign in with <code>CODEX_HOME=/home/gem/.codex codex login --device-auth</code>, then refresh. Device login must be enabled for your account.</p>
-          <p>You can also provision your own API key through Codex’s terminal login. Keep credentials out of chat. A ChatGPT browser session does not sign this computer in.</p>
+          <p>In Messages, open your agent’s card, open its computer, and choose Take control. Open a terminal there and run:</p>
+          <pre className="coding-command"><code>CODEX_HOME=/home/gem/.codex codex login --device-auth</code></pre>
+          <p>Follow the sign-in link and code shown in the terminal, then return here and refresh. Device login must be enabled for your account. Keep passwords, codes and API keys out of chat.</p>
         </div>}
         {status.setup.version && <p className="field-hint">Codex {status.setup.version} · GPT-6.1 Sol · High effort</p>}
-        {status.jobs.length === 0 ? <p>No coding jobs yet. Ask your agent to work on a project in the computer.</p> : <>
+        <details><summary>Codex access and usage</summary>
+          <p>A ChatGPT browser session does not sign this computer in. Use your own Codex account or set up API-key sign-in in its terminal. Never paste credentials into Messages.</p>
+          <p>Sign-in does not confirm access to GPT-6.1 Sol or remaining usage. If a task fails, check your account’s model access and usage limits before trying again. API-key use can incur charges.</p>
+          <a href="https://developers.openai.com/codex/auth" target="_blank" rel="noreferrer">Codex sign-in help<span className="sr-only"> (opens in a new tab)</span></a>
+        </details>
+        {status.jobs.length === 0 ? <div className="coding-setup">
+          <p>No coding jobs yet.</p>
+          {status.setup.state === "ready" ? <p>Choose an existing project folder on the computer. For a first try, ask in Messages: “Ask Codex to look through my project in [folder] and explain it without changing any files.” Replace [folder] with its path.</p>
+            : <p>Finish the setup above before asking your agent to code.</p>}
+        </div> : <>
           <label>Recent jobs
             <select value={job?.id ?? ""} onChange={event => setSelected(event.target.value)}>
               {status.jobs.map(row => <option key={row.id} value={row.id}>
@@ -100,7 +110,8 @@ export default function Coding({ onClose }: { onClose: () => void }) {
             </select>
           </label>
           {job && <>
-            <p className="coding-state">{error ? "Last known state: " : ""}{labels[job.status]}</p>
+            <p className="coding-state" role="status">{error ? "Last known state: " : ""}{labels[job.status]}</p>
+            <p className="field-hint">Project folder: <code>{job.cwd}</code></p>
             <p className="coding-message">{job.message}</p>
             {job.events.length > 0 && <ol className="coding-events" aria-label="Coding progress">
               {job.events.map(event => <li key={event.sequence}>{event.message}</li>)}
@@ -108,7 +119,6 @@ export default function Coding({ onClose }: { onClose: () => void }) {
             {job.events_truncated && <p className="field-hint">Showing recent progress. Earlier events have been omitted.</p>}
             <details><summary>Job details</summary><dl>
               <dt>Job</dt><dd><code>{job.id}</code></dd>
-              <dt>Directory</dt><dd><code>{job.cwd}</code></dd>
               <dt>Codex session</dt><dd><code>{job.session_id ?? "Not recorded yet"}</code></dd>
             </dl></details>
             {(["starting", "running", "stopping"] as string[]).includes(job.status) && <button
@@ -117,7 +127,7 @@ export default function Coding({ onClose }: { onClose: () => void }) {
             </button>}
           </>}
         </>}
-        <p className="field-hint">The agent continues in the original conversation when coding finishes. Chat Stop suppresses that continuation and leaves coding running. Stop coding ends its processes; file changes remain.</p>
+        <p className="field-hint">Your agent continues in the original conversation when coding finishes. Stop response in Messages prevents that reply and leaves coding running. Stop coding ends the coding task; file changes remain.</p>
       </>}
       {error && <p className="error" role="alert">{error}</p>}
       <div className="form-actions">

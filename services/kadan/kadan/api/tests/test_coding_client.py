@@ -139,7 +139,7 @@ def test_cancel_returns_stopping_until_cleanup_finishes():
 )
 def test_ambiguous_control_results_do_not_retry_or_expose_stderr(envelope):
     api, calls = client(None, envelope=envelope)
-    with pytest.raises(ServiceError, match="same request ID") as error:
+    with pytest.raises(ServiceError, match="Refresh Coding") as error:
         asyncio.run(
             api.start(CodingStart(request_id=uuid4(), cwd="/home/gem", prompt="task"))
         )

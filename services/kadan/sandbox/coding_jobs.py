@@ -324,7 +324,7 @@ def setup_status() -> dict:
     if not binary:
         return {
             "state": "missing",
-            "message": "Codex CLI is missing from the computer. Build the configured Kadan computer image.",
+            "message": "Coding is not installed on this computer yet. Ask the person who runs Kadan to update its computer, then refresh here.",
         }
     try:
         version = subprocess.run(
@@ -340,7 +340,7 @@ def setup_status() -> dict:
         ):
             return {
                 "state": "unavailable",
-                "message": "The computer requires the supported Codex CLI version. Rebuild the configured Kadan computer image.",
+                "message": f"This computer needs Codex {VERSION} for coding. Ask the person who runs Kadan to update its computer, then refresh here.",
             }
         auth = subprocess.run(
             [binary, "login", "status"],
@@ -351,17 +351,20 @@ def setup_status() -> dict:
             env={**os.environ, "CODEX_HOME": CODEX_HOME},
         )
     except (OSError, subprocess.TimeoutExpired):
-        return {"state": "unavailable", "message": "Codex setup could not be checked."}
+        return {
+            "state": "unavailable",
+            "message": "Kadan could not check coding on this computer. Refresh to try again. If it keeps failing, ask the person who runs Kadan to check the computer.",
+        }
     if auth.returncode:
         return {
             "state": "auth_required",
             "version": VERSION,
-            "message": "Codex is installed. The owner must sign in inside the computer before coding jobs can start.",
+            "message": "Codex is installed. Sign in on this computer before starting a coding task.",
         }
     return {
         "state": "ready",
         "version": VERSION,
-        "message": "Codex is installed and reports signed-in credentials. Execution has not been verified.",
+        "message": "Codex found a saved sign-in. Each coding task still depends on model access and available usage.",
     }
 
 
@@ -556,7 +559,7 @@ def monitor(
                     return "completed", summary or "Codex completed its turn."
                 return (
                     "failed",
-                    "Codex did not complete its turn. Check sign-in and inspect files before retrying.",
+                    "Codex could not finish this task. Check your Codex sign-in, access to GPT-6.1 Sol and remaining usage. Inspect project files before trying again.",
                 )
     finally:
         selector.close()

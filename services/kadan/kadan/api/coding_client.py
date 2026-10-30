@@ -49,9 +49,10 @@ class CodingClient:
                 raise ValueError("Invalid control response")
         except (ServiceError, ValueError, KeyError, TypeError) as error:
             raise ServiceError(
-                "Coding control did not confirm the operation. Refresh coding jobs "
-                "before retrying. If submitting, inspect the job using the same request ID. "
-                "Check that the computer uses the current sandbox image.",
+                "Kadan could not confirm the coding task's status. Refresh Coding "
+                "before trying again; the task may still be running. Do not submit "
+                "it again. If this keeps failing, ask the person who runs Kadan "
+                "to check that its computer is running and up to date.",
                 503,
                 "coding_unconfirmed",
             ) from error
@@ -72,7 +73,10 @@ class CodingClient:
     async def status(self) -> CodingStatus:
         if not self.computer.configured:
             return CodingStatus(
-                setup={"state": "unavailable", "message": "No computer is configured."},
+                setup={
+                    "state": "unavailable",
+                    "message": "No computer is connected. Ask the person who runs Kadan to connect one, then refresh here.",
+                },
                 jobs=[],
             )
         return await self.read_model(CodingStatus, "status")

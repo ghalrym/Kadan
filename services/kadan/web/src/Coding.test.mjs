@@ -179,3 +179,47 @@ test("cleanup failure remains attention-needed and explicit session identity is 
   assert.match(text(render()), /Earlier events have been omitted/);
   assert.equal(button("Stop coding"), undefined);
 });
+
+
+test("ready first use suggests an existing project and a read-only task without submitting", async () => {
+  await open(status([]));
+  assert.match(text(render()), /Choose an existing project folder/);
+  assert.match(text(render()), /Ask Codex to look through my project/);
+  assert.match(text(render()), /without changing any files/);
+  assert.match(text(render()), /Replace \[folder\] with its path/);
+  assert.ok(calls.every(call => call[1] === undefined));
+});
+
+
+test("sign-in guidance locates the terminal and does not treat ChatGPT browser login as Codex access", async () => {
+  await open(status([], { state: "auth_required", message: "Sign in on this computer." }));
+  assert.match(text(render()), /open your agent’s card, open its computer, and choose Take control/);
+  assert.match(text(render()), /CODEX_HOME=\/home\/gem\/\.codex codex login --device-auth/);
+  assert.match(text(render()), /Keep passwords, codes and API keys out of chat/);
+  assert.match(text(render()), /Finish the setup above/);
+  assert.doesNotMatch(text(render()), /For a first try/);
+  const help = nodes(render(), "a").find(link => link.props.href === "https://developers.openai.com/codex/auth");
+  assert.equal(help.props.target, "_blank");
+  assert.match(text(help), /opens in a new tab/);
+  assert.match(text(render()), /Sign-in does not confirm access to GPT-6.1 Sol or remaining usage/);
+  assert.match(text(render()), /API-key use can incur charges/);
+  assert.ok(calls.every(call => call[1] === undefined));
+});
+
+
+test("update setup does not offer sign-in as a fix for a missing or incompatible package", async () => {
+  await open(status([], { state: "unavailable", message: "Ask the person who runs Kadan to update its computer." }));
+  assert.match(text(render()), /update its computer/);
+  assert.doesNotMatch(text(render()), /codex login --device-auth/);
+  assert.doesNotMatch(text(render()), /For a first try/);
+});
+
+
+test("the project is visible before stopping and state changes have a polite announcement", async () => {
+  await open();
+  assert.match(text(render()), /Project folder: \/home\/gem\/project/);
+  const state = nodes(render(), "p").find(node => node.props.className === "coding-state");
+  assert.equal(state.props.role, "status");
+  assert.match(text(render()), /Stop response in Messages prevents that reply and leaves coding running/);
+  assert.match(text(render()), /Stop coding ends the coding task; file changes remain/);
+});
