@@ -84,8 +84,15 @@ export default function App() {
   const [hatched, setHatched] = useState(false);
   const [resourceRevision, setResourceRevision] = useState(0);
   const key = agent?.key ?? "";
+  const [resourceOwner, setResourceOwner] = useState("");
   const currentAgentKey = useRef(key);
-  currentAgentKey.current = key;
+  const agentKey = currentAgentKey;
+  const refreshRevision = useRef(0);
+  if (currentAgentKey.current !== key) {
+    currentAgentKey.current = key;
+    ++petSelectionRevision.current;
+    pendingPetSelection.current = 0;
+  }
 
   const refreshPetSelection = useCallback(async (agentKey: string, current: () => boolean = () => true, reportError = false) => {
     if (pendingPetSelection.current) return false;
@@ -177,16 +184,26 @@ export default function App() {
     }
   }
   async function refreshAgent() {
+    const revision = ++refreshRevision.current;
     setError("");
     setLoading(true);
     try {
       const [first] = await api<Agent[]>("/agents");
+      if (revision !== refreshRevision.current) return;
+      if (agentKey.current !== (first?.key ?? "")) {
+        setBusy(false);
+        setEditingPet(false);
+        setRenaming(false);
+        setAssigningRunner(false);
+      }
       setAgent(first ?? null);
       setResourceRevision((revision) => revision + 1);
       if (!first) setLoading(false);
     } catch (e) {
-      setError((e as Error).message);
-      setLoading(false);
+      if (revision === refreshRevision.current) {
+        setError((e as Error).message);
+        setLoading(false);
+      }
     }
   }
   useEffect(() => {
@@ -209,22 +226,25 @@ export default function App() {
   useEffect(() => {
     if (!key) return;
     let current = true;
+    const revision = refreshRevision.current;
     setLoading(true);
     Promise.all([
       api<Resource>(`${agentPath(key)}/chain`),
       allResources(key, "persona"),
     ])
       .then(([conversation, profiles]) => {
-        if (current) {
-          setChain(conversation);
+        if (current && revision === refreshRevision.current) {
+          setChain((current) => current?.agent_key === key && current.id === conversation.id
+            ? latestConversation(current, conversation) : conversation);
           setPersonas(profiles);
+          setResourceOwner(key);
         }
       })
       .catch((e) => {
-        if (current) setError(e.message);
+        if (current && revision === refreshRevision.current) setError(e.message);
       })
       .finally(() => {
-        if (current) setLoading(false);
+        if (current && revision === refreshRevision.current) setLoading(false);
       });
     return () => {
       current = false;
@@ -232,6 +252,7 @@ export default function App() {
   }, [key, resourceRevision]);
 
   function updateChain(value: Resource) {
+    if (agentKey.current !== key) return;
     setChain((current) => current ? latestConversation(current, value) : current);
   }
   function show(next: typeof view) {
@@ -440,7 +461,7 @@ export default function App() {
               Hatch your agent
             </button>
           </div>
-        ) : view === "workspace" ? null : chain ? (
+        ) : view === "workspace" ? null : chain && resourceOwner === key ? (
           <Chat
             key={`${key}:${chain.id}`}
             agentKey={key}
@@ -450,7 +471,7 @@ export default function App() {
             status={status}
             entrance={hatched ? "jumping" : "waving"}
             onChange={updateChain}
-            onBusy={setBusy}
+            onBusy={(value) => { if (agentKey.current === key) setBusy(value); }}
             onEditPet={() => setEditingPet(true)}
             blocked={loading}
             refreshStatus={refreshStatus}
@@ -468,7 +489,7 @@ export default function App() {
       </main>
       {renaming && agent && <RenameAgent
         agent={agent}
-        onUpdated={(saved) => setAgent((current) => current && { ...current, name: saved.name })}
+        onUpdated={(saved) => setAgent((current) => current?.key === saved.key ? { ...current, name: saved.name } : current)}
         onClose={() => {
           setRenaming(false);
           restoreFocus();
@@ -496,6 +517,7 @@ export default function App() {
           restoreFocus();
         }}
         onHatched={(created) => {
+          ++refreshRevision.current;
           setHatched(true);
           setCreating(false);
           transition(() => {

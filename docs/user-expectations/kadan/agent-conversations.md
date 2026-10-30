@@ -4,7 +4,7 @@ Kadan lets users hatch an agent and return to one continuous chat with it. Creat
 
 Hatching requires a name and a unique permanent key. Invalid or duplicate keys produce an error without replacing an existing agent. After an uncertain creation, refresh the agent list before trying again. Kadan opens the first agent returned by Tsuchi after refreshing; other existing agents are not selectable in Kadan. Both applications use the same [namespaces](../tsuchi/namespaces.md).
 
-Each agent has its own saved conversation. Drafts are kept separately in the current browser tab and can be lost when the tab closes; they are not saved messages.
+Each agent has its own saved conversation. Drafts are kept separately in the current browser tab and can be lost when the tab closes; they are not saved messages. When refresh opens a different agent, Kadan waits for that agent’s conversation and personas rather than showing the previous agent’s. If loading fails, it reports the error; retry refreshes the records. A failed refresh for the same agent leaves its last loaded conversation visible.
 
 Sending saves the message and queues work. Users can keep typing and send more messages while earlier work waits. Replies can be delayed by other work or model loading. The agent can finish work without sending a visible reply; errors and stopped work must remain visible.
 
