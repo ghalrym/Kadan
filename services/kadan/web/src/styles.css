@@ -648,6 +648,7 @@ main:focus {
   animation: blink 0.9s ease-in-out infinite alternate;
 }
 .messages {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -658,7 +659,7 @@ main:focus {
 .messages-inner {
   width: min(760px, 100%);
   margin: 0 auto;
-  padding: 124px 24px 112px;
+  padding: 124px 24px 24px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -670,7 +671,7 @@ main:focus {
   flex-shrink: 0;
   min-height: 44px;
   max-width: calc(100% - 32px);
-  margin: -52px auto 8px;
+  margin: 0 auto 8px;
   background: var(--surface);
   border-color: var(--line-strong);
   font-size: 12px;
@@ -862,8 +863,14 @@ main:focus {
 }
 .chat-activity > summary {
   cursor: pointer;
-  padding: 10px 12px;
+  min-height: 44px;
+  padding: 12px;
   font-weight: 600;
+}
+.chat-activity summary:focus-visible,
+.activity-content:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .chat-activity > summary > span {
   color: var(--muted);
@@ -871,10 +878,26 @@ main:focus {
   margin-left: 12px;
 }
 .activity-content {
-  max-height: min(45vh, 420px);
+  max-height: min(32dvh, 360px);
   overflow-y: auto;
   padding: 0 14px 12px;
 }
+.activity-content summary {
+  padding: 10px 0;
+  cursor: pointer;
+}
+.chat-coding {
+  flex-shrink: 0;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(760px, calc(100% - 40px));
+  padding: 6px 0;
+  font-size: 12px;
+}
+.chat-coding > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.chat-coding button { flex-shrink: 0; min-height: 44px; }
 .activity-content > * + * {
   margin-top: 12px;
 }
@@ -966,12 +989,6 @@ main:focus {
   flex-direction: column;
   align-items: flex-start;
   gap: 8px;
-}
-.chat .composer-wrap {
-  padding-top: 64px;
-  margin-top: -64px;
-  background: linear-gradient(transparent, var(--bg) 60px);
-  width: min(760px, calc(100% - 32px));
 }
 .plan-prompt {
   width: 100%;
@@ -1784,7 +1801,7 @@ dialog::backdrop {
     padding: 0 12px 0 8px;
   }
   .messages-inner {
-    padding: 116px 16px 104px;
+    padding: 116px 16px 24px;
   }
   .workspace,
   .personas {

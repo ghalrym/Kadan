@@ -4,27 +4,7 @@ import type { Resource } from "./types";
 import { chatStorageKeys, queueSend, readPending, type PendingMessage } from "./outbox.ts";
 import { randomUuid } from "./uuid.ts";
 
-export interface CodingJob {
-  id: string;
-  status: "starting" | "running" | "stopping" | "completed" | "failed" | "cancelled" | "timed_out" | "interrupted" | "cleanup_required";
-  cwd: string;
-  session_id: string | null;
-  created_at: string;
-  message: string;
-  events: { sequence: number; kind: string; message: string }[];
-  events_truncated?: boolean;
-}
-
-interface CodingStatus {
-  setup: { state: string; message: string; version?: string | null };
-  jobs: CodingJob[];
-}
-
-const labels: Record<CodingJob["status"], string> = {
-  starting: "Starting", running: "Working", stopping: "Stopping and cleaning up…",
-  completed: "Completed", failed: "Failed", cancelled: "Cancelled", timed_out: "Timed out",
-  interrupted: "Interrupted", cleanup_required: "Cleanup needs attention",
-};
+import { codingBusy, codingLabels as labels, type CodingJob, type CodingStatus } from "./coding.ts";
 
 interface Props {
   agentKey: string;
@@ -62,7 +42,7 @@ export default function Coding({ agentKey, conversation, onQueued, onClose }: Pr
   const resumable = job?.session_id && !["starting", "running", "stopping", "cleanup_required"].includes(job.status);
   const retry = !!job && submission.current?.resume_coding_job_id === job.id;
   const followup = retry ? submission.current!.content : followups[job?.id ?? ""] ?? "";
-  const computerBusy = status?.jobs.some(row => ["starting", "running", "stopping", "cleanup_required"].includes(row.status));
+  const computerBusy = status?.jobs.some(codingBusy);
 
   useEffect(() => {
     active.current = true;
@@ -106,7 +86,7 @@ export default function Coding({ agentKey, conversation, onQueued, onClose }: Pr
     }
   }
 
-  function close() { active.current = false; onClose(); }
+  function close() { active.current = false; dialog.current?.close(); onClose(); }
 
   function saveFollowup(id: string, text: string) {
     const saved = { ...followups };

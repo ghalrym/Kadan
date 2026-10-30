@@ -1,4 +1,5 @@
 import type { AgentRun, ImageJob, Resource } from "./types.ts";
+import { currentResponseOutcome } from "./agentRuns.ts";
 
 export interface ActivityItem {
   id: string;
@@ -12,6 +13,7 @@ export interface ActivityItem {
 export interface ActivityGroup {
   title: string;
   items: ActivityItem[];
+  historical?: boolean;
 }
 
 const excerpt = (text: string) => Array.from(text.trim()).slice(0, 140).join("");
@@ -22,7 +24,9 @@ export function conversationActivity(conversation: Resource, runs: AgentRun[], i
     { title: "Needs review", items: [] },
     { title: "In progress", items: [] },
     { title: "Finished", items: [] },
+    { title: "Earlier failures and stops", items: [], historical: true },
   ];
+  const currentOutcome = currentResponseOutcome(conversation, runs);
   const messages = new Map(conversation.messages.map(message => [message.id, message]));
   for (const run of runs) {
     if (run.conversation_id !== conversation.id) continue;
@@ -39,12 +43,12 @@ export function conversationActivity(conversation: Resource, runs: AgentRun[], i
       case "failed":
         item.state = "Response failed";
         item.detail = run.error || "No failure details were recorded.";
-        groups[0].items.push(item);
+        groups[run.id === currentOutcome?.id ? 0 : 3].items.push(item);
         break;
       case "cancelled":
         item.state = "Response stopped";
         item.detail = "Already delivered messages remain. Stopping does not undo actions.";
-        groups[0].items.push(item);
+        groups[run.id === currentOutcome?.id ? 0 : 3].items.push(item);
         break;
       case "queued":
       case "running":

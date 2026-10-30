@@ -480,6 +480,7 @@ export default function App() {
             onChange={updateChain}
             onBusy={(value) => { if (agentKey.current === key) setBusy(value); }}
             onEditPet={() => setEditingPet(true)}
+            onOpenCoding={() => setCoding(true)}
             blocked={loading}
             refreshStatus={refreshStatus}
           />

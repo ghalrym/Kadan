@@ -6,13 +6,14 @@ import Pet, { useMood } from "./Pet";
 import AgentCard from "./AgentCard";
 import ComputerViewer from "./ComputerViewer";
 import Activity from "./Activity";
+import CodingIndicator from "./CodingIndicator";
 import { useVoiceCall } from "./VoiceCallControl";
 import { activeLabel } from "./presence";
 import { useAgentPet } from "./PetContext";
 import { agentPath, api } from "./api";
 import type { PetState } from "./pet";
 import type { AgentRun, Asset, ImageJob, Message, Resource, RunSnapshot, Status } from "./types";
-import { activeRun, cancellableImage, imageStatus, isImageAsset, latestConversation, responseProgress } from "./agentRuns";
+import { activeRun, cancellableImage, currentResponseOutcome, imageStatus, isImageAsset, latestConversation, responseProgress } from "./agentRuns";
 import { randomUuid } from "./uuid";
 import { chatStorageKeys, confirmSend, copyPendingToDraft, discardUnassignedPending, queueSend, readPending, type PendingMessage } from "./outbox";
 
@@ -26,6 +27,7 @@ interface Props {
   onChange: (value: Resource) => void;
   onBusy: (value: boolean) => void;
   onEditPet: () => void;
+  onOpenCoding: () => void;
   blocked: boolean;
   refreshStatus: () => Promise<void>;
 }
@@ -90,6 +92,7 @@ export default function Chat({
   onChange,
   onBusy,
   onEditPet,
+  onOpenCoding,
   blocked,
   refreshStatus,
 }: Props) {
@@ -186,6 +189,13 @@ export default function Chat({
     previousItems.current = { scope, count: items.length };
     scrollToLatest();
   }, [scope]);
+  useEffect(() => {
+    const observer = new ResizeObserver(() => {
+      if (followLatest.current && !query) scrollToLatest();
+    });
+    if (messages.current) observer.observe(messages.current);
+    return () => observer.disconnect();
+  }, [scope, query]);
   useLayoutEffect(() => {
     const added = items.length - previousItems.current.count;
     if (previousItems.current.scope === scope && added > 0 && (!followLatest.current || query)) {
@@ -382,13 +392,10 @@ export default function Chat({
     finally { setStopping(false); mutation.current++; }
   }
   const conversationRuns = runs.filter((run) => run.conversation_id === chain.id);
-  const outcomes = [
-    conversationRuns.filter((run) => run.status === "failed").at(-1),
-    conversationRuns.filter((run) => run.status === "cancelled").at(-1),
-  ].filter((run): run is AgentRun => !!run);
+  const outcome = !sending && currentResponseOutcome(chain, conversationRuns);
   const perchStatus = modelLoading
     ? "Loading model…"
-    : typing ? "Typing…"
+    : typing ? "Response pending…"
       : generating ? "Waiting to respond…"
         : imagePending ? "Image pending…"
           : !ready.chat ? "Notes only" : agentName;
@@ -581,12 +588,9 @@ export default function Chat({
               {progress}
             </p>
           )}
-          {outcomes.map((run) => {
-            const response = sending || run.id !== conversationRuns.at(-1)?.id ? "Earlier response" : "Response";
-            return <p className="notice" role="status" key={run.id}>
-              {run.status === "failed" ? `${response} failed: ${run.error || "Please try again."}` : `${response} stopped`}
-            </p>;
-          })}
+          {outcome && <p className="notice" role="status">
+            {outcome.status === "failed" ? `Response failed: ${outcome.error || "Please try again."}` : "Response stopped"}
+          </p>}
           {images.filter((job) => imageStatus(job)).map((job) => (
             <div className="image-job notice" key={job.id} role="status">
               <span>{imageStatus(job)}</span>
@@ -595,6 +599,7 @@ export default function Chat({
           ))}
         </div>
       </div>
+      <CodingIndicator onOpen={onOpenCoding} />
       <Activity
         conversation={chain}
         runs={runs}

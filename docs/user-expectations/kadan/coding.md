@@ -30,6 +30,16 @@ recovering that action returns the saved job rather than starting it again.
 A changed task needs a new submission after the previous job has stopped.
 
 The Coding panel refreshes bounded progress and the final summary while open.
+Messages also shows a compact **Codex on shared computer** status, read from the
+computer's saved jobs rather than assistant messages or Activity counts. It
+distinguishes starting, working, stopping and unconfirmed cleanup from no active
+job. The latest finished job is labelled as earlier evidence with its start time;
+it is not proof that the current chat request used Codex. The computer is shared,
+so this status is not limited to the displayed conversation. **Open Coding** opens
+the existing progress, results and separate stop controls. A failed read marks
+retained job evidence as last known; unavailable status must not imply idle work.
+These updates arrive periodically and can lag changes.
+
 Earlier progress can be omitted, and summaries do not include complete command
 output or diffs. A failed refresh labels retained information as last known;
 reopening or refreshing reads the saved job without restarting it. Closing the

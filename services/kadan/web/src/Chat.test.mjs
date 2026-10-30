@@ -64,6 +64,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     "./AgentCard": { default: "AgentCard" },
     "./ComputerViewer": { default: "ComputerViewer" },
     "./Activity": { default: "Activity" },
+    "./CodingIndicator": { default: "CodingIndicator" },
     "./VoiceCallControl": { useVoiceCall: () => ({ active: false }) },
     "./PetContext": { useAgentPet: () => null },
     "./presence": { activeLabel: () => "Not active yet" },
@@ -91,6 +92,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
   const exports = {};
   runInNewContext(source, {
     exports,
+    ResizeObserver: class { observe() {} disconnect() {} },
     require: name => { assert.ok(name in modules, name); return modules[name]; },
     sessionStorage: {
       getItem: key => storage.get(key) ?? null,
@@ -147,30 +149,30 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
 }
 
 for (const status of ["failed", "cancelled"]) {
-  test(`${status} outcomes remain visible behind newer queued, running and successful responses`, async () => {
+  test(`${status} outcomes move to Activity behind newer queued, running and successful responses`, async () => {
     const previous = run("previous", status, "Context limit reached");
     const view = await chat([previous]);
     const notice = status === "failed" ? "Response failed: Context limit reached" : "Response stopped";
     assert.deepEqual(view.notices(), [notice]);
     for (const next of ["queued", "running", "completed"]) {
       await view.poll([previous, run("newer", next)]);
-      const earlier = status === "failed" ? "Earlier response failed: Context limit reached" : "Earlier response stopped";
-      assert.ok(view.notices().includes(earlier), `${status} remains visible during ${next}`);
+      assert.ok(!view.notices().some(text => /failed|stopped/.test(text)));
+      assert.ok(view.activity().runs.includes(previous));
     }
   });
 }
 
 for (const status of ["failed", "cancelled"]) {
-  test(`sending another message does not temporarily hide a ${status} response`, async () => {
+  test(`sending another message retains a ${status} response in Activity`, async () => {
     const view = await chat([run("previous", status, "Command limit reached")]);
-    const notice = status === "failed" ? "Earlier response failed: Command limit reached" : "Earlier response stopped";
     const finishSend = view.holdSend();
     view.composer().onChange("Try another question");
     view.render();
     view.composer().onSend(true);
     view.render();
     assert.equal(view.composer().sending, true);
-    assert.ok(view.notices().includes(notice));
+    assert.ok(!view.notices().some(text => /failed|stopped/.test(text)));
+    assert.equal(view.activity().runs[0].status, status);
     finishSend({
       run: run("newer", "queued"),
       conversation: { ...chain, version: 2, messages: [message("sent-message", "user", "Try another question")] },
@@ -178,30 +180,31 @@ for (const status of ["failed", "cancelled"]) {
     await settle();
     view.render();
     assert.equal(view.composer().sending, false);
-    assert.ok(view.notices().includes(notice));
+    assert.ok(!view.notices().some(text => /failed|stopped/.test(text)));
+    assert.equal(view.activity().runs[0].status, status);
   });
 }
 
-test("only the latest failure and stop are shown, with the current outcome distinguished", async () => {
+test("only the current outcome is repeated beside Messages; all history stays in Activity", async () => {
   const view = await chat([
     run("old-failure", "failed", "Old error"), run("old-stop", "cancelled"),
     run("latest-failure", "failed", "Current error"), run("latest-stop", "cancelled"),
   ]);
-  assert.deepEqual(view.notices(), ["Earlier response failed: Current error", "Response stopped"]);
+  assert.deepEqual(view.notices(), ["Response stopped"]);
   await view.poll([
     run("latest-stop", "cancelled"), run("latest-failure", "failed"),
   ]);
-  assert.deepEqual(view.notices(), ["Response failed: Please try again.", "Earlier response stopped"]);
+  assert.deepEqual(view.notices(), ["Response failed: Please try again."]);
 });
 
-test("Stop updates queued and running responses without hiding the earlier failure", async () => {
+test("Stop updates queued and running responses while retaining earlier failures in Activity", async () => {
   const view = await chat([
     run("failed", "failed", "Context limit reached"), run("running", "running"), run("queued", "queued"),
   ]);
   view.composer().onStop();
   await settle();
   view.render();
-  assert.deepEqual(view.notices(), ["Earlier response failed: Context limit reached", "Response stopped"]);
+  assert.deepEqual(view.notices(), ["Response stopped"]);
   assert.equal(view.composer().onStop, undefined);
   assert.deepEqual(view.requests.filter(item => item.path.endsWith("/cancel")).map(item => item.path), [
     "/agents/guide/runs/running/cancel", "/agents/guide/runs/queued/cancel",
@@ -217,7 +220,7 @@ test("active and successful histories show no failure or stopped outcome", async
 
 test("replacing the conversation hides its old outcomes while the new poll waits or fails", async () => {
   const view = await chat([run("failed", "failed", "Old error"), run("stopped", "cancelled")]);
-  assert.equal(view.notices().length, 2);
+  assert.equal(view.notices().length, 1);
   const failPoll = view.replaceConversation({ ...chain, id: "replacement" });
   assert.equal(view.requests.at(-1).path, "/agents/guide/conversations/replacement/runs");
   assert.deepEqual(view.notices(), []);
