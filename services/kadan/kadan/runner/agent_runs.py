@@ -25,6 +25,8 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ValidationError
 
 from ..api.config import ServiceError
+from ..api.coding_client import CodingClient
+from ..api.pydantic_models.coding import CodingStart, CodingTask
 from ..api.pydantic_models.agent_runs import (
     AgentRun,
     AgentRunState,
@@ -48,6 +50,7 @@ from .conversation_history import (
 from .memories import AgentMemories
 from .tools import (
     ALL_TOOLS,
+    CODING_TOOLS,
     CONVERSATION_TOOLS,
     MEMORY_TOOLS,
     PERSONA_TOOLS,
@@ -71,6 +74,8 @@ MAX_CONTEXT = 48000
 CHARACTERS_PER_TOKEN = 3
 RESERVED_TOKENS = 1024
 TOOL_RESULT = "Tool result: "
+CODING_POLL_SECONDS = 2
+CODING_RECOVERY_SECONDS = 120
 
 
 def context_characters(context_limit: int | None) -> int:
@@ -140,6 +145,64 @@ class RunConversation:
         self.end_run = False
         self.finished = False
         self.replayed = replayed
+
+    async def delegate_coding(self, args: CodingTask) -> dict:
+        if not self.runs.services.sandbox.configured:
+            return {"error": "No computer is configured for this agent."}
+        client = CodingClient(self.runs.services.sandbox)
+        request = CodingStart(request_id=self.action_id, **args.model_dump())
+        # The saved action stays pending in Tsuchi throughout this wait. Recovery
+        # uses the same idempotent submission, never a new continuation run.
+        deadline = monotonic() + args.timeout_seconds + CODING_RECOVERY_SECONDS
+        job = None
+        while True:
+            await self.runs.owned(self.run)
+            if monotonic() >= deadline:
+                return {
+                    "job_id": str(self.action_id),
+                    "status": "unconfirmed",
+                    "error": "Coding status could not be confirmed before the recovery deadline. "
+                    "The job may have changed files. Do not resubmit it automatically.",
+                }
+            try:
+                job = (
+                    await client.start(request)
+                    if job is None
+                    else await client.job(self.action_id)
+                )
+            except ServiceError as error:
+                if error.code != "coding_unconfirmed":
+                    return {"job_id": str(self.action_id), "error": str(error)}
+                # Retrying this ID can only recover its existing submission.
+                # Transport reconnects require no model decision or new action.
+            await self.runs.owned(self.run)
+            if job is not None:
+                try:
+                    created = datetime.fromisoformat(job.created_at)
+                except ValueError as error:
+                    raise ServiceError(
+                        "The computer returned an invalid coding timestamp.", 502
+                    ) from error
+                if created.utcoffset() is None:
+                    raise ServiceError(
+                        "The computer returned an invalid coding timestamp.", 502
+                    )
+                remaining = (
+                    (created - datetime.now(UTC)).total_seconds()
+                    + args.timeout_seconds
+                    + CODING_RECOVERY_SECONDS
+                )
+                deadline = min(deadline, monotonic() + max(0, remaining))
+                if job.status not in {"starting", "running", "stopping"}:
+                    return {
+                        "job_id": str(job.id),
+                        "status": job.status,
+                        "session_id": job.session_id,
+                        "message": job.message,
+                    }
+            await asyncio.sleep(
+                min(CODING_POLL_SECONDS, max(0, deadline - monotonic()))
+            )
 
     async def send_message(self, args: SendMessageArguments) -> dict:
         message = Message(id=self.action_id, role="assistant", content=args.content)
@@ -326,7 +389,9 @@ class AgentRuns(RunClient):
     async def owned(self, run: AgentRun) -> AgentRun:
         current = await self.get(run.agent_key, run.id)
         if (
-            current.status != "running"
+            (current.id, current.agent_key, current.conversation_id)
+            != (run.id, run.agent_key, run.conversation_id)
+            or current.status != "running"
             or current.owner_id != self.owner
             or current.lease_expires_at is None
             or current.lease_expires_at <= datetime.now(UTC)
@@ -617,7 +682,7 @@ class AgentRuns(RunClient):
 
         elif tool in MEMORY_TOOLS:
             result = await self.use_memory(tool, command, run, state.replayed)
-        elif tool in CONVERSATION_TOOLS:
+        elif tool in CONVERSATION_TOOLS or tool in CODING_TOOLS:
             result = await tool.ainvoke(
                 command.arguments,
                 config={"configurable": {"conversation": conversation}},

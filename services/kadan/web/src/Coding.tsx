@@ -117,7 +117,7 @@ export default function Coding({ onClose }: { onClose: () => void }) {
             </button>}
           </>}
         </>}
-        <p className="field-hint">Closing this panel or stopping chat leaves coding running. Stop coding ends its processes; file changes remain. Ask the agent to read the result or continue a saved session.</p>
+        <p className="field-hint">The agent continues in the original conversation when coding finishes. Chat Stop suppresses that continuation and leaves coding running. Stop coding ends its processes; file changes remain.</p>
       </>}
       {error && <p className="error" role="alert">{error}</p>}
       <div className="form-actions">

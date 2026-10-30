@@ -1457,3 +1457,427 @@ def test_persona_conflict_is_a_tool_result(boundary, monkeypatch):
     asyncio.run(boundary.controller.process(boundary.current))
     assert tool_result(boundary, -2) == {"error": "Persona changed; read it again."}
     assert boundary.current.status == "completed"
+
+
+class CodingBoundary:
+    """A durable job boundary shared by replacement runner instances."""
+
+    def __init__(self):
+        self.jobs = {}
+        self.attempts = []
+        self.reads = 0
+        self.results = ["running", "completed"]
+        self.after_start = None
+        self.before_read = None
+        self.clock = 0
+
+    def result(self, job_id):
+        saved = self.jobs[job_id]
+        if self.results:
+            saved = saved.model_copy(update={"status": self.results.pop(0)})
+        self.jobs[job_id] = saved
+        return saved
+
+    async def start(self, args):
+        from kadan.api.pydantic_models.coding import CodingJob
+
+        self.attempts.append(args)
+        if args.request_id not in self.jobs:
+            self.jobs[args.request_id] = CodingJob(
+                id=args.request_id,
+                request_id=args.request_id,
+                cwd=args.cwd,
+                status="running",
+                created_at=datetime.now(UTC).isoformat(),
+                message="Changed the requested file; unit tests passed.",
+                session_id=str(uuid4()),
+            )
+        if self.after_start:
+            callback, self.after_start = self.after_start, None
+            callback()
+        return self.result(args.request_id)
+
+    async def job(self, job_id):
+        self.reads += 1
+        if self.before_read:
+            await self.before_read()
+        return self.result(job_id)
+
+
+def coding_request(**changes):
+    return command(
+        "codex_start",
+        prompt="Fix the requested code and run unit tests.",
+        cwd="/home/gem/project",
+        **changes,
+    )
+
+
+@pytest.fixture
+def coding_boundary(boundary, monkeypatch):
+    computer = CodingBoundary()
+    boundary.sandbox.configured = True
+    monkeypatch.setattr(
+        "kadan.runner.agent_runs.CodingClient", lambda sandbox: computer
+    )
+    monkeypatch.setattr("kadan.runner.agent_runs.CODING_POLL_SECONDS", 0)
+    return computer
+
+
+def coding_result(boundary):
+    results = [
+        json.loads(item.content.removeprefix("Tool result: "))
+        for item in boundary.current.transcript
+        if item.content.startswith("Tool result: ")
+    ]
+    return next(result for result in results if "job_id" in result)
+
+
+def test_coding_wait_returns_result_to_model_and_delivers_without_another_user_message(
+    boundary, coding_boundary
+):
+    async def scenario():
+        polled, release = asyncio.Event(), asyncio.Event()
+
+        async def block():
+            polled.set()
+            await release.wait()
+
+        coding_boundary.before_read = block
+
+        def answer():
+            result = coding_result(boundary)
+            assert result["status"] == "completed"
+            assert result["message"] == "Changed the requested file; unit tests passed."
+            return send(
+                content="The requested change is ready; unit tests passed.",
+                end_run=True,
+            )
+
+        boundary.controller.inference = Commands(coding_request(), answer)
+        task = asyncio.create_task(boundary.controller.process(boundary.current))
+        await polled.wait()
+        assert len(boundary.controller.inference.calls) == 1
+        assert boundary.deliveries == []
+        # A long tool wait never holds the run lock against heartbeat renewal.
+        await boundary.controller.update(
+            boundary.current, lease_expires_at=datetime.now(UTC) + timedelta(seconds=60)
+        )
+        release.set()
+        await task
+
+    asyncio.run(scenario())
+    assert boundary.current.status == "completed"
+    assert len(coding_boundary.jobs) == len(boundary.deliveries) == 1
+    assert len(boundary.controller.inference.calls) == 2
+
+
+@pytest.mark.parametrize(
+    "status", ["failed", "cancelled", "timed_out", "interrupted", "cleanup_required"]
+)
+def test_coding_failure_and_cancellation_return_to_same_run_once(
+    boundary, coding_boundary, status
+):
+    coding_boundary.results = ["running", status]
+    boundary.controller.inference = Commands(
+        coding_request(), send(content=f"Coding ended: {status}", end_run=True)
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert coding_result(boundary)["status"] == status
+    assert boundary.current.status == "completed"
+    assert len(boundary.deliveries) == len(coding_boundary.attempts) == 1
+
+
+def test_many_duplicate_progress_reads_do_not_consume_inference_or_command_budget(
+    boundary, coding_boundary
+):
+    coding_boundary.results = ["running"] * 30 + ["completed"]
+    boundary.controller.inference = Commands(
+        coding_request(), send(content="Done", end_run=True)
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert coding_boundary.reads == 30
+    assert len(boundary.controller.inference.calls) == 2
+    assert len(boundary.deliveries) == 1
+    assert sum(item.role == "assistant" for item in boundary.current.transcript) == 2
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert len(boundary.deliveries) == len(coding_boundary.attempts) == 1
+
+
+def test_coding_restart_after_accepted_submission_reattaches_same_action(
+    boundary, coding_boundary
+):
+    def crash():
+        raise asyncio.CancelledError()
+
+    coding_boundary.after_start = crash
+    boundary.controller.inference = Commands(coding_request())
+
+    async def scenario():
+        with pytest.raises(asyncio.CancelledError):
+            await boundary.controller.advance(boundary.start_owned())
+        expected_id = uuid5(
+            boundary.current.id, f"command:{len(boundary.current.transcript)}"
+        )
+        assert list(coding_boundary.jobs) == [expected_id]
+        boundary.controller = AgentRuns(boundary)
+        boundary.controller.inference = Commands(
+            send(content="Recovered coding result", end_run=True)
+        )
+        await boundary.controller.advance(boundary.start_owned())
+
+    asyncio.run(scenario())
+    assert len(coding_boundary.attempts) == 2
+    assert coding_boundary.attempts[0] == coding_boundary.attempts[1]
+    assert len(coding_boundary.jobs) == len(boundary.deliveries) == 1
+    assert len(boundary.controller.inference.calls) == 1
+
+
+def test_restart_before_coding_result_checkpoint_does_not_repeat_job(
+    boundary, coding_boundary, monkeypatch
+):
+    coding_boundary.results = ["completed"]
+    original_save = boundary.controller.save_result
+
+    async def crash(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(boundary.controller, "save_result", crash)
+    boundary.controller.inference = Commands(coding_request())
+
+    async def scenario():
+        with pytest.raises(asyncio.CancelledError):
+            await boundary.controller.advance(boundary.start_owned())
+        assert boundary.current.transcript[-1].role == "assistant"
+        monkeypatch.setattr(boundary.controller, "save_result", original_save)
+        boundary.controller.inference = Commands(send(content="Done", end_run=True))
+        await boundary.controller.advance(boundary.current)
+
+    asyncio.run(scenario())
+    assert len(coding_boundary.jobs) == len(boundary.deliveries) == 1
+    assert len(coding_boundary.attempts) == 2
+
+
+def test_restart_after_coding_result_checkpoint_only_continues_model(
+    boundary, coding_boundary
+):
+    coding_boundary.results = ["completed"]
+    boundary.controller.inference = Commands(coding_request(), asyncio.CancelledError())
+
+    async def scenario():
+        with pytest.raises(asyncio.CancelledError):
+            await boundary.controller.advance(boundary.start_owned())
+        assert boundary.current.transcript[-1].content.startswith("Tool result: ")
+        boundary.controller = AgentRuns(boundary)
+        boundary.controller.inference = Commands(send(content="Done", end_run=True))
+        await boundary.controller.advance(boundary.start_owned())
+
+    asyncio.run(scenario())
+    assert len(coding_boundary.attempts) == len(boundary.deliveries) == 1
+
+
+def test_restart_after_final_coding_answer_preserves_delivery_receipt(
+    boundary, coding_boundary
+):
+    coding_boundary.results = ["completed"]
+    boundary.crash_after_delivery = True
+    boundary.controller.inference = Commands(
+        coding_request(), send(content="Done", end_run=True)
+    )
+
+    async def scenario():
+        with pytest.raises(asyncio.CancelledError):
+            await boundary.controller.advance(boundary.start_owned())
+        boundary.controller = AgentRuns(boundary)
+        boundary.controller.inference = Commands()
+        await boundary.controller.advance(boundary.start_owned())
+
+    asyncio.run(scenario())
+    assert len(coding_boundary.attempts) == len(boundary.deliveries) == 1
+    assert boundary.delivery_attempts == [boundary.deliveries[0].id] * 2
+    assert boundary.controller.inference.calls == []
+
+
+@pytest.mark.parametrize(
+    "loss", ["cancelled", "owner", "expired", "agent", "conversation", "run"]
+)
+def test_coding_completion_cannot_continue_cancelled_or_wrong_scope_run(
+    boundary, coding_boundary, loss
+):
+    async def change_owner():
+        if loss == "cancelled":
+            boundary.cancel()
+        else:
+            changes = {
+                "owner": {"owner_id": uuid4()},
+                "expired": {
+                    "lease_expires_at": datetime.now(UTC) - timedelta(seconds=1)
+                },
+                "agent": {"agent_key": "other"},
+                "conversation": {"conversation_id": uuid4()},
+                "run": {"id": uuid4()},
+            }[loss]
+            # Replace the read boundary instead of changing its lookup key.
+            current_get = boundary.controller.get
+
+            async def changed(*args):
+                return (await current_get(*args)).model_copy(update=changes)
+
+            boundary.controller.get = changed
+
+    coding_boundary.before_read = change_owner
+    boundary.controller.inference = Commands(coding_request())
+
+    async def scenario():
+        with pytest.raises(ServiceError) as error:
+            await boundary.controller.advance(boundary.start_owned())
+        assert error.value.code == "lease_lost"
+
+    asyncio.run(scenario())
+    assert len(boundary.controller.inference.calls) == 1
+    assert boundary.deliveries == []
+    assert boundary.current.transcript[-1].role == "assistant"
+
+
+def test_cancelled_chat_is_not_reclaimed_when_coding_later_completes(
+    boundary, coding_boundary
+):
+    async def stop_chat():
+        boundary.cancel()
+
+    coding_boundary.before_read = stop_chat
+    boundary.controller.inference = Commands(coding_request())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "cancelled"
+    coding_boundary.results = ["completed"]
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert (
+        len(coding_boundary.attempts) == len(boundary.controller.inference.calls) == 1
+    )
+    assert boundary.deliveries == []
+
+
+def test_coding_reconnect_after_uncertain_start_reuses_id_without_new_inference(
+    boundary, coding_boundary
+):
+    def lost_response():
+        raise ServiceError("Response lost", 503, "coding_unconfirmed")
+
+    coding_boundary.after_start = lost_response
+    boundary.controller.inference = Commands(
+        coding_request(), send(content="Done", end_run=True)
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert len(coding_boundary.attempts) == 2
+    assert len(coding_boundary.jobs) == len(boundary.deliveries) == 1
+    assert (
+        coding_boundary.attempts[0].request_id == coding_boundary.attempts[1].request_id
+    )
+    assert len(boundary.controller.inference.calls) == 2
+
+
+def test_coding_reconnect_only_retries_reads_and_preserves_accepted_job(
+    boundary, coding_boundary
+):
+    failures = 2
+
+    async def reconnect():
+        nonlocal failures
+        if failures:
+            failures -= 1
+            raise ServiceError("Disconnected", 503, "coding_unconfirmed")
+
+    coding_boundary.before_read = reconnect
+    boundary.controller.inference = Commands(
+        coding_request(), send(content="Done", end_run=True)
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert coding_boundary.reads == 3
+    assert len(coding_boundary.attempts) == len(boundary.deliveries) == 1
+    assert len(boundary.controller.inference.calls) == 2
+
+
+def test_lost_computer_has_bounded_wait_and_no_automatic_new_coding_turn(
+    boundary, coding_boundary, monkeypatch
+):
+    monkeypatch.setattr(
+        "kadan.runner.agent_runs.monotonic", lambda: coding_boundary.clock
+    )
+
+    async def timeout():
+        coding_boundary.clock = 200
+        raise ServiceError("Disconnected", 503, "coding_unconfirmed")
+
+    coding_boundary.before_read = timeout
+    boundary.controller.inference = Commands(
+        coding_request(timeout_seconds=60),
+        send(content="Could not confirm coding status.", end_run=True),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert coding_result(boundary)["status"] == "unconfirmed"
+    assert len(coding_boundary.attempts) == 1
+    assert len(boundary.controller.inference.calls) == 2
+    assert len(boundary.deliveries) == 1
+
+
+def test_coding_task_id_cannot_be_selected_by_model():
+    from kadan.runner.tools.coding import codex_start
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        codex_start.args_schema.model_validate(
+            {"request_id": str(uuid4()), "prompt": "Task", "cwd": "/home/gem"}
+        )
+
+
+def test_interrupting_coding_wait_preserves_job_for_replacement_runner(
+    boundary, coding_boundary
+):
+    async def scenario():
+        waiting = asyncio.Event()
+
+        async def block():
+            waiting.set()
+            await asyncio.Event().wait()
+
+        coding_boundary.before_read = block
+        boundary.controller.inference = Commands(coding_request())
+        task = asyncio.create_task(boundary.controller.advance(boundary.start_owned()))
+        await waiting.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert boundary.current.transcript[-1].role == "assistant"
+        assert next(iter(coding_boundary.jobs.values())).status == "running"
+        coding_boundary.before_read = None
+        coding_boundary.results = ["completed"]
+        boundary.controller = AgentRuns(boundary)
+        boundary.controller.inference = Commands(
+            send(content="Finished after recovery", end_run=True)
+        )
+        await boundary.controller.advance(boundary.start_owned())
+
+    asyncio.run(scenario())
+    assert len(coding_boundary.jobs) == len(boundary.deliveries) == 1
+    assert len(coding_boundary.attempts) == 2
+
+
+def test_restart_cannot_extend_expired_coding_wait(boundary, coding_boundary):
+    coding_boundary.results = ["running"]
+
+    def old_job():
+        job_id = coding_boundary.attempts[-1].request_id
+        coding_boundary.jobs[job_id] = coding_boundary.jobs[job_id].model_copy(
+            update={
+                "created_at": (datetime.now(UTC) - timedelta(hours=2)).isoformat(),
+            }
+        )
+
+    coding_boundary.after_start = old_job
+    boundary.controller.inference = Commands(
+        coding_request(), send(content="Could not confirm status", end_run=True)
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert coding_result(boundary)["status"] == "unconfirmed"
+    assert coding_boundary.reads == 0
+    assert len(coding_boundary.attempts) == len(boundary.deliveries) == 1

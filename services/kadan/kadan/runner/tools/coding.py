@@ -1,11 +1,12 @@
+from typing import Protocol
 from uuid import UUID
 
 from pydantic import Field
 
 from ...api.coding_client import CodingClient
-from ...api.pydantic_models.coding import CodingStart
+from ...api.pydantic_models.coding import CodingTask
 from ...api.sandbox_client import SandboxClient
-from .base import Arguments, computer_tool
+from .base import Arguments, computer_tool, conversation_tool
 
 
 class CodingStatusArguments(Arguments):
@@ -19,7 +20,7 @@ class CodingStatusArguments(Arguments):
 async def codex_status(args: CodingStatusArguments, computer: SandboxClient) -> dict:
     """Read Codex setup or saved job progress. A reconnect never starts work.
 
-    For a lost submission, job_id is its request_id. Keep next_cursor for later reads.
+    Use the recorded job ID. Keep next_cursor for later reads.
     """
     client = CodingClient(computer)
     if args.job_id is None:
@@ -42,17 +43,22 @@ async def codex_status(args: CodingStatusArguments, computer: SandboxClient) -> 
     return result.model_dump(mode="json")
 
 
-@computer_tool("POST")
-async def codex_start(args: CodingStart, computer: SandboxClient) -> dict:
-    """Delegate coding to Codex in the shared computer; returns before completion.
+class CodingConversation(Protocol):
+    async def delegate_coding(self, args: CodingTask) -> dict: ...
+
+
+@conversation_tool
+async def codex_start(args: CodingTask, conversation: CodingConversation) -> dict:
+    """Delegate coding and receive its final result in this conversation run.
 
     Inspect codex_status first. Supply the user's scoped task and absolute project
-    directory. Choose one UUID request_id and reuse it after uncertain submission;
-    the job ID is that UUID. One job runs at a time. To continue a saved Codex
-    session, supply its prior resume_job_id with a new request_id and follow-up
-    prompt. Never resubmit completed work as a new job to inspect its result.
+    directory. Kadan waits without inference and reattaches after a runner restart.
+    The runner owns the durable job ID. One job runs at a time. To continue a saved
+    Codex session, supply its prior resume_job_id and a scoped follow-up prompt.
+    After the result, finish the requested work and report the outcome with
+    send_message. Do not resubmit failed or uncertain work automatically.
     """
-    return (await CodingClient(computer).start(args)).model_dump(mode="json")
+    return await conversation.delegate_coding(args)
 
 
 class CodingCancelArguments(Arguments):
@@ -68,4 +74,5 @@ async def codex_cancel(args: CodingCancelArguments, computer: SandboxClient) -> 
     return (await CodingClient(computer).cancel(args.job_id)).model_dump(mode="json")
 
 
-TOOLS = [codex_status, codex_start, codex_cancel]
+TOOLS = [codex_status, codex_cancel]
+DELEGATION_TOOLS = [codex_start]

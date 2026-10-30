@@ -27,17 +27,44 @@ The API's `CodingClient` and the runner's three tools invoke the same supervisor
 through the sandbox's existing Bash exec route. The control invocation receives
 base64 encoded JSON rather than shell-interpolated task text, returns structured
 JSON, and closes its disposable Bash session so status polling cannot exhaust the
-computer's session capacity. Transport failures are uncertain outcomes, never an
-automatic retry. Raw shell stderr and auth output do not enter API errors.
+computer's session capacity. The transport client reports uncertain outcomes
+without retrying. Only the scoped delegation wait retries its idempotent action
+or reads as described below. Raw shell stderr and auth output do not enter API errors.
 
 `codex_status` reads setup/recent job IDs or one job's events after a cursor.
-`codex_start` accepts a caller-chosen UUID request ID, prompt, absolute existing
-working directory, deadline and optional previous job ID. The job ID is the
-request ID, so lost submissions remain discoverable. `codex_cancel` records a
-durable cancellation request. Only status is replayable after conversation-run
-recovery; the existing runner fences new actions after chat cancellation.
-These tools do not schedule completion wakes. The panel polls without inference,
-and the agent can inspect results on a subsequent user request.
+`codex_start` accepts a prompt, absolute existing working directory, deadline and
+optional previous job ID. It is a conversation-scoped tool, bound only when a
+computer is configured. `RunConversation` derives the supervisor request/job ID
+from the persisted run ID and command position, using the same action-identity
+scheme as message delivery. The model cannot choose an ID from another task.
+`codex_cancel` records a durable cancellation request.
+
+Delegation keeps its original Tsuchi run and saved command pending until the job
+returns a terminal outcome. The runner waits asynchronously between status reads;
+lease renewal continues independently and waiting consumes no additional model
+calls or commands. A restart recovers the saved action using the supervisor's
+idempotent submission contract. The completed result is checkpointed as that
+action's tool result before ordinary bounded inference resumes to finish the task.
+This avoids a second completion queue, event run, or cross-store delivery receipt.
+Existing message action IDs still deduplicate a reply after uncertain delivery.
+Later user messages wait behind this run, matching existing per-agent scheduling.
+
+Every wait iteration checks the original run's identity, agent, conversation,
+ownership and live lease before and after the computer operation. Chat cancellation
+or ownership loss stops the wait and fences result checkpoints, inference and
+delivery; it neither cancels Codex nor queues a replacement run. Browser selection
+is never consulted for continuation. Job reads and writes validate the returned job
+and request IDs against the requested action. Repeated progress or terminal reads
+cannot generate another event run.
+
+Unconfirmed transport operations retry under that same action ID without inference.
+The wait is bounded by the job's original creation time plus its timeout and a
+two-minute recovery allowance, with a local bound while submission is uncertain.
+Persisted job creation time prevents restarts from extending that allowance.
+A missing job, setup rejection or invalid response returns an error; an expired
+recovery deadline returns an unconfirmed outcome, never automatic resubmission
+under another ID. Only `codex_start` gains this idempotent replay path; other
+computer mutations keep their existing no-replay rule.
 
 The web API exposes `GET /api/computer/coding`,
 `GET /api/computer/coding/{job_id}?after=…` and

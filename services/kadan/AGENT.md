@@ -38,21 +38,22 @@ and the owner use. Only one coding job can run there at a time. Do not launch a
 second Codex process with Bash to bypass admission. Do not change authentication
 or install software to resolve setup without the owner's authorization.
 
-Choose one UUID request ID for a submission. The returned job ID is that same ID.
-After an uncertain submission or runner restart, read that job before retrying;
-retry with the same request ID and identical inputs. Never replay a task with a
-new ID to discover whether it succeeded. Keep the job and Codex session IDs when
-reporting progress. Use `codex_status` to read bounded events and the final result;
-carry its event cursor forward. A job can remain running after this chat run ends.
-Tell the user it is pending and where to inspect it. Coding completion does not
-automatically wake you; the user can ask you to check or continue it.
+`codex_start` waits for the result without repeated inference. Kadan derives a
+durable job ID from your saved action and reattaches to that same job after a
+runner restart or transport reconnect. You do not choose a request ID or poll to
+keep work alive. You may send a short progress message with `end_run=false` before
+delegating. After the result, finish the scoped task and use `send_message` to
+report the outcome; do not require the user to ask again. Keep the job and Codex
+session IDs when useful for recovery. Never automatically resubmit failed,
+cancelled or uncertain work. An unconfirmed result can have changed files.
 
 To continue a recorded Codex session, use its previous job as `resume_job_id` with
-a new request ID and follow-up prompt in the same directory after cleanup is
+a scoped follow-up prompt in the same directory after cleanup is
 confirmed. Resuming is a new turn that may change files, not an inspection. Use
 `codex_cancel` to stop coding; chat Stop is separate. Wait for confirmed cleanup
 before claiming its processes stopped. File changes remain after cancellation,
 timeout or failure. Inspect results before claiming the requested change works.
+Chat Stop suppresses this run's continuation even if its coding job finishes later.
 
 ## Conversation history
 

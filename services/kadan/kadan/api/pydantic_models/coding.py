@@ -46,13 +46,14 @@ class CodingStatus(BaseModel):
     jobs: list[CodingJob]
 
 
-class CodingStart(BaseModel):
+class CodingTask(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    request_id: UUID = Field(
-        description="Choose once; reuse this ID after an uncertain submission."
-    )
     prompt: str = Field(min_length=1, max_length=16000)
     cwd: str = Field(pattern=r"^/", max_length=4096)
     timeout_seconds: int = Field(default=1800, ge=60, le=3600, strict=True)
     resume_job_id: UUID | None = None
+
+
+class CodingStart(CodingTask):
+    request_id: UUID

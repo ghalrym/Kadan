@@ -6,6 +6,8 @@ The chat's Stop control cancels the queued and running response work currently s
 
 [Coding jobs](coding.md) have a separate **Stop coding** control in the Coding
 panel. Chat Stop does not stop Codex work already accepted by the computer.
+It does suppress the waiting response's automatic continuation; a later coding
+completion cannot revive that cancelled response.
 
 Once cancellation is recorded, the cancelled run must not deliver another message or execute a saved command. Inference may take until the runner's next ownership check to stop, so the interface must not imply that GPU work ends instantly.
 

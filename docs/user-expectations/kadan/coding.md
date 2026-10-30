@@ -17,17 +17,35 @@ incompatible versions and unavailable computers remain distinguishable from read
 Ask the agent to work in a project directory on the computer and describe the
 change and constraints. Kadan accepts one coding job at a time on the shared
 computer. Another submission is rejected while a job is active or cleanup is
-unconfirmed. The agent receives a durable job ID; retrying an uncertain submission
-with that same ID and instructions returns the saved job rather than starting it
-again. A changed task needs a new submission after the previous job has stopped.
+unconfirmed. Kadan derives a durable job ID from the agent's saved action;
+recovering that action returns the saved job rather than starting it again.
+A changed task needs a new submission after the previous job has stopped.
 
 The Coding panel refreshes bounded progress and the final summary while open.
 Earlier progress can be omitted, and summaries do not include complete command
 output or diffs. A failed refresh labels retained information as last known;
 reopening or refreshing reads the saved job without restarting it. Closing the
 panel, closing the browser, stopping chat or restarting Kadan's API or runner
-leaves an accepted coding job running in the computer. Completion does not
-automatically start another agent response: ask the agent to read the result.
+leaves an accepted coding job running in the computer.
+
+The agent waits without repeatedly asking its model for progress, receives the
+completed or failed result and continues the original task without another user
+message. A runner restart reattaches the saved action to its existing job; browser
+reconnects do not create another continuation or move it to the currently displayed
+conversation. Later messages queue behind the waiting task. Closing the browser
+does not suppress its eventual reply.
+
+Chat Stop cancels the response and suppresses this automatic continuation. It
+does not stop the coding process, undo changes or cause a later completion to
+revive that cancelled response. The user can send a new message after stopping.
+**Stop coding** remains the separate process control. A lost runner assignment,
+unavailable inference or exceeded context/command limit can still prevent a reply
+and must remain visible as failed or stopped response work.
+
+If the computer cannot confirm a result, Kadan retries status recovery without
+inference up to a bounded deadline beyond the coding timeout. It then returns an
+unconfirmed outcome to the agent rather than resubmitting the task or waiting
+indefinitely. The job can have made changes even when its result is unavailable.
 
 **Stop coding** requests cancellation independently of chat Stop. The panel shows
 stopping until Kadan's supervisor confirms its owned processes have ended.

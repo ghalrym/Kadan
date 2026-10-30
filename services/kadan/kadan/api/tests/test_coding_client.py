@@ -4,7 +4,7 @@ import asyncio
 import base64
 import json
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -90,9 +90,12 @@ def test_start_encodes_prompt_without_shell_evaluation_and_preserves_retry_id():
 
 
 def test_unicode_maximum_fits_shell_argument_and_supervisor_bound():
-    api, calls = client(job())
+    result = job()
+    api, calls = client(result)
     asyncio.run(
-        api.start(CodingStart(request_id=uuid4(), cwd="/home/gem", prompt="🐈" * 16000))
+        api.start(
+            CodingStart(request_id=result["id"], cwd="/home/gem", prompt="🐈" * 16000)
+        )
     )
     assert len(json.loads(calls[0].content)["command"].split()[-1]) < 100000
 
@@ -111,13 +114,14 @@ def test_status_and_job_cursor_only_read_saved_state():
     assert sent(calls) == {"operation": "status"}
     result = job()
     api, calls = client(result)
-    asyncio.run(api.job(uuid4(), after=17))
+    asyncio.run(api.job(UUID(result["id"]), after=17))
     assert sent(calls)["after"] == 17
 
 
 def test_cancel_returns_stopping_until_cleanup_finishes():
-    api, calls = client(job(status="stopping"))
-    result = asyncio.run(api.cancel(uuid4()))
+    saved = job(status="stopping")
+    api, calls = client(saved)
+    result = asyncio.run(api.cancel(UUID(saved["id"])))
     assert result.status == "stopping"
     assert sent(calls)["operation"] == "cancel"
 
@@ -189,7 +193,8 @@ def test_start_rejects_invalid_or_unscoped_inputs(change):
 
 def test_only_status_is_replayable_and_tools_use_typed_control():
     assert codex_status.metadata["method"] == "GET"
-    assert codex_start.metadata["method"] == codex_cancel.metadata["method"] == "POST"
+    assert "method" not in codex_start.metadata
+    assert codex_cancel.metadata["method"] == "POST"
     result = job()
     api, calls = client(result)
     saved = asyncio.run(
@@ -210,6 +215,22 @@ def test_api_cancel_uses_same_owned_job_protocol():
             state=SimpleNamespace(services=SimpleNamespace(sandbox=api.computer))
         )
     )
-    saved = asyncio.run(coding.cancel_coding(request, uuid4()))
+    saved = asyncio.run(coding.cancel_coding(request, UUID(result["id"])))
     assert saved.status == "stopping"
     assert sent(calls)["operation"] == "cancel"
+
+
+@pytest.mark.parametrize("operation", ["start", "job", "cancel"])
+def test_wrong_job_result_is_rejected(operation):
+    api, _ = client(job(message="Another conversation's output"))
+    requested = uuid4()
+    with pytest.raises(ServiceError) as error:
+        asyncio.run(
+            getattr(api, operation)(
+                CodingStart(request_id=requested, prompt="task", cwd="/home/gem")
+                if operation == "start"
+                else requested
+            )
+        )
+    assert error.value.code == "coding_invalid_response"
+    assert "Another conversation" not in str(error.value)

@@ -78,17 +78,30 @@ class CodingClient:
         return await self.read_model(CodingStatus, "status")
 
     async def job(self, job_id: UUID, after: int = 0) -> CodingJob:
-        return await self.read_model(
+        job = await self.read_model(
             CodingJob, "status", job_id=str(job_id), after=after
         )
+        return self.match_job(job, job_id)
 
     async def start(self, arguments: CodingStart) -> CodingJob:
-        return await self.read_model(
+        job = await self.read_model(
             CodingJob, "start", **arguments.model_dump(mode="json")
         )
+        return self.match_job(job, arguments.request_id)
 
     async def cancel(self, job_id: UUID) -> CodingJob:
-        return await self.read_model(CodingJob, "cancel", job_id=str(job_id))
+        job = await self.read_model(CodingJob, "cancel", job_id=str(job_id))
+        return self.match_job(job, job_id)
+
+    @staticmethod
+    def match_job(job: CodingJob, job_id: UUID) -> CodingJob:
+        if job.id != job_id or job.request_id != job_id:
+            raise ServiceError(
+                "The computer returned another coding job's status.",
+                502,
+                "coding_invalid_response",
+            )
+        return job
 
     async def read_model(self, model, operation: str, **arguments):
         result = await self.request(operation, **arguments)

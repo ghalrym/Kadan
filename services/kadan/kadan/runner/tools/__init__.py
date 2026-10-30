@@ -32,6 +32,7 @@ CONVERSATION_TOOLS: list[StructuredTool] = [
 ]
 MEMORY_TOOLS: list[StructuredTool] = memory.TOOLS
 PERSONA_TOOLS: list[StructuredTool] = persona.TOOLS
+CODING_TOOLS: list[StructuredTool] = coding.DELEGATION_TOOLS
 COMPUTER_TOOLS: list[StructuredTool] = [
     *coding.TOOLS,
     *browser.TOOLS,
@@ -48,6 +49,12 @@ COMPUTER_TOOLS: list[StructuredTool] = [
     *display.TOOLS,
     *util.TOOLS,
 ]
-ALL_TOOLS = [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS, *COMPUTER_TOOLS]
+ALL_TOOLS = [
+    *CONVERSATION_TOOLS,
+    *MEMORY_TOOLS,
+    *PERSONA_TOOLS,
+    *COMPUTER_TOOLS,
+    *CODING_TOOLS,
+]
 VISION_TOOLS: list[StructuredTool] = vision.TOOLS
 TOOLS_BY_NAME = {tool.name: tool for tool in [*ALL_TOOLS, *VISION_TOOLS]}
