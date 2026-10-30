@@ -81,30 +81,38 @@ export default function App() {
   const [hatched, setHatched] = useState(false);
   const [resourceRevision, setResourceRevision] = useState(0);
   const key = agent?.key ?? "";
+  const [resourceOwner, setResourceOwner] = useState("");
+  const agentKey = useRef(key);
+  const refreshRevision = useRef(0);
+  if (agentKey.current !== key) {
+    agentKey.current = key;
+    ++petSelectionRevision.current;
+    pendingPetSelection.current = 0;
+  }
 
-  const refreshPetSelection = useCallback(async (agentKey: string) => {
+  const refreshPetSelection = useCallback(async (agentKeyValue: string) => {
     if (pendingPetSelection.current) return;
     const revision = petSelectionRevision.current;
-    const pet = await api<PetJob | null>(`${agentPath(agentKey)}/pet`);
-    if (revision === petSelectionRevision.current && !pendingPetSelection.current) {
-      setPets((rows) => rows[agentKey]?.id === pet?.id && rows[agentKey]?.version === pet?.version
-        ? rows : { [agentKey]: pet });
+    const pet = await api<PetJob | null>(`${agentPath(agentKeyValue)}/pet`);
+    if (agentKey.current === agentKeyValue && revision === petSelectionRevision.current && !pendingPetSelection.current) {
+      setPets((rows) => rows[agentKeyValue]?.id === pet?.id && rows[agentKeyValue]?.version === pet?.version
+        ? rows : { [agentKeyValue]: pet });
     }
   }, []);
 
-  const selectPet = useCallback(async (agentKey: string, id: string | null) => {
+  const selectPet = useCallback(async (agentKeyValue: string, id: string | null) => {
     const revision = petSelectionRevision.current + 1;
     petSelectionRevision.current = revision;
     pendingPetSelection.current = revision;
     const apply = (pet: PetJob | null) => {
-      if (revision === petSelectionRevision.current) setPets({ [agentKey]: pet });
+      if (agentKey.current === agentKeyValue && revision === petSelectionRevision.current) setPets({ [agentKeyValue]: pet });
     };
     try {
       try {
-        apply(await api<PetJob | null>(`${agentPath(agentKey)}/pet`, { pet_id: id }, "PUT"));
+        apply(await api<PetJob | null>(`${agentPath(agentKeyValue)}/pet`, { pet_id: id }, "PUT"));
       } catch (error) {
         // The write may have committed even when its response never arrived.
-        const saved = await api<PetJob | null>(`${agentPath(agentKey)}/pet`);
+        const saved = await api<PetJob | null>(`${agentPath(agentKeyValue)}/pet`);
         apply(saved);
         if ((saved?.id ?? null) !== id) throw error;
       }
@@ -159,16 +167,26 @@ export default function App() {
     }
   }
   async function refreshAgent() {
+    const revision = ++refreshRevision.current;
     setError("");
     setLoading(true);
     try {
       const [first] = await api<Agent[]>("/agents");
+      if (revision !== refreshRevision.current) return;
+      if (agentKey.current !== (first?.key ?? "")) {
+        setBusy(false);
+        setEditingPet(false);
+        setRenaming(false);
+        setAssigningRunner(false);
+      }
       setAgent(first ?? null);
       setResourceRevision((revision) => revision + 1);
       if (!first) setLoading(false);
     } catch (e) {
-      setError((e as Error).message);
-      setLoading(false);
+      if (revision === refreshRevision.current) {
+        setError((e as Error).message);
+        setLoading(false);
+      }
     }
   }
   useEffect(() => {
@@ -188,22 +206,25 @@ export default function App() {
   useEffect(() => {
     if (!key) return;
     let current = true;
+    const revision = refreshRevision.current;
     setLoading(true);
     Promise.all([
       api<Resource>(`${agentPath(key)}/chain`),
       allResources(key, "persona"),
     ])
       .then(([conversation, profiles]) => {
-        if (current) {
-          setChain(conversation);
+        if (current && revision === refreshRevision.current) {
+          setChain((current) => current?.agent_key === key && current.id === conversation.id
+            ? latestConversation(current, conversation) : conversation);
           setPersonas(profiles);
+          setResourceOwner(key);
         }
       })
       .catch((e) => {
-        if (current) setError(e.message);
+        if (current && revision === refreshRevision.current) setError(e.message);
       })
       .finally(() => {
-        if (current) setLoading(false);
+        if (current && revision === refreshRevision.current) setLoading(false);
       });
     return () => {
       current = false;
@@ -211,6 +232,7 @@ export default function App() {
   }, [key, resourceRevision]);
 
   function updateChain(value: Resource) {
+    if (agentKey.current !== key) return;
     setChain((current) => current ? latestConversation(current, value) : current);
   }
   function show(next: typeof view) {
@@ -413,7 +435,7 @@ export default function App() {
               Hatch your agent
             </button>
           </div>
-        ) : view === "workspace" ? null : chain ? (
+        ) : view === "workspace" ? null : chain && resourceOwner === key ? (
           <Chat
             key={`${key}:${chain.id}`}
             agentKey={key}
@@ -423,7 +445,7 @@ export default function App() {
             status={status}
             entrance={hatched ? "jumping" : "waving"}
             onChange={updateChain}
-            onBusy={setBusy}
+            onBusy={(value) => { if (agentKey.current === key) setBusy(value); }}
             onEditPet={() => setEditingPet(true)}
             blocked={loading}
             refreshStatus={refreshStatus}
@@ -441,7 +463,7 @@ export default function App() {
       </main>
       {renaming && agent && <RenameAgent
         agent={agent}
-        onUpdated={(saved) => setAgent((current) => current && { ...current, name: saved.name })}
+        onUpdated={(saved) => setAgent((current) => current?.key === saved.key ? { ...current, name: saved.name } : current)}
         onClose={() => {
           setRenaming(false);
           restoreFocus();
@@ -469,6 +491,7 @@ export default function App() {
           restoreFocus();
         }}
         onHatched={(created) => {
+          ++refreshRevision.current;
           setHatched(true);
           setCreating(false);
           transition(() => {

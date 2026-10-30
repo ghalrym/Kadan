@@ -73,6 +73,7 @@ beforeEach(() => {
   state.length = 0;
   state[AGENT] = { key: "agent", name: "Agent" };
   state[CHAIN] = original;
+  state[18] = "agent";
   Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: () => ({ matches: false }) });
 });
 afterEach(() => {
