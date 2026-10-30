@@ -9,7 +9,7 @@ The standard deployment uses the released LFM3 BF16 conversation worker with the
 
 The current deployment shares one computer across agents. Actions and manual input can affect the same browser, files and processes. Agent separation in Tsuchi does not create separate desktops. Files created on the computer are not automatically added to Tsuchi's file library.
 
-A computer action can fail because the computer, website, program or requested file is unavailable. Kadan returns action errors to the agent so it can decide what to do next. This does not guarantee that it will recover or send a visible explanation. Invalid agent commands can fail the response, and work remains subject to the conversation's command and context limits.
+A computer action can fail because the computer, website, program or requested file is unavailable. Kadan returns action errors to the agent so it can decide what to do next. This does not guarantee that it will recover or send a visible explanation. Kadan rejects invalid tool arguments before executing the action and gives the agent field-level feedback with up to two correction attempts per response. Repeated invalid arguments fail the response with a diagnostic; rejected argument values are omitted. Unknown tools and malformed commands can still fail immediately. Corrections consume the normal command and context limits and do not reset after successful actions or a runner restart.
 
 Action results have a limited text size. The current agent cannot inspect screenshot pixels through its text model, even though users can view the computer. A delivered chat message does not prove that an external change succeeded; inspect the resulting page, file or application when confirmation matters.
 

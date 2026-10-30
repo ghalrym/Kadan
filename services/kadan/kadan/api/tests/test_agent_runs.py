@@ -19,6 +19,8 @@ from kadan.api.pydantic_models.agent_runs import AgentRun, ImageJob, RunMessage
 from kadan.api.pydantic_models.resources import Message, Resource, ResourceKind
 from kadan.runner.agent_inference import ToolCommand, tool_characters
 from kadan.runner.agent_runs import (
+    ARGUMENT_REJECTION,
+    MAX_ARGUMENT_CORRECTIONS,
     MAX_CONTEXT,
     AgentRuns,
     RunState,
@@ -1064,16 +1066,246 @@ def test_invalid_workspace_response_is_an_uncertain_write(boundary):
         command("shell_exec_command", command="ls"),
         command("missing_tool"),
         command("browser_navigate", address="https://example.com"),
-        send(content="Hi"),
-        image_request(prompt=""),
     ],
 )
-def test_unknown_tools_and_invalid_arguments_fail_the_run(boundary, invalid):
+def test_unknown_or_disabled_tools_fail_without_correction(boundary, invalid):
     boundary.controller.inference = Commands(invalid, finish())
     asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.current.status == "failed"
     assert len(boundary.controller.inference.calls) == 1
     assert boundary.deliveries == []
+
+
+@pytest.mark.parametrize(
+    "invalid, field, code",
+    [
+        (
+            command("read_conversation_history", unsupported="private"),
+            "unsupported",
+            "extra_forbidden",
+        ),
+        (command("read_conversation_history", limit=21), "limit", "less_than_equal"),
+        (
+            command("read_conversation_history", start_message_id="private"),
+            "start_message_id",
+            "uuid_parsing",
+        ),
+        (command("search_conversation_history"), "query", "missing"),
+    ],
+)
+def test_history_argument_rejection_is_useful_and_never_executes(
+    boundary, monkeypatch, invalid, field, code
+):
+    from unittest.mock import AsyncMock
+    from kadan.runner.agent_runs import RunConversation
+
+    history = AsyncMock(side_effect=AssertionError("Rejected call executed"))
+    monkeypatch.setattr(RunConversation, "conversation_history", history)
+    boundary.controller.inference = Commands(invalid, finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert len(boundary.controller.inference.calls) == 2
+    feedback = boundary.controller.inference.calls[1][-1]
+    assert feedback.type == "human"
+    rejection = json.loads(feedback.content.removeprefix(ARGUMENT_REJECTION))
+    assert rejection["tool"] == invalid.tool
+    assert rejection["problems"] == [{"field": field, "code": code}]
+    assert "No tool was executed" in rejection["error"]
+    assert "private" not in json.dumps(boundary.current.model_dump(mode="json"))
+    assert invalid.model_dump_json() not in [
+        item.content for item in boundary.current.transcript
+    ]
+    history.assert_not_awaited()
+    assert boundary.deliveries == []
+
+
+def test_corrected_history_call_returns_result_then_delivers_once(boundary):
+    boundary.controller.inference = Commands(
+        command("read_conversation_history", unsupported="private"),
+        command("read_conversation_history", limit=1),
+        send(content="Found the history", end_run=True),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert len(boundary.controller.inference.calls) == 3
+    result = json.loads(boundary.controller.inference.calls[2][-1].content)
+    assert result["messages"][0]["content"] == "Hello"
+    assert [message.content for message in boundary.deliveries] == ["Found the history"]
+
+
+def test_argument_correction_exhaustion_retains_safe_diagnostics(boundary):
+    invalid = command("read_conversation_history", unsupported="private")
+    boundary.controller.inference = Commands(*([invalid] * 4))
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert len(boundary.controller.inference.calls) == MAX_ARGUMENT_CORRECTIONS + 1
+    assert "correction attempts" in boundary.current.error
+    assert "read_conversation_history" in boundary.current.error
+    assert "unsupported: extra_forbidden" in boundary.current.error
+    assert (
+        len(
+            [
+                item
+                for item in boundary.current.transcript
+                if item.content.startswith(ARGUMENT_REJECTION)
+            ]
+        )
+        == 3
+    )
+    assert "private" not in json.dumps(boundary.current.model_dump(mode="json"))
+    assert boundary.deliveries == []
+
+
+def test_successful_tool_does_not_reset_argument_correction_budget(boundary):
+    invalid = command("read_conversation_history", unsupported=True)
+    boundary.controller.inference = Commands(
+        invalid,
+        command("read_conversation_history", limit=1),
+        invalid,
+        invalid,
+        finish(),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert len(boundary.controller.inference.calls) == 4
+    assert "correction attempts" in boundary.current.error
+
+
+def test_argument_rejection_consumes_remaining_command_budget(boundary):
+    boundary.controller.inference = Commands(
+        *[send(content="Progress", end_run=False) for _ in range(23)],
+        command("read_conversation_history", unsupported=True),
+        finish(),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert len(boundary.controller.inference.calls) == 24
+    assert "24-command run limit" in boundary.current.error
+    assert len(boundary.deliveries) == 23
+
+
+def test_argument_diagnostics_are_bounded_and_redact_unconventional_keys(boundary):
+    boundary.controller.inference = Commands(
+        command(
+            "read_conversation_history",
+            **{f"private content {index}": "secret" for index in range(50)},
+        ),
+        finish(),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    feedback = boundary.controller.inference.calls[1][-1].content
+    rejection = json.loads(feedback.removeprefix(ARGUMENT_REJECTION))
+    assert len(rejection["problems"]) == 5
+    assert all(problem["field"] == "[redacted]" for problem in rejection["problems"])
+    assert len(feedback) < 2000
+    assert "private content" not in feedback and "secret" not in feedback
+
+
+def test_invalid_mutations_have_no_effect_before_correction(boundary):
+    boundary.sandbox = Computer()
+    boundary.controller.inference = Commands(
+        send(content="Must not deliver"),
+        command("bash_exec", command="touch /tmp/must-not-exist", unsupported=True),
+        finish(),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert boundary.deliveries == []
+    assert boundary.sandbox.calls == []
+
+
+@pytest.mark.parametrize("loss", ["cancelled", "owner", "expired"])
+def test_ownership_loss_during_invalid_inference_cannot_save_or_correct(boundary, loss):
+    def rejected_after_loss():
+        if loss == "cancelled":
+            boundary.cancel()
+        else:
+            boundary.current = boundary.current.model_copy(
+                update={
+                    "owner_id": uuid4()
+                    if loss == "owner"
+                    else boundary.controller.owner,
+                    "lease_expires_at": datetime.now(UTC) - timedelta(seconds=1)
+                    if loss == "expired"
+                    else boundary.current.lease_expires_at,
+                }
+            )
+        return command("read_conversation_history", unsupported=True)
+
+    boundary.controller.inference = Commands(rejected_after_loss, finish())
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert len(boundary.controller.inference.calls) == 1
+    assert not any(
+        item.content.startswith(ARGUMENT_REJECTION)
+        for item in boundary.current.transcript
+    )
+    assert boundary.deliveries == []
+
+
+@pytest.mark.parametrize("exhausted", [False, True])
+def test_restart_preserves_argument_feedback_and_correction_limit(boundary, exhausted):
+    async def check():
+        run = boundary.start_owned()
+        run = (await boundary.controller.prepare(RunState(run=run)))["run"]
+        boundary.controller.inference = Commands(
+            *([command("read_conversation_history", unsupported="private")] * 3)
+        )
+        for _ in range(3 if exhausted else 1):
+            result = await boundary.controller.infer_command(RunState(run=run))
+            run = result["run"]
+            assert result["command"] is None
+        saved = run.transcript[-1].content
+        boundary.controller = AgentRuns(boundary)
+        boundary.controller.inference = Commands(
+            send(content="Recovered", end_run=True)
+        )
+        await boundary.controller.process(boundary.current)
+        if exhausted:
+            assert boundary.current.status == "failed"
+            assert boundary.controller.inference.calls == []
+            assert boundary.deliveries == []
+        else:
+            assert boundary.current.status == "completed"
+            assert boundary.controller.inference.calls[0][-1].content == saved
+            assert len(boundary.deliveries) == 1
+
+    asyncio.run(check())
+
+
+def test_cancelled_saved_rejection_cannot_resume_correction(boundary):
+    async def check():
+        boundary.controller.inference = Commands(
+            command("read_conversation_history", unsupported=True)
+        )
+        run = (await boundary.controller.prepare(RunState(run=boundary.start_owned())))[
+            "run"
+        ]
+        await boundary.controller.infer_command(RunState(run=run))
+        boundary.cancel()
+        boundary.controller.inference = Commands(finish())
+        await boundary.controller.process(boundary.current)
+
+    asyncio.run(check())
+    assert boundary.current.status == "cancelled"
+    assert boundary.controller.inference.calls == []
+    assert boundary.deliveries == []
+
+
+def test_execution_error_is_not_argument_correction_feedback(boundary):
+    boundary.sandbox = Computer(ServiceError("Execution outcome uncertain", 502))
+    boundary.controller.inference = Commands(
+        command("bash_exec", command="echo hi"), finish()
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert len(boundary.sandbox.calls) == 1
+    assert not any(
+        item.content.startswith(ARGUMENT_REJECTION)
+        for item in boundary.current.transcript
+    )
+    assert (
+        "Execution outcome uncertain"
+        in boundary.controller.inference.calls[1][-1].content
+    )
 
 
 @pytest.mark.parametrize(
