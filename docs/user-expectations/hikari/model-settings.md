@@ -4,6 +4,8 @@ Hikari's Settings lists the intended model for each capability, its download sta
 
 The page shows each model's progress. Percentages are estimates; the completed state confirms success. **Resume downloads** retries incomplete downloads without downloading completed models again. Download sizes use verified totals when available; catalog estimates are labelled **estimated**, and unavailable sizes say **Size unknown**. These sizes describe downloaded files, rather than loaded memory or generated files.
 
+Saving the transcription formatting preference requires a connected native model store that can retain it. If none is available, Hikari reports an error instead of confirming a save through a language or audio worker.
+
 Closing the page keeps accepted downloads running. After a failed or timed-out request, refresh model state before retrying because some downloads may already have started.
 
 Hikari has no hardware tiers or per-machine model choices. Language uses LFM3 1.7B, voice calls use LFM3-Audio-2B, vision uses LFM3-VL 2B, images use Qwen-Image Turbo, video uses H3 Turbo, speech uses Qwen3-TTS CustomVoice, transcription uses Whisper medium, formatting uses S1-mini, and decisions use Laya. All require their own available worker and verified checkpoint. Inference never starts a missing-model download; review the licenses and explicitly start downloads in Settings first. Enabling or connecting a worker does not download its model. Earlier model files remain on disk and are not deleted by this change.

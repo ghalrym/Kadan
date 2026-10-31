@@ -701,9 +701,7 @@ class RegistrationTests(HubTestCase):
             ),
         )
         self.assertEqual(self.hub.models.selected_model_id, "lfm3-1.7b-bf16")
-        self.assertEqual(
-            [model.id for model in self.hub.models.models], ["qwen-image-2.1-turbo"]
-        )
+        self.assertEqual(self.hub.models.models, [])
         self.assertEqual(len(worker.models.models), 3)
 
     async def test_late_worker_receives_the_primary_settings(self):
