@@ -33,17 +33,14 @@ from ..api.pydantic_models.agent_runs import (
     ImageJob,
     RunMessage,
 )
-from ..api.pydantic_models.coding import (
-    CodingContinuation,
-    CodingOutcome,
-    CodingStart,
-    CodingTask,
-)
+from ..api.pydantic_models.coding import CodexOrigin, CodexTask
 from ..api.pydantic_models.resources import Message, Resource, ResourceKind
 from ..api.run_client import RunClient
 from ..api.services import parse_resource
 from .agent_inference import (
     AgentInference,
+    REASONING_TOKENS,
+    REPLY_TOKENS,
     ToolCommand,
     parse_command,
     tool_characters,
@@ -63,6 +60,7 @@ from .tools import (
     TOOLS_BY_NAME,
     VISION_TOOLS,
 )
+from .tools.coding import CodexStartArguments
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
 from .tools.persona import UpdatePersonaArguments
 from .tools.workspace import (
@@ -85,12 +83,10 @@ ARGUMENT_REJECTION = "Rejected tool arguments: "
 # Transcript budget in characters when Hikari does not report a context window.
 MAX_CONTEXT = 48000
 # Tool results are JSON, which tokenizes densely; three characters per token
-# keeps a transcript inside the window. The reserve covers the reply and template.
+# estimates transcript space. Reserve generation separately from template overhead.
 CHARACTERS_PER_TOKEN = 3
-RESERVED_TOKENS = 1024
+RESERVED_TOKENS = REASONING_TOKENS + REPLY_TOKENS + 1024
 TOOL_RESULT = "Tool result: "
-CODING_POLL_SECONDS = 2
-CODING_RECOVERY_SECONDS = 120
 
 
 def context_characters(context_limit: int | None) -> int:
@@ -182,47 +178,6 @@ def validate(
     return None
 
 
-def coding_continuation_command(
-    run: AgentRun, start: ToolCommand, transcript: list[RunMessage]
-) -> ToolCommand:
-    task = CodingContinuation.model_validate(start.arguments)
-    if not transcript:
-        return start
-    if (
-        len(transcript) != 2
-        or transcript[0].role != "assistant"
-        or parse_command(transcript[0].content) != start
-        or transcript[1].role != "user"
-        or not transcript[1].content.startswith(TOOL_RESULT)
-    ):
-        raise ServiceError("The saved coding continuation has an invalid result.", 502)
-    result = CodingOutcome.model_validate_json(
-        transcript[1].content.removeprefix(TOOL_RESULT)
-    )
-    if result.job_id != uuid5(run.id, "command:1"):
-        raise ServiceError("The coding result belongs to another action.", 502)
-    labels = {
-        "completed": "Codex completed the continuation.",
-        "failed": "Codex could not finish the continuation.",
-        "cancelled": "Codex continuation was cancelled; file changes remain.",
-        "timed_out": "Codex continuation timed out; inspect partial changes.",
-        "interrupted": "Codex continuation was interrupted; inspect partial changes.",
-        "cleanup_required": "Codex cleanup needs attention. Further coding is blocked.",
-        "unconfirmed": "Codex continuation could not be confirmed. Do not resubmit automatically.",
-        "rejected": "Codex continuation could not start.",
-    }
-    content = labels[result.status]
-    if result.error or result.message:
-        content += "\n\n" + (result.error or result.message)
-    content += f"\n\nJob: `{result.job_id}`"
-    if result.session_id:
-        content += f"\nCodex session: `{result.session_id}`"
-    content += f"\nContinued job: `{task.resume_job_id}`"
-    return ToolCommand(
-        tool="send_message", arguments={"content": content, "end_run": True}
-    )
-
-
 class RunConversation:
     """The conversation tools' view of one run, at the step being executed."""
 
@@ -234,66 +189,31 @@ class RunConversation:
         self.finished = False
         self.replayed = replayed
 
-    async def delegate_coding(self, args: CodingTask) -> dict:
+    async def start_codex(self, args: CodexStartArguments) -> dict:
         if not self.runs.services.sandbox.configured:
-            return {
-                "job_id": str(self.action_id),
-                "error": "No computer is configured for this agent.",
-            }
-        client = CodingClient(self.runs.services.sandbox)
-        request = CodingStart(request_id=self.action_id, **args.model_dump())
-        # The saved action stays pending in Tsuchi throughout this wait. Recovery
-        # uses the same idempotent submission, never a new continuation run.
-        deadline = monotonic() + args.timeout_seconds + CODING_RECOVERY_SECONDS
-        job = None
-        while True:
-            await self.runs.owned(self.run)
-            if monotonic() >= deadline:
-                return {
-                    "job_id": str(self.action_id),
-                    "status": "unconfirmed",
-                    "error": "Coding status could not be confirmed before the recovery deadline. "
-                    "The job may have changed files. Do not resubmit it automatically.",
-                }
-            try:
-                job = (
-                    await client.start(request)
-                    if job is None
-                    else await client.job(self.action_id)
-                )
-            except ServiceError as error:
-                if error.code != "coding_unconfirmed":
-                    return {"job_id": str(self.action_id), "error": str(error)}
-                # Retrying this ID can only recover its existing submission.
-                # Transport reconnects require no model decision or new action.
-            await self.runs.owned(self.run)
-            if job is not None:
-                try:
-                    created = datetime.fromisoformat(job.created_at)
-                except ValueError as error:
-                    raise ServiceError(
-                        "The computer returned an invalid coding timestamp.", 502
-                    ) from error
-                if created.utcoffset() is None:
-                    raise ServiceError(
-                        "The computer returned an invalid coding timestamp.", 502
-                    )
-                remaining = (
-                    (created - datetime.now(UTC)).total_seconds()
-                    + args.timeout_seconds
-                    + CODING_RECOVERY_SECONDS
-                )
-                deadline = min(deadline, monotonic() + max(0, remaining))
-                if job.status not in {"starting", "running", "stopping"}:
-                    return {
-                        "job_id": str(job.id),
-                        "status": job.status,
-                        "session_id": job.session_id,
-                        "message": job.message,
-                    }
-            await asyncio.sleep(
-                min(CODING_POLL_SECONDS, max(0, deadline - monotonic()))
+            return {"error": "No computer is configured for this agent."}
+        if args.thread_id is None and args.cwd is None:
+            return {"error": "Give a project folder for a new thread, or a thread_id."}
+        # The start is keyed by this action ID, so a replay after a restart returns
+        # the original Codex run instead of starting another.
+        try:
+            started = await CodingClient(self.runs.services.sandbox).start(
+                CodexTask(**args.model_dump(exclude={"message"})),
+                self.action_id,
+                CodexOrigin(
+                    agent_key=self.run.agent_key,
+                    conversation_id=self.run.conversation_id,
+                    run_id=self.run.id,
+                ),
             )
+        except ServiceError as error:
+            return {"error": str(error)}
+        # Tell the user and end this run; the finished Codex run wakes the agent
+        # again in this conversation with its result.
+        await self.send_message(
+            SendMessageArguments(content=args.message, end_run=True)
+        )
+        return started.model_dump(mode="json")
 
     async def send_message(self, args: SendMessageArguments) -> dict:
         message = Message(id=self.action_id, role="assistant", content=args.content)
@@ -671,6 +591,11 @@ class AgentRuns(RunClient):
                     }
                 ),
             )
+        elif run.trigger_event:
+            trigger = RunMessage(
+                role="user",
+                content="Codex thread event: " + run.trigger_event.content,
+            )
         else:
             trigger = RunMessage(
                 role="user",
@@ -757,22 +682,7 @@ class AgentRuns(RunClient):
         run = state.run
         run = await self.owned(run)
         replayed = bool(run.transcript) and run.transcript[-1].role == "assistant"
-        initial = (
-            parse_command(run.initial_command.content) if run.initial_command else None
-        )
-        if (
-            initial is not None
-            and initial.tool == "codex_start"
-            and initial.arguments.get("resume_job_id") is not None
-        ):
-            # An explicit UI continuation is durable work, not a model decision.
-            prefix = run.transcript[:-1] if replayed else run.transcript
-            command = coding_continuation_command(run, initial, prefix)
-            if replayed and parse_command(run.transcript[-1].content) != command:
-                raise ServiceError(
-                    "The saved coding continuation command changed.", 502
-                )
-        elif replayed:
+        if replayed:
             command = parse_command(run.transcript[-1].content)
         else:
             rejections = [

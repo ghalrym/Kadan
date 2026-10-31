@@ -623,6 +623,13 @@ class RunMessage(Model):
     content: str = Field(max_length=1000000)
 
 
+class RunEvent(Model):
+    """An external event that wakes the agent; Kadan owns its content."""
+
+    kind: Literal["codex"]
+    content: str = Field(min_length=1, max_length=20000)
+
+
 class AgentRunState(Model):
     status: Literal["queued", "running", "completed", "failed", "cancelled"] = "queued"
     transcript: list[RunMessage] = Field(default_factory=list, max_length=1000)
@@ -654,18 +661,13 @@ class AgentRun(AgentRunState):
     conversation_id: UUID
     trigger_message_id: UUID | None = None
     trigger_job_id: UUID | None = None
+    trigger_event: RunEvent | None = None
     persona_id: UUID | None = None
     references: list[ReferenceSnapshot] = Field(default_factory=list, max_length=3)
     delivered_message_ids: list[UUID] = Field(default_factory=list)
     version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
-
-    @property
-    def initial_command(self) -> RunMessage | None:
-        if self.transcript and self.transcript[0].role == "assistant":
-            return self.transcript[0]
-        return None
 
 
 class ImageJobState(Model):

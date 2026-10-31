@@ -31,8 +31,8 @@ CONVERSATION_TOOLS: list[StructuredTool] = [
     *history.TOOLS,
 ]
 MEMORY_TOOLS: list[StructuredTool] = memory.TOOLS
+CODING_TOOLS: list[StructuredTool] = coding.START_TOOLS
 PERSONA_TOOLS: list[StructuredTool] = persona.TOOLS
-CODING_TOOLS: list[StructuredTool] = coding.DELEGATION_TOOLS
 COMPUTER_TOOLS: list[StructuredTool] = [
     *coding.TOOLS,
     *browser.TOOLS,

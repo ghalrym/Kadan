@@ -301,6 +301,12 @@ export type CompletionRequest = {
    */
   conversation_id?: string | null
   /**
+   * Max Tokens
+   *
+   * Cap on generated tokens, including reasoning. Omit to allow the remaining context.
+   */
+  max_tokens?: number | null
+  /**
    * Messages
    */
   messages: Array<CompletionMessage | Lfm3Message>
@@ -308,6 +314,12 @@ export type CompletionRequest = {
    * Model
    */
   model?: 'lfm3-1.7b-bf16'
+  /**
+   * Reasoning Tokens
+   *
+   * Reasoning is closed after this many tokens so the reply keeps its share of max_tokens.
+   */
+  reasoning_tokens?: number | null
   /**
    * Reuse Prefix
    *

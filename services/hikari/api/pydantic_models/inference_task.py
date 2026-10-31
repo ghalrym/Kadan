@@ -30,6 +30,8 @@ class ChatTask(TaskInput):
     stream: bool = False
     conversation_id: str | None = None
     reuse_prefix: bool = True
+    max_tokens: int | None = Field(default=None, ge=1, strict=True)
+    reasoning_tokens: int | None = Field(default=None, ge=1, strict=True)
 
     @model_validator(mode="before")
     @classmethod

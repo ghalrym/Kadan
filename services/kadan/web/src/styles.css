@@ -874,18 +874,6 @@ main:focus {
   text-align: center;
 }
 
-.chat-coding {
-  flex-shrink: 0;
-  align-self: center;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: min(760px, calc(100% - 40px));
-  padding: 6px 0;
-  font-size: 12px;
-}
-.chat-coding > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.chat-coding button { flex-shrink: 0; min-height: 44px; }
 .agent-card-activity {
   display: flex;
   flex-direction: column;

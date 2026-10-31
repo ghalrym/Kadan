@@ -1,25 +1,42 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Request
 
 from ...coding_client import CodingClient
-from ...pydantic_models.coding import CodingJob, CodingStatus
+from ...pydantic_models.coding import CodexSetup, CodexStatus, CodexStopped, CodexThread
 
 router = APIRouter(prefix="/api/computer/coding")
 
 
+def client(request: Request) -> CodingClient:
+    return CodingClient(request.app.state.services.sandbox)
+
+
 @router.get("")
-async def coding_status(request: Request) -> CodingStatus:
-    return await CodingClient(request.app.state.services.sandbox).status()
+async def coding_status(request: Request) -> CodexStatus:
+    return await client(request).status()
 
 
-@router.get("/{job_id}")
-async def coding_job(
-    request: Request, job_id: UUID, after: int = Query(0, ge=0)
-) -> CodingJob:
-    return await CodingClient(request.app.state.services.sandbox).job(job_id, after)
+@router.get("/login/status")
+async def codex_login_status(request: Request) -> CodexSetup:
+    return await client(request).login_status()
 
 
-@router.post("/{job_id}/cancel")
-async def cancel_coding(request: Request, job_id: UUID) -> CodingJob:
-    return await CodingClient(request.app.state.services.sandbox).cancel(job_id)
+@router.post("/login")
+async def codex_login(request: Request) -> CodexSetup:
+    return await client(request).login()
+
+
+@router.post("/logout")
+async def codex_logout(request: Request) -> CodexSetup:
+    return await client(request).logout()
+
+
+@router.get("/threads/{thread_id}")
+async def codex_thread(request: Request, thread_id: UUID) -> CodexThread:
+    return await client(request).thread(thread_id)
+
+
+@router.post("/threads/{thread_id}/stop")
+async def stop_codex_thread(request: Request, thread_id: UUID) -> CodexStopped:
+    return await client(request).stop(thread_id)

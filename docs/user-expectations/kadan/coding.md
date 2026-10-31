@@ -1,111 +1,64 @@
 # Coding with Codex
 
-Kadan's text agent can delegate a scoped coding task to Codex in its existing
-computer. Codex works on that computer's files, using GPT-6.1 Sol with high effort.
-The computer, files and credentials are shared with the owner and the agent;
-this feature does not provide hosted account separation. Voice calls keep their
-existing behavior and do not offer coding tools.
+Kadan's text agent can hand coding work to Codex on its computer. Codex uses the
+user's ChatGPT subscription and works on that computer's files with GPT-6.1 Sol at
+high effort. The computer, its files and the Codex sign-in are shared by every agent
+and by the owner. Voice calls do not offer coding tools.
 
-Open **Coding** in the sidebar to inspect setup and recent jobs. Installation and
-sign-in are separate: the computer needs the supported Codex package and credentials
-provisioned by its owner. A ChatGPT browser session or subscription does not sign
-the computer into Codex. The panel explains terminal sign-in; never paste
-credentials into chat. A signed-in status reports local credentials, not verified
-model access, available credit or a successful coding run. Missing packages,
-incompatible versions and unavailable computers remain distinguishable from readiness.
-Missing or incompatible software directs users to the person running Kadan to
-update the computer; it does not ask users to install software through chat.
+## Signing in
 
-Sign-in guidance explains how to open the agent's computer and its terminal.
-Expandable **Codex access and usage** guidance links to Codex sign-in help and
-explains model access, usage limits and possible API-key charges. It does not
-start a login or a paid request. When setup is ready and no jobs exist, Kadan
-suggests a first task that inspects an existing project without editing it.
+Open **Coding** in the sidebar and choose **Sign in with ChatGPT**. Kadan shows a
+sign-in link and a one-time code. Open the link in any browser, sign in and enter
+the code. The Coding tab switches to signed in once ChatGPT confirms. No terminal
+or desktop access is needed. **Sign out** removes the sign-in from the computer.
+**Cancel sign-in** stops a pending sign-in, including while its code is still being prepared. Sign-in and thread history refresh independently: a failure in one must leave the other available, with a visible refresh error. **Refresh** retries failed reads.
 
-Ask the agent to work in a project directory on the computer and describe the
-change and constraints. Kadan accepts one coding job at a time on the shared
-computer. Another submission is rejected while a job is active or cleanup is
-unconfirmed. Kadan derives a durable job ID from the agent's saved action;
-recovering that action returns the saved job rather than starting it again.
-A changed task needs a new submission after the previous job has stopped.
+Signing in confirms the account, not available usage or model access; a run can
+still fail for those reasons. If Codex isn't installed on the computer, the tab says
+so and asks the person running Kadan to update it.
 
-The Coding panel refreshes bounded progress and the final summary while open.
-Messages also shows a compact **Codex on shared computer** status, read from the
-computer's saved jobs rather than assistant messages or Activity counts. It
-distinguishes starting, working, stopping and unconfirmed cleanup from no active
-job. The latest finished job is labelled as earlier evidence with its start time;
-it is not proof that the current chat request used Codex. The computer is shared,
-so this status is not limited to the displayed conversation. **Open Coding** opens
-the existing progress, results and separate stop controls. A failed read marks
-retained job evidence as last known; unavailable status must not imply idle work.
-These updates arrive periodically and can lag changes.
+## How the agent uses Codex
 
-Earlier progress can be omitted, and summaries do not include complete command
-output or diffs. A failed refresh labels retained information as last known;
-reopening or refreshing reads the saved job without restarting it. Closing the
-panel, closing the browser, stopping chat or restarting Kadan's API or runner
-leaves an accepted coding job running in the computer.
+Ask the agent to work on a project folder on the computer; a new project's folder is
+created if it doesn't exist yet. The agent starts Codex in the background and
+replies right away with what Codex is doing, then waits for it rather than doing the
+work itself. When Codex finishes, fails or is stopped, the agent replies again in the
+same conversation with the outcome, without another message from the user. Results
+from a conversation that has since been moved to trash are dropped. The agent can
+also continue an earlier thread with a follow-up, and can check on a thread when
+asked. A thread that is
+already working can't take another follow-up until it finishes or is stopped. If
+Codex isn't signed in, the agent asks the user to sign in from the Coding tab.
 
-The agent waits without repeatedly asking its model for progress, receives the
-completed or failed result and continues the original task without another user
-message. A runner restart reattaches the saved action to its existing job; browser
-reconnects do not create another continuation or move it to the currently displayed
-conversation. Later messages queue behind the waiting task. Closing the browser
-does not suppress its eventual reply.
+## Tracking threads
 
-**Stop response** in Messages cancels the response and suppresses this automatic continuation. It
-does not stop the coding process, undo changes or cause a later completion to
-revive that cancelled response. The user can send a new message after stopping.
-**Stop coding** remains the separate process control. A lost runner assignment,
-unavailable inference or exceeded context/command limit can still prevent a reply
-and must remain visible as failed or stopped response work.
+The Coding tab lists the Codex threads saved on the computer, newest first, with
+each thread's opening request, project folder, last update and whether it is still
+working. That includes threads someone started directly on the computer. Opening a
+thread shows its conversation: requests, Codex's replies and short notes for the
+commands it ran and files it edited. Full command output and diffs are not shown,
+and very long threads show only their latest part. The tab refreshes every few
+seconds while open.
 
-If the computer cannot confirm a result, Kadan retries status recovery without
-inference up to a bounded deadline beyond the coding timeout. It then returns an
-unconfirmed outcome to the agent rather than resubmitting the task or waiting
-indefinitely. The job can have made changes even when its result is unavailable.
+**Stop** appears on a thread that the agent started and that is still working. It
+ends that Codex run; changes it already made to files remain. Chat **Stop response**
+does not stop Codex, and closing the browser or restarting Kadan's API or runner
+leaves Codex running. Restarting the computer ends any running Codex work. Stop is confirmed only
+once Codex and its child processes have ended. If cleanup cannot be confirmed,
+the thread stays marked as working, Kadan reports the uncertainty and blocks new
+coding tasks until the computer restarts. File changes remain and need inspection.
+A restart reports unfinished coding work as failed rather than silently restarting it.
+Repeated delivery or recovery of the same saved start must not launch another task,
+even after its result has been queued for the conversation.
 
-**Stop coding** requests cancellation independently of chat Stop. The panel shows
-stopping until Kadan's supervisor confirms its owned processes have ended.
-Cancellation, timeout and failure leave edits already made on disk. Jobs have a
-deadline of at most one hour; the default is thirty minutes. A successful Codex
-turn confirms execution and cleanup, not that every requested change works.
-Inspect the files and the reported validation before relying on them.
-The project folder is visible beside the job state before the stop control.
-State changes are announced to assistive technology; identifiers remain available
-under Job details.
-
-If the supervisor disappears or cannot confirm cleanup, the job needs attention
-and further coding is blocked. An operator must restart the computer to establish
-that its old processes have ended. A computer restart marks unfinished work as
-interrupted; it never automatically replays the task. The owner should inspect
-partial changes before continuing. A recorded Codex session can be continued with
-a new scoped follow-up in the same directory after cleanup is confirmed. In
-**Coding**, select its job, enter the follow-up and choose **Continue with Codex**.
-Kadan queues that explicit request in Messages, runs it without asking the chat
-model to choose a tool, and posts the recorded outcome with its actual job and
-session identifiers. A failed, rejected or unconfirmed continuation is reported as
-such. This path does not require Hikari conversation inference.
-
-An uncertain submission retains the original follow-up and request identity for
-retry in Coding or Messages. Closing the panel leaves accepted work running;
-retrying the same request does not create another turn. Finish or discard an
-unsent message before submitting a different continuation. Unsubmitted follow-up
-drafts survive closing and reopening the panel in the same browser tab, separately
-for each conversation and job.
-
-Ordinary Messages remain model-directed: an assistant can omit a requested tool
-or make an unsupported claim. Typing a resume request alone does not establish
-that a continuation ran. Use **Continue with Codex** and the recorded job outcome
-for that confirmation. A saved
-session ID does not guarantee that Codex's session files or authentication are
-still available; a failed resume reports failure instead of starting a fresh session.
-
-Job records and Codex sessions live on the computer's persistent home volume,
-separately from Tsuchi. Removing that volume removes their recovery history.
-Progress excludes raw commands, tool output and authentication diagnostics.
-Final summaries redact common credential formats, but generated text can still
-contain private project content. Review it before sharing.
+Threads live in Codex's own history on the computer's persistent home volume.
+Removing that volume removes them. Generated replies can contain private project
+content; review them before sharing.
 
 See [Agent actions](agent-actions.md), [Stopping chat work](stopping-chat-work.md)
 and [security and operator responsibility](../security.md).
+
+## Validation status
+
+The full device-sign-in and coding-cycle trial is pending the project owner's manual integration testing.
+Unit tests do not establish that the complete computer workflow works.

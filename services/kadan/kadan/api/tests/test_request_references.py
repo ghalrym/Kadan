@@ -76,7 +76,6 @@ def test_run_client_sends_selected_versions_separately():
 
     value = SimpleNamespace(
         message_id=run.id,
-        resume_coding_job_id=None,
         attachment_ids=[],
         content="Use my plan",
         persona_id=None,
