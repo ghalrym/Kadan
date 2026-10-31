@@ -6,7 +6,8 @@ Compose project, keeping Hikari and Kadan's usual URLs and saved conversations.
 Workers on one computer share that API's memory scheduler.
 
 These workers provide the fixed language and vision capabilities. They do not
-remove the retained native workers or accept a model license. No model weights ship in the image. Each request loads the pinned
+remove the retained native workers or accept a model license. No model weights
+ship in the image. Each request loads the pinned
 checkpoint into a separate executor; cancellation joins that process before
 releasing memory. Replies are buffered, with no persistent model or prefix cache.
 
@@ -14,9 +15,13 @@ releasing memory. Replies are buffered, with no persistent model or prefix cache
 
 Run from the normal checkout with its existing Compose project and environment.
 The following updates both workers and their callers. Service and model-volume
-names stay the same; text and vision have no model-selection flags.
+names stay the same. Compose defaults the API/worker enable flags below to true;
+Kadan no longer has separate text or vision selection flags.
 
 ```sh
+export HIKARI_ENABLE_LFM3_TEXT=true
+export HIKARI_ENABLE_LFM3_VISION=true
+
 docker compose up -d --build --no-deps \
   hikari-api hikari-frontend kadan-api kadan-runner kadan-frontend \
   hikari-worker-lfm3-text hikari-worker-lfm3-vision
@@ -24,7 +29,8 @@ docker compose up -d --build --no-deps \
 
 This recreates the named services, so apply it between manual trials with the
 existing Tsuchi and other dependencies available. Keep the existing volumes,
-worker token and native workers. Missing workers make the corresponding capability unavailable.
+worker token and native workers. The Hikari flags gate admission and execution;
+disabled or missing workers make the corresponding capability unavailable.
 
 In Hikari Settings, find the Language and Vision models, review the LFM Open
 License and custom-code notice, and explicitly accept each intended download.
@@ -56,7 +62,8 @@ contracts and measured evidence.
 
 ## Disable
 
-Stop only the selected `hikari-worker-lfm3-*` services
-using the same Compose project. Keep downloaded checkpoints and native workers.
+Disable the corresponding Hikari enable flag and reapply the affected API and
+worker configuration. Stop only the selected `hikari-worker-lfm3-*` services using
+the same Compose project. Keep downloaded checkpoints and native workers.
 That capability remains unavailable until its worker returns. Workers reconnect
 after transport loss, but unconfirmed work is not replayed.
