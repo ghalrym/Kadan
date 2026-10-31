@@ -1,0 +1,7 @@
+# Optional developer diagnostics. Audio calling is part of normal compose.yaml.
+services:
+  hikari-api:
+    environment:
+      HIKARI_LFM3_AUDIO_SINGLE_TURN: ${HIKARI_LFM3_AUDIO_SINGLE_TURN:-false}
+      HIKARI_LFM3_AUDIO_STREAM_PROBE: ${HIKARI_LFM3_AUDIO_STREAM_PROBE:-false}
+      HIKARI_LFM3_AUDIO_SENTENCE_TTS: ${HIKARI_LFM3_AUDIO_SENTENCE_TTS:-false}

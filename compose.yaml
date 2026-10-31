@@ -128,6 +128,15 @@ services:
     volumes:
       - lfm3_vision_models:/var/lib/kadan/models
 
+  # Calls use the same pinned audio checkpoint and volume as the former overlay.
+  hikari-worker-lfm3-audio:
+    <<: *lfm3_worker
+    environment:
+      <<: *lfm3_environment
+      HIKARI_EXPERIMENTAL_BACKEND: experimental_worker.audio
+    volumes:
+      - lfm3_audio_model_data:/var/lib/kadan/models
+
   # Language worker: the tier's mixture-of-experts model for chat.
   hikari-worker-llm:
     build:
@@ -408,8 +417,6 @@ services:
       KADAN_HIKARI_URL: http://hikari-api:8000
       KADAN_TSUCHI_BROWSER_URL: http://127.0.0.1:${TSUCHI_PORT:-8620}
       KADAN_HIKARI_BROWSER_URL: http://127.0.0.1:${HIKARI_FRONTEND_PORT:-8088}
-      KADAN_EXPERIMENTAL_LFM3_TEXT: ${KADAN_EXPERIMENTAL_LFM3_TEXT:-true}
-      KADAN_EXPERIMENTAL_LFM3_VISION: ${KADAN_EXPERIMENTAL_LFM3_VISION:-true}
       KADAN_SANDBOX_URL: http://kadan-sandbox:8080
       KADAN_SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:-insecure-api-key}
     depends_on:
@@ -443,8 +450,6 @@ services:
       KADAN_TSUCHI_URL: http://tsuchi-api:8000
       KADAN_HIKARI_URL: http://hikari-api:8000
       KADAN_RUNNER_ID: ${KADAN_RUNNER_ID:-runner-1}
-      KADAN_EXPERIMENTAL_LFM3_TEXT: ${KADAN_EXPERIMENTAL_LFM3_TEXT:-true}
-      KADAN_EXPERIMENTAL_LFM3_VISION: ${KADAN_EXPERIMENTAL_LFM3_VISION:-true}
       KADAN_RUNNER_CAPACITY: ${KADAN_RUNNER_CAPACITY:-5}
       KADAN_SANDBOX_URL: http://kadan-sandbox:8080
       KADAN_SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:-insecure-api-key}
@@ -515,6 +520,7 @@ services:
 volumes:
   lfm3_text_models:
   lfm3_vision_models:
+  lfm3_audio_model_data:
   sandbox_home:
   model_data:
     name: ${HIKARI_MODEL_VOLUME:-${COMPOSE_PROJECT_NAME}_model_data}

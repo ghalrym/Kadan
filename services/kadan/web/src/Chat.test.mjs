@@ -20,9 +20,15 @@ const run = (id, status, error = null) => ({
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
 // Exercise Chat's poll, send and Stop handlers with in-memory hooks and API boundaries.
-async function chat(initialRuns, initialConversation = chain) {
-  const slots = [], effects = [], timers = [], requests = [];
+async function chat(initialRuns, initialConversation = chain, storedPending = null, callOptions = {}) {
+  const slots = [], effects = [], timers = [], requests = [], callStarts = [];
+  let callDisabled;
   const storage = new Map();
+  if (storedPending) storage.set(outbox.chatStorageKeys("guide", initialConversation.id).pending, JSON.stringify(storedPending));
+  const attachments = { ready: true, entries: [], start() {}, stop() {},
+    ids() { return this.entries.map(item => item.id); },
+    removeMany(ids) { this.entries = this.entries.filter(item => !ids.includes(item.id)); },
+  };
   let cursor = 0, tree, snapshotRuns = initialRuns, sendResponse, replacementResponse;
   let selectedChain = initialConversation;
   const react = {
@@ -58,17 +64,23 @@ async function chat(initialRuns, initialConversation = chain) {
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "lucide-react": {},
     "./Markdown": { default: "Markdown" },
-    "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true }) },
+    "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true, ...callOptions.ready }) },
     "./Pet": { default: "Pet", useMood: () => ["idle", () => {}] },
     "./AgentCard": { default: "AgentCard" },
     "./ComputerViewer": { default: "ComputerViewer" },
     "./Activity": { default: "Activity" },
-    "./VoiceCallControl": { useVoiceCall: () => ({ active: false }) },
+    "./CodingIndicator": { default: "CodingIndicator" },
+    "./VoiceCallControl": { useVoiceCall: (_agent, _persona, disabled) => {
+      callDisabled = disabled;
+      return { active: false, unavailable: null, ...callOptions.voiceCall, start: (...args) => callStarts.push(args) };
+    } },
     "./PetContext": { useAgentPet: () => null },
     "./presence": { activeLabel: () => "Not active yet" },
     "./agentRuns": agentRuns,
     "./outbox": outbox,
+    "./attachments": { ChatAttachments: class { constructor() { return attachments; } } },
     "./uuid": { randomUuid: () => "sent-message" },
+    "./SaveChatResult": { default: "SaveChatResult" },
     "./api": {
       agentPath: key => `/agents/${key}`,
       async api(path, body) {
@@ -90,6 +102,7 @@ async function chat(initialRuns, initialConversation = chain) {
   const exports = {};
   runInNewContext(source, {
     exports,
+    ResizeObserver: class { observe() {} disconnect() {} },
     require: name => { assert.ok(name in modules, name); return modules[name]; },
     sessionStorage: {
       getItem: key => storage.get(key) ?? null,
@@ -116,7 +129,16 @@ async function chat(initialRuns, initialConversation = chain) {
   await settle();
   render();
   return {
-    render, requests,
+    render, requests, storage, attachments, callStarts,
+    callDisabled: () => callDisabled,
+    card() {
+      elements().find(node => node.props?.["aria-label"] === "Open Guide’s card").props.onClick();
+      render();
+      return elements().find(node => node.type === "AgentCard").props;
+    },
+    attachmentIds: () => elements().filter(node => typeof node.type === "function" && node.type.name === "Attachment").map(node => node.props.id),
+    savedResults: () => elements().filter(node => node.type === "SaveChatResult").map(node => node.props),
+    retry: () => elements().find(node => node.type === "button" && node.props.children === "Retry").props.onClick(),
     notices: () => elements().filter(node => node.props?.className === "notice").map(node => node.props.children),
     alerts: () => elements().filter(node => node.props?.role === "alert").map(node => node.props.children[0]),
     receipts: () => elements().filter(node => node.props?.className === "receipt").map(node => node.props.children),
@@ -131,7 +153,7 @@ async function chat(initialRuns, initialConversation = chain) {
     },
     holdSend() {
       let resolve;
-      sendResponse = new Promise(done => { resolve = done; });
+      sendResponse = new Promise((done, fail) => { resolve = done; resolve.reject = fail; });
       return resolve;
     },
     replaceConversation(value) {
@@ -145,30 +167,30 @@ async function chat(initialRuns, initialConversation = chain) {
 }
 
 for (const status of ["failed", "cancelled"]) {
-  test(`${status} outcomes remain visible behind newer queued, running and successful responses`, async () => {
+  test(`${status} outcomes move to Activity behind newer queued, running and successful responses`, async () => {
     const previous = run("previous", status, "Context limit reached");
     const view = await chat([previous]);
     const notice = status === "failed" ? "Response failed: Context limit reached" : "Response stopped";
     assert.deepEqual(view.notices(), [notice]);
     for (const next of ["queued", "running", "completed"]) {
       await view.poll([previous, run("newer", next)]);
-      const earlier = status === "failed" ? "Earlier response failed: Context limit reached" : "Earlier response stopped";
-      assert.ok(view.notices().includes(earlier), `${status} remains visible during ${next}`);
+      assert.ok(!view.notices().some(text => /failed|stopped/.test(text)));
+      assert.ok(view.activity().runs.includes(previous));
     }
   });
 }
 
 for (const status of ["failed", "cancelled"]) {
-  test(`sending another message does not temporarily hide a ${status} response`, async () => {
+  test(`sending another message retains a ${status} response in Activity`, async () => {
     const view = await chat([run("previous", status, "Command limit reached")]);
-    const notice = status === "failed" ? "Earlier response failed: Command limit reached" : "Earlier response stopped";
     const finishSend = view.holdSend();
     view.composer().onChange("Try another question");
     view.render();
     view.composer().onSend(true);
     view.render();
     assert.equal(view.composer().sending, true);
-    assert.ok(view.notices().includes(notice));
+    assert.ok(!view.notices().some(text => /failed|stopped/.test(text)));
+    assert.equal(view.activity().runs[0].status, status);
     finishSend({
       run: run("newer", "queued"),
       conversation: { ...chain, version: 2, messages: [message("sent-message", "user", "Try another question")] },
@@ -176,30 +198,31 @@ for (const status of ["failed", "cancelled"]) {
     await settle();
     view.render();
     assert.equal(view.composer().sending, false);
-    assert.ok(view.notices().includes(notice));
+    assert.ok(!view.notices().some(text => /failed|stopped/.test(text)));
+    assert.equal(view.activity().runs[0].status, status);
   });
 }
 
-test("only the latest failure and stop are shown, with the current outcome distinguished", async () => {
+test("only the current outcome is repeated beside Messages; all history stays in Activity", async () => {
   const view = await chat([
     run("old-failure", "failed", "Old error"), run("old-stop", "cancelled"),
     run("latest-failure", "failed", "Current error"), run("latest-stop", "cancelled"),
   ]);
-  assert.deepEqual(view.notices(), ["Earlier response failed: Current error", "Response stopped"]);
+  assert.deepEqual(view.notices(), ["Response stopped"]);
   await view.poll([
     run("latest-stop", "cancelled"), run("latest-failure", "failed"),
   ]);
-  assert.deepEqual(view.notices(), ["Response failed: Please try again.", "Earlier response stopped"]);
+  assert.deepEqual(view.notices(), ["Response failed: Please try again."]);
 });
 
-test("Stop updates queued and running responses without hiding the earlier failure", async () => {
+test("Stop updates queued and running responses while retaining earlier failures in Activity", async () => {
   const view = await chat([
     run("failed", "failed", "Context limit reached"), run("running", "running"), run("queued", "queued"),
   ]);
   view.composer().onStop();
   await settle();
   view.render();
-  assert.deepEqual(view.notices(), ["Earlier response failed: Context limit reached", "Response stopped"]);
+  assert.deepEqual(view.notices(), ["Response stopped"]);
   assert.equal(view.composer().onStop, undefined);
   assert.deepEqual(view.requests.filter(item => item.path.endsWith("/cancel")).map(item => item.path), [
     "/agents/guide/runs/running/cancel", "/agents/guide/runs/queued/cancel",
@@ -215,7 +238,7 @@ test("active and successful histories show no failure or stopped outcome", async
 
 test("replacing the conversation hides its old outcomes while the new poll waits or fails", async () => {
   const view = await chat([run("failed", "failed", "Old error"), run("stopped", "cancelled")]);
-  assert.equal(view.notices().length, 2);
+  assert.equal(view.notices().length, 1);
   const failPoll = view.replaceConversation({ ...chain, id: "replacement" });
   assert.equal(view.requests.at(-1).path, "/agents/guide/conversations/replacement/runs");
   assert.deepEqual(view.notices(), []);
@@ -279,4 +302,170 @@ test("confirmed messages are Delivered before and after a normal reply", async (
 test("assistant-only history has no user delivery receipt", async () => {
   const view = await chat([], { ...chain, messages: [message("reply", "assistant", "Hello")] });
   assert.deepEqual(view.receipts(), []);
+});
+
+test("Messages retries a recovered explicit coding continuation without turning it into model-directed chat", async () => {
+  const pending = { id: "continuation-request", content: "Check the fix", generate: true, persona: "", resume_coding_job_id: "recorded-job" };
+  const view = await chat([], chain, pending);
+  const finishSend = view.holdSend();
+  view.retry();
+  const request = view.requests.find(row => row.body);
+  assert.equal(request.path, "/agents/guide/conversations/conversation/runs");
+  assert.equal(request.body.message_id, pending.id);
+  assert.equal(request.body.resume_coding_job_id, pending.resume_coding_job_id);
+  assert.equal(request.body.content, pending.content);
+  finishSend({ run: run(pending.id, "queued"), conversation: { ...chain, version: 2, messages: [message(pending.id, "user", pending.content)] } });
+  await settle();
+  view.render();
+  assert.equal(view.requests.filter(row => row.body).length, 1);
+});
+
+test("an already-mounted Messages poll preserves a continuation queued by Coding until its message is confirmed", async () => {
+  const view = await chat([]);
+  const pending = { id: "coding-request", content: "Check the fix", generate: true, persona: "", resume_coding_job_id: "recorded-job" };
+  const key = outbox.chatStorageKeys("guide", chain.id).pending;
+  // Coding queues into the same session outbox while Chat remains mounted.
+  view.storage.set(key, JSON.stringify(pending));
+  await view.poll([]);
+  assert.deepEqual(JSON.parse(view.storage.get(key)), pending);
+  assert.equal(view.requests.filter(row => row.body).length, 0);
+  const finishSend = view.holdSend();
+  view.retry();
+  assert.equal(view.requests.at(-1).body.message_id, pending.id);
+  assert.equal(view.requests.at(-1).body.resume_coding_job_id, pending.resume_coding_job_id);
+  const accepted = { ...chain, version: 2, messages: [message(pending.id, "user", pending.content)] };
+  finishSend({ run: run(pending.id, "queued"), conversation: accepted });
+  await settle(); view.render();
+  assert.equal(view.storage.has(key), false);
+  await view.poll([], accepted);
+  assert.equal(view.storage.has(key), false);
+  assert.equal(view.requests.filter(row => row.body).length, 1);
+});
+
+test("a stale mounted Messages sender cannot replace a continuation from Coding", async () => {
+  const view = await chat([]);
+  const pending = { id: "coding-request", content: "Check only", generate: true, persona: "", resume_coding_job_id: "recorded-job" };
+  const key = outbox.chatStorageKeys("guide", chain.id).pending;
+  view.storage.set(key, JSON.stringify(pending));
+  view.composer().onChange("A different message"); view.render();
+  view.composer().onSend(true); await settle(); view.render();
+  assert.deepEqual(JSON.parse(view.storage.get(key)), pending);
+  assert.equal(view.requests.filter(row => row.body).length, 0);
+});
+
+
+test("note submission snapshots ordered attachments separately from upload confirmation", async () => {
+  const view = await chat([]);
+  view.attachments.entries = [{ id: "file-b" }, { id: "file-a" }];
+  const finish = view.holdSend();
+  view.composer().onChange("Keep these files");
+  view.render();
+  view.composer().onSend(false);
+  view.render();
+  const request = view.requests.find(request => request.body);
+  assert.equal(request.path, "/agents/guide/conversations/conversation/notes");
+  assert.deepEqual(Array.from(request.body.attachment_ids), ["file-b", "file-a"]);
+  assert.deepEqual(view.attachmentIds(), ["file-b", "file-a"]);
+  const key = outbox.chatStorageKeys("guide", chain.id).pending;
+  assert.deepEqual(JSON.parse(view.storage.get(key)).attachment_ids, ["file-b", "file-a"]);
+  assert.deepEqual(view.attachments.entries, []);
+  finish({ ...chain, version: 2, messages: [message("sent-message", "user", "Keep these files")] });
+  await settle();
+  view.render();
+  assert.equal(view.storage.has(key), false);
+});
+
+test("failed run retry keeps original attachments while newer uploads remain unresolved", async () => {
+  const view = await chat([]);
+  view.attachments.entries = [{ id: "file-b" }, { id: "file-a" }];
+  const fail = view.holdSend();
+  view.composer().onChange("Read these files");
+  view.render();
+  view.composer().onSend(true);
+  const original = view.requests.find(request => request.body).body;
+  assert.deepEqual(Array.from(original.attachment_ids), ["file-b", "file-a"]);
+  fail.reject(new Error("Lost send response"));
+  await settle();
+  view.attachments.entries = [{ id: "new-file" }];
+  view.attachments.ready = false;
+  view.render();
+  view.composer().onChange("New draft");
+  view.render();
+  const finish = view.holdSend();
+  view.retry();
+  const retry = view.requests.filter(request => request.body).at(-1).body;
+  assert.deepEqual(retry, original);
+  assert.deepEqual(view.attachments.entries, [{ id: "new-file" }]);
+  view.render();
+  assert.equal(view.composer().value, "New draft");
+  finish({ run: run("queued", "queued"), conversation: { ...chain, version: 2, messages: [message("sent-message", "user", "Read these files")] } });
+  await settle();
+});
+
+test("new sends with unresolved attachments cannot submit", async () => {
+  const view = await chat([]);
+  view.attachments.ready = false;
+  view.composer().onChange("Wait for upload");
+  view.render();
+  view.composer().onSend(false);
+  view.render();
+  assert.equal(view.requests.filter(request => request.body).length, 0);
+  assert.ok(view.alerts().some(text => /Finish uploading/.test(text)));
+});
+
+test("reloaded retry preserves attachments and explicit Codex continuation independently of the draft", async () => {
+  for (const attachment_ids of [undefined, ["saved-b", "saved-a"]]) {
+    const pending = { id: "earlier", content: "Continue", generate: true, persona: "original", resume_coding_job_id: "coding-job", ...(attachment_ids && { attachment_ids }) };
+    const view = await chat([], chain, pending);
+    view.attachments.entries = [{ id: "draft-file" }];
+    const finish = view.holdSend();
+    view.retry();
+    const request = view.requests.find(request => request.body).body;
+    assert.equal(request.message_id, "earlier");
+    assert.equal(request.resume_coding_job_id, "coding-job");
+    assert.equal(request.persona_id, "original");
+    assert.deepEqual(Array.from(request.attachment_ids), attachment_ids ?? []);
+    assert.deepEqual(view.attachments.entries, [{ id: "draft-file" }]);
+    finish({ run: run("queued", "queued"), conversation: { ...chain, version: 2, messages: [message("earlier", "user", "Continue")] } });
+    await settle();
+  }
+});
+
+test("only saved assistant replies with text offer saving in the current agent and conversation", async () => {
+  const reply = message("reply", "assistant", "Useful reply");
+  const view = await chat([], { ...chain, messages: [
+    message("user", "user", "Question"), reply,
+    message("empty", "assistant", " "), message("tool", "tool", "Tool result"),
+  ] });
+  const controls = view.savedResults();
+  assert.equal(controls.length, 1);
+  assert.equal(controls[0].agentKey, "guide");
+  assert.equal(controls[0].conversationId, chain.id);
+  assert.equal(controls[0].message, reply);
+});
+
+
+test("normal Call remains available when text language is unavailable", async () => {
+  const view = await chat([], chain, null, { ready: { storage: true, chat: false } });
+  const card = view.card();
+  assert.equal(card.callDisabled, false);
+  assert.equal(view.callDisabled(), false);
+  assert.equal(card.callTitle, "Start a voice call");
+  card.onCall();
+  assert.deepEqual(view.callStarts, [[]]);
+});
+
+test("Call needs Tsuchi for persona instructions", async () => {
+  const view = await chat([], chain, null, { ready: { storage: false, chat: false } });
+  const card = view.card();
+  assert.equal(card.callDisabled, true);
+  assert.equal(view.callDisabled(), true);
+  assert.match(card.callTitle, /storage.*persona/);
+});
+
+test("Call reports missing browser support before starting", async () => {
+  const view = await chat([], chain, null, { voiceCall: { unavailable: "Calls require HTTPS or localhost." } });
+  const card = view.card();
+  assert.equal(card.callDisabled, true);
+  assert.equal(card.callTitle, "Calls require HTTPS or localhost.");
 });

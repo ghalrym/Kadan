@@ -68,24 +68,13 @@ void prepare_input(
     ModelStore& store,
     const std::atomic_bool& cancel
 ) {
-    const auto& entry = store.entry(input.model);
     preparation_check(
-        !entry.license_notice || input.license_acknowledged,
+        input.license_acknowledged,
         "Read the model license notice and explicitly continue before downloading",
         422
     );
     request.model = input.model;
     request.configuration.checkpoint = store.acquire(input.model, cancel);
-}
-
-void prepare_input(
-    TierSelectionRequest& input,
-    InferenceRequest& request,
-    ModelStore& store,
-    const std::atomic_bool&
-) {
-    store.select_tier(input.tier);
-    request.model = store.selected();
 }
 
 void prepare_input(
@@ -96,16 +85,6 @@ void prepare_input(
 ) {
     request.model = input.model;
     store.set_context(input.model, input.limit ? Json(*input.limit) : Json(nullptr));
-}
-
-void prepare_input(
-    WhisperSelectionRequest& input,
-    InferenceRequest& request,
-    ModelStore& store,
-    const std::atomic_bool&
-) {
-    request.model = input.model;
-    store.select_whisper(input.model);
 }
 
 void prepare_input(

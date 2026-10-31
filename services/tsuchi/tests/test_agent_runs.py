@@ -1,4 +1,5 @@
 from datetime import timedelta
+import json
 from uuid import uuid4, uuid5
 
 import pytest
@@ -6,6 +7,7 @@ from pydantic import ValidationError
 from tsuchi.config import StorageError
 from tsuchi.models import (
     AgentInput,
+    AgentRun,
     AgentRunState,
     Asset,
     ConversationContent,
@@ -17,6 +19,7 @@ from tsuchi.models import (
     utc_now,
 )
 from tsuchi.repository import Repository
+from pre_seed_run_reader import AgentRun as OldAgentRun
 
 
 @pytest.fixture
@@ -935,3 +938,239 @@ def test_stored_image_jobs_default_to_upload_not_started(repository):
     stored = job.model_dump_json(exclude={"upload_status"})
     assert ImageJob.model_validate_json(stored) == job
     assert job.upload_status == "not_started"
+
+
+def initial_coding_command(**changes):
+    arguments = {
+        "prompt": "Rerun the existing unit tests without editing files.",
+        "cwd": "/home/gem/project",
+        "resume_job_id": "00000000-0000-4000-8000-000000000001",
+        "timeout_seconds": 60,
+        **changes,
+    }
+    return RunMessage(
+        role="assistant",
+        content=json.dumps({"tool": "codex_start", "arguments": arguments}),
+    )
+
+
+def seeded_run(repository):
+    resource = conversation(repository)
+    user = message(content="Continue with Codex: rerun the tests")
+    command = initial_coding_command()
+    run = repository.create_run(
+        "alpha", resource.id, user, resource.version, initial_command=command
+    )
+    return resource, user, command, run
+
+
+def test_initial_command_is_atomic_durable_and_part_of_retry_identity(repository):
+    resource, user, command, run = seeded_run(repository)
+    assert repository.active_runs() == [run]
+    assert run.transcript == [command]
+    assert repository.get_resource("alpha", resource.id).messages == [user]
+    # Reopen storage after losing the enqueue response. The same request must recover.
+    restarted = Repository(repository.database_path.parent)
+    recovered = restarted.create_run(
+        "alpha", resource.id, user, resource.version, initial_command=command
+    )
+    assert recovered == run
+    owned = claim(restarted, recovered)
+    result = RunMessage(role="user", content='Tool result: {"status":"completed"}')
+    advanced = restarted.update_run(
+        "alpha",
+        owned.id,
+        run_state(owned, transcript=[command, result]),
+        owned.version,
+        owned.owner_id,
+    )
+    assert (
+        restarted.create_run(
+            "alpha", resource.id, user, resource.version, initial_command=command
+        )
+        == advanced
+    )
+    for changed in [
+        None,
+        initial_coding_command(prompt="Different task"),
+        initial_coding_command(resume_job_id=str(uuid4())),
+        initial_coding_command(cwd="/another/project"),
+        initial_coding_command(timeout_seconds=120),
+    ]:
+        with pytest.raises(StorageError, match="already in use"):
+            restarted.create_run(
+                "alpha", resource.id, user, resource.version, initial_command=changed
+            )
+    assert len(restarted.get_resource("alpha", resource.id).messages) == 1
+
+
+@pytest.mark.parametrize("boundary", ["before_run_save", "after_run_save"])
+def test_enqueue_failure_rolls_back_message_revision_and_seed(
+    repository, monkeypatch, boundary
+):
+    resource = conversation(repository)
+    user = message()
+    command = initial_coding_command()
+    original = repository._save_run
+
+    def crash(db, run):
+        if boundary == "after_run_save":
+            original(db, run)
+        raise RuntimeError("Simulated process failure before transaction commit")
+
+    monkeypatch.setattr(repository, "_save_run", crash)
+    with pytest.raises(RuntimeError):
+        repository.create_run(
+            "alpha", resource.id, user, resource.version, initial_command=command
+        )
+    assert repository.get_resource("alpha", resource.id) == resource
+    assert len(repository.versions("alpha", resource.id)) == 1
+    assert repository.active_runs() == []
+    restarted = Repository(repository.database_path.parent)
+    run = restarted.create_run(
+        "alpha", resource.id, user, resource.version, initial_command=command
+    )
+    assert run.transcript == [command]
+    assert len(restarted.get_resource("alpha", resource.id).messages) == 1
+
+
+@pytest.mark.parametrize("phase", ["queued", "owned", "expired"])
+@pytest.mark.parametrize("change", ["remove", "replace", "prepend"])
+def test_initial_checkpoint_cannot_be_changed_on_first_claim_update_or_recovery(
+    repository, phase, change
+):
+    _, _, command, run = seeded_run(repository)
+    if phase == "queued":
+        owner = uuid4()
+        repository.register_runner("test", owner)
+        repository.assign_runner("test", owner)
+    else:
+        run = claim(repository, run)
+        owner = run.owner_id
+        if phase == "expired":
+            run = expire_run(repository, run)
+    changed = {
+        "remove": [],
+        "replace": [initial_coding_command(prompt="Different")],
+        "prepend": [RunMessage(role="system", content="New intent"), command],
+    }[change]
+    with pytest.raises(StorageError, match="immutable"):
+        repository.update_run(
+            "alpha",
+            run.id,
+            run_state(
+                run,
+                status="running",
+                owner_id=owner,
+                lease_expires_at=utc_now() + timedelta(seconds=60),
+                transcript=changed,
+            ),
+            run.version,
+            owner,
+        )
+    assert repository.get_run("alpha", run.id) == run
+
+
+def test_claiming_the_same_seed_twice_is_fenced_by_version(repository):
+    _, _, _, run = seeded_run(repository)
+    owned = claim(repository, run)
+    with pytest.raises(StorageError, match="changed"):
+        repository.update_run(
+            "alpha", run.id, run_state(owned), run.version, owned.owner_id
+        )
+    assert repository.get_run("alpha", run.id) == owned
+
+
+def test_non_assistant_initial_checkpoint_does_not_enqueue(repository):
+    resource = conversation(repository)
+    with pytest.raises(StorageError, match="assistant checkpoint"):
+        repository.create_run(
+            "alpha",
+            resource.id,
+            message(),
+            resource.version,
+            initial_command=RunMessage(role="user", content="Run code"),
+        )
+    assert repository.active_runs() == []
+    assert repository.get_resource("alpha", resource.id) == resource
+
+
+def test_ordinary_run_retry_cannot_add_an_initial_command(repository):
+    resource = conversation(repository)
+    user = message()
+    run = repository.create_run("alpha", resource.id, user, resource.version)
+    with pytest.raises(StorageError, match="already in use"):
+        repository.create_run(
+            "alpha",
+            resource.id,
+            user,
+            resource.version,
+            initial_command=initial_coding_command(),
+        )
+    assert repository.get_run("alpha", run.id).transcript == []
+
+
+def test_seeded_run_records_remain_readable_by_frozen_old_strict_reader(repository):
+    _, _, command, run = seeded_run(repository)
+
+    def check(record):
+        with repository.connect() as db:
+            raw = db.execute(
+                "SELECT data FROM agent_runs WHERE id = ?", (str(record.id),)
+            ).fetchone()[0]
+        old = OldAgentRun.model_validate_json(raw)
+        assert old.model_dump(mode="json") == json.loads(raw)
+        assert AgentRun.model_validate_json(old.model_dump_json()) == record
+        assert "initial_command" not in json.loads(raw)
+        assert "coding_task" not in json.loads(raw)
+        return old
+
+    check(run)
+    run = claim(repository, run)
+    check(run)
+    run = repository.update_run(
+        "alpha",
+        run.id,
+        run_state(
+            run,
+            transcript=[
+                command,
+                RunMessage(role="user", content='Tool result: {"status":"completed"}'),
+            ],
+        ),
+        run.version,
+        run.owner_id,
+    )
+    check(run)
+    reply = message("assistant", "Codex completed the continuation").model_copy(
+        update={"id": uuid5(run.id, "delivery")}
+    )
+    repository.deliver_run_message("alpha", run.id, run.owner_id, reply)
+    run = repository.get_run("alpha", run.id)
+    assert check(run).delivered_message_ids == [reply.id]
+    run = repository.update_run(
+        "alpha",
+        run.id,
+        run_state(run, status="completed", owner_id=None, lease_expires_at=None),
+        run.version,
+        run.owner_id,
+    )
+    check(run)
+    # Compatibility also covers newly written ordinary records, with no null field added.
+    check(enqueue(repository))
+
+
+def test_cancelling_before_claim_preserves_seed_and_never_reactivates(repository):
+    _, user, command, run = seeded_run(repository)
+    cancelled = repository.cancel_run("alpha", run.id)
+    assert cancelled.status == "cancelled" and cancelled.transcript == [command]
+    resource = repository.get_resource("alpha", run.conversation_id)
+    assert (
+        repository.create_run(
+            "alpha", resource.id, user, resource.version, initial_command=command
+        )
+        == cancelled
+    )
+    assert repository.active_runs() == []
+    with pytest.raises(StorageError):
+        claim(repository, cancelled)

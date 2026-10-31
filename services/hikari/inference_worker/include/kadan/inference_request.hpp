@@ -142,17 +142,9 @@ struct DownloadRequest {
     bool license_acknowledged = false;
 };
 
-struct TierSelectionRequest {
-    std::string tier;
-};
-
 struct ContextRequest {
     std::string model;
     std::optional<std::size_t> limit;
-};
-
-struct WhisperSelectionRequest {
-    std::string model;
 };
 
 struct WhisperFormattingRequest {
@@ -168,9 +160,7 @@ using TaskInput = std::variant<
     TranscriptionFormattingRequest,
     VideoRequest,
     DownloadRequest,
-    TierSelectionRequest,
     ContextRequest,
-    WhisperSelectionRequest,
     WhisperFormattingRequest>;
 
 struct EngineConfiguration {

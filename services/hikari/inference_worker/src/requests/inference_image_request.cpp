@@ -86,7 +86,6 @@ void prepare_input(
             }
         }
     }
-    // Every tier generates images with Turbo, so no tier choice is needed.
     request.model = input.model.value_or("qwen-image-2.1-turbo");
     if (request.model != "qwen-image-2.1-turbo")
         throw RequestError("Unsupported image model", 422);
@@ -108,7 +107,7 @@ void prepare_input(
         } else
             throw RequestError("Unsupported image aspect", 422);
     }
-    request.configuration.checkpoint = store.acquire(request.model, cancel);
+    request.configuration.checkpoint = store.require_local(request.model, cancel);
     if (!input.seed)
         input.seed = std::random_device{}();
 }

@@ -1,4 +1,4 @@
-// The speech synthesis worker: the tier's text-to-speech model.
+// The speech synthesis worker: Qwen CustomVoice.
 #include "kadan/worker_runtime.hpp"
 
 int main() {

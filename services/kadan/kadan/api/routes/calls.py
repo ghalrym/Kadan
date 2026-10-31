@@ -47,7 +47,12 @@ async def voice_call(key: AgentKey, socket: WebSocket):
                 url, open_timeout=5, max_size=6 * 1024**2, proxy=None
             )
             await upstream.send(
-                json.dumps({"type": "start", "instruction": instruction})
+                json.dumps(
+                    {
+                        "type": "start",
+                        "instruction": instruction,
+                    }
+                )
             )
         except (
             OSError,

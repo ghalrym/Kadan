@@ -12,8 +12,8 @@ from .config import ServiceError, Settings
 from .routes import agents, calls, computer, health, runners, status, transcriptions
 from .routes.agents import assets, chain, memories, pets, resources, workspace
 from .routes.agents.assets import content
-from .routes.agents.conversations import notes, runs
-from .routes.computer import screenshot, vnc
+from .routes.agents.conversations import notes, results, runs
+from .routes.computer import coding, screenshot, vnc
 from .services import LocalServices
 
 
@@ -58,8 +58,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         assets.router,
         content.router,
         notes.router,
+        results.router,
         runs.router,
         computer.router,
+        coding.router,
         screenshot.router,
         vnc.router,
     ):

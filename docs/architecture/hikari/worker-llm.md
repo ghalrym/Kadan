@@ -1,6 +1,6 @@
 # Language worker (`llm`)
 
-Runs the hardware tier's language model for chat. It exists to serve
+Retains the native engine for explicit internal checkpoint requests. Public chat uses the separate fixed LFM3 worker. This engine serves
 mixture-of-experts checkpoints larger than the GPU by tiering routed experts
 across VRAM, RAM and disk (the Strata/FreeToken approach).
 
@@ -18,13 +18,11 @@ across VRAM, RAM and disk (the Strata/FreeToken approach).
 
 ## Serves
 
-- `/v1/chat/completions` (JSON and streaming).
-- Model lifecycle `load` and `unload`. A load may carry its own `context_limit`.
+- Internal explicitly named native language requests. A native load may carry its own `context_limit`; public lifecycle controls belong to LFM.
 
 ## Engine
 
-- One pinned GGUF mixture-of-experts checkpoint per hardware tier. Dense
-  language models are never used.
+- Pinned GGUF mixture-of-experts checkpoints. The catalog retains their metadata without hardware profiles or saved selection; native language requests must name a checkpoint.
 - Non-expert weights and context state stay pinned in VRAM. Only routed experts
   move between VRAM, RAM and disk.
 - Routed experts held in RAM run on the CPU alongside the GPU batch. They are

@@ -10,20 +10,13 @@ void prepare_input(
     const std::atomic_bool& cancel
 ) {
     if (!input.duration_supplied || !input.resolution_supplied) {
-        const auto tier = store.tier();
-        preparation_check(
-            tier.has_value(),
-            "Choose a hardware tier in Settings before submitting a video.",
-            422
-        );
-        const auto& defaults = store.hardware_tier(*tier).video_defaults;
         if (!input.duration_supplied)
-            input.duration = defaults.duration;
+            input.duration = 5;
         if (!input.resolution_supplied)
-            input.short_edge = defaults.resolution == "480p" ? 480 : 768;
+            input.short_edge = 480;
     }
     request.model = input.model;
-    const auto checkpoint = store.acquire(request.model, cancel);
+    const auto checkpoint = store.require_local(request.model, cancel);
     request.configuration.checkpoint = checkpoint;
     input.paths = {
         (checkpoint / "FL2VA/tokenizer/tokenizer.json").string(),

@@ -4,7 +4,7 @@ Hikari manages model loading and memory allocations across inference workers so 
 
 ## Mixture-of-experts language models
 
-Every hardware tier uses a mixture-of-experts (MoE) language checkpoint. Hikari is designed to run checkpoints larger than GPU memory by keeping routed experts across GPU memory (VRAM), system memory (RAM) and disk. The complete checkpoint does not have to fit in VRAM.
+Public conversations use the fixed separate LFM3 worker. The retained native mixture-of-experts (MoE) engine accepts explicit internal checkpoints; it is designed to run checkpoints larger than GPU memory by keeping routed experts across GPU memory (VRAM), system memory (RAM) and disk. The complete checkpoint does not have to fit in VRAM.
 
 Frequently used routed experts should stay in VRAM where capacity permits. Other routed experts can remain in RAM, with disk holding those that do not fit in either memory tier. Placement adapts to expert use within the memory available to the language model. Only routed experts move between these tiers. Non-expert matrices, including shared experts, remain pinned in VRAM while the language model is loaded, so sufficient VRAM for those weights and execution state is still required.
 
@@ -34,7 +34,7 @@ A higher-priority request does not interrupt inference already running. It may w
 
 Hikari first tries to make room by reducing an idle worker's memory allocation before unloading its model entirely. It reclaims memory from lower-priority workers first, and from the least recently used workers within a priority. An idle worker with no queued requests can yield memory even to a lower-priority type. A worker with queued requests yields only to a strictly higher-priority type. Memory becomes available to another worker only after its release is confirmed.
 
-Where possible, Hikari keeps enough room for the selected language tier's minimum requirements so chat can start while another type runs. This reservation is best effort: if preserving it prevents other work from fitting, Hikari can let that work proceed. Chat therefore has no unconditional immediate-start guarantee, and sustained higher-priority demand can delay lower-priority work.
+Where possible, Hikari keeps enough room for the language worker's minimum requirements so chat can start while another type runs. This reservation is best effort: if preserving it prevents other work from fitting, Hikari can let that work proceed. Chat therefore has no unconditional immediate-start guarantee, and sustained higher-priority demand can delay lower-priority work.
 
 For example, an idle chat model holding more memory than it needs can have its allocation reduced to admit an image request. An active video request continues to completion even if chat is waiting for its memory.
 

@@ -1,4 +1,4 @@
-// The language worker: the tier's GGUF mixture-of-experts model for chat.
+// The language worker: explicit native GGUF mixture-of-experts checkpoints for chat.
 #include "kadan/worker_runtime.hpp"
 
 int main() {
