@@ -163,7 +163,7 @@
         "FL2VA/video_vae/source"
       ],
       "license_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/42ed227ee7df40d41602854ae760620d6eb651fe/LICENSE",
-      "license_notice": "MiniMax H3\u2019s license excludes use in the US, EU, UK and South Korea, including personal use. Continuing does not grant rights under the license.",
+      "license_notice": "MiniMax H3’s license excludes use in the US, EU, UK and South Korea, including personal use. Continuing does not grant rights under the license.",
       "inference_available": false,
       "asset_url": null,
       "asset_name": null,
@@ -209,7 +209,7 @@
       ],
       "weight_paths": [],
       "license_url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/42ed227ee7df40d41602854ae760620d6eb651fe/LICENSE",
-      "license_notice": "MiniMax H3\u2019s license excludes use in the US, EU, UK and South Korea, including personal use. Continuing does not grant rights under the license.",
+      "license_notice": "MiniMax H3’s license excludes use in the US, EU, UK and South Korea, including personal use. Continuing does not grant rights under the license.",
       "inference_available": true,
       "asset_url": null,
       "asset_name": null,
