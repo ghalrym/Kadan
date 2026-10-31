@@ -6,21 +6,16 @@ The computer, files and credentials are shared with the owner and the agent;
 this feature does not provide hosted account separation. Voice calls keep their
 existing behavior and do not offer coding tools.
 
-Open **Coding** in the sidebar to inspect setup and recent jobs. Installation and
-sign-in are separate: the computer needs the supported Codex package and credentials
-provisioned by its owner. A ChatGPT browser session or subscription does not sign
-the computer into Codex. The panel explains terminal sign-in; never paste
-credentials into chat. A signed-in status reports local credentials, not verified
-model access, available credit or a successful coding run. Missing packages,
-incompatible versions and unavailable computers remain distinguishable from readiness.
-Missing or incompatible software directs users to the person running Kadan to
-update the computer; it does not ask users to install software through chat.
-
-Sign-in guidance explains how to open the agent's computer and its terminal.
-Expandable **Codex access and usage** guidance links to Codex sign-in help and
-explains model access, usage limits and possible API-key charges. It does not
-start a login or a paid request. When setup is ready and no jobs exist, Kadan
-suggests a first task that inspects an existing project without editing it.
+Open **Coding** in the sidebar and choose **Sign in with ChatGPT**. Kadan shows a
+sign-in link and a one-time code. Open the link, sign in, and enter the code. The
+computer shares this sign-in with the agent. **Cancel sign-in** stops a pending
+attempt; closing the panel leaves it available when reopened. If an attempt ends
+without signing in, start sign-in again for a new code. **Sign out** removes the
+computer's saved sign-in; it does not stop an already accepted coding job.
+Kadan's API keeps job status and stop controls available if sign-in status cannot
+be read, including when the computer needs an update. A signed-in
+status does not confirm model access or available usage. If Codex is unavailable,
+ask the person running Kadan to update or reconnect the computer.
 
 Ask the agent to work in a project directory on the computer and describe the
 change and constraints. Kadan accepts one coding job at a time on the shared

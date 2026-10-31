@@ -78,3 +78,14 @@ class CodingOutcome(BaseModel):
     session_id: str | None = None
     message: str = ""
     error: str | None = None
+
+
+class CodexLoginPrompt(BaseModel):
+    url: str
+    code: str
+
+
+class CodexLoginStatus(BaseModel):
+    state: Literal["signed_in", "signed_out", "signing_in", "missing", "unavailable"]
+    message: str
+    login: CodexLoginPrompt | None = None
