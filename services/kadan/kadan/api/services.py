@@ -429,7 +429,12 @@ class LocalServices:
                 409,
                 "duplicate_message",
             )
-        message = Message(id=value.message_id, role="user", content=value.content)
+        message = Message(
+            id=value.message_id,
+            role="user",
+            content=value.content,
+            attachment_ids=value.attachment_ids,
+        )
         return await self.append(key, conversation_id, value.expected_version, message)
 
 

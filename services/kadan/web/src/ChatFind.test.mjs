@@ -73,6 +73,13 @@ function chat(chain, storageValues = {}) {
     "./agentRuns": agentRuns,
     "./uuid": { randomUuid: () => "outgoing" },
     "./outbox": outbox,
+    "./attachments": { ChatAttachments: class {
+      ready = true;
+      start() {}
+      stop() {}
+      ids() { return []; }
+      removeMany() {}
+    } },
   };
   const exports = {};
   runInNewContext(source, {
