@@ -1,7 +1,7 @@
 """Pinned snapshots acquired only by the existing explicit download request."""
 
-import hashlib
 import fcntl
+import hashlib
 import json
 import os
 import urllib.request
@@ -55,7 +55,7 @@ class ModelStore:
                     "license_url": metadata["license_url"],
                     "license_notice": metadata.get(
                         "license_notice",
-                        "Experimental BF16 LFM3 trial including pinned checkpoint custom code; review the model license before downloading.",
+                        "BF16 LFM3 checkpoint including pinned custom code; review the model license before downloading.",
                     ),
                     "display_name": metadata.get("display_name", metadata["id"]),
                     "short_name": metadata.get("short_name"),

@@ -255,7 +255,7 @@ def generate(
             endings.add(model.config.text_end_token_id)
         if not len(tokens) or int(tokens[-1]) not in endings:
             raise ValueError(
-                "Audio generation reached the trial limit before completing the reply"
+                "Audio generation reached the context limit before completing the reply"
             )
         decoded = processor.decode(tokens, skip_special_tokens=False)
         if tts:
