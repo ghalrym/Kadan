@@ -17,6 +17,11 @@ async def coding_status(request: Request) -> CodexStatus:
     return await client(request).status()
 
 
+@router.get("/login/status")
+async def codex_login_status(request: Request) -> CodexSetup:
+    return await client(request).login_status()
+
+
 @router.post("/login")
 async def codex_login(request: Request) -> CodexSetup:
     return await client(request).login()

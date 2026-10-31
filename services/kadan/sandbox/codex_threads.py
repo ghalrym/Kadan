@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import fcntl
 import json
 import os
@@ -12,7 +13,8 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from datetime import datetime, UTC
 from pathlib import Path
 from uuid import UUID
 
@@ -33,9 +35,24 @@ def process_start(pid: int) -> str | None:
         return None
 
 
+def incarnation() -> str:
+    return (
+        Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        + ":"
+        + str(process_start(1))
+    )
+
+
 def alive(record: dict) -> bool:
     pid = record.get("pid")
-    return isinstance(pid, int) and process_start(pid) == record.get("start")
+    start = record.get("start")
+    return (
+        isinstance(pid, int)
+        and pid > 1
+        and isinstance(start, str)
+        and record.get("incarnation") == incarnation()
+        and process_start(pid) == start
+    )
 
 
 def read_json(path: Path) -> dict:
@@ -66,7 +83,11 @@ def launch(command: list[str], output: Path, cwd: str, stdin=None) -> dict:
             close_fds=True,
             env=ENV,
         )
-    return {"pid": process.pid, "start": process_start(process.pid)}
+    return {
+        "pid": process.pid,
+        "start": process_start(process.pid),
+        "incarnation": incarnation(),
+    }
 
 
 def terminate(record: dict) -> None:
@@ -82,6 +103,10 @@ def terminate(record: dict) -> None:
             time.sleep(0.1)
         if not alive(record):
             return
+
+    raise ValueError(
+        "Sign-in cleanup could not be confirmed. Restart the computer before trying again."
+    )
 
 
 def login_record() -> dict:
@@ -152,25 +177,12 @@ def login() -> dict:
         )
     elif current["state"] != "signing_in" or "login" in current:
         return current
-    return wait_for_login()
-
-
-def wait_for_login() -> dict:
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        current = setup()
-        if current["state"] == "signed_out":
-            raise ValueError("Codex sign-in stopped before it gave a code. Try again.")
-        if current["state"] != "signing_in" or "login" in current:
-            return current
-        time.sleep(0.25)
-    terminate(login_record())
-    raise ValueError("Codex didn't provide a sign-in code. Try signing in again.")
+    return {"state": "signing_in", "message": "Starting sign-in…"}
 
 
 def logout() -> dict:
     terminate(login_record())
-    subprocess.run(
+    result = subprocess.run(
         ["codex", "logout"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -178,6 +190,10 @@ def logout() -> dict:
         check=False,
         env=ENV,
     )
+    if result.returncode != 0:
+        raise ValueError(
+            "Sign-out failed. Refresh to check sign-in before trying again."
+        )
     return setup()
 
 
@@ -188,19 +204,35 @@ def valid_uuid(value) -> str:
         raise ValueError("A valid thread ID is required.") from None
 
 
+@contextmanager
+def locked():
+    STATE.mkdir(parents=True, exist_ok=True)
+    with (STATE / "runs.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def records() -> list[dict]:
-    """Kadan-launched runs, kept after exit until Kadan acknowledges the result."""
     return [
         {**read_json(path), "id": path.stem} for path in (STATE / "runs").glob("*.json")
     ]
 
 
+def pending(record: dict) -> bool:
+    # A dead supervisor cannot prove its descendants stopped. Only a computer
+    # replacement or the supervisor's own cleanup confirmation releases ownership.
+    return (
+        not record.get("cleanup_confirmed")
+        and record.get("incarnation") == incarnation()
+    )
+
+
 def runs() -> dict[str, dict]:
-    """Kadan-launched runs that are still alive, by Codex thread ID."""
     return {
-        record["thread_id"]: record
+        (record.get("thread_id") or record["resume_thread_id"]): record
         for record in records()
-        if record.get("thread_id") and alive(record)
+        if (record.get("thread_id") or record.get("resume_thread_id"))
+        and pending(record)
     }
 
 
@@ -234,35 +266,57 @@ def outcome(log: Path, stopped: bool) -> tuple[str, str]:
         pass
     if stopped:
         status = "stopped"
-    elif status == "failed" and not message:
-        message = error
+    elif status == "failed":
+        message = error + ("\n" + message if message else "")
     return status, message[:4000]
 
 
 def finished() -> dict:
     results = []
-    for record in records():
-        if alive(record) or not record.get("thread_id"):
-            continue
-        status, message = outcome(
-            STATE / "runs" / f"{record['id']}.jsonl", bool(record.get("stopped"))
-        )
-        results.append(
-            {
-                "request_id": record["id"],
-                "thread_id": record["thread_id"],
-                "cwd": record.get("cwd", ""),
-                "origin": record.get("origin"),
-                "status": status,
-                "message": message,
-            }
-        )
+    with locked():
+        for record in records():
+            if (
+                pending(record)
+                or record.get("acknowledged")
+                or not record.get("thread_id")
+            ):
+                continue
+            status, message = (
+                record.get("status", "failed"),
+                record.get("message", "Codex was interrupted by a computer restart."),
+            )
+            if not record.get("cleanup_confirmed"):
+                status, message = (
+                    "failed",
+                    "Codex was interrupted by a computer restart. Inspect the project before continuing.",
+                )
+            results.append(
+                {
+                    "request_id": record["id"],
+                    "thread_id": record["thread_id"],
+                    "cwd": record.get("cwd", ""),
+                    "origin": record.get("origin"),
+                    "status": status,
+                    "message": message,
+                }
+            )
     return {"runs": results}
 
 
 def acknowledge(request_id: str) -> dict:
-    for suffix in (".json", ".jsonl"):
-        (STATE / "runs" / f"{request_id}{suffix}").unlink(missing_ok=True)
+    with locked():
+        path = STATE / "runs" / f"{request_id}.json"
+        record = read_json(path)
+        if record:
+            if pending(record):
+                raise ValueError(
+                    "Codex is still working; its result cannot be acknowledged."
+                )
+            # Retain the action receipt: a runner may replay the original start
+            # even after its completion event has been accepted by Tsuchi.
+            write_json(path, {**record, "acknowledged": True})
+        for suffix in (".jsonl", ".worker.log"):
+            (STATE / "runs" / f"{request_id}{suffix}").unlink(missing_ok=True)
     return {"request_id": request_id}
 
 
@@ -376,9 +430,7 @@ def summary(thread_id: str, path: Path, active: dict[str, dict]) -> dict:
         "title": thread["title"] or "Untitled thread",
         "cwd": thread["cwd"],
         "created_at": thread["created_at"],
-        "updated_at": datetime.fromtimestamp(
-            path.stat().st_mtime, timezone.utc
-        ).isoformat(),
+        "updated_at": datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat(),
         "running": thread_id in active,
     }
 
@@ -389,7 +441,6 @@ def threads() -> dict:
         rollouts().items(), key=lambda item: item[1].stat().st_mtime, reverse=True
     )
     return {
-        "setup": setup(),
         "threads": [
             summary(thread_id, path, active) for thread_id, path in paths[:MAX_THREADS]
         ],
@@ -410,6 +461,30 @@ def thread(thread_id: str) -> dict:
 
 def start(request: dict) -> dict:
     request_id = valid_uuid(request.get("request_id"))
+    with locked():
+        reserve(request, request_id)
+    deadline = time.monotonic() + 20
+    path = STATE / "runs" / f"{request_id}.json"
+    while time.monotonic() < deadline:
+        record = read_json(path)
+        if record.get("thread_id"):
+            return {
+                "thread_id": record["thread_id"],
+                "cwd": record["cwd"],
+                "running": pending(record),
+            }
+        if record.get("cleanup_confirmed"):
+            raise ValueError(
+                record.get("message")
+                or "Codex could not start. Inspect the project before another request."
+            )
+        time.sleep(0.1)
+    raise ValueError(
+        "Codex start is unconfirmed. Check Coding before submitting another task."
+    )
+
+
+def reserve(request: dict, request_id: str) -> None:
     origin = request.get("origin")
     if not isinstance(origin, dict) or not all(
         isinstance(origin.get(name), str)
@@ -417,14 +492,15 @@ def start(request: dict) -> dict:
     ):
         raise ValueError("Codex runs need the conversation that started them.")
     root = STATE / "runs"
-    existing = read_json(root / f"{request_id}.json")
-    if existing.get("thread_id"):
-        # A retried action returns its original run rather than starting another.
-        return {
-            "thread_id": existing["thread_id"],
-            "cwd": existing.get("cwd", ""),
-            "running": alive(existing),
-        }
+    if read_json(root / f"{request_id}.json"):
+        return
+    if any(
+        pending(record) and (not alive(record) or not record.get("thread_id"))
+        for record in records()
+    ):
+        raise ValueError(
+            "Coding cleanup is unconfirmed. Restart the computer before another task."
+        )
     prompt = request.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("Give Codex a task.")
@@ -442,7 +518,10 @@ def start(request: dict) -> dict:
         cwd = request.get("cwd")
     if not isinstance(cwd, str) or not os.path.isabs(cwd):
         raise ValueError("Use an absolute project folder on this computer.")
-    if setup()["state"] != "signed_in":
+    with (STATE / "login.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        signed_in = setup()["state"] == "signed_in"
+    if not signed_in:
         raise ValueError(
             "Codex isn't signed in. Ask the user to sign in from the Coding tab."
         )
@@ -473,45 +552,209 @@ def start(request: dict) -> dict:
         else ["codex", "exec", *options, "-"]
     )
     root.mkdir(parents=True, exist_ok=True)
-    prompt_path = root / f"{request_id}.prompt"
-    prompt_path.write_text(prompt)
-    with prompt_path.open("rb") as stdin:
-        prompt_path.unlink()
-        record = {
-            **launch(command, root / f"{request_id}.jsonl", cwd, stdin),
-            "cwd": cwd,
-            "origin": origin,
+    path = root / f"{request_id}.json"
+    record = {
+        "cwd": cwd,
+        "origin": origin,
+        "incarnation": incarnation(),
+        "command": command,
+        "resume_thread_id": resume,
+    }
+    (root / f"{request_id}.prompt").write_text(prompt)
+    # Reserve before spawning. A worker writes its identity under the same lock
+    # before it can launch Codex, including if the requesting Bash session dies.
+    write_json(path, record)
+    try:
+        worker = launch(
+            [sys.executable, str(Path(__file__).resolve()), "--worker", request_id],
+            root / f"{request_id}.worker.log",
+            cwd,
+        )
+        write_json(path, {**record, **worker})
+    except OSError:
+        write_json(
+            path,
+            {
+                **record,
+                "cleanup_confirmed": True,
+                "status": "failed",
+                "message": "Codex supervisor could not start.",
+            },
+        )
+        (root / f"{request_id}.prompt").unlink(missing_ok=True)
+        raise ValueError("Codex supervisor could not start.") from None
+
+
+def children_of(pid: int) -> dict[int, str]:
+    parents = {}
+    identities = {}
+    for path in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            values = path.read_text().rsplit(")", 1)[1].split()
+            child = int(path.parent.name)
+            parents[child] = int(values[1])
+            identities[child] = values[19]
+        except (OSError, ValueError, IndexError):
+            continue
+    descendants = {pid}
+    while True:
+        expanded = descendants | {
+            child for child, parent in parents.items() if parent in descendants
         }
-    write_json(root / f"{request_id}.json", record)
-    deadline = time.monotonic() + 20
-    while time.monotonic() < deadline:
-        thread_id = started_thread(root / f"{request_id}.jsonl")
-        if thread_id:
-            write_json(root / f"{request_id}.json", {**record, "thread_id": thread_id})
-            return {"thread_id": thread_id, "cwd": cwd, "running": True}
-        if not alive(record):
-            acknowledge(request_id)
-            raise ValueError(
-                "Codex exited before starting. Check that it's signed in and try again."
+        if expanded == descendants:
+            return {child: identities[child] for child in descendants - {pid}}
+        descendants = expanded
+
+
+def reap() -> None:
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+            if not pid:
+                return
+        except ChildProcessError:
+            return
+
+
+def cleanup() -> bool:
+    # A pidfd binds signals to the captured descendant, even if a PID is later reused.
+    for sig, grace in ((signal.SIGTERM, 2.0), (signal.SIGKILL, 3.0)):
+        deadline = time.monotonic() + grace
+        while True:
+            descendants = children_of(os.getpid())
+            for pid, identity in descendants.items():
+                try:
+                    descriptor = os.pidfd_open(pid, 0)
+                except ProcessLookupError:
+                    continue
+                except OSError:
+                    return False
+                try:
+                    if process_start(pid) == identity:
+                        signal.pidfd_send_signal(descriptor, sig)
+                except ProcessLookupError:
+                    pass
+                except OSError:
+                    return False
+                finally:
+                    os.close(descriptor)
+            reap()
+            if not children_of(os.getpid()):
+                return True
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+    return False
+
+
+def worker(request_id: str) -> None:
+    path = STATE / "runs" / f"{request_id}.json"
+    log = STATE / "runs" / f"{request_id}.jsonl"
+    interrupted = False
+
+    def interrupt(_signal, _frame):
+        nonlocal interrupted
+        interrupted = True
+
+    signal.signal(signal.SIGTERM, interrupt)
+    signal.signal(signal.SIGINT, interrupt)
+    process = None
+    failed = False
+    owned = ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
+    with locked():
+        record = read_json(path)
+        if record.get("cleanup_confirmed") or (
+            alive(record) and record.get("pid") != os.getpid()
+        ):
+            return
+        record.update(
+            pid=os.getpid(),
+            start=process_start(os.getpid()),
+            incarnation=incarnation(),
+        )
+        write_json(path, record)
+    try:
+        if interrupted or record.get("stopped"):
+            return
+        if not owned:
+            raise ValueError("Computer cannot provide coding process ownership.")
+        with (
+            (STATE / "runs" / f"{request_id}.prompt").open("rb") as prompt,
+            log.open("wb") as output,
+        ):
+            process = subprocess.Popen(
+                record["command"],
+                cwd=record["cwd"],
+                stdin=prompt,
+                stdout=output,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+                env=ENV,
             )
-        time.sleep(0.25)
-    terminate(record)
-    acknowledge(request_id)
-    raise ValueError("Codex didn't start in time. Try again.")
+        (STATE / "runs" / f"{request_id}.prompt").unlink(missing_ok=True)
+        deadline = time.monotonic() + 20
+        while process.poll() is None:
+            with locked():
+                record = read_json(path)
+                thread_id = record.get("thread_id") or started_thread(log)
+                if thread_id and not record.get("thread_id"):
+                    record["thread_id"] = thread_id
+                    write_json(path, record)
+            if (
+                interrupted
+                or record.get("stopped")
+                or (not thread_id and time.monotonic() >= deadline)
+            ):
+                break
+            time.sleep(0.1)
+    except Exception:
+        failed = True
+    finally:
+        exit_code = process.poll() if process is not None else None
+        confirmed = cleanup() if owned else process is None
+        with locked():
+            record = read_json(path)
+            thread_id = record.get("thread_id") or started_thread(log)
+            status, message = outcome(log, bool(record.get("stopped")))
+            if not record.get("stopped") and (
+                failed or interrupted or process is None or exit_code != 0
+            ):
+                if status == "completed" or not message:
+                    message = "Codex execution was interrupted or failed. Inspect the project before another task."
+                status = "failed"
+            write_json(
+                path,
+                {
+                    **record,
+                    "thread_id": thread_id,
+                    "status": status,
+                    "message": message,
+                    "cleanup_confirmed": confirmed,
+                },
+            )
+        (STATE / "runs" / f"{request_id}.prompt").unlink(missing_ok=True)
 
 
 def stop(thread_id: str) -> dict:
-    record = runs().get(thread_id)
-    if record is not None:
+    with locked():
+        record = runs().get(thread_id)
+        if record is None:
+            return {"thread_id": thread_id, "running": False}
+        path = STATE / "runs" / f"{record['id']}.json"
         write_json(
-            STATE / "runs" / f"{record['id']}.json",
+            path,
             {key: value for key, value in record.items() if key != "id"}
             | {"stopped": True},
         )
-        terminate(record)
-        if alive(record):
-            raise ValueError("Codex is still stopping. Refresh to check again.")
-    return {"thread_id": thread_id, "running": False}
+    deadline = time.monotonic() + 7
+    while time.monotonic() < deadline:
+        if not pending(read_json(path)):
+            return {"thread_id": thread_id, "running": False}
+        time.sleep(0.1)
+    raise ValueError(
+        "Codex cleanup is unconfirmed. Refresh Coding; restart the computer if it remains working."
+    )
 
 
 def dispatch(request: dict) -> dict:
@@ -538,6 +781,9 @@ def dispatch(request: dict) -> dict:
 
 
 def main() -> None:
+    if len(sys.argv) == 3 and sys.argv[1] == "--worker":
+        worker(valid_uuid(sys.argv[2]))
+        return
     try:
         # Codex refuses to run when CODEX_HOME is missing, as on a fresh home volume.
         CODEX_HOME.mkdir(parents=True, exist_ok=True)

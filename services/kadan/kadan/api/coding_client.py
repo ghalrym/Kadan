@@ -89,14 +89,16 @@ class CodingClient:
 
     async def status(self) -> CodexStatus:
         if not self.computer.configured:
-            return CodexStatus(
-                setup=CodexSetup(
-                    state="unavailable",
-                    message="No computer is connected. Ask the person who runs Kadan to connect one.",
-                ),
-                threads=[],
-            )
+            return CodexStatus(threads=[])
         return await self.read_model(CodexStatus, "threads")
+
+    async def login_status(self) -> CodexSetup:
+        if not self.computer.configured:
+            return CodexSetup(
+                state="unavailable",
+                message="No computer is connected. Ask the person who runs Kadan to connect one.",
+            )
+        return await self.read_model(CodexSetup, "setup")
 
     async def login(self) -> CodexSetup:
         return await self.read_model(CodexSetup, "login")

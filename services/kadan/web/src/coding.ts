@@ -19,6 +19,5 @@ export interface CodexThread extends CodexThreadSummary {
 }
 
 export interface CodexStatus {
-  setup: CodexSetup;
   threads: CodexThreadSummary[];
 }

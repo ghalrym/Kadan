@@ -21,6 +21,7 @@ SPEC.loader.exec_module(script)
 def home(tmp_path, monkeypatch):
     monkeypatch.setattr(script, "CODEX_HOME", tmp_path / "codex")
     monkeypatch.setattr(script, "STATE", tmp_path / "state")
+    script.STATE.mkdir()
     return tmp_path
 
 
@@ -104,7 +105,7 @@ def test_unknown_thread_is_rejected(home):
 
 
 def test_login_prompt_reads_link_and_code_through_colours(home):
-    script.STATE.mkdir()
+    script.STATE.mkdir(exist_ok=True)
     (script.STATE / "login.log").write_text(
         "1. Open \x1b[94mhttps://auth.example/codex/device\x1b[0m\n"
         "2. Enter this one-time code\n   \x1b[94mAB12-CD34\x1b[0m\n"
@@ -137,220 +138,269 @@ def test_missing_codex_is_reported(home):
         assert script.setup()["state"] == "missing"
 
 
-def test_start_launches_background_run_and_returns_thread(home, tmp_path):
+def save(request_id, **fields):
+    record = {
+        "pid": 10,
+        "start": "1",
+        "incarnation": script.incarnation(),
+        "cwd": "/p",
+        "origin": ORIGIN,
+        **fields,
+    }
+    script.write_json(script.STATE / "runs" / f"{request_id}.json", record)
+    return record
+
+
+def test_reserve_persists_before_launch_and_rejects_duplicate_resume(home):
     thread_id = str(uuid4())
-    project = tmp_path / "project"
-    project.mkdir()
-    launched = {}
-
-    def launch(command, output, cwd, stdin):
-        launched.update(command=command, cwd=cwd, prompt=stdin.read().decode())
-        output.write_text(
-            json.dumps({"type": "thread.started", "thread_id": thread_id})
-        )
-        return {"pid": 10, "start": "1"}
-
-    with (
-        patch.object(script, "setup", return_value={"state": "signed_in"}),
-        patch.object(script, "launch", side_effect=launch),
-        patch.object(script, "alive", return_value=True),
-    ):
-        started = script.start(request(prompt="Do it", cwd=str(project)))
-        assert script.runs()[thread_id]["pid"] == 10
-    assert started == {"thread_id": thread_id, "cwd": str(project), "running": True}
-    assert launched["command"][:2] == ["codex", "exec"]
-    assert launched["command"][-1] == "-"
-    assert launched["cwd"] == str(project)
-    assert launched["prompt"] == "Do it"
-    assert not list((script.STATE / "runs").glob("*.prompt"))
-
-
-def test_resume_uses_thread_folder(home, tmp_path):
-    thread_id = str(uuid4())
-    project = tmp_path / "project"
+    project = home / "project"
     project.mkdir()
     rollout(home, thread_id, str(project), [])
-    launched = {}
+    req = request(prompt="More", thread_id=thread_id)
 
-    def launch(command, output, cwd, stdin):
-        launched.update(command=command, cwd=cwd)
-        output.write_text(
-            json.dumps({"type": "thread.started", "thread_id": thread_id})
-        )
-        return {"pid": 10, "start": "1"}
+    def launch(command, output, cwd):
+        saved = script.read_json(script.STATE / "runs" / f"{req['request_id']}.json")
+        assert saved["origin"] == ORIGIN
+        assert saved["resume_thread_id"] == thread_id
+        assert saved["command"][:3] == ["codex", "exec", "resume"]
+        assert command[-2:] == ["--worker", req["request_id"]]
+        return {"pid": 10, "start": "1", "incarnation": script.incarnation()}
 
     with (
         patch.object(script, "setup", return_value={"state": "signed_in"}),
         patch.object(script, "launch", side_effect=launch),
         patch.object(script, "alive", return_value=True),
-        patch.object(script, "runs", return_value={}),
     ):
-        script.start(request(prompt="More", thread_id=thread_id, cwd="/elsewhere"))
-    assert launched["command"][:3] == ["codex", "exec", "resume"]
-    assert launched["command"][-2:] == [thread_id, "-"]
-    assert launched["cwd"] == str(project)
+        script.reserve(req, req["request_id"])
+        with pytest.raises(ValueError):
+            other = request(prompt="Again", thread_id=thread_id)
+            script.reserve(other, other["request_id"])
 
 
-def test_start_refuses_running_thread(home):
-    thread_id = str(uuid4())
-    with (
-        patch.object(script, "runs", return_value={thread_id: {}}),
-        pytest.raises(ValueError, match="already running"),
-    ):
-        script.start(request(prompt="More", thread_id=thread_id))
-
-
-def test_start_requires_sign_in(home, tmp_path):
-    with (
-        patch.object(script, "setup", return_value={"state": "signed_out"}),
-        pytest.raises(ValueError, match="isn't signed in"),
-    ):
-        script.start(request(prompt="Do it", cwd=str(tmp_path)))
-
-
-def write_record(request_id, log, **record):
-    runs = script.STATE / "runs"
-    runs.mkdir(parents=True, exist_ok=True)
-    (runs / f"{request_id}.json").write_text(
-        json.dumps({"pid": 10, "start": "1", "cwd": "/p", "origin": ORIGIN, **record})
-    )
-    (runs / f"{request_id}.jsonl").write_text(
-        "\n".join(json.dumps(line) for line in log) + "\n"
-    )
-
-
-def agent_message(text):
-    return {"type": "item.completed", "item": {"type": "agent_message", "text": text}}
-
-
-@pytest.mark.parametrize(
-    ("log", "record", "status", "message"),
-    [
-        (
-            [agent_message("Built it."), {"type": "turn.completed"}],
-            {},
-            "completed",
-            "Built it.",
-        ),
-        (
-            [{"type": "turn.failed", "error": {"message": "Usage limit reached"}}],
-            {},
-            "failed",
-            "Usage limit reached",
-        ),
-        ([agent_message("Halfway")], {"stopped": True}, "stopped", "Halfway"),
-        ([], {}, "failed", "Codex exited before finishing its turn."),
-    ],
-)
-def test_finished_runs_report_their_outcome_until_acknowledged(
-    home, log, record, status, message
-):
+def test_acknowledged_start_retains_receipt_and_cannot_launch_twice(home):
     request_id, thread_id = str(uuid4()), str(uuid4())
-    write_record(request_id, log, thread_id=thread_id, **record)
-    with patch.object(script, "alive", return_value=False):
-        assert script.finished() == {
-            "runs": [
-                {
-                    "request_id": request_id,
-                    "thread_id": thread_id,
-                    "cwd": "/p",
-                    "origin": ORIGIN,
-                    "status": status,
-                    "message": message,
-                }
-            ]
+    save(
+        request_id,
+        thread_id=thread_id,
+        cleanup_confirmed=True,
+        status="completed",
+        message="Done",
+    )
+    assert script.finished()["runs"][0]["message"] == "Done"
+    script.acknowledge(request_id)
+    assert script.finished() == {"runs": []}
+    with patch.object(script, "launch") as launch:
+        assert script.start({"request_id": request_id, "origin": ORIGIN}) == {
+            "thread_id": thread_id,
+            "cwd": "/p",
+            "running": False,
         }
-        assert script.runs() == {}
-        script.acknowledge(request_id)
-        assert script.finished() == {"runs": []}
-    assert list((script.STATE / "runs").iterdir()) == []
-
-
-def test_running_runs_are_not_finished(home):
-    write_record(str(uuid4()), [], thread_id=str(uuid4()))
-    with patch.object(script, "alive", return_value=True):
-        assert script.finished() == {"runs": []}
-
-
-def test_retried_start_returns_the_original_run(home):
-    request_id, thread_id = str(uuid4()), str(uuid4())
-    write_record(request_id, [], thread_id=thread_id)
-    with (
-        patch.object(script, "launch") as launch,
-        patch.object(script, "alive", return_value=False),
-    ):
-        started = script.start(
-            {"request_id": request_id, "origin": ORIGIN, "prompt": "Do it"}
-        )
-    assert started == {"thread_id": thread_id, "cwd": "/p", "running": False}
     launch.assert_not_called()
 
 
-def test_start_requires_its_origin(home, tmp_path):
-    with pytest.raises(ValueError, match="conversation that started"):
-        script.start(
-            {"request_id": str(uuid4()), "prompt": "Do it", "cwd": str(tmp_path)}
-        )
-
-
-def test_failed_start_leaves_no_record_to_report(home, tmp_path):
-    with (
-        patch.object(script, "setup", return_value={"state": "signed_in"}),
-        patch.object(script, "launch", return_value={"pid": 10, "start": "1"}),
-        patch.object(script, "alive", return_value=False),
-        pytest.raises(ValueError, match="exited before starting"),
-    ):
-        script.start(request(prompt="Do it", cwd=str(tmp_path)))
-    assert list((script.STATE / "runs").glob("*.json")) == []
-
-
-def test_stop_marks_the_run_stopped_and_terminates_it(home):
+def test_uncertain_cleanup_is_not_delivered_and_blocks_new_work(home):
     request_id, thread_id = str(uuid4()), str(uuid4())
-    write_record(request_id, [], thread_id=thread_id)
-    alive = iter([True, False])
-    with (
-        patch.object(script, "alive", side_effect=lambda record: next(alive, False)),
-        patch.object(script, "terminate") as terminate,
-    ):
+    save(request_id, thread_id=thread_id)
+    with patch.object(script, "alive", return_value=False):
+        assert script.finished() == {"runs": []}
+        assert thread_id in script.runs()
+        req = request(prompt="Again", cwd=str(home))
+        with pytest.raises(ValueError, match="cleanup is unconfirmed"):
+            script.reserve(req, req["request_id"])
+    with pytest.raises(ValueError, match="still working"):
+        script.acknowledge(request_id)
+
+
+def test_computer_restart_releases_uncertain_work_and_reports_failure(home):
+    request_id, thread_id = str(uuid4()), str(uuid4())
+    save(request_id, thread_id=thread_id, incarnation="old-computer")
+    assert script.runs() == {}
+    assert script.finished()["runs"][0]["status"] == "failed"
+
+
+def test_stop_waits_for_cleanup_confirmation(home):
+    request_id, thread_id = str(uuid4()), str(uuid4())
+    save(request_id, thread_id=thread_id)
+
+    def finish(_seconds):
+        record = script.read_json(script.STATE / "runs" / f"{request_id}.json")
+        assert record["stopped"]
+        save(request_id, **{**record, "cleanup_confirmed": True})
+
+    with patch.object(script.time, "sleep", side_effect=finish):
         assert script.stop(thread_id) == {"thread_id": thread_id, "running": False}
-    terminate.assert_called_once()
-    saved = json.loads((script.STATE / "runs" / f"{request_id}.json").read_text())
-    assert saved["stopped"] is True
 
 
-def test_login_that_exits_without_a_code_reports_failure(home):
-    with (
-        patch.object(script, "setup", return_value={"state": "signed_out"}),
-        patch.object(script, "launch", return_value={"pid": 10, "start": "1"}),
-        pytest.raises(ValueError, match="stopped before it gave a code"),
-    ):
-        script.login()
+def test_stop_failure_keeps_thread_working(home):
+    request_id, thread_id = str(uuid4()), str(uuid4())
+    save(request_id, thread_id=thread_id)
+    with patch.object(script.time, "monotonic", side_effect=[0, 8]):
+        with pytest.raises(ValueError, match="cleanup is unconfirmed"):
+            script.stop(thread_id)
+    assert thread_id in script.runs()
 
 
-def test_new_thread_creates_missing_project_folder(home, tmp_path):
-    thread_id = str(uuid4())
-    project = tmp_path / "new" / "hello-world"
+@pytest.fixture
+def supervisor(home, monkeypatch):
+    from unittest.mock import Mock
 
-    def launch(command, output, cwd, stdin):
-        output.write_text(
-            json.dumps({"type": "thread.started", "thread_id": thread_id})
+    request_id, thread_id = str(uuid4()), str(uuid4())
+    save(request_id, command=["codex", "exec"], cwd=str(home))
+    prompt = script.STATE / "runs" / f"{request_id}.prompt"
+    prompt.write_text("Build it")
+    process = Mock()
+    process.poll.return_value = 0
+
+    def popen(*args, **kwargs):
+        assert kwargs["stdin"].read() == b"Build it"
+        kwargs["stdout"].write(
+            (
+                json.dumps({"type": "thread.started", "thread_id": thread_id})
+                + "\n"
+                + json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": "Done"},
+                    }
+                )
+                + "\n"
+                + json.dumps({"type": "turn.completed"})
+                + "\n"
+            ).encode()
         )
-        return {"pid": 10, "start": "1"}
+        return process
 
+    launch = Mock(side_effect=popen)
+    monkeypatch.setattr(script.subprocess, "Popen", launch)
+    monkeypatch.setattr(script.signal, "signal", Mock())
+    monkeypatch.setattr(
+        script.ctypes, "CDLL", Mock(return_value=SimpleNamespace(prctl=lambda *args: 0))
+    )
+    monkeypatch.setattr(script, "alive", lambda record: False)
+    cleanup = Mock(return_value=True)
+    monkeypatch.setattr(script, "cleanup", cleanup)
+    return SimpleNamespace(
+        request_id=request_id,
+        thread_id=thread_id,
+        process=process,
+        launch=launch,
+        cleanup=cleanup,
+    )
+
+
+def test_supervisor_publishes_only_after_cleanup(supervisor):
+    def cleanup():
+        assert script.finished() == {"runs": []}
+        return True
+
+    supervisor.cleanup.side_effect = cleanup
+    script.worker(supervisor.request_id)
+    result = script.finished()["runs"][0]
+    assert result["status"] == "completed"
+    assert result["message"] == "Done"
+    assert result["thread_id"] == supervisor.thread_id
+
+
+def test_supervisor_nonzero_exit_overrides_completion_log(supervisor):
+    supervisor.process.poll.return_value = 1
+    script.worker(supervisor.request_id)
+    assert script.finished()["runs"][0]["status"] == "failed"
+
+
+def test_supervisor_unconfirmed_descendants_block_delivery(supervisor):
+    supervisor.cleanup.return_value = False
+    script.worker(supervisor.request_id)
+    assert script.finished() == {"runs": []}
+    assert supervisor.thread_id in script.runs()
+
+
+def test_supervisor_cannot_spawn_without_descendant_ownership(supervisor):
+    with patch.object(
+        script.ctypes, "CDLL", return_value=SimpleNamespace(prctl=lambda *args: -1)
+    ):
+        script.worker(supervisor.request_id)
+    supervisor.launch.assert_not_called()
+    record = script.read_json(script.STATE / "runs" / f"{supervisor.request_id}.json")
+    assert record["cleanup_confirmed"]
+    assert record["status"] == "failed"
+
+
+def test_cleanup_signals_only_matching_descendants(home):
+
+    with (
+        patch.object(script, "children_of", side_effect=[{77: "old"}, {}, {}]),
+        patch.object(script.os, "pidfd_open", return_value=9),
+        patch.object(script.os, "close") as close,
+        patch.object(script, "process_start", return_value="reused"),
+        patch.object(script.signal, "pidfd_send_signal") as send,
+        patch.object(script, "reap"),
+    ):
+        assert script.cleanup()
+    send.assert_not_called()
+    close.assert_called_once_with(9)
+
+
+def test_new_project_is_created_only_after_sign_in(home):
+    req = request(prompt="Build", cwd=str(home / "new"))
+    with patch.object(script, "setup", return_value={"state": "signed_out"}):
+        with pytest.raises(ValueError, match="isn't signed in"):
+            script.reserve(req, req["request_id"])
+    assert not (home / "new").exists()
     with (
         patch.object(script, "setup", return_value={"state": "signed_in"}),
-        patch.object(script, "launch", side_effect=launch),
-        patch.object(script, "alive", return_value=True),
+        patch.object(script, "launch", return_value={"pid": 10}),
     ):
-        script.start(request(prompt="Make it", cwd=str(project)))
-    assert project.is_dir()
+        script.reserve(req, req["request_id"])
+    assert (home / "new").is_dir()
 
 
-def test_folder_is_not_created_when_signed_out(home, tmp_path):
-    project = tmp_path / "never"
+@pytest.mark.parametrize("stopped,expected", [(False, "failed"), (True, "stopped")])
+def test_outcome_retains_failure_even_after_an_agent_message(home, stopped, expected):
+    log = home / "events.jsonl"
+    log.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "Working"},
+                },
+                {"type": "turn.failed", "error": {"message": "Usage limit"}},
+            ]
+        )
+    )
+    status, message = script.outcome(log, stopped)
+    assert status == expected
+    if not stopped:
+        assert "Usage limit" in message
+
+
+def test_supervisor_observes_durable_stop_and_confirms_cleanup(supervisor):
+    supervisor.process.poll.return_value = None
+    path = script.STATE / "runs" / f"{supervisor.request_id}.json"
+    record = script.read_json(path)
+    script.write_json(path, {**record, "stopped": True})
+    script.worker(supervisor.request_id)
+    supervisor.launch.assert_not_called()
+    assert script.read_json(path)["cleanup_confirmed"]
+
+
+def test_cleanup_escalates_when_descendant_survives_term(home):
+    signals = []
     with (
-        patch.object(script, "setup", return_value={"state": "signed_out"}),
-        pytest.raises(ValueError, match="isn't signed in"),
+        patch.object(
+            script, "children_of", side_effect=[{77: "1"}, {77: "1"}, {77: "1"}, {}]
+        ),
+        patch.object(script.os, "pidfd_open", return_value=9),
+        patch.object(script.os, "close"),
+        patch.object(script, "process_start", return_value="1"),
+        patch.object(
+            script.signal,
+            "pidfd_send_signal",
+            side_effect=lambda fd, sig: signals.append(sig),
+        ),
+        patch.object(script, "reap"),
+        patch.object(script.time, "monotonic", side_effect=[0, 3, 3]),
     ):
-        script.start(request(prompt="Make it", cwd=str(project)))
-    assert not project.exists()
+        assert script.cleanup()
+    assert signals == [script.signal.SIGTERM, script.signal.SIGKILL]

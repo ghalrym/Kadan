@@ -29,7 +29,12 @@ const hooksUrl = `data:text/javascript,${encodeURIComponent(`
 const apiUrl = `data:text/javascript,${encodeURIComponent(`
   export const calls = [];
   export const replies = [];
-  export const api = (...args) => { calls.push(args); return replies.shift()(); };
+  export const authReplies = [];
+  export const api = (...args) => {
+    calls.push(args);
+    if (args[0] === '/computer/coding/login/status') return authReplies.length ? authReplies.shift()() : Promise.resolve({ state: 'signed_in', message: 'Signed in with ChatGPT.' });
+    return replies.shift()();
+  };
 `)}`;
 const componentUrl = new URL("./Coding.tsx", import.meta.url).href;
 const loader = registerHooks({
@@ -49,7 +54,7 @@ const loader = registerHooks({
   },
 });
 const hooks = await import(hooksUrl);
-const { calls, replies } = await import(apiUrl);
+const { calls, replies, authReplies } = await import(apiUrl);
 const { default: Coding } = await import(componentUrl);
 loader.deregister();
 
@@ -77,9 +82,9 @@ const thread = { id: "thread-a", title: "Fix the parser", cwd: "/home/gem/projec
 const signedIn = { state: "signed_in", message: "Signed in with ChatGPT." };
 function status(threads = [thread], setup = signedIn) { return { setup, threads }; }
 function reply(value) { replies.push(() => Promise.resolve(value)); }
-async function open(result = status()) { reply(result); render(); await settle(); }
+async function open(result = status()) { reply(result); authReplies.push(() => Promise.resolve(result.setup)); render(); await settle(); }
 beforeEach(() => {
-  hooks.reset(); calls.length = replies.length = 0; closed = 0;
+  hooks.reset(); calls.length = replies.length = authReplies.length = 0; closed = 0;
   globalThis.setInterval = fn => { interval = fn; return 1; };
   globalThis.clearInterval = () => { interval = undefined; };
 });
@@ -95,9 +100,10 @@ test("signed-out computer offers one sign-in button that shows the device code",
   const login = { state: "signing_in", message: "Open the sign-in page and enter the code.", login: { url: "https://auth.example/device", code: "ABCD-1234" } };
   reply(login);
   reply(status([], login));
+  authReplies.push(() => Promise.resolve(login));
   button("Sign in with ChatGPT").props.onClick();
   await settle();
-  assert.deepEqual(calls.slice(-2).map(call => call[0]), ["/computer/coding/login", "/computer/coding"]);
+  assert.deepEqual(calls.filter(call => call[1]).map(call => call[0]), ["/computer/coding/login"]);
   const view = render();
   assert.match(text(view), /ABCD-1234/);
   assert.equal(nodes(view, "a")[0].props.href, "https://auth.example/device");
@@ -107,9 +113,10 @@ test("signed-in computer can sign out", async () => {
   await open(status([]));
   reply({ state: "signed_out", message: "Signed out." });
   reply(status([], { state: "signed_out", message: "Signed out." }));
+  authReplies.push(() => Promise.resolve({ state: "signed_out", message: "Signed out." }));
   button("Sign out").props.onClick();
   await settle();
-  assert.equal(calls.at(-2)[0], "/computer/coding/logout");
+  assert.equal(calls.find(call => call[1])[0], "/computer/coding/logout");
   assert.ok(button("Sign in with ChatGPT"));
 });
 
@@ -156,4 +163,50 @@ test("a failed refresh reports the error and Close closes", async () => {
   assert.match(text(render()), /Computer unavailable/);
   button("Close").props.onClick();
   assert.equal(closed, 1);
+});
+
+
+test("thread refresh failure leaves sign-in controls available", async () => {
+  replies.push(() => Promise.reject(new Error("Threads unavailable")));
+  authReplies.push(() => Promise.resolve({ state: "signed_out", message: "Sign in" }));
+  render(); await settle();
+  assert.ok(button("Sign in with ChatGPT"));
+  assert.match(text(render()), /Threads unavailable/);
+});
+
+test("sign-in failure leaves thread tracking available", async () => {
+  reply(status());
+  authReplies.push(() => Promise.reject(new Error("Auth unavailable")));
+  render(); await settle();
+  assert.match(text(render()), /Fix the parser/);
+  assert.match(text(render()), /Sign-in status unavailable/);
+});
+
+test("pending sign-in can be cancelled before a code arrives", async () => {
+  await open(status([], { state: "signing_in", message: "Starting sign-in…" }));
+  assert.ok(button("Cancel sign-in"));
+  reply({ state: "signed_out", message: "Sign in" });
+  reply(status([]));
+  authReplies.push(() => Promise.resolve({ state: "signed_out", message: "Sign in" }));
+  button("Cancel sign-in").props.onClick(); await settle();
+  assert.ok(button("Sign in with ChatGPT"));
+});
+
+test("polling is single-flight and stale auth reads cannot undo sign-out", async () => {
+  let resolveAuth;
+  reply(status());
+  authReplies.push(() => new Promise(resolve => { resolveAuth = resolve; }));
+  render(); await settle();
+  const count = calls.length;
+  await interval();
+  assert.equal(calls.length, count);
+  resolveAuth(signedIn); await settle();
+  let resolveOld;
+  reply(status());
+  authReplies.push(() => new Promise(resolve => { resolveOld = resolve; }));
+  void interval(); await settle();
+  reply({ state: "signed_out", message: "Sign in" });
+  button("Sign out").props.onClick(); await settle();
+  resolveOld(signedIn); await settle();
+  assert.ok(button("Sign in with ChatGPT"));
 });

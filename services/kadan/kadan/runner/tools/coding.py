@@ -55,7 +55,7 @@ async def codex_threads(args: CodexThreadsArguments, computer: SandboxClient) ->
     if args.thread_id is None:
         status = await client.status()
         return {
-            "setup": status.setup.state,
+            "setup": (await client.login_status()).state,
             "threads": [
                 thread.model_dump(mode="json") for thread in status.threads[:10]
             ],

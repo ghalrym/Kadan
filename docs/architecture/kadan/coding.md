@@ -2,8 +2,8 @@
 
 The [coding expectations](../../user-expectations/kadan/coding.md) describe the
 user experience. Kadan runs the official pinned Codex CLI inside the shared
-computer and treats Codex's own session history as the only record of coding work.
-Kadan keeps no job store, so there is nothing to reconcile between Kadan and Codex.
+computer. Codex owns thread history. Kadan retains action receipts and result
+delivery state on the computer so retries cannot start duplicate work.
 
 ## Computer-side script
 
@@ -15,8 +15,8 @@ sandbox's session table. The script prints fixed error messages; shell stderr an
 authentication output never reach the API. `CODEX_HOME` is `/home/gem/.codex` on
 the persistent home volume.
 
-- `login` starts `codex login --device-auth` detached and returns the verification
-  URL and code parsed from its output. The device flow is used because the user's
+- `login` starts `codex login --device-auth` detached and returns immediately.
+  Later `setup` reads return the verification URL and code parsed from its output. The device flow is used because the user's
   browser cannot reach a localhost callback inside the computer. `setup` reports
   `signed_in` from `codex login status`, `signing_in` while the login process
   lives, and otherwise `signed_out`. `logout` runs `codex logout`.
@@ -30,20 +30,33 @@ the persistent home volume.
   from the first user message; items are user and agent messages plus one-line
   summaries of shell calls and patches. Reads are capped at fifty threads and the
   latest two hundred items.
-- `stop` marks the run as stopped, then signals its process group with TERM, then
-  KILL.
-- `finished` reports exited runs with their outcome, read from the run's JSON
+- `stop` durably requests cancellation and waits for the supervisor to confirm cleanup. It reports uncertainty if cleanup is still pending.
+- `finished` reports runs with confirmed process cleanup with their outcome, read from the run's JSON
   events: `completed` after `turn.completed`, `stopped` when stopped, otherwise
-  `failed`, with Codex's last agent message or error. `acknowledge` deletes a
-  reported run.
+  `failed`, with Codex's last agent message or error. `acknowledge` removes the event log and marks its action receipt acknowledged.
 
 Run records under `/home/gem/.local/state/kadan/codex/runs` are named by the agent
-action's ID and hold the PID, its start time, the thread ID, the folder and the
+action's ID and hold the supervisor PID, its start time, computer incarnation, thread ID, folder and
 origin (agent, conversation and run that started it). The action ID makes `start`
 idempotent: a runner restart that replays `codex_start` gets the original run back.
-Records outlive their process until acknowledged, so a finished run's result
-survives Kadan and runner restarts. Threads started outside Kadan appear in the list
+Acknowledged receipts remain to prevent a delayed replay from launching again. Unacknowledged results
+survive Kadan and runner restarts. Threads started outside Kadan appear in the list
 but are never reported as running and produce no events.
+
+A detached supervisor becomes a Linux child subreaper before launching Codex.
+It persists its identity under the run lock, then launches Codex; the requesting
+Bash session does not own Codex. The supervisor adopts orphaned descendants,
+signals them through PID file descriptors, reaps them and confirms cleanup before
+publishing an outcome. Failure to acquire ownership prevents launch. Nonzero
+exit overrides a success event. If a supervisor disappears or cleanup fails,
+new starts are blocked for that computer incarnation. A computer restart releases
+that ownership and reports interrupted work as failed. Reservations and resume
+checks are serialized so simultaneous follow-ups cannot overlap on one thread.
+
+Sign-in retains the preceding device-login lifecycle: nonblocking start, pending
+cancellation, checked logout, and process identities fenced by kernel boot and
+PID 1 start time. Auth operations use their own lock; thread reads do not depend
+on successful authentication reads.
 
 ## Completion events
 
@@ -54,13 +67,12 @@ The runner's `CodexEvents` loop polls `finished` every five seconds. For each ru
 asks Tsuchi to queue an event run in the origin conversation with
 `kind: "codex"` and the outcome as content, using a run ID derived from the Codex
 run, and only then acknowledges it. A crash between the two repeats the request,
-which Tsuchi answers with the existing run. A 404 or 409 (conversation missing or
-trashed) drops the result. The event run's context ends with
+which Tsuchi answers with the existing run. A 404 or the specific trashed-conversation 409 drops the result. Other conflicts remain for retry and do not prevent delivery to other conversations. The event run's context ends with
 `Codex thread event: {...}`, and the agent reports the outcome with `send_message`.
 
 ## API and agent tools
 
-`GET /api/computer/coding` returns sign-in state and recent threads.
+`GET /api/computer/coding` returns recent threads; `/login/status` returns sign-in state independently.
 `POST /api/computer/coding/login` and `/logout` change sign-in.
 `GET /api/computer/coding/threads/{id}` reads a thread, and
 `POST /api/computer/coding/threads/{id}/stop` stops it. The browser cannot start
