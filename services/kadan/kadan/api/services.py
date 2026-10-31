@@ -11,8 +11,9 @@ from .pydantic_models.inference import (
     HikariModelLifecycle,
     HikariModels,
 )
-from .pydantic_models.resources import Message, Resource, ResourceKind
+from .pydantic_models.resources import Memory, Message, Resource, ResourceKind
 from .routes.agents.conversations.notes import NoteInput
+from .routes.agents.memories import MemoryUpdate
 from .routes.agents.resources import PersonaUpdate
 from .routes.status import InferenceState, ServiceState, Status
 from .run_client import RunClient
@@ -296,6 +297,47 @@ class LocalServices:
             "Tsuchi", "PUT", f"/api/agents/{key}/resources/{resource_id}", json=content
         )
         return parse_resource(result)
+
+    async def update_memory(
+        self, key: str, resource_id: UUID, value: MemoryUpdate
+    ) -> Memory:
+        current = await self.resource_of_kinds(key, resource_id, (ResourceKind.MEMORY,))
+        require_active(current, ResourceKind.MEMORY, value.expected_version)
+        content = current.model_dump(
+            mode="json",
+            exclude={
+                "id",
+                "agent_key",
+                "version",
+                "created_at",
+                "updated_at",
+                "deleted_at",
+            },
+        )
+        content.update(value.model_dump(mode="json"))
+        result = parse_resource(
+            await self.json_request(
+                "Tsuchi",
+                "PUT",
+                f"/api/agents/{key}/resources/{resource_id}",
+                json=content,
+            )
+        )
+        if (
+            result.agent_key != key
+            or result.id != resource_id
+            or result.kind != ResourceKind.MEMORY
+            or result.deleted_at is not None
+            or result.version != value.expected_version + 1
+            or result.title != value.title
+            or result.markdown != value.markdown
+        ):
+            raise ServiceError(
+                "Tsuchi did not confirm this memory correction. Check the saved memory before retrying.",
+                502,
+                "invalid_response",
+            )
+        return Memory.model_validate(result.model_dump())
 
     async def append(
         self, key: str, conversation_id: UUID, version: int, message: Message
