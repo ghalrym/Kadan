@@ -78,7 +78,8 @@ class CodexEvents:
                 except ServiceError as error:
                     if error.status != 404 and not (
                         error.status == 409
-                        and str(error) == "Restore this item from trash before editing it"
+                        and str(error)
+                        == "Restore this item from trash before editing it"
                     ):
                         raise
                     # The conversation is gone or no longer accepts runs.

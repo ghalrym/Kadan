@@ -83,7 +83,13 @@ def test_storage_outage_leaves_the_run_for_the_next_poll(boundary):
     assert boundary.acknowledged == []
 
 
-@pytest.mark.parametrize("status,message", [(404, "Conversation is gone."), (409, "Restore this item from trash before editing it")])
+@pytest.mark.parametrize(
+    "status,message",
+    [
+        (404, "Conversation is gone."),
+        (409, "Restore this item from trash before editing it"),
+    ],
+)
 def test_missing_conversation_drops_the_result(boundary, status, message):
     run = finished()
     boundary.finished = [run]
