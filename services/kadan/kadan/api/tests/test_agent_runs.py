@@ -17,11 +17,17 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from kadan.api.config import ServiceError
 from kadan.api.pydantic_models.agent_runs import AgentRun, ImageJob, RunMessage
 from kadan.api.pydantic_models.resources import Message, Resource, ResourceKind
-from kadan.runner.agent_inference import ToolCommand, tool_characters
+from kadan.runner.agent_inference import (
+    REASONING_TOKENS,
+    REPLY_TOKENS,
+    ToolCommand,
+    tool_characters,
+)
 from kadan.runner.agent_runs import (
     ARGUMENT_REJECTION,
     MAX_ARGUMENT_CORRECTIONS,
     MAX_CONTEXT,
+    RESERVED_TOKENS,
     AgentRuns,
     RunState,
     context_characters,
@@ -1354,8 +1360,10 @@ def test_restart_never_repeats_an_unconfirmed_computer_side_effect(
         (None, MAX_CONTEXT),
         (1, 0),
         (1024, 0),
-        (4096, (4096 - 1024) * 3),
-        (65536, (65536 - 1024) * 3),
+        (4096, 0),
+        (RESERVED_TOKENS, 0),
+        (RESERVED_TOKENS + 1, 3),
+        (65536, (65536 - REASONING_TOKENS - REPLY_TOKENS - 1024) * 3),
     ],
 )
 def test_transcript_budget_follows_the_models_context_window(tokens, expected):
@@ -1389,7 +1397,9 @@ def test_smaller_model_window_drops_history_before_inference(boundary):
     # Leave room for bound tool schemas while keeping the older turn too large.
     async def inference_status():
         return SimpleNamespace(
-            state="ready", model_id="selected-model", context_limit=8192
+            state="ready",
+            model_id="selected-model",
+            context_limit=RESERVED_TOKENS + 7168,
         )
 
     boundary.inference_status = inference_status
@@ -1409,7 +1419,9 @@ def test_smaller_model_window_drops_history_before_inference(boundary):
 def test_smaller_model_window_rejects_an_oversized_saved_transcript(boundary):
     async def inference_status():
         return SimpleNamespace(
-            state="ready", model_id="selected-model", context_limit=4096
+            state="ready",
+            model_id="selected-model",
+            context_limit=RESERVED_TOKENS + 3072,
         )
 
     boundary.inference_status = inference_status
@@ -1423,7 +1435,9 @@ def test_smaller_model_window_rejects_an_oversized_saved_transcript(boundary):
     assert boundary.controller.inference.calls == []
 
 
-@pytest.mark.parametrize("context_limit", [1, 1024, 1025, 4096])
+@pytest.mark.parametrize(
+    "context_limit", [1, 1024, 1025, 4096, RESERVED_TOKENS, RESERVED_TOKENS + 1]
+)
 @pytest.mark.parametrize("saved_transcript", [False, True])
 def test_window_without_room_for_tools_fails_before_inference(
     boundary, context_limit, saved_transcript
@@ -2452,7 +2466,10 @@ def test_selected_reference_over_context_budget_fails_without_truncation(boundar
     boundary.current.references = [selected_reference("x" * 12000)]
     context = asyncio.run(boundary.controller.context(boundary.current))
     reserve = tool_characters(boundary.controller.bound_tools(boundary.current))
-    tokens = 1024 + (reserve + sum(len(item.content) for item in context) + 1000) // 3
+    tokens = (
+        RESERVED_TOKENS
+        + (reserve + sum(len(item.content) for item in context) + 1000) // 3
+    )
 
     async def status():
         return SimpleNamespace(

@@ -44,6 +44,8 @@ from ..api.run_client import RunClient
 from ..api.services import parse_resource
 from .agent_inference import (
     AgentInference,
+    REASONING_TOKENS,
+    REPLY_TOKENS,
     ToolCommand,
     parse_command,
     tool_characters,
@@ -85,9 +87,9 @@ ARGUMENT_REJECTION = "Rejected tool arguments: "
 # Transcript budget in characters when Hikari does not report a context window.
 MAX_CONTEXT = 48000
 # Tool results are JSON, which tokenizes densely; three characters per token
-# keeps a transcript inside the window. The reserve covers the reply and template.
+# estimates transcript space. Reserve generation separately from template overhead.
 CHARACTERS_PER_TOKEN = 3
-RESERVED_TOKENS = 1024
+RESERVED_TOKENS = REASONING_TOKENS + REPLY_TOKENS + 1024
 TOOL_RESULT = "Tool result: "
 CODING_POLL_SECONDS = 2
 CODING_RECOVERY_SECONDS = 120
