@@ -10,10 +10,10 @@ from kadan.runner.agent_inference import ToolCommand
 from kadan.runner.agent_runs import validate
 from kadan.runner.tools import (
     ALL_TOOLS,
+    COMPUTER_AGENT_TOOLS,
     COMPUTER_TOOLS,
     CONVERSATION_TOOLS,
     TOOLS_BY_NAME,
-    VISION_TOOLS,
 )
 from kadan.runner.tools.base import body
 from kadan.runner.tools.bash import bash_exec
@@ -73,15 +73,21 @@ def required(schema: dict, root: dict) -> dict:
 
 
 def test_every_tool_has_a_unique_name_and_a_description():
-    assert len(ALL_TOOLS) == 33
-    assert len(TOOLS_BY_NAME) == len(ALL_TOOLS) + len(VISION_TOOLS)
+    assert len(ALL_TOOLS) == 22
+    assert len(TOOLS_BY_NAME) == len(ALL_TOOLS) + len(COMPUTER_AGENT_TOOLS)
     assert len(CONVERSATION_TOOLS) == 11
-    assert all(tool.description for tool in ALL_TOOLS)
+    assert all(tool.description for tool in [*ALL_TOOLS, *COMPUTER_AGENT_TOOLS])
+
+
+def test_codex_stays_with_the_conversation_agent():
+    names = {tool.name for tool in ALL_TOOLS}
+    assert {"codex_start", "codex_threads", "codex_stop", "use_computer"} <= names
+    assert not names & {tool.name for tool in COMPUTER_AGENT_TOOLS}
 
 
 @pytest.mark.parametrize(
     "tool",
-    [tool for tool in COMPUTER_TOOLS if not tool.name.startswith("codex_")],
+    COMPUTER_TOOLS,
     ids=lambda tool: tool.name,
 )
 def test_every_computer_tool_calls_one_route_with_its_declared_method(tool):

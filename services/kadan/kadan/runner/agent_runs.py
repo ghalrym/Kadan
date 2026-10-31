@@ -34,13 +34,14 @@ from ..api.pydantic_models.agent_runs import (
     RunMessage,
 )
 from ..api.pydantic_models.coding import CodexOrigin, CodexTask
+from ..api.pydantic_models.computer import ComputerTask
 from ..api.pydantic_models.resources import Message, Resource, ResourceKind
 from ..api.run_client import RunClient
 from ..api.services import parse_resource
 from .agent_inference import (
-    AgentInference,
     REASONING_TOKENS,
     REPLY_TOKENS,
+    AgentInference,
     ToolCommand,
     parse_command,
     tool_characters,
@@ -53,14 +54,17 @@ from .conversation_history import (
 from .memories import AgentMemories
 from .tools import (
     ALL_TOOLS,
+    CODEX_TOOLS,
     CODING_TOOLS,
     CONVERSATION_TOOLS,
+    DELEGATION_TOOLS,
     MEMORY_TOOLS,
     PERSONA_TOOLS,
     TOOLS_BY_NAME,
-    VISION_TOOLS,
 )
+from .tools.base import invoke_computer_tool
 from .tools.coding import CodexStartArguments
+from .tools.computer import UseComputerArguments
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
 from .tools.persona import UpdatePersonaArguments
 from .tools.workspace import (
@@ -214,6 +218,30 @@ class RunConversation:
             SendMessageArguments(content=args.message, end_run=True)
         )
         return started.model_dump(mode="json")
+
+    async def use_computer(self, args: UseComputerArguments) -> dict:
+        if not self.runs.services.sandbox.configured:
+            return {"error": "No computer is configured for this agent."}
+        # Keyed by this action ID, so a replay after a restart returns the
+        # original task instead of queuing another.
+        task = ComputerTask.model_validate(
+            await self.runs.services.json_request(
+                "Tsuchi",
+                "POST",
+                f"/api/agents/{self.run.agent_key}/computer-tasks",
+                json={
+                    "id": str(self.action_id),
+                    "instructions": args.instructions,
+                    "origin_run_id": str(self.run.id),
+                    "worker_id": str(self.runs.owner),
+                },
+            )
+        )
+        self.runs.services.computer.wakeup.set()
+        await self.send_message(
+            SendMessageArguments(content=args.message, end_run=True)
+        )
+        return {"tool": "use_computer", "task_id": str(task.id), "status": task.status}
 
     async def send_message(self, args: SendMessageArguments) -> dict:
         message = Message(id=self.action_id, role="assistant", content=args.content)
@@ -592,10 +620,11 @@ class AgentRuns(RunClient):
                 ),
             )
         elif run.trigger_event:
-            trigger = RunMessage(
-                role="user",
-                content="Codex thread event: " + run.trigger_event.content,
-            )
+            label = {
+                "codex": "Codex thread event: ",
+                "computer": "Computer task event: ",
+            }[run.trigger_event.kind]
+            trigger = RunMessage(role="user", content=label + run.trigger_event.content)
         else:
             trigger = RunMessage(
                 role="user",
@@ -620,6 +649,27 @@ class AgentRuns(RunClient):
                     for job in pending
                 ]
             )
+        if self.services.sandbox.configured:
+            tasks = [
+                ComputerTask.model_validate(value)
+                for value in await self.services.json_request(
+                    "Tsuchi", "GET", f"/api/agents/{run.agent_key}/computer-tasks"
+                )
+            ]
+            if tasks:
+                trigger.content += (
+                    "\nPending computer tasks (do not resubmit): "
+                    + json.dumps(
+                        [
+                            {
+                                "task_id": str(task.id),
+                                "status": task.status,
+                                "instructions": task.instructions[:500],
+                            }
+                            for task in tasks
+                        ]
+                    )
+                )
         if limit is None:
             limit = MAX_CONTEXT - tool_characters(self.bound_tools(run))
         budget = limit - len(system.content) - len(trigger.content)
@@ -779,7 +829,7 @@ class AgentRuns(RunClient):
 
     def bound_tools(self, run: AgentRun) -> list[StructuredTool]:
         tools = (
-            [*ALL_TOOLS, *VISION_TOOLS]
+            ALL_TOOLS
             if self.services.sandbox.configured
             else [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]
         )
@@ -815,16 +865,24 @@ class AgentRuns(RunClient):
 
         elif tool in MEMORY_TOOLS:
             result = await self.use_memory(tool, command, run, state.replayed)
-        elif tool in CONVERSATION_TOOLS or tool in CODING_TOOLS:
+        elif (
+            tool in CONVERSATION_TOOLS
+            or tool in CODING_TOOLS
+            or (tool in DELEGATION_TOOLS)
+        ):
             result = await tool.ainvoke(
                 command.arguments,
                 config={"configurable": {"conversation": conversation}},
             )
-        else:
+        elif tool in CODEX_TOOLS:
             result = {
                 "tool": tool.name,
-                **await self.use_computer(tool, command, state.replayed),
+                **await invoke_computer_tool(
+                    tool, command.arguments, self.services.sandbox, state.replayed
+                ),
             }
+        else:
+            result = {"tool": command.tool, "error": "This tool is not available."}
         if conversation.finished:
             run = await self.update(
                 run, status="completed", owner_id=None, lease_expires_at=None
@@ -855,26 +913,6 @@ class AgentRuns(RunClient):
                         )
                     }
                 },
-            )
-        except (ServiceError, ValidationError) as error:
-            return {"error": str(error)}
-
-    async def use_computer(
-        self, tool: StructuredTool, command: ToolCommand, replayed: bool
-    ) -> dict:
-        if not self.services.sandbox.configured:
-            return {"error": "No computer is configured for this agent."}
-        if replayed and tool.metadata["method"] != "GET":
-            # The sandbox has no idempotency keys, so a restart must not
-            # repeat a side effect that may already have happened.
-            return {
-                "error": "The runner restarted before this operation reported "
-                "a result. It may or may not have run; check before retrying."
-            }
-        try:
-            return await tool.ainvoke(
-                command.arguments,
-                config={"configurable": {"computer": self.services.sandbox}},
             )
         except (ServiceError, ValidationError) as error:
             return {"error": str(error)}

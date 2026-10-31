@@ -10,7 +10,15 @@ from kadan_tracing import RequestTracing, configure, shutdown
 
 from .config import ServiceError, Settings
 from .routes import agents, calls, computer, health, runners, status, transcriptions
-from .routes.agents import assets, chain, memories, pets, resources, workspace
+from .routes.agents import (
+    assets,
+    chain,
+    memories,
+    pets,
+    resources,
+    workspace,
+)
+from .routes.agents import computer as agent_computer
 from .routes.agents.assets import content
 from .routes.agents.conversations import notes, results, runs
 from .routes.computer import coding, screenshot, vnc
@@ -55,6 +63,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         memories.router,
         chain.router,
         pets.router,
+        agent_computer.router,
         assets.router,
         content.router,
         notes.router,

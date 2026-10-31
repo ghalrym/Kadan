@@ -11,7 +11,9 @@ from typing import Any, get_type_hints
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
+
+from ...api.config import ServiceError
 
 
 class Arguments(BaseModel):
@@ -55,6 +57,32 @@ def computer_tool(
     repeated, because the sandbox has no idempotency keys.
     """
     return lambda function: register(function, "computer", {"method": method})
+
+
+async def invoke_computer_tool(
+    tool: StructuredTool, arguments: dict[str, Any], computer: Any, replayed: bool
+) -> dict:
+    """Run one computer tool, reporting failures as results rather than errors."""
+    if not computer.configured:
+        return {"error": "No computer is configured for this agent."}
+    if replayed and tool.metadata["method"] != "GET":
+        # The sandbox has no idempotency keys, so a restart must not
+        # repeat a side effect that may already have happened.
+        return {
+            "error": "The runner restarted before this operation reported "
+            "a result. It may or may not have run; check before retrying."
+        }
+    try:
+        return await tool.ainvoke(
+            arguments, config={"configurable": {"computer": computer}}
+        )
+    except (ServiceError, ValidationError) as error:
+        return {"error": str(error)}
+
+
+def task_tool(function: Callable[..., Awaitable[Any]]) -> StructuredTool:
+    """A tool that acts on the computer agent's current task."""
+    return register(function, "task", {})
 
 
 def conversation_tool(function: Callable[..., Awaitable[Any]]) -> StructuredTool:

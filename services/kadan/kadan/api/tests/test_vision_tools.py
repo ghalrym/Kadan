@@ -9,7 +9,7 @@ import pytest
 
 from kadan.api.config import ServiceError, Settings
 from kadan.runner.agent_runs import AgentRuns
-from kadan.runner.tools import ALL_TOOLS, VISION_TOOLS
+from kadan.runner.tools import ALL_TOOLS, COMPUTER_AGENT_TOOLS, VISION_TOOLS
 from kadan.runner.tools.vision import computer_look
 
 
@@ -54,7 +54,7 @@ def test_worker_failure_is_reported_without_fabricating_an_observation():
         invoke(computer(response=httpx.Response(503)))
 
 
-def test_vision_is_available_only_when_the_agent_has_a_computer():
+def test_vision_belongs_to_the_computer_agent():
     owner = SimpleNamespace(
         services=SimpleNamespace(
             settings=Settings(_env_file=None),
@@ -63,9 +63,7 @@ def test_vision_is_available_only_when_the_agent_has_a_computer():
     )
     run = SimpleNamespace(references=[])
     assert AgentRuns.bound_tools(owner, run) == [
-        tool
-        for tool in [*ALL_TOOLS, *VISION_TOOLS]
-        if tool.name != "read_request_references"
+        tool for tool in ALL_TOOLS if tool.name != "read_request_references"
     ]
-    owner.services.sandbox.configured = False
     assert not any(tool in VISION_TOOLS for tool in AgentRuns.bound_tools(owner, run))
+    assert all(tool in COMPUTER_AGENT_TOOLS for tool in VISION_TOOLS)

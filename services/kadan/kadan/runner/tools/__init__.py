@@ -1,4 +1,4 @@
-"""Every tool the agent has, bound to the model with `bind_tools`."""
+"""Every tool the conversation and computer agents have, bound with `bind_tools`."""
 
 from langchain_core.tools import StructuredTool
 
@@ -7,6 +7,7 @@ from . import (
     browser,
     code,
     coding,
+    computer,
     conversation,
     display,
     file,
@@ -32,9 +33,12 @@ CONVERSATION_TOOLS: list[StructuredTool] = [
 ]
 MEMORY_TOOLS: list[StructuredTool] = memory.TOOLS
 CODING_TOOLS: list[StructuredTool] = coding.START_TOOLS
+# Codex threads stay with the conversation agent; they run on the computer.
+CODEX_TOOLS: list[StructuredTool] = coding.TOOLS
+DELEGATION_TOOLS: list[StructuredTool] = computer.TOOLS
 PERSONA_TOOLS: list[StructuredTool] = persona.TOOLS
+# Only the computer agent binds these.
 COMPUTER_TOOLS: list[StructuredTool] = [
-    *coding.TOOLS,
     *browser.TOOLS,
     *shell.TOOLS,
     *bash.TOOLS,
@@ -49,12 +53,15 @@ COMPUTER_TOOLS: list[StructuredTool] = [
     *display.TOOLS,
     *util.TOOLS,
 ]
+TASK_TOOLS: list[StructuredTool] = computer.TASK_TOOLS
+VISION_TOOLS: list[StructuredTool] = vision.TOOLS
 ALL_TOOLS = [
     *CONVERSATION_TOOLS,
     *MEMORY_TOOLS,
     *PERSONA_TOOLS,
-    *COMPUTER_TOOLS,
     *CODING_TOOLS,
+    *CODEX_TOOLS,
+    *DELEGATION_TOOLS,
 ]
-VISION_TOOLS: list[StructuredTool] = vision.TOOLS
-TOOLS_BY_NAME = {tool.name: tool for tool in [*ALL_TOOLS, *VISION_TOOLS]}
+COMPUTER_AGENT_TOOLS = [*COMPUTER_TOOLS, *VISION_TOOLS, *TASK_TOOLS]
+TOOLS_BY_NAME = {tool.name: tool for tool in [*ALL_TOOLS, *COMPUTER_AGENT_TOOLS]}

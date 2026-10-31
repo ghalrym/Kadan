@@ -1,3 +1,4 @@
+import json
 import re
 import sqlite3
 from collections.abc import Iterator
@@ -18,6 +19,11 @@ from .models import (
     AgentRun,
     AgentRunState,
     Asset,
+    ComputerSteering,
+    ComputerTask,
+    ComputerTaskOrigin,
+    ComputerThread,
+    ComputerThreadState,
     ExportManifest,
     ExportRevision,
     ImageJob,
@@ -34,12 +40,12 @@ from .models import (
     PetState,
     ReferenceSnapshot,
     RequestReference,
-    RunEvent,
     Resource,
     ResourceInput,
     ResourceKind,
     ResourceRecord,
     ResourceVersion,
+    RunEvent,
     Runner,
     Stats,
     resource_adapter,
@@ -144,6 +150,20 @@ class Repository:
                     status TEXT NOT NULL, updated_at TEXT NOT NULL, data TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS image_jobs_status ON image_jobs(status);
+                CREATE TABLE IF NOT EXISTS computer_threads (
+                    agent_key TEXT PRIMARY KEY REFERENCES agents(key), data TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS computer_tasks (
+                    id TEXT PRIMARY KEY, agent_key TEXT NOT NULL REFERENCES agents(key),
+                    status TEXT NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS computer_tasks_status ON computer_tasks(status);
+                CREATE TABLE IF NOT EXISTS computer_steering (
+                    id TEXT PRIMARY KEY, agent_key TEXT NOT NULL REFERENCES agents(key),
+                    task_id TEXT NOT NULL REFERENCES computer_tasks(id),
+                    consumed INTEGER NOT NULL, created_at TEXT NOT NULL, data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS computer_steering_pending ON computer_steering(agent_key, consumed);
                 CREATE TABLE IF NOT EXISTS activity (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                     agent_key TEXT NOT NULL REFERENCES agents(key), data TEXT NOT NULL
@@ -964,6 +984,348 @@ class Repository:
             return updated
 
     @staticmethod
+    def _computer_task(db: sqlite3.Connection, key: str, task_id: UUID) -> ComputerTask:
+        row = db.execute(
+            "SELECT data FROM computer_tasks WHERE agent_key = ? AND id = ?",
+            (key, str(task_id)),
+        ).fetchone()
+        if row is None:
+            raise StorageError("Computer task not found", 404)
+        return ComputerTask.model_validate_json(row[0])
+
+    @staticmethod
+    def _save_computer_task(db: sqlite3.Connection, task: ComputerTask) -> None:
+        db.execute(
+            """INSERT INTO computer_tasks VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET status=excluded.status, data=excluded.data""",
+            (
+                str(task.id),
+                task.agent_key,
+                task.status,
+                task.created_at.isoformat(),
+                task.model_dump_json(),
+            ),
+        )
+
+    @staticmethod
+    def _active_computer_tasks(
+        db: sqlite3.Connection, key: str | None = None
+    ) -> list[ComputerTask]:
+        query = "SELECT data FROM computer_tasks WHERE status IN ('queued', 'running')"
+        rows = (
+            db.execute(query + " AND agent_key = ?", (key,))
+            if key
+            else db.execute(query)
+        )
+        return sorted(
+            (ComputerTask.model_validate_json(row[0]) for row in rows),
+            key=lambda task: (task.created_at, task.id),
+        )
+
+    def _computer_thread(self, db: sqlite3.Connection, key: str) -> ComputerThread:
+        self._agent(db, key)
+        row = db.execute(
+            "SELECT data FROM computer_threads WHERE agent_key = ?", (key,)
+        ).fetchone()
+        thread = (
+            ComputerThread.model_validate_json(row[0])
+            if row
+            else ComputerThread(agent_key=key, version=1, updated_at=utc_now())
+        )
+        thread.steering = sorted(
+            (
+                ComputerSteering.model_validate(
+                    {**json.loads(item[0]), "task_id": item[1]}
+                )
+                for item in db.execute(
+                    "SELECT data, task_id FROM computer_steering WHERE agent_key = ? AND consumed = 0",
+                    (key,),
+                )
+            ),
+            key=lambda item: (item.created_at, item.id),
+        )
+        return thread
+
+    @staticmethod
+    def _computer_event(db: sqlite3.Connection, task: ComputerTask) -> None:
+        # Like image results, the terminal state and its wake-up event share
+        # one transaction, so a retry cannot lose or duplicate the event.
+        if task.origin is None or task.event_run_id is None:
+            return
+        origin = Repository._run(db, task.agent_key, task.origin.run_id)
+        if db.execute(
+            "SELECT 1 FROM agent_runs WHERE id = ?", (str(task.event_run_id),)
+        ).fetchone():
+            raise StorageError("The computer event run ID is already in use", 409)
+        now = utc_now()
+        content = json.dumps(
+            {
+                "task_id": str(task.id),
+                "status": task.status,
+                "instructions": task.instructions[:2000],
+                "summary": (task.summary or "")[:6000],
+            },
+            ensure_ascii=False,
+        )
+        Repository._save_run(
+            db,
+            AgentRun(
+                id=task.event_run_id,
+                trace_parent=carrier().get("traceparent"),
+                agent_key=task.agent_key,
+                conversation_id=task.origin.conversation_id,
+                trigger_event=RunEvent(kind="computer", content=content),
+                persona_id=origin.persona_id,
+                references=origin.references,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            ),
+        )
+
+    @traced("kadan.storage.create_computer_task")
+    def create_computer_task(
+        self, key: str, task_id: UUID, instructions: str, run_id: UUID, worker_id: UUID
+    ) -> ComputerTask:
+        """Queue a task handed over by a conversation run, idempotent by its ID."""
+        if not instructions.strip():
+            raise StorageError("Describe what to do on the computer", 409)
+        with self.connect(write=True) as db:
+            run = self._run(db, key, run_id)
+            row = db.execute(
+                "SELECT data FROM computer_tasks WHERE id = ?", (str(task_id),)
+            ).fetchone()
+            if row is not None:
+                current = ComputerTask.model_validate_json(row[0])
+                if (
+                    current.agent_key == key
+                    and current.instructions == instructions
+                    and current.origin is not None
+                    and current.origin.run_id == run_id
+                ):
+                    return current
+                raise StorageError("This computer task ID is already in use", 409)
+            self._owned_run(db, run, worker_id)
+            self._conversation(db, key, run.conversation_id)
+            now = utc_now()
+            task = ComputerTask(
+                id=task_id,
+                agent_key=key,
+                instructions=instructions,
+                origin=ComputerTaskOrigin(
+                    conversation_id=run.conversation_id, run_id=run_id
+                ),
+                event_run_id=uuid5(task_id, "event"),
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            self._save_computer_task(db, task)
+            return task
+
+    @traced("kadan.storage.computer_request")
+    def computer_request(
+        self, key: str, request_id: UUID, content: str
+    ) -> tuple[str, ComputerTask]:
+        """A user request: steering for the active task, otherwise a new task.
+
+        Both happen in one transaction, so a request is never left waiting
+        behind a task that has just finished.
+        """
+        if not content.strip():
+            raise StorageError("Describe what to do on the computer", 409)
+        with self.connect(write=True) as db:
+            self._agent(db, key)
+            row = db.execute(
+                "SELECT agent_key, task_id FROM computer_steering WHERE id = ?",
+                (str(request_id),),
+            ).fetchone()
+            if row is not None:
+                if row[0] != key:
+                    raise StorageError("This request ID is already in use", 409)
+                return "steering", self._computer_task(db, key, UUID(row[1]))
+            row = db.execute(
+                "SELECT data FROM computer_tasks WHERE id = ?", (str(request_id),)
+            ).fetchone()
+            if row is not None:
+                current = ComputerTask.model_validate_json(row[0])
+                if current.agent_key != key or current.origin is not None:
+                    raise StorageError("This request ID is already in use", 409)
+                return "task", current
+            now = utc_now()
+            active = self._active_computer_tasks(db, key)
+            if active:
+                steering = ComputerSteering(
+                    id=request_id, task_id=active[0].id, content=content, created_at=now
+                )
+                db.execute(
+                    "INSERT INTO computer_steering VALUES (?, ?, ?, 0, ?, ?)",
+                    (
+                        str(request_id),
+                        key,
+                        str(active[0].id),
+                        now.isoformat(),
+                        steering.model_dump_json(),
+                    ),
+                )
+                return "steering", active[0]
+            task = ComputerTask(
+                id=request_id,
+                agent_key=key,
+                instructions=content,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            self._save_computer_task(db, task)
+            return "task", task
+
+    def active_computer_tasks(self, key: str | None = None) -> list[ComputerTask]:
+        with self.connect() as db:
+            if key:
+                self._agent(db, key)
+            return self._active_computer_tasks(db, key)
+
+    def latest_computer_task(self, key: str) -> ComputerTask | None:
+        with self.connect() as db:
+            self._agent(db, key)
+            row = db.execute(
+                "SELECT data FROM computer_tasks WHERE agent_key = ? "
+                "ORDER BY created_at DESC, id DESC LIMIT 1",
+                (key,),
+            ).fetchone()
+            return ComputerTask.model_validate_json(row[0]) if row else None
+
+    def get_computer_task(self, key: str, task_id: UUID) -> ComputerTask:
+        with self.connect() as db:
+            return self._computer_task(db, key, task_id)
+
+    def cancel_computer_task(self, key: str, task_id: UUID) -> ComputerTask:
+        with self.connect(write=True) as db:
+            current = self._computer_task(db, key, task_id)
+            if current.status in {"completed", "failed", "cancelled"}:
+                return current
+            # A running task stops after its current computer action; the
+            # worker reads the cancellation before its next step.
+            updated = current.model_copy(
+                update={
+                    "status": "cancelled",
+                    "summary": "Cancelled by the user.",
+                    "version": current.version + 1,
+                    "updated_at": utc_now(),
+                }
+            )
+            self._save_computer_task(db, updated)
+            db.execute(
+                "UPDATE computer_steering SET consumed = 1 WHERE agent_key = ? AND task_id = ?",
+                (key, str(task_id)),
+            )
+            self._computer_event(db, updated)
+            return updated
+
+    def get_computer_thread(self, key: str) -> ComputerThread:
+        with self.connect() as db:
+            return self._computer_thread(db, key)
+
+    @traced("kadan.storage.update_computer_thread")
+    def update_computer_thread(
+        self,
+        key: str,
+        value: ComputerThreadState,
+        expected_version: int,
+        worker_id: UUID,
+        consumed_steering_ids: list[UUID],
+        task_id: UUID | None = None,
+        task_status: str | None = None,
+        task_summary: str | None = None,
+    ) -> ComputerThread:
+        with self.connect(write=True) as db:
+            current = self._computer_thread(db, key)
+            self._check_version(current, expected_version)
+            now = utc_now()
+            live = current.owner_id is not None and current.lease_expires_at > now
+            if live and current.owner_id != worker_id:
+                raise StorageError("Another worker owns this computer thread", 409)
+            if not live:
+                if value.owner_id != worker_id:
+                    raise StorageError(
+                        "Claim the computer thread before updating it", 409
+                    )
+                if value.transcript != current.transcript:
+                    raise StorageError(
+                        "Claiming a computer thread cannot change its transcript", 409
+                    )
+            if value.owner_id is not None:
+                if value.owner_id != worker_id:
+                    raise StorageError(
+                        "A worker must own its computer thread lease", 409
+                    )
+                if not now < value.lease_expires_at <= now + timedelta(minutes=5):
+                    raise StorageError(
+                        "Computer thread lease must expire within five minutes", 409
+                    )
+            pending = {item.id for item in current.steering}
+            consumed = set(consumed_steering_ids)
+            if not consumed <= pending:
+                raise StorageError("This steering was already read", 409)
+            db.executemany(
+                "UPDATE computer_steering SET consumed = 1 WHERE id = ?",
+                [(str(item),) for item in consumed],
+            )
+            if task_id is not None:
+                task = self._computer_task(db, key, task_id)
+                if task.status == "cancelled":
+                    pass
+                elif task.status in {"completed", "failed"}:
+                    if task.status != task_status:
+                        raise StorageError("Finished computer tasks are immutable", 409)
+                elif task_status == "running":
+                    if task.status == "queued":
+                        task = task.model_copy(
+                            update={
+                                "status": "running",
+                                "version": task.version + 1,
+                                "updated_at": now,
+                            }
+                        )
+                        self._save_computer_task(db, task)
+                elif task_status in {"completed", "failed"}:
+                    task_pending = {
+                        item.id for item in current.steering if item.task_id == task_id
+                    }
+                    if task_pending - consumed:
+                        raise StorageError("New steering arrived for this task", 409)
+                    task = task.model_copy(
+                        update={
+                            "status": task_status,
+                            "summary": (task_summary or "")[:10000] or None,
+                            "version": task.version + 1,
+                            "updated_at": now,
+                        }
+                    )
+                    self._save_computer_task(db, task)
+                    self._computer_event(db, task)
+                else:
+                    raise StorageError("Invalid computer task state transition", 409)
+            updated = ComputerThread.model_validate(
+                {
+                    **current.model_dump(exclude={"steering"}),
+                    **value.model_dump(),
+                    "version": current.version + 1,
+                    "updated_at": now,
+                }
+            )
+            db.execute(
+                """INSERT INTO computer_threads VALUES (?, ?)
+                ON CONFLICT(agent_key) DO UPDATE SET data=excluded.data""",
+                (key, updated.model_dump_json(exclude={"steering"})),
+            )
+            updated.steering = [
+                item for item in current.steering if item.id not in consumed
+            ]
+            return updated
+
+    @staticmethod
     def _agent(db: sqlite3.Connection, key: str) -> Agent:
         row = db.execute("SELECT * FROM agents WHERE key = ?", (key,)).fetchone()
         if row is None:
@@ -1548,7 +1910,8 @@ class Repository:
 
     @staticmethod
     def _check_version(
-        current: Resource | Asset | PetJob | AgentRun | ImageJob, expected_version: int
+        current: Resource | Asset | PetJob | AgentRun | ImageJob | ComputerThread,
+        expected_version: int,
     ) -> None:
         if current.version != expected_version:
             raise StorageError("This item changed. Reload it before saving again.", 409)

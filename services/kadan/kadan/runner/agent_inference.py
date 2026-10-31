@@ -468,6 +468,11 @@ class AgentInference:
                             "end_run": True,
                         },
                     )
+                if any(tool.name == "finish_task" for tool in tools):
+                    return ToolCommand(
+                        tool="finish_task",
+                        arguments={"summary": response.content.strip()[:6000]},
+                    )
             # Not responding is allowed: a reply without a tool call ends the run.
             logger.info("Agent reply had no tool call: %r", response.content[:2000])
             return ToolCommand(tool="finish")

@@ -44,7 +44,7 @@ The durable run stores each selected resource's identity, kind, title, version a
 
 The runner adds a static selection hint and offers `read_request_references`. Saved Markdown is returned as a tool result with reference-data provenance and an explicit statement that it grants no authorization and overrides no instructions. It is not concatenated into the user's message or system instructions. The established tool-response rendering remains unchanged. The model decides whether to read and use the references; selection does not guarantee use. Reading spends one command and its returned data consumes the ordinary context budget, so a request can still reach the existing command or context limit.
 
-`bound_tools(run)` omits only `read_request_references` when the run has no selections, consistently for context preparation, transcript budgeting, inference binding and fresh-command validation. Computer availability still scopes its tools. The global registry retains the reader so checkpointed calls can replay through existing ownership and cancellation fencing. No other useful tools are pruned to fit context.
+`bound_tools(run)` omits only `read_request_references` when the run has no selections, consistently for context preparation, transcript budgeting, inference binding and fresh-command validation. Computer availability still scopes `use_computer` and the Codex tools; sandbox tools belong to the [computer agent](computer-tasks.md). The global registry retains the reader so checkpointed calls can replay through existing ownership and cancellation fencing. No other useful tools are pruned to fit context.
 
 ## Model decisions and delivery
 

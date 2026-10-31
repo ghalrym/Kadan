@@ -16,13 +16,16 @@ admission estimate, not the exact rendered LFM prompt length.
 | Configuration | Tools | LFM schema JSON bytes | JSON token estimate | Reserved tool characters | Reservation token estimate |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | No computer | 18 | 11,454 | 3,818 | 12,932 | 4,311 |
-| Computer | 33 | 25,950 | 8,650 | 28,622 | 9,541 |
-| Computer and vision | 34 | 26,427 | 8,809 | 29,118 | 9,706 |
+| Computer | 22 | 14,039 | 4,680 | 15,659 | 5,220 |
+| Computer agent | 14 | 13,732 | 4,578 | 15,754 | 5,252 |
+
+The computer agent's tools are bound only in its own thread, not in conversation
+runs. See [computer agent](computer-tasks.md).
 
 Token columns are explicitly estimates: ceiling of characters divided by three,
 matching Kadan's context-budget heuristic. No tokenizer was loaded. They are not
 token counts from the pinned LFM tokenizer and exclude its final chat-template
-overhead. The checked-in base `AGENT.md` adds 7,298 characters before personas,
+overhead. The checked-in base `AGENT.md` adds 8,200 characters before personas,
 history, event context and tool results. Those variable inputs must be measured
 separately for a particular run. The runner also reserves its reasoning and reply
 output caps plus 1,024 tokens for the template and includes at most 97 recent delivered messages.
@@ -41,13 +44,13 @@ from pathlib import Path
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from kadan.runner.agent_inference import tool_characters
 from kadan.runner.tools import (
-    ALL_TOOLS, CONVERSATION_TOOLS, MEMORY_TOOLS, PERSONA_TOOLS, VISION_TOOLS,
+    ALL_TOOLS, COMPUTER_AGENT_TOOLS, CONVERSATION_TOOLS, MEMORY_TOOLS, PERSONA_TOOLS,
 )
 
 groups = {
     "no computer": [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS],
     "computer": ALL_TOOLS,
-    "computer and vision": [*ALL_TOOLS, *VISION_TOOLS],
+    "computer agent": COMPUTER_AGENT_TOOLS,
 }
 for name, tools in groups.items():
     schemas = [convert_to_openai_tool(tool) for tool in tools]

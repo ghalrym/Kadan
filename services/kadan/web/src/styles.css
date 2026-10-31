@@ -2674,6 +2674,48 @@ dialog::backdrop {
   min-height: 0;
   background: #000;
 }
+.computer-work {
+  max-width: 260px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.computer-work.failed {
+  color: var(--error);
+}
+.computer-work.busy {
+  color: var(--accent);
+}
+.computer-request {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 10px 10px 14px;
+  border-top: 1px solid var(--line);
+}
+.computer-request input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+}
+.computer-request input:focus {
+  outline: none;
+  border-color: var(--accent-line);
+}
+.computer-request-error {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--error);
+  font-size: 12px;
+}
 /* Too narrow to split: the computer covers the chat until closed. */
 @media (max-width: 760px) {
   .computer-panel {
