@@ -51,8 +51,7 @@ log = logging.getLogger(__name__)
 
 PROTOCOL = 5
 
-# Features served by an inference worker; settings go to every worker and a
-# download goes to a worker of its checkpoint's type.
+# Features served by an inference worker; downloads go to the checkpoint owner.
 FEATURE_WORKERS = {
     "llm": "llm",
     "decisions": "decision",
@@ -62,6 +61,9 @@ FEATURE_WORKERS = {
     "image": "image",
     "video": "video",
 }
+
+# Native stores persist the transcription preference; LFM configure is only an ack.
+NATIVE_MODEL_STORES = frozenset(FEATURE_WORKERS.values())
 
 # A checkpoint's catalog kind and the worker type that downloads and runs it.
 CHECKPOINT_WORKERS = {
@@ -306,20 +308,24 @@ class WorkerHub:
             if base is not None
             else ModelStoreStatus(models=[])
         )
-        known = {model.id for model in snapshot.models}
+        visible = set(ModelAssignments().model_dump().values())
+        snapshot.models = []
+        known = set()
         for worker in self.workers.values():
-            if not worker.kind.startswith("lfm3_") or worker.models is None:
+            if worker.models is None:
                 continue
             for model in worker.models.models:
+                if model.id not in visible or model.id in known:
+                    continue
                 try:
-                    kind = experimental_worker(model.id)
+                    kind = experimental_worker(model.id) or CHECKPOINT_WORKERS.get(
+                        model.kind
+                    )
                 except InferenceFailure:
                     continue
-                if kind == worker.kind and model.id not in known:
+                if kind == worker.kind:
                     snapshot.models.append(model.model_copy(deep=True))
                     known.add(model.id)
-        visible = set(ModelAssignments().model_dump().values())
-        snapshot.models = [model for model in snapshot.models if model.id in visible]
         self.models = snapshot if base is not None or snapshot.models else None
 
     async def start(self):
@@ -509,11 +515,23 @@ class WorkerHub:
         return max(loaded or candidates, key=Worker.free_bytes)
 
     def _store_targets(self, request: InferenceTask) -> list[Worker]:
-        """Settings go to every worker; a download to one worker of its type per computer."""
+        """Route settings to persistence owners, downloads to checkpoint owners."""
         if request.operation == "configure":
-            model = requested_model(request)
-            kind = experimental_worker(model)
-            targets = self._ready(kind) if kind else self._ready()
+            if request.feature == "whisper_formatting":
+                targets = [
+                    worker
+                    for worker in self._ready()
+                    if worker.kind in NATIVE_MODEL_STORES
+                ]
+                if not targets:
+                    raise InferenceFailure(
+                        "No native model store is connected to save transcription settings.",
+                        503,
+                    )
+            else:
+                model = requested_model(request)
+                kind = experimental_worker(model)
+                targets = self._ready(kind) if kind else self._ready()
         else:
             kind = experimental_worker(request.input.model_id)
             for model in self.models.models if self.models is not None else []:
@@ -839,7 +857,11 @@ class WorkerHub:
     async def _synchronize(self, worker: Worker):
         """Bring a newly connected worker's settings in line with the primary."""
         primary = self.workers.get(self.primary or "")
-        if primary is None or primary is worker:
+        if (
+            worker.kind not in NATIVE_MODEL_STORES
+            or primary is None
+            or primary is worker
+        ):
             return
         source, target = primary.models, worker.models
         if source is None or target is None:
