@@ -123,13 +123,25 @@ function StorageBar({ rows }: { rows: CapabilityModel[] }) {
   )
 }
 
-function ModelRow({ capability, model, index }: CapabilityModel & { index: number }) {
+function ModelRow({ capability, model, selected, disabled, onSelect }: CapabilityModel & {
+  selected: boolean
+  disabled: boolean
+  onSelect: (selected: boolean) => void
+}) {
   const state = downloadState(model)
   const size = modelSize(model)
   const active = state === 'queued' || state === 'downloading'
   return (
     <li className={`model-row model-row--${state} tone-${capability.tone}`}>
-      <span className="model-row-index mono faint">{String(index + 1).padStart(2, '0')}</span>
+      <label className="model-row-choice">
+        <input
+          type="checkbox"
+          aria-label={`Select ${capability.label} for download`}
+          checked={selected}
+          disabled={disabled}
+          onChange={(event) => onSelect(event.target.checked)}
+        />
+      </label>
       <span className="model-row-swatch" aria-hidden="true" />
       <span className="model-row-label">
         <span className="model-row-capability">{capability.label}</span>
@@ -164,6 +176,7 @@ function ModelRow({ capability, model, index }: CapabilityModel & { index: numbe
  */
 export default function SettingsPage() {
   const [rows, setRows] = useState<CapabilityModel[] | null>(null)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [error, setError] = useState('')
   const [actionError, setActionError] = useState('')
   const [needsRefresh, setNeedsRefresh] = useState(false)
@@ -216,6 +229,7 @@ export default function SettingsPage() {
       const next = await work(AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]))
       if (!controller.signal.aborted) {
         setRows(next)
+        setSelectedIds([])
         setNeedsRefresh(false)
         setConfirming(false)
         setRefresh((value) => value + 1)
@@ -232,12 +246,10 @@ export default function SettingsPage() {
   }
 
   const complete = !!rows && modelsComplete(rows)
-  const canDownload = !!rows && modelsCanDownload(rows)
-  const notices = rows ? licenseNotices(rows) : []
-  const remaining = rows?.filter(({ model }) => model && model.status !== 'complete') ?? []
-  const remainingBytes = remaining.reduce((total, { model }) => total + modelSize(model), 0)
+  const selected = rows?.filter((row) => selectedIds.includes(row.capability.id) && modelsCanDownload([row])) ?? []
+  const notices = licenseNotices(selected)
+  const selectedBytes = selected.reduce((total, { model }) => total + modelSize(model), 0)
   const downloaded = rows?.filter(({ model }) => model?.status === 'complete').length ?? 0
-  const resuming = !!rows?.some(({ model }) => downloadState(model) === 'failed')
 
   const errorPanel = (actionError || error) && (
     <div role="alert" className="error-panel models-alert">
@@ -262,12 +274,12 @@ export default function SettingsPage() {
     <div className="scroll-page">
       {confirming && rows && (
         <Modal
-          title="Download Hikari’s models?"
+          title="Download selected models?"
           close={() => !submitting && setConfirming(false)}
           returnFocusId="models-download"
         >
           <p className="muted">
-            This downloads {remaining.length} {remaining.length === 1 ? 'model' : 'models'}, about {gigabytes(remainingBytes)}.
+            This downloads {selected.length} {selected.length === 1 ? 'model' : 'models'}, about {gigabytes(selectedBytes)}.
           </p>
           {notices.map((model) => (
             <p key={model.id} className="models-dialog-notice">
@@ -292,8 +304,8 @@ export default function SettingsPage() {
             <button
               type="button"
               className="button button--primary"
-              disabled={submitting || needsRefresh || (notices.length > 0 && !acknowledged)}
-              onClick={() => void run((signal) => downloadModels(rows, true, signal), 'Could not start downloads')}
+              disabled={submitting || needsRefresh || selected.length === 0 || (notices.length > 0 && !acknowledged)}
+              onClick={() => void run((signal) => downloadModels(selected, true, signal), 'Could not start downloads')}
             >
               {submitting ? 'Starting…' : notices.length ? 'Accept and download' : 'Download'}
             </button>
@@ -302,9 +314,7 @@ export default function SettingsPage() {
       )}
       <div className="settings-layout models-layout stack">
         <header className="models-intro">
-          <p className="eyebrow">System</p>
           <h1>Models</h1>
-          <p className="muted">Hikari runs one model for each capability. Download them once to get started.</p>
         </header>
         {!confirming && errorPanel}
         {!rows && !error && <p role="status" className="muted">Loading models…</p>}
@@ -326,16 +336,26 @@ export default function SettingsPage() {
                   id="models-download"
                   type="button"
                   className="button button--primary"
-                  disabled={submitting || downloading || needsRefresh || !canDownload}
+                  disabled={submitting || needsRefresh || selected.length === 0}
                   onClick={() => { setAcknowledged(false); setConfirming(true) }}
                 >
-                  {downloading ? 'Downloading…' : resuming ? 'Resume downloads' : 'Download models'}
+                  {submitting ? 'Starting…' : selected.length ? `Download selected (${selected.length})` : 'Download selected'}
                 </button>
               )}
             </header>
             <StorageBar rows={rows} />
             <ol className="model-list">
-              {rows.map((row, index) => <ModelRow key={row.capability.id} index={index} {...row} />)}
+              {rows.map((row) => (
+                <ModelRow
+                  key={row.capability.id}
+                  {...row}
+                  selected={selected.some((item) => item.capability.id === row.capability.id)}
+                  disabled={submitting || confirming || needsRefresh || !modelsCanDownload([row])}
+                  onSelect={(checked) => setSelectedIds((ids) => checked
+                    ? [...ids, row.capability.id]
+                    : ids.filter((id) => id !== row.capability.id))}
+                />
+              ))}
             </ol>
           </section>
         )}

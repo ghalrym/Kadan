@@ -50,7 +50,7 @@ export async function fetchModels(signal: AbortSignal): Promise<CapabilityModel[
 }
 
 /**
- * Queue every incomplete, idle checkpoint in order. The caller has shown the
+ * Queue the selected incomplete, idle checkpoints in order. The caller has shown the
  * license notices and obtained explicit acknowledgement.
  */
 export async function downloadModels(
