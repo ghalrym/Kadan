@@ -357,13 +357,25 @@ def test_folder_is_not_created_when_signed_out(home, tmp_path):
 
 
 def test_login_returns_existing_device_prompt():
-    prompt = {"state": "signing_in", "message": "Enter the code", "login": {"url": "https://example.com", "code": "ABCD-EFGH"}}
-    with patch.object(script, "setup", return_value=prompt), patch.object(script, "launch") as launch:
+    prompt = {
+        "state": "signing_in",
+        "message": "Enter the code",
+        "login": {"url": "https://example.com", "code": "ABCD-EFGH"},
+    }
+    with (
+        patch.object(script, "setup", return_value=prompt),
+        patch.object(script, "launch") as launch,
+    ):
         assert script.login() == prompt
         launch.assert_not_called()
 
 
 def test_login_starts_device_authorization():
-    with patch.object(script, "setup", return_value={"state": "signed_out"}), patch.object(script, "launch", return_value={"pid": 3}), patch.object(script, "write_json") as write, patch.object(script, "wait_for_login", return_value={"state": "signing_in"}):
+    with (
+        patch.object(script, "setup", return_value={"state": "signed_out"}),
+        patch.object(script, "launch", return_value={"pid": 3}),
+        patch.object(script, "write_json") as write,
+        patch.object(script, "wait_for_login", return_value={"state": "signing_in"}),
+    ):
         assert script.login() == {"state": "signing_in"}
         assert write.call_args.args[1] == {"pid": 3}
