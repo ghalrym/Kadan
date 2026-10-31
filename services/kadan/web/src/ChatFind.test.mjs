@@ -60,6 +60,7 @@ function chat(chain, storageValues = {}) {
     "lucide-react": {},
     "./Markdown": { default: "Markdown" },
     "./SaveChatResult": { default: "SaveChatResult" },
+    "./ChatExport": { default: "ChatExport" },
     "./Activity": { default: "Activity" },
     "./CodingIndicator": { default: "CodingIndicator" },
     "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true }) },

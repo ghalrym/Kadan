@@ -68,6 +68,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     "./Pet": { default: "Pet", useMood: () => ["idle", () => {}] },
     "./AgentCard": { default: "AgentCard" },
     "./ComputerViewer": { default: "ComputerViewer" },
+    "./ChatExport": { default: "ChatExport" },
     "./Activity": { default: "Activity" },
     "./CodingIndicator": { default: "CodingIndicator" },
     "./VoiceCallControl": { useVoiceCall: (_agent, _persona, disabled) => {
