@@ -4,7 +4,7 @@ Hikari lets users record audio with microphone permission or choose a file their
 
 Transcription currently supports English clips up to 30 seconds. Recording does not stop automatically at that limit. Long or unsupported inputs must fail rather than silently lose audio; choose a shorter clip when needed.
 
-The page uses the saved transcription model and formatting preference. Optional formatting cleans up the recognized text. If formatting fails, the raw transcript remains available with a visible error. **Raw transcription** lets users compare it with a formatted result. Both versions need review for meaning and accuracy.
+Hikari uses Whisper medium and the saved formatting preference. This standalone transcription capability remains available independently of LFM3 audio calls; choosing a file here does not give Kadan agents a file-transcription tool. Optional formatting cleans up the recognized text. If formatting fails, the raw transcript remains available with a visible error. **Raw transcription** lets users compare it with a formatted result. Both versions need review for meaning and accuracy.
 
 **Discard** clears the clip and transcript. **Copy transcript** can fail independently of recognition. Retrying Copy clears the previous clipboard feedback while preserving the transcript and any recognition or formatting errors. Copy feedback applies only to the current attempt and result; choosing or discarding a clip or starting a new transcription clears it. Clips, results and form state disappear on navigation or reload.
 

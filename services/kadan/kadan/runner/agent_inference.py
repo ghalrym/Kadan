@@ -32,9 +32,10 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
+from pydantic import Field, ValidationError
 
 from ..api.config import ServiceError
+from ..api.pydantic_models.agent_runs import ToolCommand
 
 MAX_COMMAND_CHARACTERS = 48000
 MAX_EVENT_CHARACTERS = 300000
@@ -66,14 +67,6 @@ PARAMETER = re.compile(r"<parameter=([^>\s]+)>\n?(.*?)\n?</parameter>", re.DOTAL
 TOOL_MARKUP = re.compile(
     r"</?(?:tool_call|function|parameter|tool_response)(?:[=>\s]|$)", re.IGNORECASE
 )
-
-
-class ToolCommand(BaseModel):
-    """One tool call, persisted in the run transcript before it executes."""
-
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
-    tool: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_]+$")
-    arguments: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 def unique_fields(pairs: list[tuple[str, object]]) -> dict:

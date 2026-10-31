@@ -68,12 +68,9 @@ async def voice_call(socket: WebSocket):
         async def receive():
             return call_event.validate_python(await socket.receive_json())
 
-        # The connection owns residency and cleanup, including cancellation of
-        # transcription, streamed text and buffered Qwen segments on disconnect.
-        with inference.worker.full_duplex(models.participants()):
-            await VoiceCall(inference, models, start.instruction, socket.send_json).run(
-                receive
-            )
+        await VoiceCall(inference, models, start.instruction, socket.send_json).run(
+            receive
+        )
     except WebSocketDisconnect:
         return
     except (ValidationError, json.JSONDecodeError):

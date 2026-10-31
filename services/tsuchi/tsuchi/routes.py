@@ -17,6 +17,7 @@ from .models import (
     AgentRunState,
     Asset,
     AssetUpdate,
+    ChatResultInput,
     ImageJob,
     ImageJobState,
     MarkdownResource,
@@ -34,6 +35,7 @@ from .models import (
     ResourceKind,
     ResourceUpdate,
     ResourceVersion,
+    RunMessage,
     Runner,
     Stats,
     VersionInput,
@@ -96,6 +98,7 @@ class RunCreate(Model):
     expected_version: int = Field(ge=1)
     message: Message
     persona_id: UUID | None = None
+    initial_command: RunMessage | None = None
 
 
 class RunUpdate(AgentRunState):
@@ -214,6 +217,7 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
             value.message,
             value.expected_version,
             value.persona_id,
+            value.initial_command,
         )
 
     @router.get("/agents/{key}/runs/{run_id}", response_model=AgentRun)
@@ -358,6 +362,20 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     @router.post("/agents/{key}/resources", response_model=Resource, status_code=201)
     def create_resource(key: AgentKey, value: ResourceInput):
         return repository.create_resource(key, value)
+
+    @router.post(
+        "/agents/{key}/resources/{conversation_id}/messages/{message_id}/document",
+        response_model=Resource,
+    )
+    def save_chat_result(
+        key: AgentKey,
+        conversation_id: UUID,
+        message_id: UUID,
+        value: ChatResultInput,
+    ):
+        return repository.save_chat_result(
+            key, conversation_id, message_id, value.title
+        )
 
     @router.get("/agents/{key}/resources/{resource_id}", response_model=Resource)
     def get_resource(key: AgentKey, resource_id: UUID):

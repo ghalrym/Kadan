@@ -1,4 +1,4 @@
-"""Experimental screenshot observations within the agent's existing computer scope."""
+"""Screenshot observations within the agent's existing computer scope."""
 
 import base64
 
@@ -19,13 +19,11 @@ class LookArguments(Arguments):
 
 @computer_tool("GET")
 async def computer_look(args: LookArguments, computer: SandboxClient) -> dict:
-    """Inspect the current computer screenshot with the experimental vision model.
+    """Inspect the current computer screenshot with the LFM3 vision model.
 
     Ask about visible text, controls, positions or the current app state. The
     observation can be wrong; it does not execute actions or confirm later state.
     """
-    if not computer.services.settings.experimental_lfm3_vision:
-        raise ServiceError("Experimental screenshot understanding is disabled.", 503)
     if not args.question.strip():
         raise ServiceError("A screenshot question cannot be blank.", 422)
     image, media_type = await computer.screenshot()

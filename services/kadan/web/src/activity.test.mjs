@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { conversationActivity } from "./activity.ts";
 
-const conversation = { id: "chat", messages: [{ id: "question", content: "Research a weekend trip" }] };
+const conversation = { id: "chat", messages: [{ role: "user", id: "question", content: "Research a weekend trip" }] };
 const run = (id, status, extra = {}) => ({
   id, conversation_id: "chat", trigger_message_id: "question", trigger_job_id: null,
   delivered_message_ids: [], status, error: null, updated_at: "2026-10-25T10:00:00Z", ...extra,
@@ -13,13 +13,13 @@ const image = (id, status, extra = {}) => ({
 });
 
 test("failed responses retain their recorded error and remain distinct from deliberate stops", () => {
-  const [review, progressing, finished] = conversationActivity(conversation, [
+  const [review, progressing, finished, earlier] = conversationActivity(conversation, [
     run("failed", "failed", { error: "Context allowance exceeded" }), run("stop", "cancelled"),
   ], []);
-  assert.equal(review.items[0].state, "Response failed");
-  assert.equal(review.items[0].detail, "Context allowance exceeded");
-  assert.equal(review.items[1].state, "Response stopped");
-  assert.match(review.items[1].detail, /does not undo/);
+  assert.equal(earlier.items[0].state, "Response failed");
+  assert.equal(earlier.items[0].detail, "Context allowance exceeded");
+  assert.equal(review.items[0].state, "Response stopped");
+  assert.match(review.items[0].detail, /does not undo/);
   assert.deepEqual(progressing.items, []);
   assert.deepEqual(finished.items, []);
 });
@@ -77,4 +77,23 @@ test("image follow-up responses and missing triggering messages have honest fall
     run("unknown", "running", { trigger_message_id: "missing" }),
   ], []);
   assert.deepEqual(progressing.items.map(item => item.title), ["Image follow-up response", "Response"]);
+});
+
+
+test("a newer response preserves all previous failures without counting them as current review", () => {
+  const failed = run("failed", "failed", { error: "Command rejected" });
+  const stopped = run("stopped", "cancelled");
+  const groups = conversationActivity(conversation, [failed, stopped, run("new", "running")], []);
+  assert.equal(groups[0].items.length, 0);
+  assert.equal(groups[1].items.length, 1);
+  assert.equal(groups[3].historical, true);
+  assert.equal(groups[3].items.length, 2);
+  assert.equal(groups[3].items.find(item => item.id === "failed").detail, "Command rejected");
+});
+
+test("the latest response failure stays current without labelling older failures resolved", () => {
+  const groups = conversationActivity(conversation, [run("old", "failed"), run("new", "failed", { error: "Still blocked" })], []);
+  assert.equal(groups[0].items[0].detail, "Still blocked");
+  assert.equal(groups[3].items[0].id, "old");
+  assert.equal(groups[3].items[0].state, "Response failed");
 });

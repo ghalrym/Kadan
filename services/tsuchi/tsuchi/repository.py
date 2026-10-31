@@ -36,6 +36,7 @@ from .models import (
     ResourceKind,
     ResourceRecord,
     ResourceVersion,
+    RunMessage,
     Runner,
     Stats,
     resource_adapter,
@@ -423,9 +424,14 @@ class Repository:
         message: Message,
         expected_version: int,
         persona_id: UUID | None = None,
+        initial_command: RunMessage | None = None,
     ) -> AgentRun:
         if message.role != "user":
             raise StorageError("An agent run must start with a user message", 409)
+        if initial_command is not None and initial_command.role != "assistant":
+            raise StorageError(
+                "An initial command must be an assistant checkpoint", 409
+            )
         with self.connect(write=True) as db:
             conversation = self._conversation(db, key, conversation_id)
             row = db.execute(
@@ -438,6 +444,7 @@ class Repository:
                     and existing.conversation_id == conversation_id
                     and existing.trigger_message_id == message.id
                     and existing.persona_id == persona_id
+                    and existing.initial_command == initial_command
                     and any(
                         item.model_dump(exclude={"created_at"})
                         == message.model_dump(exclude={"created_at"})
@@ -461,6 +468,7 @@ class Repository:
                 conversation_id=conversation_id,
                 trigger_message_id=message.id,
                 persona_id=persona_id,
+                transcript=[initial_command] if initial_command is not None else [],
                 version=1,
                 created_at=now,
                 updated_at=now,
@@ -522,6 +530,8 @@ class Repository:
             current = self._run(db, key, run_id)
             self._assigned_worker(db, key, worker_id)
             self._check_version(current, expected_version)
+            if value.transcript[: len(current.transcript)] != current.transcript:
+                raise StorageError("Persisted agent transcript is immutable", 409)
             now = utc_now()
             claiming = current.status == "queued" or (
                 current.status == "running" and current.lease_expires_at <= now
@@ -540,8 +550,6 @@ class Repository:
                 self._owned_run(db, current, worker_id)
                 if value.status not in {"running", "completed", "failed", "cancelled"}:
                     raise StorageError("Invalid agent run state transition", 409)
-                if value.transcript[: len(current.transcript)] != current.transcript:
-                    raise StorageError("Persisted agent transcript is immutable", 409)
             if value.status == "running":
                 if value.owner_id != worker_id:
                     raise StorageError("A worker must own its agent run lease", 409)
@@ -1549,6 +1557,66 @@ class Repository:
                 db, key, "created", "resource", str(resource.id), resource.title
             )
         return resource
+
+    def save_chat_result(
+        self, key: str, conversation_id: UUID, message_id: UUID, title: str
+    ) -> Resource:
+        """Keep one editable document per saved reply, including after a lost receipt."""
+        document_id = uuid5(conversation_id, f"chat-result:{message_id}")
+        with self.connect(write=True) as db:
+            self._agent(db, key)
+            conversation = self._resource(db, key, conversation_id)
+            if (
+                conversation.kind != ResourceKind.CONVERSATION
+                or conversation.deleted_at
+            ):
+                raise StorageError("An active conversation is required", 409)
+            message = next(
+                (item for item in conversation.messages if item.id == message_id), None
+            )
+            if message is None:
+                raise StorageError("Saved reply not found", 404)
+            if message.role != "assistant" or not message.content.strip():
+                raise StorageError(
+                    "Choose a saved assistant reply containing text", 409
+                )
+            existing = db.execute(
+                "SELECT data FROM resources WHERE agent_key = ? AND id = ?",
+                (key, str(document_id)),
+            ).fetchone()
+            if existing:
+                document = resource_adapter.validate_json(existing[0])
+                if document.deleted_at:
+                    raise StorageError(
+                        "This result is in trash. Restore it in Tsuchi.", 409
+                    )
+                return document
+            now = utc_now()
+            document = resource_adapter.validate_python(
+                {
+                    "id": document_id,
+                    "agent_key": key,
+                    "kind": "space",
+                    "title": title,
+                    "markdown": message.content,
+                    "attachment_ids": message.attachment_ids,
+                    "sources": message.sources,
+                    "tags": [
+                        "chat-result",
+                        f"conversation:{conversation_id}",
+                        f"message:{message_id}",
+                    ],
+                    "version": 1,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+            self._validate_links(db, key, document, document_id)
+            self._save_resource(db, document)
+            self._activity(
+                db, key, "created", "resource", str(document_id), document.title
+            )
+            return document
 
     def update_resource(
         self, key: str, resource_id: UUID, value: ResourceInput, expected_version: int

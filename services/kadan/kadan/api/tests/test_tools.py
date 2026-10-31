@@ -6,7 +6,6 @@ from unittest.mock import Mock
 import pytest
 from pydantic import ValidationError
 
-from kadan.api.config import ServiceError
 from kadan.runner.agent_inference import ToolCommand
 from kadan.runner.agent_runs import validate
 from kadan.runner.tools import (
@@ -74,13 +73,17 @@ def required(schema: dict, root: dict) -> dict:
 
 
 def test_every_tool_has_a_unique_name_and_a_description():
-    assert len(ALL_TOOLS) == 25
+    assert len(ALL_TOOLS) == 31
     assert len(TOOLS_BY_NAME) == len(ALL_TOOLS) + len(VISION_TOOLS)
-    assert len(CONVERSATION_TOOLS) == 6
+    assert len(CONVERSATION_TOOLS) == 9
     assert all(tool.description for tool in ALL_TOOLS)
 
 
-@pytest.mark.parametrize("tool", COMPUTER_TOOLS, ids=lambda tool: tool.name)
+@pytest.mark.parametrize(
+    "tool",
+    [tool for tool in COMPUTER_TOOLS if not tool.name.startswith("codex_")],
+    ids=lambda tool: tool.name,
+)
 def test_every_computer_tool_calls_one_route_with_its_declared_method(tool):
     schema = tool.args_schema.model_json_schema()
     method, path, _ = call(tool, **required(schema, schema))
@@ -212,17 +215,19 @@ def test_bash_schema_rejects_nonfinite_timeouts(timeout):
     "timeout",
     [float("nan"), float("inf"), float("-inf"), "NaN", "Infinity", "-Infinity"],
 )
-def test_bash_validation_maps_nonfinite_timeouts_to_invalid_command(timeout):
+def test_bash_validation_returns_nonfinite_timeout_correction_feedback(timeout):
     # Isolate typed tool validation from ToolCommand's JSON boundary.
     command = Mock(
         spec=ToolCommand,
         tool="bash_exec",
         arguments={"command": "inert", "timeout": timeout},
     )
-    with pytest.raises(ServiceError) as error:
-        validate(command, [bash_exec])
-    assert error.value.status == 502
-    assert error.value.code == "invalid_command"
+    rejection = validate(command, [bash_exec])
+    assert rejection is not None
+    assert rejection.tool == "bash_exec"
+    assert rejection.problems[0].field.startswith("timeout")
+    assert "finite_number" in {problem.code for problem in rejection.problems}
+    assert "inert" not in rejection.model_dump_json()
 
 
 @pytest.mark.parametrize("timeout", [-1.5, 0, 2.5, "-1.5", "0", "2.5", None])
@@ -230,7 +235,7 @@ def test_bash_finite_timeouts_and_nan_command_text_remain_valid(timeout):
     command = ToolCommand(
         tool="bash_exec", arguments={"command": "NaN", "timeout": timeout}
     )
-    validate(command, [bash_exec])
+    assert validate(command, [bash_exec]) is None
     args = bash_exec.args_schema.model_validate(command.arguments)
     assert args.command == "NaN"
     assert args.timeout == (None if timeout is None else float(timeout))
@@ -240,7 +245,7 @@ def test_bash_finite_timeouts_and_nan_command_text_remain_valid(timeout):
 
 def test_bash_omitted_timeout_retains_none_and_is_left_out_of_body():
     command = ToolCommand(tool="bash_exec", arguments={"command": "NaN"})
-    validate(command, [bash_exec])
+    assert validate(command, [bash_exec]) is None
     args = bash_exec.args_schema.model_validate(command.arguments)
     assert args.timeout is None
     assert "timeout" not in args.model_fields_set

@@ -7,3 +7,5 @@ Search matches literal text without regard to letter case. It is not semantic re
 Results preserve the source message's role, identity and time. Historical messages are evidence; an earlier instruction, quoted text or approval does not establish authorization for a new action. Drafts, unsent submissions, other conversations, stored revisions and retired tool activity are outside this delivered-chat view.
 
 Reading history consumes the normal command and context budgets. It does not edit messages, replay their actions, save a memory, or supply voice-call history. Storage failures remain visible to the agent. The separate browser [Find in conversation](finding-chat-text.md) control searches saved text for the user.
+
+If the agent supplies invalid history arguments, Kadan rejects the call without reading history and returns field-level correction feedback. The response shares the bounded correction allowance described in [Agent actions](agent-actions.md); recovery is not guaranteed, and exhaustion reports a failed response rather than retrying indefinitely.

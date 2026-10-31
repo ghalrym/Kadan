@@ -10,7 +10,7 @@ void prepare_input(
     const std::atomic_bool& cancel
 ) {
     request.model = "laya";
-    request.configuration.checkpoint = store.acquire(request.model, cancel);
+    request.configuration.checkpoint = store.require_local(request.model, cancel);
 }
 
 Json present_decisions(const std::vector<DecisionAnswer>& answers) {
