@@ -154,12 +154,23 @@ class InferenceService:
             )
         elif any(not worker.residency_known for worker in workers):
             error = "Language-model cleanup is unconfirmed."
-        active = any(
-            job.worker == "lfm3_llm" and not job.result.done()
+        active = [
+            job
             for job in self.worker.jobs.values()
+            if job.worker == "lfm3_llm" and not job.result.done()
+        ]
+        running = any(job.state == "running" for job in active)
+        state = (
+            "error"
+            if error
+            else "ready"
+            if running
+            else "loading"
+            if active
+            else "unloaded"
         )
         return {
-            "state": "error" if error else "loading" if active else "unloaded",
+            "state": state,
             "model_id": model_id,
             "error": error,
             "memory": self.worker.memory.model_dump() if self.worker.memory else None,
