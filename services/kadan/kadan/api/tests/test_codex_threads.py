@@ -404,3 +404,35 @@ def test_cleanup_escalates_when_descendant_survives_term(home):
     ):
         assert script.cleanup()
     assert signals == [script.signal.SIGTERM, script.signal.SIGKILL]
+
+
+def test_retry_without_thread_id_reports_uncertainty_without_relaunch(home):
+    request_id = str(uuid4())
+    record = save(request_id)
+    log = script.STATE / "runs" / f"{request_id}.jsonl"
+    log.write_text("existing output\n")
+    with (
+        patch.object(script, "launch") as launch,
+        patch.object(script.time, "monotonic", side_effect=[0, 21]),
+        pytest.raises(ValueError, match="start is unconfirmed"),
+    ):
+        script.start({"request_id": request_id, "origin": ORIGIN})
+    launch.assert_not_called()
+    assert script.read_json(script.STATE / "runs" / f"{request_id}.json") == record
+    assert log.read_text() == "existing output\n"
+
+
+def test_retry_waits_for_existing_supervisor_to_publish_thread(home):
+    request_id, thread_id = str(uuid4()), str(uuid4())
+    save(request_id)
+    with (
+        patch.object(script, "launch") as launch,
+        patch.object(
+            script.time,
+            "sleep",
+            side_effect=lambda seconds: save(request_id, thread_id=thread_id),
+        ),
+    ):
+        result = script.start({"request_id": request_id, "origin": ORIGIN})
+    assert result == {"thread_id": thread_id, "cwd": "/p", "running": True}
+    launch.assert_not_called()
