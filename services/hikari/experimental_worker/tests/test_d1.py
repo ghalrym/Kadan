@@ -113,7 +113,7 @@ class BoundedD1Tests(unittest.TestCase):
             (Path(__file__).parents[1] / "catalog_d1.json").read_text()
         )
         store = ModelStore(Path("/unused"), MODEL, manifest)
-        self.assertEqual(REQUIREMENT, (16 * 1024**3, 0))
+        self.assertEqual(REQUIREMENT, (15 * 1024**3, 0))
         self.assertEqual(CONTEXT_LIMIT, 1024)
         self.assertEqual(len(store.artifacts), 34)
         self.assertEqual(sum(item["size"] for item in store.artifacts), 3_854_681_959)

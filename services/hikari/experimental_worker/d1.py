@@ -7,7 +7,9 @@ from experimental_worker.decision import _questions, evaluate
 MODEL_ID = "d1-2b-cpu-f32"
 REVISION = "10e7671d44e4b37700020b1eed3f594c5f2af0b4"
 CONTEXT_LIMIT = 1024
-REQUIREMENT = (16 * 1024**3, 0)
+# Covers the measured F32 peak, with the runtime's separate 1 GiB headroom
+# fitting alongside this grant inside a 16 GiB container.
+REQUIREMENT = (15 * 1024**3, 0)
 MAX_EXECUTOR_SECONDS = 180
 MODEL = {
     "id": MODEL_ID,

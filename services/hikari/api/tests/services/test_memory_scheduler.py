@@ -50,13 +50,13 @@ class CapacityTests(unittest.TestCase):
             kind="lfm3_decision",
             devices=[],
             budget=[0, 0],
-            requirement=requirement(16, 0),
+            requirement=requirement(15, 0),
         )
         machine.workers["trial"] = slot
         self.assertEqual(
-            plan_load(machine, "trial"), [Action("load", "trial", [16 * GIB, 0])]
+            plan_load(machine, "trial"), [Action("load", "trial", [15 * GIB, 0])]
         )
-        slot.host_limit = 15 * GIB
+        slot.host_limit = 14 * GIB
         self.assertIsNone(plan_load(machine, "trial"))
 
     def test_container_cap_limits_initial_grant_and_idle_growth(self):

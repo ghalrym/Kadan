@@ -30,8 +30,9 @@ fractional expected-score contract. The trial rejects a one-level Score rubric,
 which the current HTTP schema accepts but d1 does not support. No request is
 truncated, answered synthetically or redirected to another model.
 
-The hub reserves 16 GiB host RAM and no VRAM before spawning the executor. This
-conservative envelope covers the measured F32 initialization peak below; it is
+The hub reserves 15 GiB host RAM and no VRAM before spawning the executor. This
+envelope covers the measured F32 initialization peak below and leaves the
+worker's 1 GiB headroom inside a 16 GiB container cap; it is
 not evidence that all admitted inputs fit. The runtime monitors executor RSS and
 enforces a 180-second deadline including model loading. Cancellation, disconnect,
 RAM overrun and deadline failure terminate and join the process before publishing
@@ -58,9 +59,26 @@ measurements, not a quality comparison or evidence of a speedup over Laya.
 Both test containers and their processes exited. Downloaded artifacts and evidence
 remain in a separate experiment cache; running services and their saved model
 stores were untouched. The measured F32 process does not fit the current decision
-worker's 3 GiB envelope. The separate 16 GiB CPU trial now has model-free tests of
+worker's 3 GiB envelope. The separate 15 GiB CPU trial has model-free tests of
 routing, RAM admission, token bounds, deadline and confirmed cancellation cleanup.
-Those tests do not establish real worker acceptance: eight-question, long-input,
-and real worker cancellation remain unverified. The supported official recipe
-uses F32 on CPU and BF16 on CUDA/MPS; GPU resource use and performance are
-unmeasured. Laya remains the default.
+
+A subsequent explicitly authorized manual acceptance used the real local Runtime
+FIFO and spawned executors with the same pinned model, two-core CPU and 16 GiB
+container caps. Read-only status reported ample physical host RAM; its local
+controller checked the container's 15 GiB admissible limit before granting
+resources. It never connected to a production API. Cancellation before `loaded`
+completed in 0.162 seconds after the
+cancel command, and cancellation one second after `loaded` completed in 0.111
+seconds. Eight questions across all three types, totaling 334 encoded tokens,
+completed in 154.23 seconds including loading. Sampled executor RSS peaked at
+12,322,725,888 bytes. An oversized input was rejected explicitly before forward
+execution, without truncation. Every terminal event followed confirmed executor
+exit and grant release; executor scratch was removed. The container exited and
+was removed, with no GPU devices exposed, installs or service changes.
+Python's resource tracker reported two semaphore objects for cleanup at shutdown;
+the run does not establish a surviving leak.
+
+This establishes these bounded local lifecycle cases, not HTTP/WebSocket or
+production-hub acceptance, fit across the complete input range, quality or a
+speedup over Laya. The supported official recipe uses F32 on CPU and BF16 on
+CUDA/MPS; GPU resource use and performance are unmeasured. Laya remains the default.
