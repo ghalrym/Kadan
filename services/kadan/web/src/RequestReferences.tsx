@@ -33,7 +33,8 @@ export default function RequestReferences({ agentKey, selected, onChange, disabl
   const [loading, setLoading] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const request = useRef(0);
-  const searched = useRef("");
+  const searched = useRef<string | null>("");
+  const container = useRef<HTMLDivElement>(null);
   const agent = useRef(agentKey);
   agent.current = agentKey;
   useEffect(() => {
@@ -47,8 +48,16 @@ export default function RequestReferences({ agentKey, selected, onChange, disabl
     return () => { request.current++; };
   }, [agentKey]);
   useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!container.current?.contains(event.target as Node)) close();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
+  useEffect(() => {
     if (!open || disabled || query === searched.current) return;
-    const timer = setTimeout(() => void load(), 250);
+    const timer = setTimeout(() => { if (query !== searched.current) void load(); }, 250);
     return () => clearTimeout(timer);
   }, [open, query, disabled]);
   async function load() {
@@ -76,14 +85,25 @@ export default function RequestReferences({ agentKey, selected, onChange, disabl
     setOpen(false);
     setLoading(false);
   }
+  function changeQuery(value: string) {
+    request.current++;
+    searched.current = null;
+    setQuery(value);
+    setResources([]);
+    setError("");
+    setTruncated(false);
+    setLoading(true);
+  }
   const remove = (id: string) => onChange(selected.filter((value) => value.resource_id !== id));
   const full = selected.length >= REFERENCE_LIMIT;
   const measured = selected.every((item) => item.characters !== undefined);
   const total = selected.reduce((sum, item) => sum + (item.characters ?? 0), 0);
   const over = total > REFERENCE_CHARACTERS;
-  return <div className="request-references"
+  return <div className="request-references" ref={container}
     onKeyDown={(event) => { if (open && event.key === "Escape") { event.stopPropagation(); close(); } }}
-    onBlur={(event) => { if (open && !event.currentTarget.contains(event.relatedTarget as Node | null)) close(); }}>
+    onBlur={(event) => {
+      if (open && event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) close();
+    }}>
     <div className="reference-row">
       <button type="button" className={`chip${open || selected.length ? " active" : ""}`} disabled={disabled}
         aria-expanded={open} aria-haspopup="dialog" onClick={() => { if (open) close(); else void load(); }}>
@@ -107,7 +127,7 @@ export default function RequestReferences({ agentKey, selected, onChange, disabl
       <form className="reference-search" onSubmit={(event) => { event.preventDefault(); if (!disabled) void load(); }}>
         <Search size={14} />
         <input aria-label="Search references" placeholder="Search" autoFocus
-          value={query} onChange={(event) => setQuery(event.target.value)} />
+          value={query} onChange={(event) => changeQuery(event.target.value)} />
         <button type="button" className="icon" aria-label="Close references" onClick={close}><X size={14} /></button>
       </form>
       <p className="reference-hint">Up to {REFERENCE_LIMIT}, {count(REFERENCE_CHARACTERS)} characters total.</p>
