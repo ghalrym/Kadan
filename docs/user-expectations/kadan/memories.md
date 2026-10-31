@@ -6,7 +6,7 @@ During text chat, an agent can list, search, read, create and update its own mem
 
 Users can search and read the selected agent's saved memories in Workspace's separate **Memories** tab. Switching agents shows that agent's records. Choose **Correct memory** to edit its title and Markdown in Kadan. Links, tags, attachments, identity and revision history stay intact; other metadata and revision restoration remain in Tsuchi. **Open Tsuchi** opens that storage editor. **Refresh** checks saved changes. Opening a memory does not add it to the response's context; the agent must search or read the records it needs.
 
-The correction editor reads the current memory before editing. Unsaved corrections remain in this browser tab when navigating away, separately for each agent and memory; closing the tab can lose them. If tab storage is full or unavailable, keep the editor open until saving or discarding the correction. Discarding an unsaved correction asks for confirmation.
+The correction editor reads the current memory before editing. A delayed Workspace refresh does not replace a newer confirmed correction with older text. Unsaved corrections remain in this browser tab when navigating away, separately for each agent and memory; closing the tab can lose them. If tab storage is full or unavailable, keep the editor open until saving or discarding the correction. Discarding an unsaved correction asks for confirmation.
 
 A failed or uncertain correction keeps the draft and requires **Check saved version** before another save. The check shows the saved text for comparison without replacing the correction. If the saved text already matches, no further save is needed. A save does not change context already prepared for a response.
 

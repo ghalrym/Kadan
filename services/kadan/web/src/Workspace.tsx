@@ -99,7 +99,9 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
             || (selectedKind === "file" ? !("filename" in saved) : !("kind" in saved) || saved.kind !== selectedKind)) saved = undefined;
         }
         setMissingId(saved ? null : selectedId);
-        if (saved) setSelected(saved);
+        if (saved) setSelected(latest => latest && latest.id === saved.id
+          && "version" in latest && "version" in saved && latest.version > saved.version
+          ? latest : saved);
       } catch (e) {
         if (!current) return;
         if (e instanceof ApiError && e.status === 404) setMissingId(selectedId);
