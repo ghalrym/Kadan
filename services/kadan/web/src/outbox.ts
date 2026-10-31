@@ -1,3 +1,5 @@
+import type { SelectedReference } from "./RequestReferences";
+
 export interface PendingMessage {
   id: string;
   content: string;
@@ -5,6 +7,7 @@ export interface PendingMessage {
   persona: string;
   resume_coding_job_id?: string;
   attachment_ids?: string[];
+  references?: SelectedReference[];
 }
 
 export function chatStorageKeys(agentKey: string, conversationId: string) {
@@ -18,6 +21,11 @@ export function readPending(raw: string | null): PendingMessage | null {
     return value && typeof value.id === "string" &&
       typeof value.content === "string" && typeof value.generate === "boolean" &&
       typeof value.persona === "string" &&
+      (value.references === undefined ||
+        (Array.isArray(value.references) && value.references.length <= 3 &&
+          value.references.every((item: SelectedReference) => item && typeof item.resource_id === "string" &&
+            Number.isInteger(item.expected_version) && item.expected_version >= 1 && typeof item.title === "string") &&
+          new Set(value.references.map((item: SelectedReference) => item.resource_id)).size === value.references.length)) &&
       (value.attachment_ids === undefined ||
         (Array.isArray(value.attachment_ids) && value.attachment_ids.length <= 100 &&
           value.attachment_ids.every((id: unknown) => typeof id === "string") &&

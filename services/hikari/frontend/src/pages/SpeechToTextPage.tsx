@@ -29,6 +29,7 @@ export default function SpeechToTextPage() {
   const [elapsed, setElapsed] = useState(0)
   const [copied, setCopied] = useState(false)
   const [copyError, setCopyError] = useState('')
+  const transcriptElement = useRef<HTMLParagraphElement | null>(null)
   const copyGeneration = useRef(0)
   const copyTimer = useRef<number | undefined>(undefined)
   const recorder = useRef<MediaRecorder | null>(null)
@@ -182,8 +183,24 @@ export default function SpeechToTextPage() {
         }
       }, 1500)
     } catch {
-      if (mounted.current && generation === copyGeneration.current)
-        setCopyError('Could not copy to the clipboard.')
+      if (!mounted.current || generation !== copyGeneration.current) return
+      let message =
+        'Could not copy to the clipboard. Select the transcript, then use your browser’s Copy command or Ctrl+C (⌘C on Mac).'
+      try {
+        const selection = window.getSelection?.()
+        if (selection && transcriptElement.current) {
+          const range = document.createRange()
+          range.selectNodeContents(transcriptElement.current)
+          selection.removeAllRanges()
+          selection.addRange(range)
+          if (selection.toString() === text.text)
+            message =
+              'Could not copy to the clipboard. Transcript selected. Use your browser’s Copy command or Ctrl+C (⌘C on Mac).'
+        }
+      } catch {
+        // Manual selection remains available when browser selection fails.
+      }
+      setCopyError(message)
     }
   }
 
@@ -326,6 +343,7 @@ export default function SpeechToTextPage() {
                 </p>
               )}
               <p
+                ref={transcriptElement}
                 role="status"
                 className={`transcript-text${text.text ? '' : ' faint'}`}
               >

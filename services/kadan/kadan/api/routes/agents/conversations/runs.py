@@ -2,10 +2,10 @@ import asyncio
 from uuid import UUID
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from ....config import ServiceError
-from ....pydantic_models.agent_runs import AgentRun, ImageJob
+from ....pydantic_models.agent_runs import AgentRun, ImageJob, RequestReference
 from ....pydantic_models.conversation_work import AgentRunSummary, ImageJobSummary
 from ....pydantic_models.resources import AgentKey, Resource, ResourceKind
 from .notes import NoteInput
@@ -14,6 +14,7 @@ router = APIRouter()
 
 
 class RunInput(NoteInput):
+    references: list[RequestReference] = Field(default_factory=list, max_length=3)
     persona_id: UUID | None
     resume_coding_job_id: UUID | None = None
 

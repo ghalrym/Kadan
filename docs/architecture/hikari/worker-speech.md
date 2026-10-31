@@ -27,7 +27,8 @@ native Whisper.
 ## Memory
 
 - **Minimum:** 1 GiB RAM and 2.4 GiB VRAM.
-- **Preferred:** checkpoint size plus those floors.
+- **Preferred:** checkpoint size plus the host floor in RAM; runtime F32 weight
+  inventory plus the GPU floor in VRAM.
 - **Several GPUs:** each GPU it uses needs its own 2.4 GiB floor.
 
 Greedy decoding retains cross-attention keys and values for each decoder layer only
@@ -48,6 +49,23 @@ encoding. The cache owns its actual reservation once, during decoding; it is not
 also included in the request-scratch reservation. Ordinary projection and decoder
 buffers keep their existing reservations. Lack of headroom does not select a
 smaller model or silently disable the cache.
+
+Whisper medium's pinned catalog entry declares `runtime_weight_bytes` separately
+from its download estimate. The GPU bank retains F32 projection weights even
+when downloaded tensors are F16. Its 3,055,431,680-byte runtime inventory raises
+only the preferred GPU amount; minimum streaming headroom, the per-device floor
+and host-memory policy stay unchanged. The complete preferred amount is
+5,605,568,512 bytes including the compute context and streaming scratch allowance.
+It is a scheduling preference, not a fixed VRAM requirement or a guarantee that
+the bank will fit under concurrent physical pressure. Smaller grants still use
+the existing streaming path and physical allocation checks.
+
+This positive integer is native catalog metadata, omitted from model-status and
+download-size responses. Entries without it retain their existing estimate-based
+policy. Requirement calculation does not read or create a converted checkpoint,
+fetch a model, or establish download approval or verification. The pinned
+declaration is available before the first export, so requirement caching cannot
+leave the worker at its streaming floor merely because conversion happened later.
 
 ## Scheduling
 

@@ -3,6 +3,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string_view>
 
 #include "kadan/media_residency.hpp"
@@ -101,6 +102,26 @@ private:
     void release() noexcept;
 };
 
+// An admitted upload source. Moving its unique owner into a session prevents
+// caller destruction from releasing bytes while a device may still read them.
+class MediaHostBuffer {
+public:
+    ~MediaHostBuffer();
+    MediaHostBuffer(const MediaHostBuffer&) = delete;
+    MediaHostBuffer& operator=(const MediaHostBuffer&) = delete;
+    std::span<std::uint8_t> bytes() &;
+    std::span<const std::uint8_t> bytes() const&;
+
+private:
+    friend class MediaSession;
+    MediaHostBuffer(std::shared_ptr<Resources>, Workload, Bytes);
+    std::shared_ptr<Resources> resources_;
+    Workload workload_;
+    Handle reservation_ = 0;
+    std::unique_ptr<std::uint8_t[]> storage_;
+    std::size_t size_ = 0;
+};
+
 // Session and its views are orchestrated by one request-owner thread.
 class MediaSession {
 public:
@@ -143,10 +164,11 @@ public:
     // Validate complete prepared boundaries without launching or transferring data.
     bool ready(DeviceTensorView&);
     void require_ready(std::span<DeviceTensorView* const>);
-    // Explicit host boundaries, synchronous for host-span lifetime. The ingress
-    // caller supplies validated input; weight copies preserve original raw bytes.
+    // Upload bytes remain owned and charged through confirmed completion. Input
+    // spans are copied into admitted storage; weight producers move their owner.
+    std::unique_ptr<MediaHostBuffer> allocate_upload(Bytes);
     void upload_input(DeviceTensorView&, std::span<const std::byte>);
-    void upload_weight(DeviceTensorView&, std::span<const std::byte>);
+    void upload_weight(DeviceTensorView&, std::unique_ptr<MediaHostBuffer>);
     void download_output(DeviceTensorView&, std::span<std::byte>);
     // Each gather cycle starts at column zero and fills contiguous column shards
     // in order. Restarting invalidates all prior coverage in the destination view.
@@ -171,7 +193,8 @@ public:
 
 private:
     std::shared_ptr<MediaSessionState> state_;
-    void upload(DeviceTensorView&, std::span<const std::byte>, bool weight);
+    void validate_upload(DeviceTensorView&, std::size_t bytes, bool weight);
+    void upload(DeviceTensorView&, std::unique_ptr<MediaHostBuffer>, bool weight);
 };
 
 // Holds WorkerCompute::compute until all views and confirmed request cleanup end.

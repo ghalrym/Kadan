@@ -32,7 +32,10 @@ const alerts = (tree) =>
     .join(' ')
 const transcript = (tree) =>
   content(elements(tree).find((node) => node.props?.role === 'status'))
-const copyError = 'Could not copy to the clipboard.'
+const copyError =
+  'Could not copy to the clipboard. Transcript selected. Use your browser’s Copy command or Ctrl+C (⌘C on Mac).'
+const manualCopyError =
+  'Could not copy to the clipboard. Select the transcript, then use your browser’s Copy command or Ctrl+C (⌘C on Mac).'
 const result = (text = 'Recognized text') => ({
   text,
   raw_text: text,
@@ -40,14 +43,18 @@ const result = (text = 'Recognized text') => ({
 })
 
 // Invoke local hooks and JSX records; Panel, clipboard, conversion, requests,
-// object URLs and timers are fakes. No renderer, DOM, audio or service is used.
-async function page() {
+// object URLs, paragraph refs, selection and timers are fakes. No renderer, DOM,
+// audio or service is used.
+async function page({ clipboard = true, selection = 'available' } = {}) {
   const slots = [],
     effects = [],
     writes = [],
     conversions = [],
     requests = [],
-    timers = []
+    timers = [],
+    selectionCalls = [],
+    selectedNodes = [],
+    refElements = new Map()
   let cursor = 0,
     dirty = true,
     tree,
@@ -64,6 +71,11 @@ async function page() {
       calls.push({ ...data, resolve, reject }),
     )
   }
+  const navigator = {
+    clipboard: clipboard
+      ? { writeText: (text) => deferred(writes, { text }) }
+      : undefined,
+  }
   const context = createContext({
     AbortController,
     Error,
@@ -72,10 +84,43 @@ async function page() {
       createObjectURL: (file) => `blob:fixture/${file.name}`,
       revokeObjectURL() {},
     },
-    navigator: {
-      clipboard: { writeText: (text) => deferred(writes, { text }) },
+    navigator,
+    document: {
+      createRange() {
+        selectionCalls.push('createRange')
+        if (selection === 'range-fails') throw new Error('Range unavailable')
+        return {
+          selectNodeContents(node) {
+            selectionCalls.push('selectNodeContents')
+            this.node = node
+          },
+        }
+      },
     },
     window: {
+      ...(selection === 'missing'
+        ? {}
+        : {
+            getSelection() {
+              selectionCalls.push('getSelection')
+              if (selection === 'unavailable') return null
+              return {
+                removeAllRanges() {
+                  selectionCalls.push('removeAllRanges')
+                  selectedNodes.length = 0
+                },
+                addRange(range) {
+                  selectionCalls.push('addRange')
+                  if (selection === 'add-fails')
+                    throw new Error('Selection failed')
+                  if (selection !== 'ignored') selectedNodes.push(range.node)
+                },
+                toString() {
+                  return selectedNodes.map((node) => node.textContent).join('')
+                },
+              }
+            },
+          }),
       setTimeout(callback, milliseconds) {
         const timer = {
           callback,
@@ -161,6 +206,14 @@ async function page() {
         dirty = false
         cursor = 0
         tree = component.namespace.default()
+        for (const ref of refElements.keys()) ref.current = null
+        for (const node of elements(tree)) {
+          const ref = node.props?.ref
+          if (!ref) continue
+          if (!refElements.has(ref)) refElements.set(ref, {})
+          ref.current = refElements.get(ref)
+          ref.current.textContent = content(node)
+        }
         effects.splice(0).forEach((run) => run())
       }
     }
@@ -172,6 +225,8 @@ async function page() {
     conversions,
     requests,
     timers,
+    selectionCalls,
+    selectedNodes,
     flush,
     get tree() {
       return tree
@@ -222,8 +277,8 @@ async function page() {
   }
 }
 
-async function recognized(value = result()) {
-  const view = await page()
+async function recognized(value = result(), options) {
+  const view = await page(options)
   await view.choose()
   await view.click('Transcribe')
   await view.recognize(value)
@@ -236,14 +291,73 @@ test('failed copy recovers on retry without leaving a clipboard error beside Cop
   view.writes[0].reject(new Error('Denied'))
   await view.flush()
   assert.equal(alerts(view.tree), copyError)
+  assert.ok(button(view.tree, 'Copy'))
+  assert.equal(view.timers.length, 0)
+  assert.deepEqual(view.selectedNodes, [
+    elements(view.tree).find((node) => node.props?.role === 'status').props.ref
+      .current,
+  ])
   await view.click('Copy')
+  assert.equal(alerts(view.tree), '')
+  const recoveryCalls = [...view.selectionCalls]
   view.writes[1].resolve()
   await view.flush()
   assert.ok(button(view.tree, 'Copied'))
   assert.equal(alerts(view.tree), '')
   assert.equal(transcript(view.tree), 'Recognized text')
+  assert.deepEqual(view.selectionCalls, recoveryCalls)
   view.unmount()
 })
+
+test('missing clipboard selects only the displayed formatted transcript for manual copying', async () => {
+  const view = await recognized(
+    {
+      ...result('Formatted text'),
+      raw_text: 'raw text',
+      formatting_status: 'formatted',
+    },
+    { clipboard: false },
+  )
+  const displayed = elements(view.tree).find(
+    (node) => node.props?.role === 'status',
+  ).props.ref.current
+  await view.click('Copy')
+  assert.equal(alerts(view.tree), copyError)
+  assert.deepEqual(view.selectedNodes, [displayed])
+  assert.equal(displayed.textContent, 'Formatted text')
+  assert.match(content(view.tree), /raw text/)
+  assert.deepEqual(view.selectionCalls, [
+    'getSelection',
+    'createRange',
+    'selectNodeContents',
+    'removeAllRanges',
+    'addRange',
+  ])
+  assert.equal(view.writes.length, 0)
+  assert.equal(view.timers.length, 0)
+  assert.ok(button(view.tree, 'Copy'))
+  view.unmount()
+})
+
+for (const selection of [
+  'missing',
+  'unavailable',
+  'range-fails',
+  'add-fails',
+  'ignored',
+]) {
+  test(`copy failure gives manual instructions when selection is ${selection}`, async () => {
+    const view = await recognized(result(), { selection })
+    await view.click('Copy')
+    view.writes[0].reject(new Error('Denied'))
+    await view.flush()
+    assert.equal(alerts(view.tree), manualCopyError)
+    assert.deepEqual(view.selectedNodes, [])
+    assert.ok(button(view.tree, 'Copy'))
+    assert.equal(transcript(view.tree), 'Recognized text')
+    view.unmount()
+  })
+}
 
 test('retry clears only clipboard feedback and preserves recognition error, warning and raw transcript', async () => {
   const view = await recognized({
@@ -311,6 +425,7 @@ test('pending copy cannot restore feedback after Discard', async () => {
   view.writes[0].reject(new Error('Late failure'))
   await view.flush()
   assert.equal(alerts(view.tree), '')
+  assert.deepEqual(view.selectionCalls, [])
   assert.equal(button(view.tree, 'Copied'), undefined)
   await view.choose('replacement.wav')
   await view.click('Transcribe')
@@ -319,35 +434,44 @@ test('pending copy cannot restore feedback after Discard', async () => {
   view.unmount()
 })
 
-test('file replacement clears success and fences a pending copy of the old transcript', async () => {
-  const view = await recognized()
-  await view.click('Copy')
-  view.writes[0].resolve()
-  await view.flush()
-  await view.click('Copied')
-  await view.choose('replacement.wav')
-  await view.click('Transcribe')
-  await view.recognize(result('Replacement'))
-  view.writes[1].resolve()
-  await view.flush()
-  assert.ok(button(view.tree, 'Copy'))
-  assert.equal(alerts(view.tree), '')
-  assert.equal(transcript(view.tree), 'Replacement')
-  view.unmount()
-})
+for (const settle of ['resolve', 'reject']) {
+  test(`file replacement clears success and fences pending copy ${settle} of the old transcript`, async () => {
+    const view = await recognized()
+    await view.click('Copy')
+    view.writes[0].resolve()
+    await view.flush()
+    await view.click('Copied')
+    await view.choose('replacement.wav')
+    await view.click('Transcribe')
+    await view.recognize(result('Replacement'))
+    view.writes[1][settle](
+      settle === 'reject' ? new Error('Late failure') : undefined,
+    )
+    await view.flush()
+    assert.ok(button(view.tree, 'Copy'))
+    assert.equal(alerts(view.tree), '')
+    assert.equal(transcript(view.tree), 'Replacement')
+    assert.deepEqual(view.selectionCalls, [])
+    view.unmount()
+  })
 
-test('new transcription fences pending copy even when the new text is identical', async () => {
-  const view = await recognized()
-  await view.click('Copy')
-  await view.click('Transcribe')
-  view.writes[0].resolve()
-  await view.flush()
-  assert.ok(button(view.tree, 'Copy'))
-  assert.equal(transcript(view.tree), 'Recognized text')
-  await view.recognize()
-  assert.ok(button(view.tree, 'Copy'))
-  view.unmount()
-})
+  test(`new transcription fences pending copy ${settle} even when the new text is identical`, async () => {
+    const view = await recognized()
+    await view.click('Copy')
+    await view.click('Transcribe')
+    view.writes[0][settle](
+      settle === 'reject' ? new Error('Late failure') : undefined,
+    )
+    await view.flush()
+    assert.ok(button(view.tree, 'Copy'))
+    assert.equal(transcript(view.tree), 'Recognized text')
+    assert.equal(alerts(view.tree), '')
+    assert.deepEqual(view.selectionCalls, [])
+    await view.recognize()
+    assert.ok(button(view.tree, 'Copy'))
+    view.unmount()
+  })
+}
 
 test('accepting replacement text fences copy started while transcription was pending', async () => {
   const view = await recognized()
@@ -358,6 +482,7 @@ test('accepting replacement text fences copy started while transcription was pen
   await view.flush()
   assert.equal(alerts(view.tree), '')
   assert.ok(button(view.tree, 'Copy'))
+  assert.deepEqual(view.selectionCalls, [])
   view.unmount()
 })
 
@@ -387,8 +512,10 @@ test('latest copy attempt owns feedback over older success and failure', async (
   view.writes[1].reject(new Error('Latest failure'))
   await view.flush()
   assert.equal(alerts(view.tree), copyError)
+  const recoveryCalls = [...view.selectionCalls]
   await view.click('Copy')
   assert.equal(alerts(view.tree), '')
+  assert.deepEqual(view.selectionCalls, recoveryCalls)
   await view.click('Copy')
   view.writes[3].resolve()
   await view.flush()
@@ -396,6 +523,7 @@ test('latest copy attempt owns feedback over older success and failure', async (
   await view.flush()
   assert.ok(button(view.tree, 'Copied'))
   assert.equal(alerts(view.tree), '')
+  assert.deepEqual(view.selectionCalls, recoveryCalls)
   view.unmount()
 })
 
@@ -445,6 +573,7 @@ for (const settle of ['resolve', 'reject']) {
     expiry()
     await view.flush()
     assert.equal(view.updatesAfterUnmount, 0)
+    assert.deepEqual(view.selectionCalls, [])
   })
 }
 

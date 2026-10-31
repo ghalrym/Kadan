@@ -33,6 +33,11 @@ class WorkspaceFile(BaseModel):
     deleted_at: datetime | None
 
 
+class WorkspaceFileListing(WorkspaceFile):
+    created_at: datetime
+    updated_at: datetime
+
+
 def file_name(path: str) -> str:
     name = path.replace("\\", "/").rsplit("/", 1)[-1]
     name = "".join(character for character in name if character.isprintable())[
@@ -77,6 +82,40 @@ class WorkspaceFiles:
             "Tsuchi", "GET", f"{self.path}/{file_id}"
         )
         return self.summary(self.checked(value, file_id))
+
+    async def list(self, *, query: str = "", limit: int = 20, offset: int = 0) -> dict:
+        rows = await self.services.json_request(
+            "Tsuchi",
+            "GET",
+            self.path,
+            params={"q": query, "trash": "false", "limit": limit + 1, "offset": offset},
+        )
+        if not isinstance(rows, list) or len(rows) > limit + 1:
+            raise ServiceError("Tsuchi returned an invalid file list.", 502)
+        assets = []
+        for row in rows:
+            try:
+                asset = WorkspaceFileListing.model_validate(row)
+            except ValidationError as error:
+                raise ServiceError(
+                    "Tsuchi returned invalid file metadata.", 502
+                ) from error
+            self.checked(asset, asset.id)
+            assets.append(asset)
+        if len({asset.id for asset in assets}) != len(assets):
+            raise ServiceError("Tsuchi returned duplicate file identities.", 502)
+        return {
+            "files": [
+                {
+                    **self.summary(asset),
+                    **asset.model_dump(
+                        mode="json", include={"created_at", "updated_at", "version"}
+                    ),
+                }
+                for asset in assets[:limit]
+            ],
+            "next_offset": offset + limit if len(assets) > limit else None,
+        }
 
     async def download(self, asset: WorkspaceFile, output: BinaryIO) -> None:
         size = 0

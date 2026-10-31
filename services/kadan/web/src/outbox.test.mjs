@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { chatStorageKeys, confirmSend, copyPendingToDraft, discardUnassignedPending, queueSend, readPending } from "./outbox.ts";
 
-const first = { id: "a", content: "First", generate: true, persona: "persona-a" };
-const next = { id: "b", content: "Next draft", generate: false, persona: "" };
+const first = { id: "a", content: "First", generate: true, persona: "persona-a", references: [{ resource_id: "space", expected_version: 2, title: "Plan" }] };
+const next = { id: "b", content: "Next draft", generate: false, persona: "", references: [] };
 
 test("copying an unassigned submission preserves newer draft text and the pending submission", () => {
   const pending = Object.freeze({ ...first });
@@ -92,4 +92,24 @@ test("attachment retries preserve ordered snapshots alongside Codex continuation
   for (const attachment_ids of [["a", "a"], [1], Array(101).fill("a"), "a"]) {
     assert.equal(readPending(JSON.stringify({ ...pending, attachment_ids })), null);
   }
+});
+
+test("uncertain delivery retry keeps the original selected identity and version", () => {
+  const restored = readPending(JSON.stringify(first));
+  const changed = { ...first, references: [{ resource_id: "new", expected_version: 9, title: "New" }] };
+  assert.deepEqual(queueSend(restored, changed).references, first.references);
+});
+
+test("invalid saved reference selections cannot become retry requests", () => {
+  for (const references of [null, [null], [first.references[0], first.references[0]], [{ resource_id: "x", expected_version: 0, title: "x" }], Array(4).fill(first.references[0])]) {
+    assert.equal(readPending(JSON.stringify({ ...first, references })), null);
+  }
+});
+
+
+test("legacy pending messages retain identity and content with empty references", () => {
+  const { references, ...legacy } = first;
+  const restored = readPending(JSON.stringify(legacy));
+  assert.deepEqual(restored, legacy);
+  assert.deepEqual(queueSend(restored, { ...first, references }), restored);
 });
