@@ -46,10 +46,7 @@ These newer drafts are also absent from checked master. Their selections and con
 
 | PR | Intended capability | Important limit |
 | --- | --- | --- |
-| [#461](https://github.com/ghalrym/Kadan/pull/461) | Select saved Space or memory references for one response | Bounded versioned selections; selected does not guarantee read or used. |
 | [#462](https://github.com/ghalrym/Kadan/pull/462) | Portable instruction workflows with explicit Run now | Depends on #461; no schedule or extra authorization. |
-| [#464](https://github.com/ghalrym/Kadan/pull/464) | Bind request reader tools only for actual selections | Depends on #462; does not guarantee that a small model window fits. |
 | [#465](https://github.com/ghalrym/Kadan/pull/465) | Inspect durable receipts for selected context | Depends on #462; recorded model response does not prove understanding or success. |
-| [#466](https://github.com/ghalrym/Kadan/pull/466) | Check draft context budgets against model metadata | Depends on #464; an estimate, not an exact token count or fit guarantee. |
 
 Existing live voice calls, interruption, playback acknowledgement and session cleanup remain current behavior. A separate deferred voice prototype does not remove those capabilities. No LFM3 implementation or model change is part of this documentation sweep.
