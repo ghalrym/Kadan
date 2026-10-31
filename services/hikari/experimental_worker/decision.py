@@ -62,9 +62,7 @@ def _questions(task: dict) -> tuple[str, dict]:
         elif kind == "Score":
             levels = question.get("levels")
             if not isinstance(levels, list) or not 2 <= len(levels) <= 10:
-                raise ValueError(
-                    "The d1 trial supports Score rubrics of 2 to 10 levels."
-                )
+                raise ValueError("d1 supports Score rubrics of 2 to 10 levels.")
             levels = [_text(level, "Score level") for level in levels]
             row.update(type="score", criteria=levels)
             wire["levels"] = levels
@@ -121,7 +119,7 @@ def _probabilities(value, keys: list[str]) -> dict[str, float]:
 def evaluate(
     task: dict, model: DecisionModel, check_cancelled: Callable[[], None]
 ) -> list[dict]:
-    """Translate and validate one explicit trial; cancellation checks may raise.
+    """Translate and validate one decision request; cancellation checks may raise.
 
     This does not load models, reserve memory or interrupt a blocking model call.
     """

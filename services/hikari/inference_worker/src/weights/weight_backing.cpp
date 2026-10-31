@@ -99,9 +99,7 @@ void WeightBacking::add(
         "weight_identity"
     );
     require(
-        workload == Workload::llm || workload == Workload::image
-            || workload == Workload::decision,
-        "weight_workload"
+        workload == Workload::llm || workload == Workload::image, "weight_workload"
     );
     require(
         entries_.size() < entry_limit_ && !entries_.contains(key),

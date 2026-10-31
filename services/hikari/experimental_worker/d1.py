@@ -1,4 +1,4 @@
-"""Explicit, bounded CPU d1 executor; never selected for ordinary decisions."""
+"""Bounded CPU executor for Hikari Decisions."""
 
 import time
 
@@ -17,8 +17,8 @@ MODEL = {
     "revision": REVISION,
     "license": "lfm1.0",
     "license_url": f"https://huggingface.co/LiquidAI/d1-2B/blob/{REVISION}/LICENSE",
-    "license_notice": "CPU F32 d1 trial, including pinned executable checkpoint code. Review the LFM Open License v1.0 before downloading.",
-    "display_name": "d1 2B CPU F32 (experimental)",
+    "license_notice": "CPU F32 d1, including pinned executable checkpoint code. Review the LFM Open License v1.0 before downloading.",
+    "display_name": "d1 2B CPU F32",
     "kind": "decision",
     "context_limit": CONTEXT_LIMIT,
     "architecture_context_limit": 128000,
@@ -43,7 +43,7 @@ class BoundedDecisionModel:
         self.input_tokens = sum(lengths)
         if self.input_tokens > CONTEXT_LIMIT:
             raise ValueError(
-                "The d1 trial input exceeds 65,536 encoded tokens; nothing was truncated."
+                "The d1 input exceeds 65,536 encoded tokens; nothing was truncated."
             )
         self.emit(
             {
@@ -58,9 +58,9 @@ class BoundedDecisionModel:
 
 def execute(task: dict, operation: str, model_path: str, emit) -> list[dict]:
     if operation != "generate":
-        raise ValueError("The d1 trial supports decision evaluation only.")
+        raise ValueError("d1 supports decision evaluation only.")
     if task.get("model_id") != MODEL_ID:
-        raise ValueError("The d1 trial requires its explicit model ID.")
+        raise ValueError("The Decisions task must use the fixed d1 checkpoint.")
     _questions(task)
 
     # The parent process owns admission, deadlines and kill/join cancellation.
@@ -85,7 +85,7 @@ def execute(task: dict, operation: str, model_path: str, emit) -> list[dict]:
         use_kernels=False,
     ).eval()
     if any(parameter.device.type != "cpu" for parameter in model.parameters()):
-        raise ValueError("The d1 trial requires CPU parameters only.")
+        raise ValueError("d1 requires CPU parameters only.")
     bounded = BoundedDecisionModel(model, emit)
     emit({"state": "progress", "phase": "loaded", "value": 1, "total": 1})
     with torch.inference_mode():

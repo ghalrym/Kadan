@@ -17,7 +17,6 @@ GIB = 1024**3
 # while they still have work queued.
 PRIORITY = {
     "llm": 1,
-    "decision": 1,
     "lfm3_decision": 1,
     "tts": 2,
     "speech": 3,

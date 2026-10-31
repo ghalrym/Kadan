@@ -57,7 +57,7 @@ class ModelAssignments(BaseModel):
     speech: Literal["qwen-tts-1.7b-custom"] = "qwen-tts-1.7b-custom"
     transcription: Literal["whisper-medium"] = "whisper-medium"
     formatting: Literal["superwhisper-s1-mini"] = "superwhisper-s1-mini"
-    decisions: Literal["laya"] = "laya"
+    decisions: Literal["d1-2b-cpu-f32"] = "d1-2b-cpu-f32"
 
 
 class VideoDefaults(BaseModel):

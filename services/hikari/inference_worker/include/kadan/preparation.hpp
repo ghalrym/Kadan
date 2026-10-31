@@ -190,9 +190,6 @@ void prepare_input(
     ImageRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
-    DecisionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
-);
-void prepare_input(
     SpeechRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
@@ -218,7 +215,6 @@ void prepare_input(
 );
 Json present_chat(const InferenceRequest&, Json result);
 Json present_image(const InferenceRequest&, const std::vector<fs::path>& images);
-Json present_decisions(const std::vector<DecisionAnswer>& answers);
 Json present_speech(const InferenceRequest&, const fs::path& output);
 Json present_transcription(const InferenceRequest&, const std::string& text);
 Json present_video(const InferenceRequest&, const fs::path& output);

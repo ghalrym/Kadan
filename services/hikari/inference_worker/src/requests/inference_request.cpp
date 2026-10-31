@@ -108,35 +108,6 @@ InferenceRequest parse_request(const Json& envelope) {
         input.height = height.value_or(0);
         request.input = std::move(input);
         request.workload = Workload::image;
-    } else if (feature == "decisions") {
-        DecisionRequest input;
-        input.state = body.at("state");
-        for (const auto& question : body.at("questions")) {
-            DecisionQuestion q{
-                question.at("key"), question.at("instructions"), ChoiceQuestion{}
-            };
-            const auto kind = question.at("type").get<std::string>();
-            if (kind == "Choice") {
-                ChoiceQuestion choice;
-                for (const auto& option : question.at("options"))
-                    choice.options.push_back(
-                        {option.at("key"), option.at("description")}
-                    );
-                q.criteria = std::move(choice);
-            } else if (kind == "Score")
-                q.criteria = ScoreQuestion{
-                    question.at("levels").get<std::vector<std::string>>()
-                };
-            else if (kind == "Noul")
-                q.criteria = NoulQuestion{
-                    question.value("true_when", ""), question.value("false_when", "")
-                };
-            else
-                throw RequestError("Invalid decision question", 422);
-            input.questions.push_back(std::move(q));
-        }
-        request.input = std::move(input);
-        request.workload = Workload::decision;
     } else if (feature == "tts") {
         SpeechRequest input;
         input.script = body.at("script");

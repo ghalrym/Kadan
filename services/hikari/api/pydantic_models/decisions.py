@@ -1,4 +1,5 @@
 from typing import Annotated, Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -18,7 +19,9 @@ class ScoreQuestion(BaseModel):
     key: str = Field(min_length=1)
     instructions: str = Field(min_length=1)
     type: Literal["Score"]
-    levels: list[str] = Field(min_length=1)
+    levels: list[str] = Field(
+        min_length=2, max_length=10, description="Ordered rubric with 2 to 10 levels."
+    )
 
 
 class NoulQuestion(BaseModel):

@@ -438,7 +438,6 @@ class CpuRuntimeTests(unittest.IsolatedAsyncioTestCase):
             patch.dict(
                 "os.environ",
                 {
-                    "HIKARI_ENABLE_D1_DECISIONS": "true",
                     "KADAN_MODEL_DIR": self.directory.name,
                 },
             ),
@@ -461,16 +460,22 @@ class CpuRuntimeTests(unittest.IsolatedAsyncioTestCase):
             **fields,
         }
 
-    def test_disabled_d1_fails_before_probe_or_process_creation(self):
+    def test_default_d1_needs_no_flag_and_never_probes_gpu(self):
         with (
             patch.dict("os.environ", {"HIKARI_ENABLE_D1_DECISIONS": "false"}),
-            patch("experimental_worker.runtime.machine") as probe,
-            patch("multiprocessing.get_context") as process,
-            self.assertRaisesRegex(ValueError, "requires HIKARI_ENABLE_D1_DECISIONS"),
+            patch(
+                "experimental_worker.runtime.machine", return_value={"devices": []}
+            ) as probe,
+            patch("pathlib.Path.read_text", return_value='{"artifacts": []}'),
+            patch(
+                "experimental_worker.runtime.importlib.import_module",
+                return_value=self.backend,
+            ),
         ):
-            Runtime("d1")
-        probe.assert_not_called()
-        process.assert_not_called()
+            runtime = Runtime("d1")
+        probe.assert_called_once_with(cpu_only=True)
+        self.assertTrue(runtime.cpu_only)
+        self.assertEqual(runtime.kind, "lfm3_decision")
 
     async def test_cpu_grant_reports_loaded_without_vram(self):
         await self.runtime.handle(

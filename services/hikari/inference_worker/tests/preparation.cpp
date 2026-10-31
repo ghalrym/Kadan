@@ -346,7 +346,21 @@ void completed_checkpoint_size_units() {
 
 void pinned_catalog_units() {
     Directory tmp;
+    const auto retired = tmp.path / "laya-retired-revision";
+    const auto retained = retired / "model.safetensors";
+    bytes(retained, "existing-owner-model-data");
+    write_document(retired / "complete.json", {{"revision", "retired-revision"}});
     ModelStore store(tmp.path, worker_data_directory());
+    const auto status = store.status();
+    for (const auto& model : status.at("models"))
+        assert(model.at("id") != "laya");
+    rejects([&] { store.entry("laya"); });
+    ModelStore reopened(tmp.path, worker_data_directory());
+    assert(reopened.status() == status);
+    assert(read_bytes(retained, 32) == "existing-owner-model-data");
+    assert(
+        read_document(retired / "complete.json").at("revision") == "retired-revision"
+    );
     write_document(tmp.path / "tier.json", {{"tier", "obsolete"}});
     write_document(tmp.path / "whisper-selection.json", {{"model", "large-v3"}});
     assert(store.whisper_selected() == "medium");
@@ -380,12 +394,6 @@ void pinned_catalog_units() {
     assert(speech_need["minimum"] == Json::array({1073741824ULL, 2550136832ULL}));
     assert(speech_need["preferred"] == Json::array({1073741824ULL, 5605568512ULL}));
 
-    assert(
-        worker_requirement(
-            kadan::Workload::decision, std::nullopt, store
-        )["device_floor"]
-        == 0
-    );
     const auto& formatter = store.entry("superwhisper-s1-mini");
     assert(
         formatter.repo_id == "superwhisper/s1-mini" && formatter.kind == "formatting"
@@ -707,21 +715,6 @@ void typed_request_units() {
         std::get<ChatRequest>(load.input).context_supplied
         && !std::get<ChatRequest>(load.input).context_limit
     );
-    const auto decision = request(
-        "decision",
-        {{"feature", "decisions"},
-         {"state", "state"},
-         {"questions",
-          Json::array(
-              {{{"key", "yes"},
-                {"type", "Noul"},
-                {"instructions", "Decide"},
-                {"true_when", "ready"},
-                {"false_when", "waiting"}}}
-          )}}
-    );
-    const auto& question = std::get<DecisionRequest>(decision.input).questions[0];
-    assert(std::get<NoulQuestion>(question.criteria).true_when == "ready");
     const auto speech = request(
         "speech",
         {{"feature", "tts"}, {"script", "Hello"}, {"voice", {{"speaker", "Ryan"}}}}
@@ -1703,8 +1696,7 @@ void job_units() {
         }
             .dump();
     Json models = Json::array();
-    for (const auto* id :
-         {"small", "qwen-image-2.1-turbo", "laya", "h3-fl2va-int8-turbo"}) {
+    for (const auto* id : {"small", "qwen-image-2.1-turbo", "h3-fl2va-int8-turbo"}) {
         const auto dir = root / (std::string(id) + "-revision");
         const auto manifest = local_manifest(dir, {{"config.json", config}});
         models.push_back(entry(id, manifest));
@@ -1970,28 +1962,6 @@ void job_units() {
     std::atomic_bool cancel{true};
     rejects([&] { prepare_task(image, store, files, cancel); });
     assert(!fs::exists(jobs / "image"));
-    auto decision = request(
-        "decisions",
-        {{"feature", "decisions"},
-         {"state", "example"},
-         {"questions",
-          Json::array(
-              {{{"key", "pick"},
-                {"type", "Choice"},
-                {"instructions", "Pick"},
-                {"options", Json::array({{{"key", "yes"}, {"description", "yes"}}})}}}
-          )}}
-    );
-    prepare_task(decision, store, files, running);
-    const auto answers = present_decisions(
-        {{"pick", 0.75, ChoiceResult{"yes", {{"yes", 0.75}, {"no", 0.25}}}},
-         {"score", 0.6, ScoreResult{0.6, {{"0", 0.4}, {"1", 0.6}}}},
-         {"criterion", 0.8, NoulResult{0.8}}}
-    );
-    assert(answers[0].at("type") == "Choice" && answers[0].at("value") == "yes");
-    assert(answers[1].at("type") == "Score" && answers[1].at("value") == 0.6);
-    assert(answers[2].at("type") == "Noul" && answers[2].at("probabilities").is_null());
-    files.cleanup("decisions");
 }
 
 void write_archive(

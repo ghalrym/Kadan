@@ -4,7 +4,7 @@ export type { Question } from '../api/decisions'
 
 const typeHelp: Record<Question['type'], string> = {
   Choice: 'Picks exactly one option.',
-  Score: 'Expected level on the rubric, from 0 (lowest) upward.',
+  Score: 'Expected level on a 2–10 level rubric, from 0 (lowest) upward.',
   Noul: 'Probability that the instructions hold true.',
 }
 
@@ -128,7 +128,7 @@ export default function DecisionQuestionCard({
                   type="button"
                   className="button button--text question-remove-item"
                   aria-label={`Remove level ${i}`}
-                  disabled={question.levels.length === 1}
+                  disabled={question.levels.length <= 2}
                   onClick={() => onChange({ ...question, levels: question.levels.filter((_, j) => j !== i) })}
                 >
                   ×
@@ -138,6 +138,7 @@ export default function DecisionQuestionCard({
             <button
               type="button"
               className="button button--text question-add-item"
+              disabled={question.levels.length >= 10}
               onClick={() => onChange({ ...question, levels: [...question.levels, ''] })}
             >
               + Add level

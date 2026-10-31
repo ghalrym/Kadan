@@ -36,6 +36,10 @@ class BuildTests(unittest.TestCase):
         with self.assertRaises(typer.BadParameter):
             run.worker("gpu")
 
+    def test_retired_native_decision_worker_is_rejected(self):
+        with self.assertRaises(typer.BadParameter):
+            run.worker("decision")
+
 
 class WorkerReloadTests(unittest.TestCase):
     def run_worker(self, filename, builds, fingerprints, exits=False):

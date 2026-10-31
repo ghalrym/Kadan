@@ -1,4 +1,4 @@
-# Separate trial image: it does not replace the native inference workers.
+# Python workers for fixed LFM capabilities; retained native workers use their own images.
 FROM python:3.12.15-slim-bookworm
 WORKDIR /app
 COPY experimental_worker/requirements.txt /app/experimental_worker/requirements.txt

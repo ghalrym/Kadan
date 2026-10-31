@@ -100,7 +100,7 @@ void fifo_shares_ledger() {
     );
     const Workload workloads[]{
         Workload::llm,
-        Workload::decision,
+        Workload::formatting,
         Workload::image,
         Workload::video,
         Workload::speech,
@@ -253,7 +253,7 @@ void changed_configuration_reloads_and_gpu_pressure_reconciles() {
         [&] { return free; },
         [](auto, auto, auto) {}
     );
-    auto first = request("first", Workload::decision);
+    auto first = request("first", Workload::formatting);
     first.model = "same";
     first.configuration.context_limit = 8192;
     owner.submit(first);
@@ -1665,7 +1665,7 @@ void incompatible_ram_state_is_discarded() {
         if (change == 2)
             next.configuration.checkpoint = "/other/revision";
         if (change == 3)
-            next.workload = Workload::decision;
+            next.workload = Workload::formatting;
         assert(owner.load({100, 100}));
         owner.submit(next);
         assert(owner.advance() && state.restored == 0);

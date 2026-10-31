@@ -202,7 +202,7 @@ int main() {
         r.unpin(h);
         r.begin_eviction(h);
         r.released(h);
-        auto next = r.reserve(Workload::decision, {100, 24, 24});
+        auto next = r.reserve(Workload::formatting, {100, 24, 24});
         check(next != h);
         fails([&] { r.released(h); });
         check(r.snapshot().used == Footprint({100, 24, 24}));

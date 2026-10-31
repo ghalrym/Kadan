@@ -18,7 +18,7 @@ const localFailure = new DecisionError('Check your inputs', 'Some fields need at
 type Evaluation = { state: string; questions: Question[]; answers: Answer[]; elapsedMs: number }
 
 /**
- * Edit page-local decision state and display answers from the CPU Laya API.
+ * Edit page-local decision state and display answers from the CPU d1 API.
  * Only the active request may update results; leaving the page aborts that request.
  * Answers render against the snapshot they were evaluated with and are marked
  * outdated, not discarded, when inputs change.
@@ -197,7 +197,7 @@ export default function DecisionsPage() {
             )}
           </div>
           <p className="muted decisions-footnote">
-            Uses Laya on CPU, independently of the chat model. Inputs must fit the
+            Uses d1 on CPU, independently of the chat model. Inputs must fit the
             specialist’s token budget. Questions and answers are not saved.
           </p>
         </form>

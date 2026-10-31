@@ -166,25 +166,25 @@ services:
       hikari-api:
         condition: service_healthy
 
-  # Decisions worker: Laya on the CPU.
+  # Decisions worker: d1 on the CPU.
   hikari-worker-decision:
     build:
       context: ./services/hikari
-      dockerfile: inference_worker/workers/decision/Dockerfile
-    command: [python, bin/hikari.py, run, worker, decision]
+      dockerfile: experimental_worker/Dockerfile
     init: true
     restart: unless-stopped
     environment:
-      HIKARI_API_URL: ${HIKARI_API_URL:-ws://hikari-api:8000/v1/workers}
-      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-insecure-api-key}
-      KADAN_MODEL_DIR: /var/lib/kadan/models
+      <<: *lfm3_environment
+      HIKARI_EXPERIMENTAL_BACKEND: d1
+      NVIDIA_VISIBLE_DEVICES: void
+      CUDA_VISIBLE_DEVICES: ""
     volumes:
       - model_data:/var/lib/kadan/models
-      - ./services/hikari/bin:/app/bin
-      - ./services/hikari/inference_worker:/src/inference_worker
-      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
-      - hikari_worker_decision_build:/build
-    # CPU only: no GPU reservation.
+      - ./services/hikari/experimental_worker:/app/experimental_worker:ro
+    # CPU only; the GPU worker anchor must not supply a device reservation.
+    cpus: 2
+    mem_limit: 16g
+    memswap_limit: 16g
     depends_on:
       hikari-api:
         condition: service_healthy
@@ -532,6 +532,7 @@ volumes:
   tsuchi_frontend_node_modules:
   kadan_frontend_node_modules:
   hikari_worker_llm_build:
+  # Retain the old native Decisions build volume; no existing data is removed.
   hikari_worker_decision_build:
   hikari_worker_tts_build:
   hikari_worker_speech_build:

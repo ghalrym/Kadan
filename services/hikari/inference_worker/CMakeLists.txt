@@ -45,7 +45,7 @@ add_library(kadan_preparation src/preparation/preparation_io.cpp src/preparation
   src/preparation/preparation.cpp src/preparation/whisper_export.cpp src/preparation/tokenizer_assets.cpp
   src/requests/inference_request.cpp src/preparation/audio_input.cpp src/preparation/image_upload.cpp
   src/requests/inference_chat_request.cpp src/requests/inference_image_request.cpp
-  src/requests/inference_decision_request.cpp src/requests/inference_speech_request.cpp
+  src/requests/inference_speech_request.cpp
   src/requests/inference_whisper_request.cpp src/requests/inference_video_request.cpp
   src/preparation/worker_requirement.cpp)
 target_link_libraries(kadan_preparation PUBLIC kadan_resources nlohmann_json::nlohmann_json
@@ -144,19 +144,6 @@ target_link_libraries(kadan_stt PUBLIC kadan_resources)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_stt PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
-endif()
-
-# Optional complete CPU decision runtime; no Python runtime dependency.
-option(KADAN_ENABLE_DECISIONS "Build complete CPU Laya request executor" OFF)
-if(KADAN_ENABLE_DECISIONS)
-  find_package(nlohmann_json 3.10 REQUIRED)
-target_link_libraries(kadan_resources INTERFACE nlohmann_json::nlohmann_json)
-  find_package(ICU REQUIRED COMPONENTS uc i18n)
-  find_library(KADAN_OPENBLAS openblas REQUIRED)
-  find_library(KADAN_PCRE2 pcre2-8 REQUIRED)
-  add_library(kadan_decision_executor src/models/decision/decision_executor.cpp src/models/decision/decision_tokenizer.cpp)
-  target_link_libraries(kadan_decision_executor PUBLIC kadan_weight_backing kadan_resources nlohmann_json::nlohmann_json PRIVATE ICU::uc ICU::i18n ${KADAN_PCRE2} ${KADAN_OPENBLAS})
-  target_compile_options(kadan_decision_executor PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
 # Complete H3 text conditioning model, CPU only.
@@ -501,14 +488,6 @@ if(KADAN_ENABLE_CUDA)
   target_link_libraries(kadan-worker-llm PRIVATE kadan_worker_runtime kadan_gguf_text
     kadan_text_tokenizer kadan_h3_cuda)
   kadan_install_worker(kadan-worker-llm)
-endif()
-
-if(KADAN_ENABLE_DECISIONS)
-  add_executable(kadan-worker-decision workers/decision/main.cpp
-    src/inference/inference_decision.cpp)
-  target_link_libraries(kadan-worker-decision PRIVATE kadan_worker_runtime
-    kadan_decision_executor)
-  kadan_install_worker(kadan-worker-decision)
 endif()
 
 if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_TTS_WORKER)

@@ -21,8 +21,7 @@ enum class Workload {
     video,
     speech,
     formatting,
-    tts,
-    decision
+    tts
 };
 enum class State {
     loading,

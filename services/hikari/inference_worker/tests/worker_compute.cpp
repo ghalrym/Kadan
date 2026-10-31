@@ -145,7 +145,7 @@ void projection_math() {
           Workload::video,
           Workload::speech,
           Workload::tts,
-          Workload::decision})
+          Workload::formatting})
         for (int major : {7, 8, 9})
             for (bool precise : {false, true}) {
                 check(!projection_uses_tf32(
