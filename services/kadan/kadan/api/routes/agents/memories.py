@@ -2,11 +2,26 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Request
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ...pydantic_models.resources import AgentKey, Memory, ResourceKind
+from ...pydantic_models.resources import AgentKey, Memory, ResourceKind, Title
 
 router = APIRouter()
 MEMORY_KINDS = (ResourceKind.MEMORY,)
+
+
+class MemoryUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: Title
+    markdown: str = Field(max_length=2000000)
+    expected_version: int = Field(ge=1)
+
+    @field_validator("title")
+    @classmethod
+    def nonblank_title(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Title cannot be blank")
+        return value.strip()
 
 
 @router.get("/api/agents/{key}/memories")
@@ -29,3 +44,10 @@ async def get_memory(key: AgentKey, resource_id: UUID, request: Request) -> Memo
         key, resource_id, MEMORY_KINDS
     )
     return Memory.model_validate(resource.model_dump())
+
+
+@router.put("/api/agents/{key}/memories/{resource_id}")
+async def update_memory(
+    key: AgentKey, resource_id: UUID, value: MemoryUpdate, request: Request
+) -> Memory:
+    return await request.app.state.services.update_memory(key, resource_id, value)
