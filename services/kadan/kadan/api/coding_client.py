@@ -1,4 +1,4 @@
-"""Control durable coding jobs on the existing computer, never on the API host."""
+"""Codex sign-in and threads on the agent's computer, never on the API host."""
 
 import base64
 import json
@@ -7,7 +7,17 @@ from uuid import UUID, uuid4
 from pydantic import ValidationError
 
 from .config import ServiceError
-from .pydantic_models.coding import CodingJob, CodingStart, CodingStatus
+from .pydantic_models.coding import (
+    CodexFinished,
+    CodexFinishedRuns,
+    CodexOrigin,
+    CodexSetup,
+    CodexStarted,
+    CodexStatus,
+    CodexStopped,
+    CodexTask,
+    CodexThread,
+)
 from .sandbox_client import SandboxClient
 
 
@@ -16,7 +26,7 @@ class CodingClient:
         self.computer = computer
 
     async def request(self, operation: str, **arguments) -> dict:
-        session_id = f"kadan-coding-control-{uuid4()}"
+        session_id = f"kadan-codex-{uuid4()}"
         payload = base64.urlsafe_b64encode(
             json.dumps(
                 {"operation": operation, **arguments}, ensure_ascii=False
@@ -26,39 +36,36 @@ class CodingClient:
             response = await self.computer.request(
                 "POST",
                 "/v1/bash/exec",
-                seconds=25,
+                seconds=35,
                 json={
                     "session_id": session_id,
-                    "command": f"python3 /opt/kadan/coding_jobs.py {payload}",
+                    "command": f"python3 /opt/kadan/codex_threads.py {payload}",
                     "exec_dir": "/home/gem",
-                    "timeout": 20,
-                    "hard_timeout": 25,
-                    "max_output_length": 256000,
+                    "timeout": 30,
+                    "hard_timeout": 35,
+                    "max_output_length": 2000000,
                 },
             )
-            envelope = response.json()
-            data = envelope["data"]
+            data = response.json()["data"]
             if (
                 not isinstance(data, dict)
                 or data.get("status") != "completed"
                 or data.get("exit_code") != 0
             ):
-                raise ValueError("Unconfirmed control operation")
+                raise ValueError("Unconfirmed Codex operation")
             result = json.loads(data["stdout"])
             if not isinstance(result, dict):
-                raise ValueError("Invalid control response")
+                raise ValueError("Invalid Codex response")
         except (ServiceError, ValueError, KeyError, TypeError) as error:
             raise ServiceError(
-                "Kadan could not confirm the coding task's status. Refresh Coding "
-                "before trying again; the task may still be running. Do not submit "
-                "it again. If this keeps failing, ask the person who runs Kadan "
-                "to check that its computer is running and up to date.",
+                "Kadan couldn't reach Codex on the agent's computer. Check that the "
+                "computer is running, then refresh.",
                 503,
-                "coding_unconfirmed",
+                "codex_unavailable",
             ) from error
         finally:
-            # Polling must not fill the sandbox's limited Bash session table and
-            # evict unrelated commands. The detached worker owns a separate session.
+            # Each call opens its own Bash session; close it so polling cannot fill
+            # the sandbox's session table. Background runs are detached from it.
             try:
                 await self.computer.request(
                     "POST", f"/v1/bash/sessions/{session_id}/close", seconds=8
@@ -66,46 +73,8 @@ class CodingClient:
             except ServiceError:
                 pass
         if "error" in result:
-            # Only the supervisor's fixed messages are exposed; shell stderr is never returned.
-            raise ServiceError(result["error"], 409, "coding_rejected")
+            raise ServiceError(result["error"], 409, "codex_rejected")
         return result
-
-    async def status(self) -> CodingStatus:
-        if not self.computer.configured:
-            return CodingStatus(
-                setup={
-                    "state": "unavailable",
-                    "message": "No computer is connected. Ask the person who runs Kadan to connect one, then refresh here.",
-                },
-                jobs=[],
-            )
-        return await self.read_model(CodingStatus, "status")
-
-    async def job(self, job_id: UUID, after: int = 0) -> CodingJob:
-        job = await self.read_model(
-            CodingJob, "status", job_id=str(job_id), after=after
-        )
-        return self.match_job(job, job_id)
-
-    async def start(self, arguments: CodingStart) -> CodingJob:
-        job = await self.read_model(
-            CodingJob, "start", **arguments.model_dump(mode="json")
-        )
-        return self.match_job(job, arguments.request_id)
-
-    async def cancel(self, job_id: UUID) -> CodingJob:
-        job = await self.read_model(CodingJob, "cancel", job_id=str(job_id))
-        return self.match_job(job, job_id)
-
-    @staticmethod
-    def match_job(job: CodingJob, job_id: UUID) -> CodingJob:
-        if job.id != job_id or job.request_id != job_id:
-            raise ServiceError(
-                "The computer returned another coding job's status.",
-                502,
-                "coding_invalid_response",
-            )
-        return job
 
     async def read_model(self, model, operation: str, **arguments):
         result = await self.request(operation, **arguments)
@@ -113,7 +82,49 @@ class CodingClient:
             return model.model_validate(result)
         except ValidationError as error:
             raise ServiceError(
-                "The computer returned an invalid coding status. Refresh before retrying.",
+                "The computer returned an invalid Codex response.",
                 502,
-                "coding_invalid_response",
+                "codex_invalid_response",
             ) from error
+
+    async def status(self) -> CodexStatus:
+        if not self.computer.configured:
+            return CodexStatus(threads=[])
+        return await self.read_model(CodexStatus, "threads")
+
+    async def login_status(self) -> CodexSetup:
+        if not self.computer.configured:
+            return CodexSetup(
+                state="unavailable",
+                message="No computer is connected. Ask the person who runs Kadan to connect one.",
+            )
+        return await self.read_model(CodexSetup, "setup")
+
+    async def login(self) -> CodexSetup:
+        return await self.read_model(CodexSetup, "login")
+
+    async def logout(self) -> CodexSetup:
+        return await self.read_model(CodexSetup, "logout")
+
+    async def thread(self, thread_id: UUID) -> CodexThread:
+        return await self.read_model(CodexThread, "thread", thread_id=str(thread_id))
+
+    async def start(
+        self, task: CodexTask, request_id: UUID, origin: CodexOrigin
+    ) -> CodexStarted:
+        return await self.read_model(
+            CodexStarted,
+            "start",
+            **task.model_dump(mode="json"),
+            request_id=str(request_id),
+            origin=origin.model_dump(mode="json"),
+        )
+
+    async def finished(self) -> list[CodexFinished]:
+        return (await self.read_model(CodexFinishedRuns, "finished")).runs
+
+    async def acknowledge(self, request_id: UUID) -> None:
+        await self.request("acknowledge", request_id=str(request_id))
+
+    async def stop(self, thread_id: UUID) -> CodexStopped:
+        return await self.read_model(CodexStopped, "stop", thread_id=str(thread_id))

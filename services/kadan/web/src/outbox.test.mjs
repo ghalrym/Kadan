@@ -74,17 +74,8 @@ test("malformed outbox records do not become sends", () => {
   }
 });
 
-test("explicit coding continuation keeps its original job on reconnect and retry", () => {
-  const pending = { ...first, resume_coding_job_id: "saved-job" };
-  assert.deepEqual(readPending(JSON.stringify(pending)), pending);
-  assert.deepEqual(queueSend(pending, { ...pending, content: "Changed prompt", resume_coding_job_id: "other-job" }), pending);
-  assert.equal(readPending(JSON.stringify({ ...pending, generate: false })), null);
-  assert.equal(readPending(JSON.stringify({ ...pending, resume_coding_job_id: 42 })), null);
-});
-
-
-test("attachment retries preserve ordered snapshots alongside Codex continuation", () => {
-  const pending = { ...first, attachment_ids: ["file-b", "file-a"], resume_coding_job_id: "job" };
+test("attachment retries preserve ordered snapshots", () => {
+  const pending = { ...first, attachment_ids: ["file-b", "file-a"] };
   const restored = readPending(JSON.stringify(pending));
   assert.deepEqual(restored, pending);
   assert.deepEqual(queueSend(restored, { ...pending, attachment_ids: ["new-file"] }), pending);

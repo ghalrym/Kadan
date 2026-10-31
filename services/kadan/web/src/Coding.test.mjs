@@ -27,11 +27,14 @@ const hooksUrl = `data:text/javascript,${encodeURIComponent(`
   }
 `)}`;
 const apiUrl = `data:text/javascript,${encodeURIComponent(`
-  export class ApiError extends Error { constructor(message, status) { super(message); this.status = status; } }
   export const calls = [];
   export const replies = [];
-  export const agentPath = key => '/agents/' + encodeURIComponent(key);
-  export const api = (...args) => { calls.push(args); return replies.shift()(); };
+  export const authReplies = [];
+  export const api = (...args) => {
+    calls.push(args);
+    if (args[0] === '/computer/coding/login/status') return authReplies.length ? authReplies.shift()() : Promise.resolve({ state: 'signed_in', message: 'Signed in with ChatGPT.' });
+    return replies.shift()();
+  };
 `)}`;
 const componentUrl = new URL("./Coding.tsx", import.meta.url).href;
 const loader = registerHooks({
@@ -51,21 +54,16 @@ const loader = registerHooks({
   },
 });
 const hooks = await import(hooksUrl);
-const { calls, replies, ApiError } = await import(apiUrl);
+const { calls, replies, authReplies } = await import(apiUrl);
 const { default: Coding } = await import(componentUrl);
 loader.deregister();
 
 
 let closed;
-let queued;
-const conversation = { id: "conversation-a", agent_key: "agent-a", version: 1, messages: [] };
-const storage = new Map();
-const originalStorage = globalThis.sessionStorage;
 let interval;
 const originalInterval = globalThis.setInterval;
 const originalClear = globalThis.clearInterval;
-let currentConversation;
-function render() { hooks.render(); return Coding({ agentKey: "agent-a", conversation: currentConversation, onQueued: value => queued.push(value), onClose: () => closed++ }); }
+function render() { hooks.render(); return Coding({ onClose: () => closed++ }); }
 function nodes(node, type) {
   if (!node || typeof node !== "object") return [];
   return [ ...(node.type === type ? [node] : []),
@@ -76,15 +74,17 @@ function text(node) {
   if (!node || typeof node !== "object") return "";
   return [node.props?.children].flat(Infinity).map(text).join("");
 }
-function button(label) { return nodes(render(), "button").find(node => node.props.children === label); }
-async function settle() { await new Promise(resolve => setImmediate(resolve)); }
-const first = { id: "job-a", status: "running", cwd: "/home/gem/project", session_id: "session-a", created_at: "2026-10-30T12:00:00Z", message: "Working.", events: [] };
-function status(jobs = [first], setup = { state: "ready", message: "Credentials present; execution unverified." }) { return { setup, jobs }; }
-async function open(result = status()) { replies.push(() => Promise.resolve(result)); render(); await settle(); }
+function button(label) {
+  return nodes(render(), "button").find(node => text(node) === label || text(node).startsWith(label));
+}
+async function settle() { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); }
+const thread = { id: "thread-a", title: "Fix the parser", cwd: "/home/gem/project", created_at: null, updated_at: "2026-10-30T12:00:00Z", running: true };
+const signedIn = { state: "signed_in", message: "Signed in with ChatGPT." };
+function status(threads = [thread], setup = signedIn) { return { setup, threads }; }
+function reply(value) { replies.push(() => Promise.resolve(value)); }
+async function open(result = status()) { reply(result); authReplies.push(() => Promise.resolve(result.setup)); render(); await settle(); }
 beforeEach(() => {
-  hooks.reset(); calls.length = replies.length = 0; closed = 0; queued = []; storage.clear();
-  currentConversation = conversation;
-  globalThis.sessionStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) };
+  hooks.reset(); calls.length = replies.length = authReplies.length = 0; closed = 0;
   globalThis.setInterval = fn => { interval = fn; return 1; };
   globalThis.clearInterval = () => { interval = undefined; };
 });
@@ -92,265 +92,121 @@ afterEach(() => {
   for (const cleanup of hooks.cleanups) cleanup?.();
   globalThis.setInterval = originalInterval;
   globalThis.clearInterval = originalClear;
-  globalThis.sessionStorage = originalStorage;
 });
 
-test("setup failure is not an empty job history and refresh can recover", async () => {
+test("signed-out computer offers one sign-in button that shows the device code", async () => {
+  await open(status([], { state: "signed_out", message: "Sign in with ChatGPT to let your agent use Codex." }));
+  assert.match(text(render()), /No Codex threads yet/);
+  const login = { state: "signing_in", message: "Open the sign-in page and enter the code.", login: { url: "https://auth.example/device", code: "ABCD-1234" } };
+  reply(login);
+  reply(status([], login));
+  authReplies.push(() => Promise.resolve(login));
+  button("Sign in with ChatGPT").props.onClick();
+  await settle();
+  assert.deepEqual(calls.filter(call => call[1]).map(call => call[0]), ["/computer/coding/login"]);
+  const view = render();
+  assert.match(text(view), /ABCD-1234/);
+  assert.equal(nodes(view, "a")[0].props.href, "https://auth.example/device");
+});
+
+test("signed-in computer can sign out", async () => {
+  await open(status([]));
+  reply({ state: "signed_out", message: "Signed out." });
+  reply(status([], { state: "signed_out", message: "Signed out." }));
+  authReplies.push(() => Promise.resolve({ state: "signed_out", message: "Signed out." }));
+  button("Sign out").props.onClick();
+  await settle();
+  assert.equal(calls.find(call => call[1])[0], "/computer/coding/logout");
+  assert.ok(button("Sign in with ChatGPT"));
+});
+
+test("threads list opens a thread transcript and polls it", async () => {
+  await open();
+  assert.match(text(render()), /Fix the parser/);
+  assert.match(text(render()), /Working/);
+  reply(status());
+  reply({ ...thread, items: [{ kind: "user", text: "Fix it" }, { kind: "command", text: "Ran pytest" }, { kind: "assistant", text: "Done." }], items_truncated: false });
+  nodes(render(), "button").find(node => /Fix the parser/.test(text(node))).props.onClick();
+  await settle();
+  assert.equal(calls.at(-1)[0], "/computer/coding/threads/thread-a");
+  const items = nodes(render(), "li").map(text);
+  assert.deepEqual(items, ["Fix it", "Ran pytest", "Done."]);
+  reply(status([{ ...thread, running: false }]));
+  reply({ ...thread, running: false, items: [], items_truncated: false });
+  await interval();
+  assert.equal(calls.at(-1)[0], "/computer/coding/threads/thread-a");
+  assert.equal(button("Stop"), undefined);
+  button("All threads").props.onClick();
+  assert.match(text(render()), /Fix the parser/);
+});
+
+test("a running thread can be stopped from the tracker", async () => {
+  await open();
+  reply(status());
+  reply({ ...thread, items: [], items_truncated: false });
+  nodes(render(), "button").find(node => /Fix the parser/.test(text(node))).props.onClick();
+  await settle();
+  reply({ thread_id: "thread-a", running: false });
+  reply(status([{ ...thread, running: false }]));
+  reply({ ...thread, running: false, items: [], items_truncated: false });
+  button("Stop").props.onClick();
+  await settle();
+  assert.deepEqual(calls.find(call => call[0].endsWith("/stop")), ["/computer/coding/threads/thread-a/stop", {}]);
+  assert.match(text(render()), /Idle/);
+});
+
+test("a failed refresh reports the error and Close closes", async () => {
   replies.push(() => Promise.reject(new Error("Computer unavailable")));
-  assert.match(text(render()), /Checking computer/);
+  render();
   await settle();
-  assert.match(text(render()), /Coding status unavailable/);
-  assert.doesNotMatch(text(render()), /No coding jobs/);
-  replies.push(() => Promise.resolve(status([], { state: "auth_required", message: "Sign in inside the computer." })));
-  button("Refresh coding jobs").props.onClick();
-  await settle();
-  assert.match(text(render()), /codex login --device-auth/);
-  assert.match(text(render()), /No coding jobs/);
-  assert.doesNotMatch(text(render()), /Could not refresh/);
-});
-
-test("failed reconnect retains clearly stale job state without resubmission", async () => {
-  await open();
-  replies.push(() => Promise.reject(new Error("Disconnected")));
-  interval();
-  await settle();
-  assert.match(text(render()), /Last known state: Working/);
-  assert.match(text(render()), /Could not refresh coding jobs/);
-  assert.ok(calls.every(call => call[1] === undefined));
-  replies.push(() => Promise.resolve(status([{ ...first, status: "completed", message: "Done." }])));
-  interval();
-  await settle();
-  assert.match(text(render()), /Completed/);
-  assert.doesNotMatch(text(render()), /Last known state/);
-});
-
-test("stopping remains pending until a later cleanup confirmation", async () => {
-  await open();
-  replies.push(() => Promise.resolve({ ...first, status: "stopping", message: "Cleaning up." }));
-  button("Stop coding").props.onClick();
-  await settle();
-  assert.deepEqual(calls[1], ["/computer/coding/job-a/cancel", {}]);
-  assert.match(text(render()), /Stopping and cleaning up/);
-  assert.equal(button("Waiting for cleanup…").props.disabled, true);
-  replies.push(() => Promise.resolve(status([{ ...first, status: "cancelled", message: "Cancelled; changes remain." }])));
-  interval();
-  await settle();
-  assert.match(text(render()), /Cancelled; changes remain/);
-  assert.equal(button("Stop coding"), undefined);
-});
-
-test("a late polling response cannot overwrite cancellation and does not delay stop", async () => {
-  await open();
-  let finish;
-  replies.push(() => new Promise(resolve => { finish = resolve; }));
-  interval();
-  replies.push(() => Promise.resolve({ ...first, status: "stopping", message: "Stopping." }));
-  button("Stop coding").props.onClick();
-  button("Requesting stop…").props.onClick();
-  await settle();
-  finish(status());
-  await settle();
-  assert.match(text(render()), /Stopping and cleaning up/);
-  assert.equal(calls.filter(call => call[1]).length, 1);
-});
-
-test("an uncertain cancellation is read back without replaying the write", async () => {
-  await open();
-  replies.push(() => Promise.reject(new Error("Response lost")));
-  button("Stop coding").props.onClick();
-  await settle();
-  assert.match(text(render()), /Stop coding is unconfirmed/);
-  replies.push(() => Promise.resolve(status([{ ...first, status: "cancelled", message: "Cancelled." }])));
-  interval();
-  await settle();
-  assert.match(text(render()), /Cancelled/);
-  assert.equal(calls.filter(call => call[1]).length, 1);
-});
-
-test("closing while a request is pending neither cancels work nor applies a late response", async () => {
-  await open();
-  let finish;
-  replies.push(() => new Promise(resolve => { finish = resolve; }));
-  interval();
+  assert.match(text(render()), /Codex status unavailable/);
+  assert.match(text(render()), /Computer unavailable/);
   button("Close").props.onClick();
   assert.equal(closed, 1);
-  finish(status([{ ...first, status: "completed" }]));
-  await settle();
-  assert.match(text(render()), /Working/);
-  assert.equal(calls.filter(call => call[1]).length, 0);
-});
-
-test("cleanup failure remains attention-needed and explicit session identity is visible", async () => {
-  await open(status([{ ...first, status: "cleanup_required", message: "Restart the computer to confirm cleanup.", events_truncated: true } ]));
-  assert.match(text(render()), /Cleanup needs attention/);
-  assert.match(text(render()), /session-a/);
-  assert.match(text(render()), /Earlier events have been omitted/);
-  assert.equal(button("Stop coding"), undefined);
 });
 
 
-test("ready first use suggests an existing project and a read-only task without submitting", async () => {
-  await open(status([]));
-  assert.match(text(render()), /Choose an existing project folder/);
-  assert.match(text(render()), /Ask Codex to look through my project/);
-  assert.match(text(render()), /without changing any files/);
-  assert.match(text(render()), /Replace \[folder\] with its path/);
-  assert.ok(calls.every(call => call[1] === undefined));
+test("thread refresh failure leaves sign-in controls available", async () => {
+  replies.push(() => Promise.reject(new Error("Threads unavailable")));
+  authReplies.push(() => Promise.resolve({ state: "signed_out", message: "Sign in" }));
+  render(); await settle();
+  assert.ok(button("Sign in with ChatGPT"));
+  assert.match(text(render()), /Threads unavailable/);
 });
 
-
-test("sign-in guidance locates the terminal and does not treat ChatGPT browser login as Codex access", async () => {
-  await open(status([], { state: "auth_required", message: "Sign in on this computer." }));
-  assert.match(text(render()), /open your agent’s card, open its computer, and choose Take control/);
-  assert.match(text(render()), /CODEX_HOME=\/home\/gem\/\.codex codex login --device-auth/);
-  assert.match(text(render()), /Keep passwords, codes and API keys out of chat/);
-  assert.match(text(render()), /Finish the setup above/);
-  assert.doesNotMatch(text(render()), /For a first try/);
-  const help = nodes(render(), "a").find(link => link.props.href === "https://developers.openai.com/codex/auth");
-  assert.equal(help.props.target, "_blank");
-  assert.match(text(help), /opens in a new tab/);
-  assert.match(text(render()), /Sign-in does not confirm access to GPT-6.1 Sol or remaining usage/);
-  assert.match(text(render()), /API-key use can incur charges/);
-  assert.ok(calls.every(call => call[1] === undefined));
+test("sign-in failure leaves thread tracking available", async () => {
+  reply(status());
+  authReplies.push(() => Promise.reject(new Error("Auth unavailable")));
+  render(); await settle();
+  assert.match(text(render()), /Fix the parser/);
+  assert.match(text(render()), /Sign-in status unavailable/);
 });
 
-
-test("update setup does not offer sign-in as a fix for a missing or incompatible package", async () => {
-  await open(status([], { state: "unavailable", message: "Ask the person who runs Kadan to update its computer." }));
-  assert.match(text(render()), /update its computer/);
-  assert.doesNotMatch(text(render()), /codex login --device-auth/);
-  assert.doesNotMatch(text(render()), /For a first try/);
+test("pending sign-in can be cancelled before a code arrives", async () => {
+  await open(status([], { state: "signing_in", message: "Starting sign-in…" }));
+  assert.ok(button("Cancel sign-in"));
+  reply({ state: "signed_out", message: "Sign in" });
+  reply(status([]));
+  authReplies.push(() => Promise.resolve({ state: "signed_out", message: "Sign in" }));
+  button("Cancel sign-in").props.onClick(); await settle();
+  assert.ok(button("Sign in with ChatGPT"));
 });
 
-
-test("the project is visible before stopping and state changes have a polite announcement", async () => {
-  await open();
-  assert.match(text(render()), /Project folder: \/home\/gem\/project/);
-  const state = nodes(render(), "p").find(node => node.props.className === "coding-state");
-  assert.equal(state.props.role, "status");
-  assert.match(text(render()), /Stop response in Messages prevents that reply and leaves coding running/);
-  assert.match(text(render()), /Stop coding ends the coding task; file changes remain/);
-});
-
-const completed = { ...first, status: "completed", message: "Earlier turn completed." };
-const pendingKey = "kadan.draft.agent-a.conversation-a.pending";
-function followup(value) { nodes(render(), "textarea")[0].props.onChange({ target: { value } }); }
-function submit() { nodes(render(), "form")[0].props.onSubmit({ preventDefault() {} }); }
-
-test("explicit continuation queues a scoped durable request and shows its allowance impact", async () => {
-  await open(status([completed]));
-  followup("Rerun the unit tests");
-  assert.match(text(render()), /queues this task directly in Messages/);
-  assert.match(text(render()), /uses your Codex allowance/);
-  replies.push(() => Promise.resolve(conversation), () => Promise.resolve({ conversation: { ...conversation, version: 2 } }));
-  submit(); submit();
-  await settle();
-  assert.equal(calls[1][0], "/agents/agent-a/resources/conversation-a");
-  const posts = calls.filter(call => call[1]);
-  assert.equal(posts.length, 1);
-  assert.equal(posts[0][0], "/agents/agent-a/conversations/conversation-a/runs");
-  assert.equal(posts[0][1].resume_coding_job_id, completed.id);
-  assert.equal(posts[0][1].content, "Rerun the unit tests");
-  assert.equal(posts[0][1].expected_version, 1);
-  assert.equal(posts[0][1].persona_id, null);
-  assert.equal(closed, 1); assert.equal(queued.length, 1);
-  assert.equal(storage.has(pendingKey), false);
-});
-
-test("uncertain continuation retries the frozen ID, job and prompt rather than submitting new work", async () => {
-  await open(status([completed])); followup("Check the fix");
-  replies.push(() => Promise.resolve(conversation), () => Promise.reject(new Error("Response lost")));
-  submit(); await settle();
-  const firstPost = calls.find(call => call[1])[1];
-  assert.match(text(render()), /Continuation is unconfirmed/);
-  assert.equal(nodes(render(), "textarea")[0].props.disabled, true);
-  assert.equal(nodes(render(), "select")[0].props.disabled, true);
-  assert.equal(JSON.parse(storage.get(pendingKey)).id, firstPost.message_id);
-  replies.push(() => Promise.resolve({ ...conversation, version: 2 }), () => Promise.resolve({ conversation }));
-  submit(); await settle();
-  const lastPost = calls.filter(call => call[1]).at(-1)[1];
-  assert.deepEqual(lastPost, { ...firstPost, expected_version: 2 });
-  assert.equal(storage.has(pendingKey), false);
-});
-
-test("reopening restores only this conversation's unconfirmed continuation", async () => {
-  const pending = { id: "same-request", content: "Check only", generate: true, persona: "", resume_coding_job_id: completed.id };
-  storage.set(pendingKey, JSON.stringify(pending));
-  await open(status([completed]));
-  assert.equal(nodes(render(), "textarea")[0].props.value, pending.content);
-  assert.equal(button("Retry same continuation").props.disabled, false);
-  replies.push(() => Promise.resolve(conversation), () => Promise.resolve({ conversation }));
-  submit(); await settle();
-  assert.equal(calls.find(call => call[1])[1].message_id, pending.id);
-});
-
-test("closing during preflight prevents a late write or a callback into another conversation", async () => {
-  await open(status([completed])); followup("Check only");
-  let finish;
-  replies.push(() => new Promise(resolve => { finish = resolve; }));
-  submit(); button("Close").props.onClick();
-  finish(conversation); await settle();
-  assert.equal(calls.filter(call => call[1]).length, 0);
-  assert.equal(queued.length, 0); assert.equal(closed, 1);
-  assert.equal(JSON.parse(storage.get(pendingKey)).resume_coding_job_id, completed.id);
-});
-
-test("a mismatched conversation cannot accept a continuation or clear its recovery", async () => {
-  await open(status([completed])); followup("Check only");
-  replies.push(() => Promise.resolve({ ...conversation, id: "other" }));
-  submit(); await settle();
-  assert.equal(calls.filter(call => call[1]).length, 0);
-  assert.equal(queued.length, 0); assert.ok(storage.has(pendingKey));
-  assert.match(text(render()), /conversation changed/);
-});
-
-test("unrelated pending chat is preserved and blocks a continuation", async () => {
-  const pending = { id: "ordinary-chat", content: "Existing work", generate: true, persona: "" };
-  storage.set(pendingKey, JSON.stringify(pending));
-  await open(status([completed])); followup("Check only"); submit(); await settle();
-  assert.equal(calls.length, 1);
-  assert.deepEqual(JSON.parse(storage.get(pendingKey)), pending);
-  assert.equal(queued.length, 0);
-});
-
-test("a new continuation is disabled while another job or unconfirmed cleanup owns the computer", async () => {
-  await open(status([completed, { ...first, id: "other", status: "cleanup_required" }]));
-  followup("Check only");
-  assert.equal(button("Continue with Codex").props.disabled, true);
-  assert.equal(calls.filter(call => call[1]).length, 0);
-});
-
-test("jobs without a recorded session do not offer a fresh-session fallback", async () => {
-  await open(status([{ ...completed, session_id: null }]));
-  assert.equal(nodes(render(), "form").length, 0);
-  assert.equal(button("Continue with Codex"), undefined);
-});
-
-test("unsent follow-ups survive closing, Escape and reopening without crossing conversations", async () => {
-  await open(status([completed])); followup("Keep my draft");
-  nodes(render(), "dialog")[0].props.onCancel({ preventDefault() {} });
-  for (const cleanup of hooks.cleanups) cleanup?.();
-  hooks.reset();
-  await open(status([completed]));
-  assert.equal(nodes(render(), "textarea")[0].props.value, "Keep my draft");
-  button("Close").props.onClick();
-  for (const cleanup of hooks.cleanups) cleanup?.();
-  hooks.reset(); currentConversation = { ...conversation, id: "conversation-b" };
-  await open(status([completed]));
-  assert.equal(nodes(render(), "textarea")[0].props.value, "");
-  assert.equal(calls.filter(call => call[1]).length, 0);
-});
-
-test("switching jobs preserves separate drafts and queuing moves only the selected draft to recovery", async () => {
-  const other = { ...completed, id: "job-b" };
-  await open(status([completed, other])); followup("First draft");
-  nodes(render(), "select")[0].props.onChange({ target: { value: other.id } });
-  assert.equal(nodes(render(), "textarea")[0].props.value, "");
-  followup("Second draft");
-  nodes(render(), "select")[0].props.onChange({ target: { value: completed.id } });
-  assert.equal(nodes(render(), "textarea")[0].props.value, "First draft");
-  replies.push(() => Promise.resolve(conversation), () => Promise.reject(new Error("Response lost")));
-  submit(); await settle();
-  assert.equal(JSON.parse(storage.get(pendingKey)).content, "First draft");
-  assert.deepEqual(JSON.parse(storage.get(`${pendingKey}.coding-drafts`)), { "job-b": "Second draft" });
+test("polling is single-flight and stale auth reads cannot undo sign-out", async () => {
+  let resolveAuth;
+  reply(status());
+  authReplies.push(() => new Promise(resolve => { resolveAuth = resolve; }));
+  render(); await settle();
+  const count = calls.length;
+  await interval();
+  assert.equal(calls.length, count);
+  resolveAuth(signedIn); await settle();
+  let resolveOld;
+  reply(status());
+  authReplies.push(() => new Promise(resolve => { resolveOld = resolve; }));
+  void interval(); await settle();
+  reply({ state: "signed_out", message: "Sign in" });
+  button("Sign out").props.onClick(); await settle();
+  resolveOld(signedIn); await settle();
+  assert.ok(button("Sign in with ChatGPT"));
 });

@@ -15,21 +15,21 @@ admission estimate, not the exact rendered LFM prompt length.
 
 | Configuration | Tools | LFM schema JSON bytes | JSON token estimate | Reserved tool characters | Reservation token estimate |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| No computer | 13 | 8,479 | 2,827 | 9,842 | 3,281 |
-| Computer | 28 | 23,020 | 7,674 | 25,564 | 8,522 |
-| Computer and vision | 29 | 23,505 | 7,835 | 26,068 | 8,690 |
+| No computer | 18 | 11,454 | 3,818 | 12,932 | 4,311 |
+| Computer | 33 | 25,950 | 8,650 | 28,622 | 9,541 |
+| Computer and vision | 34 | 26,427 | 8,809 | 29,118 | 9,706 |
 
 Token columns are explicitly estimates: ceiling of characters divided by three,
 matching Kadan's context-budget heuristic. No tokenizer was loaded. They are not
 token counts from the pinned LFM tokenizer and exclude its final chat-template
-overhead. The checked-in base `AGENT.md` adds 6,558 characters before personas,
+overhead. The checked-in base `AGENT.md` adds 7,298 characters before personas,
 history, event context and tool results. Those variable inputs must be measured
-separately for a particular run. The runner also reserves 1,024 tokens for the
-reply and template and includes at most 97 recent delivered messages.
+separately for a particular run. The runner also reserves its reasoning and reply
+output caps plus 1,024 tokens for the template and includes at most 97 recent delivered messages.
 
 The largest individual compact schema is `browser_execute_action` at 4,962
 bytes; both history schemas total 2,461 bytes. The three Codex schemas total
-1,793 bytes. Tool count alone therefore does not describe context cost.
+1,752 bytes. Tool count alone therefore does not describe context cost.
 
 Reproduce from the repository root with the Kadan dependencies installed:
 

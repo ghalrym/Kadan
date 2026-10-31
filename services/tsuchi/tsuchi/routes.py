@@ -31,12 +31,12 @@ from .models import (
     PetReferenceMode,
     PetState,
     RequestReference,
+    RunEvent,
     Resource,
     ResourceInput,
     ResourceKind,
     ResourceUpdate,
     ResourceVersion,
-    RunMessage,
     Runner,
     Stats,
     VersionInput,
@@ -99,8 +99,13 @@ class RunCreate(Model):
     expected_version: int = Field(ge=1)
     message: Message
     persona_id: UUID | None = None
-    initial_command: RunMessage | None = None
     references: list[RequestReference] = Field(default_factory=list, max_length=3)
+
+
+class EventRunCreate(Model):
+    id: UUID
+    origin_run_id: UUID
+    event: RunEvent
 
 
 class RunUpdate(AgentRunState):
@@ -219,8 +224,17 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
             value.message,
             value.expected_version,
             value.persona_id,
-            value.initial_command,
             value.references,
+        )
+
+    @router.post(
+        "/agents/{key}/resources/{conversation_id}/event-runs",
+        response_model=AgentRun,
+        status_code=201,
+    )
+    def create_event_run(key: AgentKey, conversation_id: UUID, value: EventRunCreate):
+        return repository.create_event_run(
+            key, conversation_id, value.id, value.origin_run_id, value.event
         )
 
     @router.get("/agents/{key}/runs/{run_id}", response_model=AgentRun)

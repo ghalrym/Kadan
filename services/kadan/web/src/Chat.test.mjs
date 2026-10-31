@@ -71,7 +71,6 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     "./ComputerViewer": { default: "ComputerViewer" },
     "./ChatExport": { default: "ChatExport" },
     "./Activity": { default: "Activity" },
-    "./CodingIndicator": { default: "CodingIndicator" },
     "./VoiceCallControl": { useVoiceCall: (_agent, _persona, disabled) => {
       callDisabled = disabled;
       return { active: false, unavailable: null, ...callOptions.voiceCall, start: (...args) => callStarts.push(args) };
@@ -313,56 +312,6 @@ test("assistant-only history has no user delivery receipt", async () => {
   assert.deepEqual(view.receipts(), []);
 });
 
-test("Messages retries a recovered explicit coding continuation without turning it into model-directed chat", async () => {
-  const pending = { id: "continuation-request", content: "Check the fix", generate: true, persona: "", resume_coding_job_id: "recorded-job" };
-  const view = await chat([], chain, pending);
-  const finishSend = view.holdSend();
-  view.retry();
-  const request = view.requests.find(row => row.body);
-  assert.equal(request.path, "/agents/guide/conversations/conversation/runs");
-  assert.equal(request.body.message_id, pending.id);
-  assert.equal(request.body.resume_coding_job_id, pending.resume_coding_job_id);
-  assert.equal(request.body.content, pending.content);
-  finishSend({ run: run(pending.id, "queued"), conversation: { ...chain, version: 2, messages: [message(pending.id, "user", pending.content)] } });
-  await settle();
-  view.render();
-  assert.equal(view.requests.filter(row => row.body).length, 1);
-});
-
-test("an already-mounted Messages poll preserves a continuation queued by Coding until its message is confirmed", async () => {
-  const view = await chat([]);
-  const pending = { id: "coding-request", content: "Check the fix", generate: true, persona: "", resume_coding_job_id: "recorded-job" };
-  const key = outbox.chatStorageKeys("guide", chain.id).pending;
-  // Coding queues into the same session outbox while Chat remains mounted.
-  view.storage.set(key, JSON.stringify(pending));
-  await view.poll([]);
-  assert.deepEqual(JSON.parse(view.storage.get(key)), pending);
-  assert.equal(view.requests.filter(row => row.body).length, 0);
-  const finishSend = view.holdSend();
-  view.retry();
-  assert.equal(view.requests.at(-1).body.message_id, pending.id);
-  assert.equal(view.requests.at(-1).body.resume_coding_job_id, pending.resume_coding_job_id);
-  const accepted = { ...chain, version: 2, messages: [message(pending.id, "user", pending.content)] };
-  finishSend({ run: run(pending.id, "queued"), conversation: accepted });
-  await settle(); view.render();
-  assert.equal(view.storage.has(key), false);
-  await view.poll([], accepted);
-  assert.equal(view.storage.has(key), false);
-  assert.equal(view.requests.filter(row => row.body).length, 1);
-});
-
-test("a stale mounted Messages sender cannot replace a continuation from Coding", async () => {
-  const view = await chat([]);
-  const pending = { id: "coding-request", content: "Check only", generate: true, persona: "", resume_coding_job_id: "recorded-job" };
-  const key = outbox.chatStorageKeys("guide", chain.id).pending;
-  view.storage.set(key, JSON.stringify(pending));
-  view.composer().onChange("A different message"); view.render();
-  view.composer().onSend(true); await settle(); view.render();
-  assert.deepEqual(JSON.parse(view.storage.get(key)), pending);
-  assert.equal(view.requests.filter(row => row.body).length, 0);
-});
-
-
 test("note submission snapshots ordered attachments separately from upload confirmation", async () => {
   const view = await chat([]);
   view.attachments.entries = [{ id: "file-b" }, { id: "file-a" }];
@@ -426,16 +375,15 @@ test("new sends with unresolved attachments cannot submit", async () => {
   assert.ok(view.alerts().some(text => /Finish uploading/.test(text)));
 });
 
-test("reloaded retry preserves attachments and explicit Codex continuation independently of the draft", async () => {
+test("reloaded retry preserves attachments independently of the draft", async () => {
   for (const attachment_ids of [undefined, ["saved-b", "saved-a"]]) {
-    const pending = { id: "earlier", content: "Continue", generate: true, persona: "original", resume_coding_job_id: "coding-job", ...(attachment_ids && { attachment_ids }) };
+    const pending = { id: "earlier", content: "Continue", generate: true, persona: "original", ...(attachment_ids && { attachment_ids }) };
     const view = await chat([], chain, pending);
     view.attachments.entries = [{ id: "draft-file" }];
     const finish = view.holdSend();
     view.retry();
     const request = view.requests.find(request => request.body).body;
     assert.equal(request.message_id, "earlier");
-    assert.equal(request.resume_coding_job_id, "coding-job");
     assert.equal(request.persona_id, "original");
     assert.deepEqual(Array.from(request.attachment_ids), attachment_ids ?? []);
     assert.deepEqual(view.attachments.entries, [{ id: "draft-file" }]);

@@ -2,8 +2,8 @@
 
 Kadan agents can use their configured computer to browse websites, read and change files, and run commands or code during text conversations. Hikari supplies the model's decisions; Kadan executes the actions. Voice calls do not provide these tools.
 
-For scoped coding work, the agent can delegate to [Codex coding jobs](coding.md)
-on this same computer, with durable progress and separate process cancellation.
+For coding work, the agent can start [Codex threads](coding.md) on this same
+computer and check on them later.
 
 The standard deployment uses the released LFM3 BF16 conversation worker with the same saved session, personas, tool permissions and action recovery. Its fixed checkpoint requires a user-approved download; unavailable workers or incomplete checkpoints produce an error. Its bounded context can reject long conversations; tool-use quality and speed need manual evaluation for the work being attempted.
 
