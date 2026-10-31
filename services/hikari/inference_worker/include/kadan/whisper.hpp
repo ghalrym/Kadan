@@ -14,7 +14,8 @@ struct WhisperDimensions {
 };
 
 // Original CPU Whisper encoder/decoder. No Python inference or implicit downloads.
-// Serialized owner; only cancellation may change concurrently. Outputs are caller
+// Serialized owner; inputs remain immutable throughout a call, including hooks.
+// Only cancellation may change concurrently. Outputs are caller
 // admitted. Discard partial output on failure. No tokenizer, segmentation or beam
 // search.
 class Whisper {
@@ -42,7 +43,7 @@ public:
         const Hook& hook = {}
     );
     // Entire token prefix -> logits for its final position [vocabulary].
-    // Recomputes prefixes; no persistent KV allocation or GPU execution.
+    // Recomputes prefixes without cross-attention reuse between calls.
     void decode(
         std::span<const std::uint32_t> tokens,
         std::span<const float> encoded,
@@ -52,6 +53,7 @@ public:
     );
     // Prompt + bounded greedy continuation. Output contains generated IDs only;
     // stop token is included. Returns count. Caller supplies explicit suppression.
+    // Cross-attention K/V is admitted once and retained only for this call.
     std::size_t greedy(
         std::span<const std::uint32_t> prompt,
         std::span<const float> encoded,

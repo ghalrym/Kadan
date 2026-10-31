@@ -1,3 +1,5 @@
+#include <limits>
+
 #include "kadan/gguf_checkpoint.hpp"
 #include "kadan/gguf_text.hpp"
 #include "kadan/h3_memory.hpp"
@@ -85,15 +87,23 @@ Json worker_requirement(
     case Workload::formatting:
         // S1-mini runs on the host with its weights resident as floats.
         return footprint(model, 2 * weights + gib, 2 * weights + gib, 0, 0, 0);
-    case Workload::speech:
+    case Workload::speech: {
+        // DeviceWeights retains F32 projections, not the download's representation.
+        const auto runtime = entry.runtime_weight_bytes.value_or(weights);
+        preparation_check(
+            runtime <= std::numeric_limits<Bytes>::max() - device_headroom
+                && weights <= std::numeric_limits<Bytes>::max() - gib,
+            "Speech weight inventory overflows its memory requirement"
+        );
         return footprint(
             model,
             gib,
             weights + gib,
             device_headroom,
-            weights + device_headroom,
+            runtime + device_headroom,
             device_headroom
         );
+    }
     case Workload::tts:
         return footprint(
             model,
