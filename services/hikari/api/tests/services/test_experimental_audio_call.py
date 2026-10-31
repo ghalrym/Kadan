@@ -25,7 +25,6 @@ class AudioModelsTests(unittest.TestCase):
         status = audio_snapshot()
         models = CallModels.selected(status)
         self.assertEqual(models.audio, "lfm3-audio-2b-bf16")
-        self.assertEqual(models.audio, "lfm3-audio-2b-bf16")
         status.models[0].status = "not_downloaded"
         with self.assertRaisesRegex(InferenceFailure, "license"):
             CallModels.selected(status)
