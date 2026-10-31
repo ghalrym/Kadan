@@ -30,6 +30,7 @@ from .models import (
     PetManifest,
     PetReferenceMode,
     PetState,
+    RequestReference,
     Resource,
     ResourceInput,
     ResourceKind,
@@ -99,6 +100,7 @@ class RunCreate(Model):
     message: Message
     persona_id: UUID | None = None
     initial_command: RunMessage | None = None
+    references: list[RequestReference] = Field(default_factory=list, max_length=3)
 
 
 class RunUpdate(AgentRunState):
@@ -218,6 +220,7 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
             value.expected_version,
             value.persona_id,
             value.initial_command,
+            value.references,
         )
 
     @router.get("/agents/{key}/runs/{run_id}", response_model=AgentRun)

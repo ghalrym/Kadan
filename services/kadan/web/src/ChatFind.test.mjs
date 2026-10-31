@@ -59,6 +59,7 @@ function chat(chain, storageValues = {}) {
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "lucide-react": {},
     "./Markdown": { default: "Markdown" },
+    "./RequestReferences": { default: "RequestReferences" },
     "./SaveChatResult": { default: "SaveChatResult" },
     "./Activity": { default: "Activity" },
     "./CodingIndicator": { default: "CodingIndicator" },

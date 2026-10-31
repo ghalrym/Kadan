@@ -61,6 +61,11 @@ def test_vision_is_available_only_when_the_agent_has_a_computer():
             sandbox=SimpleNamespace(configured=True),
         )
     )
-    assert AgentRuns.bound_tools(owner) == [*ALL_TOOLS, *VISION_TOOLS]
+    run = SimpleNamespace(references=[])
+    assert AgentRuns.bound_tools(owner, run) == [
+        tool
+        for tool in [*ALL_TOOLS, *VISION_TOOLS]
+        if tool.name != "read_request_references"
+    ]
     owner.services.sandbox.configured = False
-    assert not any(tool in VISION_TOOLS for tool in AgentRuns.bound_tools(owner))
+    assert not any(tool in VISION_TOOLS for tool in AgentRuns.bound_tools(owner, run))

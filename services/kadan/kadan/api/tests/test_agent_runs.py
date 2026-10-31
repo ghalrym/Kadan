@@ -634,7 +634,7 @@ def test_pending_job_context_cannot_exceed_run_budget(boundary, monkeypatch):
     baseline = asyncio.run(boundary.controller.context(boundary.current))
     budget = (
         sum(len(message.content) for message in baseline)
-        + tool_characters(boundary.controller.bound_tools())
+        + tool_characters(boundary.controller.bound_tools(boundary.current))
         + 10
     )
     monkeypatch.setattr("kadan.runner.agent_runs.MAX_CONTEXT", budget)
@@ -816,7 +816,11 @@ def test_every_conversation_and_computer_tool_is_bound(boundary):
     boundary.controller.inference = Commands(finish())
     asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.controller.inference.tools == [
-        [tool.name for tool in [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]]
+        [
+            tool.name
+            for tool in [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]
+            if tool.name != "read_request_references"
+        ]
     ]
 
     boundary.sandbox = Computer()
@@ -826,7 +830,11 @@ def test_every_conversation_and_computer_tool_is_bound(boundary):
     boundary.controller.inference = Commands(finish())
     asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.controller.inference.tools == [
-        [tool.name for tool in [*ALL_TOOLS, *VISION_TOOLS]]
+        [
+            tool.name
+            for tool in [*ALL_TOOLS, *VISION_TOOLS]
+            if tool.name != "read_request_references"
+        ]
     ]
 
 
@@ -1356,13 +1364,25 @@ def test_transcript_budget_follows_the_models_context_window(tokens, expected):
 
 def test_transcript_budget_leaves_room_for_the_bound_tools(boundary):
     status = SimpleNamespace(context_limit=65536)
-    assert boundary.controller.transcript_limit(status) == context_characters(
-        65536
-    ) - tool_characters([*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS])
+    assert boundary.controller.transcript_limit(
+        status, boundary.current
+    ) == context_characters(65536) - tool_characters(
+        [
+            tool
+            for tool in [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]
+            if tool.name != "read_request_references"
+        ]
+    )
     boundary.controller.services.sandbox.configured = True
-    assert boundary.controller.transcript_limit(status) == context_characters(
-        65536
-    ) - tool_characters([*ALL_TOOLS, *VISION_TOOLS])
+    assert boundary.controller.transcript_limit(
+        status, boundary.current
+    ) == context_characters(65536) - tool_characters(
+        [
+            tool
+            for tool in [*ALL_TOOLS, *VISION_TOOLS]
+            if tool.name != "read_request_references"
+        ]
+    )
 
 
 def test_smaller_model_window_drops_history_before_inference(boundary):
@@ -2338,3 +2358,113 @@ def test_cancelling_a_seeded_run_before_claim_cannot_start_coding(
     assert boundary.current.status == "cancelled"
     assert coding_boundary.attempts == [] and boundary.deliveries == []
     assert boundary.controller.inference.calls == []
+
+
+def selected_reference(markdown="Saved selected text"):
+    from kadan.api.pydantic_models.agent_runs import ReferenceSnapshot
+
+    return ReferenceSnapshot(
+        resource_id=uuid4(), kind="space", title="Plan", version=3, markdown=markdown
+    )
+
+
+@pytest.mark.parametrize("computer", [False, True])
+@pytest.mark.parametrize("selected", [False, True])
+def test_reference_scope_matches_budget_preparation_binding_and_validation(
+    boundary, computer, selected
+):
+    boundary.sandbox.configured = computer
+    boundary.current.references = [selected_reference()] if selected else []
+    expected = (
+        [*ALL_TOOLS, *VISION_TOOLS]
+        if computer
+        else [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]
+    )
+    expected = [
+        tool for tool in expected if tool.name != "read_request_references" or selected
+    ]
+    assert boundary.controller.bound_tools(boundary.current) == expected
+    status = SimpleNamespace(context_limit=65536)
+    assert boundary.controller.transcript_limit(status, boundary.current) == (
+        context_characters(65536) - tool_characters(expected)
+    )
+    boundary.controller.inference = Commands(
+        command("read_request_references"), finish()
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.controller.inference.tools[0] == [tool.name for tool in expected]
+    if selected:
+        assert boundary.current.status == "completed"
+        assert (
+            tool_result(boundary, -2)["references"][0]["markdown"]
+            == "Saved selected text"
+        )
+        assert all(
+            "Saved selected text" not in item.content
+            for item in boundary.current.transcript
+            if item.role == "system" or not item.content.startswith("Tool result: ")
+        )
+    else:
+        assert boundary.current.status == "failed"
+        assert "unknown tool" in boundary.current.error
+        assert not any(
+            item.content.startswith("Tool result: ")
+            for item in boundary.current.transcript
+        )
+
+
+def test_saved_reference_reader_replays_from_global_registry_without_selection(
+    boundary,
+):
+    boundary.start_owned(
+        transcript=[
+            RunMessage(role="system", content="Saved instructions"),
+            RunMessage(
+                role="assistant",
+                content=command("read_request_references").model_dump_json(),
+            ),
+        ]
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.advance(boundary.current))
+    assert tool_result(boundary, -2)["references"] == []
+    assert boundary.current.status == "completed"
+    assert "read_request_references" not in boundary.controller.inference.tools[0]
+
+
+def test_cancelled_run_cannot_replay_saved_reference_reader(boundary):
+    boundary.start_owned(
+        references=[selected_reference()],
+        transcript=[
+            RunMessage(
+                role="assistant",
+                content=command("read_request_references").model_dump_json(),
+            )
+        ],
+    )
+    boundary.cancel()
+    with pytest.raises(ServiceError, match="no longer owned"):
+        asyncio.run(boundary.controller.infer_command(RunState(run=boundary.current)))
+    assert len(boundary.current.transcript) == 1
+
+
+def test_selected_reference_over_context_budget_fails_without_truncation(boundary):
+    boundary.current.references = [selected_reference("x" * 12000)]
+    context = asyncio.run(boundary.controller.context(boundary.current))
+    reserve = tool_characters(boundary.controller.bound_tools(boundary.current))
+    tokens = 1024 + (reserve + sum(len(item.content) for item in context) + 1000) // 3
+
+    async def status():
+        return SimpleNamespace(
+            state="ready", model_id="selected-model", context_limit=tokens
+        )
+
+    boundary.inference_status = status
+    boundary.controller.inference = Commands(
+        command("read_request_references"), finish()
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert "context limit" in boundary.current.error
+    assert len(boundary.controller.inference.calls) == 1
+    assert tool_result(boundary)["references"][0]["markdown"] == "x" * 12000
