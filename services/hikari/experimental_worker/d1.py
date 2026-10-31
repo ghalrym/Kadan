@@ -25,10 +25,11 @@ MODEL = {
 
 
 class BoundedDecisionModel:
-    def __init__(self, model):
+    def __init__(self, model, emit):
         self.model = model
         self.engine = model.engine
         self.input_tokens = 0
+        self.emit = emit
 
     def system_one(self, state, questions, *, score_readout):
         # The pinned engine's batching budget does not reject an oversized single
@@ -43,6 +44,14 @@ class BoundedDecisionModel:
             raise ValueError(
                 "The d1 trial input exceeds 1024 encoded tokens; nothing was truncated."
             )
+        self.emit(
+            {
+                "state": "progress",
+                "phase": "evaluating",
+                "value": self.input_tokens,
+                "total": CONTEXT_LIMIT,
+            }
+        )
         return self.model.system_one(state, questions, score_readout=score_readout)
 
 
@@ -57,7 +66,12 @@ def execute(task: dict, operation: str, model_path: str, emit) -> list[dict]:
     # Only its disposable child may import inference libraries or checkpoint code.
     import torch
     from transformers import AutoModel
+    from transformers.utils.logging import disable_progress_bar
 
+    # Transformers' tqdm lock can create named semaphores that survive a killed
+    # executor until the long-lived parent's resource tracker exits. Worker
+    # protocol events provide progress without those process-shared locks.
+    disable_progress_bar()
     torch.set_num_threads(2)
     torch.set_num_interop_threads(1)
     started = time.perf_counter()
@@ -71,7 +85,7 @@ def execute(task: dict, operation: str, model_path: str, emit) -> list[dict]:
     ).eval()
     if any(parameter.device.type != "cpu" for parameter in model.parameters()):
         raise ValueError("The d1 trial requires CPU parameters only.")
-    bounded = BoundedDecisionModel(model)
+    bounded = BoundedDecisionModel(model, emit)
     emit({"state": "progress", "phase": "loaded", "value": 1, "total": 1})
     with torch.inference_mode():
         answers = evaluate(task, bounded, lambda: None)

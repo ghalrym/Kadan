@@ -30,13 +30,29 @@ class BoundedD1Tests(unittest.TestCase):
             set_num_interop_threads=MagicMock(),
             inference_mode=nullcontext,
         )
-        factory = MagicMock(return_value=model)
+        progress_disabled = False
+
+        def disable_progress():
+            nonlocal progress_disabled
+            progress_disabled = True
+
+        def load(*args, **kwargs):
+            self.assertTrue(
+                progress_disabled,
+                "Loading must not construct process-shared progress locks",
+            )
+            return model
+
+        factory = MagicMock(side_effect=load)
         with patch.dict(
             "sys.modules",
             {
                 "torch": torch,
                 "transformers": SimpleNamespace(
                     AutoModel=SimpleNamespace(from_pretrained=factory)
+                ),
+                "transformers.utils.logging": SimpleNamespace(
+                    disable_progress_bar=disable_progress
                 ),
             },
         ):
@@ -72,7 +88,8 @@ class BoundedD1Tests(unittest.TestCase):
         model = SimpleNamespace(
             engine=engine, system_one=MagicMock(return_value={"answers": {}})
         )
-        return model, BoundedDecisionModel(model)
+        model.events = []
+        return model, BoundedDecisionModel(model, model.events.append)
 
     def test_exact_total_token_limit_precedes_forward_and_never_truncates(self):
         for lengths, allowed in (
@@ -90,10 +107,22 @@ class BoundedD1Tests(unittest.TestCase):
                     model.system_one.assert_called_once_with(
                         "state", {"q": {}}, score_readout="mean"
                     )
+                    self.assertEqual(
+                        model.events,
+                        [
+                            {
+                                "state": "progress",
+                                "phase": "evaluating",
+                                "value": sum(lengths),
+                                "total": CONTEXT_LIMIT,
+                            }
+                        ],
+                    )
                 else:
                     with self.assertRaises(ValueError):
                         bounded.system_one("state", {"q": {}}, score_readout="mean")
                     model.system_one.assert_not_called()
+                    self.assertEqual(model.events, [])
 
     def test_invalid_task_or_operation_does_not_import_inference_libraries(self):
         with patch.dict("sys.modules", {"torch": None, "transformers": None}):
