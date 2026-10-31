@@ -1,10 +1,11 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from pydantic import ValidationError
+
 from api.pydantic_models.inference_task import InferenceTask
 from api.routes.v1.audio import transcriptions
 from api.routes.v1.audio.transcriptions import TranscriptionRequest
-from pydantic import ValidationError
 
 
 class TranscriptionTests(unittest.TestCase):
