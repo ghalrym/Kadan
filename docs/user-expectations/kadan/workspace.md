@@ -14,6 +14,6 @@ Users can search and read saved [memories](memories.md) and download files. File
 
 The browser is read-only. **Open Tsuchi** opens the storage editor in another tab. During text chat, agents can create Markdown Workspace documents, including subdocuments under an active Space belonging to the same agent. A draft, failed save or uncertain result is not confirmation of a saved document; check Workspace before retrying an uncertain write. Stop cannot undo a write already started. This creation tool does not supply updates to existing documents or persistent project management; those remain [proposals](../proposals.md).
 
-Opening a record does not attach it to chat or make the agent recall it. Current responses do not automatically retrieve displayed documents or memories. Saving a computer file into Workspace, copying a stored file onto the computer and uploading chat attachments also remain [proposed capabilities](../proposals.md).
+Opening a record does not attach it to chat or make the agent recall it. Current responses do not automatically retrieve displayed documents or memories. Agents can explicitly [save computer files](file-delivery.md) into Workspace and [copy stored files onto the computer](opening-workspace-files.md). Chat attachments remain a [proposed capability](../proposals.md).
 
 See [Workspace access](../../architecture/kadan/workspace.md) for ownership and [Tsuchi Spaces](../tsuchi/spaces.md), [files](../tsuchi/files.md) and [revisions](../tsuchi/revisions.md) for editing and recovery.

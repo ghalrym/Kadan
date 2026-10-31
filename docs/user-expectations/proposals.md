@@ -12,7 +12,7 @@ These proposals preserve product direction, not promises of current functionalit
 - [#418](https://github.com/ghalrym/Kadan/pull/418): Discover active same-agent stored files by paged metadata search before making a verified computer copy. Duplicate names remain distinct, metadata search does not inspect contents, and changing files can affect pagination.
 - [#439](https://github.com/ghalrym/Kadan/pull/439): Start an unsaved copy of a Tsuchi persona, memory, Space, deck or conversation. The source remains intact; saving creates a new record, preserves supported content/links and reports invalid dependencies. Copying would not run inference or replay conversation actions.
 
-The file stack ends at open #399: #409 merged into #408's branch, #408 into #406's branch, and #406 into #399's branch. Their merge commits are not ancestors of master. #418 also depends on the file-copy branch. Current master provides document creation, ordinary computer tools and stored-file downloads in Workspace; those do not establish these file-transfer or project capabilities.
+The file stack ends at open #399: #409 merged into #408's branch, #408 into #406's branch, and #406 into #399's branch. Their merge commits are not ancestors of the checked master. The focused [file delivery](kadan/file-delivery.md) and [opening files](kadan/opening-workspace-files.md) expectations describe the separately extracted transfer capability; they do not establish persistent projects or existing-document editing. #418 also depends on the file-copy branch.
 
 ## Intended experience and old reconciliations
 
