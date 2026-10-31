@@ -26,9 +26,17 @@ or acquiring the data is separate from executing that code.
 The adapter maps Choice, Score and Noul questions and validates the returned
 identities, types and probabilities before publishing answers in request order.
 It requests `score_readout="mean"`: d1's default median would change Hikari's
-fractional expected-score contract. The trial rejects a one-level Score rubric,
-which the current HTTP schema accepts but d1 does not support. No request is
+fractional expected-score contract. Explicit d1 requests reject Score rubrics
+outside two to ten levels before queueing. The pinned official JSON validator
+and single-digit Score readout support that range only; its broader numerical
+Estimate task is not an equivalent ordinal rubric. Ordinary Laya requests keep
+their existing broader validation. No request is
 truncated, answered synthetically or redirected to another model.
+
+The d1 executor disables Transformers progress bars before loading. Their tqdm
+process-shared lock can leave named semaphores registered with the long-lived
+parent after executor termination. Protocol events provide progress instead,
+including the accepted encoded-token count immediately before evaluation.
 
 The hub reserves 15 GiB host RAM and no VRAM before spawning the executor. This
 envelope covers the measured F32 initialization peak below and leaves the
@@ -75,10 +83,25 @@ completed in 154.23 seconds including loading. Sampled executor RSS peaked at
 execution, without truncation. Every terminal event followed confirmed executor
 exit and grant release; executor scratch was removed. The container exited and
 was removed, with no GPU devices exposed, installs or service changes.
-Python's resource tracker reported two semaphore objects for cleanup at shutdown;
-the run does not establish a surviving leak.
+That initial run reported two semaphore objects for resource-tracker cleanup at
+shutdown. A model-free diagnostic reproduced a named semaphore surviving a
+terminated Transformers progress bar; disabling its progress bars created none.
+
+After the fix, another authorized run reused one Runtime for seven real executor
+jobs. Three consecutive cancellations before `loaded` settled in 0.096 to 0.142
+seconds; cancellation one second after the evaluation event settled in 0.114
+seconds. An exactly 1,024-token request entered evaluation but did not finish
+within the unchanged 180-second deadline. Its failure settled in 180.12 seconds
+with confirmed cleanup, rather than publishing an answer. Subsequent malformed
+one-level and eleven-level Score requests failed explicitly before loading the
+model, demonstrating that the same queue recovered. Every job left zero named
+semaphores, no executor or scratch files, and a released grant. Shutdown produced
+no resource-tracker warning; the container reported no OOM events and was removed.
+Sampled peak executor RSS across the run was 12,321,288,192 bytes.
 
 This establishes these bounded local lifecycle cases, not HTTP/WebSocket or
-production-hub acceptance, fit across the complete input range, quality or a
-speedup over Laya. The supported official recipe uses F32 on CPU and BF16 on
-CUDA/MPS; GPU resource use and performance are unmeasured. Laya remains the default.
+production-hub acceptance, indefinite cancellation endurance, quality or a
+speedup over Laya. The full-limit CPU timeout, RAM reservation and narrower Score
+contract are explicit resource/product tradeoffs before replacing the default.
+The supported official recipe uses F32 on CPU and BF16 on CUDA/MPS; GPU resource
+use and performance are unmeasured. Laya remains the default.
