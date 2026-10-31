@@ -52,8 +52,6 @@ These newer drafts are also absent from checked master. Their selections and con
 
 | PR | Intended capability | Important limit |
 | --- | --- | --- |
-| [#457](https://github.com/ghalrym/Kadan/pull/457) | Correct saved memories in Kadan Workspace | Proposed user editing; current Kadan memory view remains read-only. |
-| [#459](https://github.com/ghalrym/Kadan/pull/459) | Save an assistant reply as a stable Workspace document | Explicit saving, not automatic retention of every reply. |
 | [#461](https://github.com/ghalrym/Kadan/pull/461) | Select saved Space or memory references for one response | Bounded versioned selections; selected does not guarantee read or used. |
 | [#462](https://github.com/ghalrym/Kadan/pull/462) | Portable instruction workflows with explicit Run now | Depends on #461; no schedule or extra authorization. |
 | [#464](https://github.com/ghalrym/Kadan/pull/464) | Bind request reader tools only for actual selections | Depends on #462; does not guarantee that a small model window fits. |

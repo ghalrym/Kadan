@@ -27,6 +27,7 @@ export interface Resource {
   markdown: string;
   parent_id: string | null;
   tags: string[];
+  sources: { label: string; url: string }[];
   messages: Message[];
   attachment_ids: string[];
   version: number;

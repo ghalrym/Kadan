@@ -17,6 +17,7 @@ import { activeRun, cancellableImage, currentResponseOutcome, imageStatus, isIma
 import { randomUuid } from "./uuid";
 import { ChatAttachments } from "./attachments";
 import { chatStorageKeys, confirmSend, copyPendingToDraft, discardUnassignedPending, queueSend, readPending, type PendingMessage } from "./outbox";
+import SaveChatResult from "./SaveChatResult";
 
 interface Props {
   agentKey: string;
@@ -565,6 +566,9 @@ export default function Chat({
                   {message.content && <div className="body">
                     <Markdown>{message.content}</Markdown>
                   </div>}
+                  {message.role === "assistant" && message.content.trim() &&
+                    <SaveChatResult key={`${agentKey}:${chain.id}:${message.id}`} agentKey={agentKey} conversationId={chain.id}
+                      message={message} disabled={blocked || !ready.storage} />}
                   {message.attachment_ids?.map((id) => <Attachment key={id} agentKey={agentKey} id={id} />)}
                   {(tags || sources) && (
                     <footer>

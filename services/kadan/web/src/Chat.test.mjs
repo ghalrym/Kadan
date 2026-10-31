@@ -76,6 +76,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     "./outbox": outbox,
     "./attachments": { ChatAttachments: class { constructor() { return attachments; } } },
     "./uuid": { randomUuid: () => "sent-message" },
+    "./SaveChatResult": { default: "SaveChatResult" },
     "./api": {
       agentPath: key => `/agents/${key}`,
       async api(path, body) {
@@ -126,6 +127,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
   return {
     render, requests, storage, attachments,
     attachmentIds: () => elements().filter(node => typeof node.type === "function" && node.type.name === "Attachment").map(node => node.props.id),
+    savedResults: () => elements().filter(node => node.type === "SaveChatResult").map(node => node.props),
     retry: () => elements().find(node => node.type === "button" && node.props.children === "Retry").props.onClick(),
     notices: () => elements().filter(node => node.props?.className === "notice").map(node => node.props.children),
     alerts: () => elements().filter(node => node.props?.role === "alert").map(node => node.props.children[0]),
@@ -417,4 +419,17 @@ test("reloaded retry preserves attachments and explicit Codex continuation indep
     finish({ run: run("queued", "queued"), conversation: { ...chain, version: 2, messages: [message("earlier", "user", "Continue")] } });
     await settle();
   }
+});
+
+test("only saved assistant replies with text offer saving in the current agent and conversation", async () => {
+  const reply = message("reply", "assistant", "Useful reply");
+  const view = await chat([], { ...chain, messages: [
+    message("user", "user", "Question"), reply,
+    message("empty", "assistant", " "), message("tool", "tool", "Tool result"),
+  ] });
+  const controls = view.savedResults();
+  assert.equal(controls.length, 1);
+  assert.equal(controls[0].agentKey, "guide");
+  assert.equal(controls[0].conversationId, chain.id);
+  assert.equal(controls[0].message, reply);
 });
