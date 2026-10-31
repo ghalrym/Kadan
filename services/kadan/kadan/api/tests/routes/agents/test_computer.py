@@ -51,6 +51,7 @@ def test_work_reports_the_current_task_without_the_transcript():
         "steering": [
             {
                 "id": str(uuid4()),
+                "task_id": running["id"],
                 "content": "faster",
                 "created_at": running["created_at"],
             }

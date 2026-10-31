@@ -748,6 +748,7 @@ class ComputerTask(Model):
 class ComputerSteering(Model):
     """A user request waiting to be read by the running computer task."""
 
+    task_id: UUID
     id: UUID
     content: str = Field(min_length=1, max_length=10000)
     created_at: datetime

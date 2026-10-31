@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowUp, MousePointer2, RotateCw, Square, X } from "lucide-react";
 import { agentPath, api } from "./api";
 import { ComputerControl } from "./computerControl";
-import { workLabel, type ComputerWork } from "./computerWork";
+import { stopComputerTask, workLabel, type ComputerWork } from "./computerWork";
 import { vncUrl } from "./presence";
 import { randomUuid } from "./uuid";
 
@@ -76,7 +76,7 @@ export default function ComputerViewer({ agentKey, agentName, onClose }: Props) 
   async function stopTask() {
     if (!work?.task) return;
     try {
-      await api(`${workPath}/tasks/${encodeURIComponent(work.task.id)}/cancel`);
+      await stopComputerTask(workPath, work.task.id);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "The task could not be stopped.");
     }

@@ -236,16 +236,17 @@ class ThreadWork:
             if current.status == "cancelled":
                 await self.end(task, "cancelled", "Cancelled by the user.", False)
                 return
-            if thread.steering:
+            steering = [item for item in thread.steering if item.task_id == task.id]
+            if steering and not pending_command(thread.transcript):
                 await self.save(
                     [
                         *thread.transcript,
                         *(
                             RunMessage(role="user", content=STEERING + item.content)
-                            for item in thread.steering
+                            for item in steering
                         ),
                     ],
-                    consumed=[item.id for item in thread.steering],
+                    consumed=[item.id for item in steering],
                 )
             replayed = pending_command(self.thread.transcript)
             if replayed:
@@ -258,6 +259,11 @@ class ThreadWork:
                     return
                 if command is None:
                     continue
+            current = await self.tasks.task(self.key, task.id)
+            if current.status == "cancelled":
+                await self.refresh()
+                await self.end(task, "cancelled", "Cancelled by the user.", False)
+                return
             if command.tool in {"finish_task", "finish"}:
                 if await self.finish(task, command):
                     return
@@ -391,7 +397,11 @@ class ThreadWork:
                     transcript,
                     # Steering for a task that did not succeed ends with it; a
                     # completed task must read it first.
-                    consumed=[item.id for item in self.thread.steering]
+                    consumed=[
+                        item.id
+                        for item in self.thread.steering
+                        if item.task_id == task.id
+                    ]
                     if status != "completed"
                     else None,
                     task={"id": str(task.id), "status": status, "summary": summary}

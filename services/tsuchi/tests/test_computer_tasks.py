@@ -162,3 +162,15 @@ def test_latest_task_is_the_most_recent_request(repository):
     repository.computer_request("alpha", uuid4(), "Open a terminal")
     _, task = handed_over(repository)
     assert repository.latest_computer_task("alpha").id == task.id
+
+
+def test_cancelling_offline_retires_only_that_tasks_steering(repository):
+    _, first = repository.computer_request("alpha", uuid4(), "First task")
+    repository.computer_request("alpha", uuid4(), "First steering")
+    repository.cancel_computer_task("alpha", first.id)
+    _, second = repository.computer_request("alpha", uuid4(), "Second task")
+    repository.computer_request("alpha", uuid4(), "Second steering")
+    steering = repository.get_computer_thread("alpha").steering
+    assert [(item.task_id, item.content) for item in steering] == [
+        (second.id, "Second steering")
+    ]

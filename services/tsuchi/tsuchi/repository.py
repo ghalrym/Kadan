@@ -1034,9 +1034,11 @@ class Repository:
         )
         thread.steering = sorted(
             (
-                ComputerSteering.model_validate_json(item[0])
+                ComputerSteering.model_validate(
+                    {**json.loads(item[0]), "task_id": item[1]}
+                )
                 for item in db.execute(
-                    "SELECT data FROM computer_steering WHERE agent_key = ? AND consumed = 0",
+                    "SELECT data, task_id FROM computer_steering WHERE agent_key = ? AND consumed = 0",
                     (key,),
                 )
             ),
@@ -1154,7 +1156,7 @@ class Repository:
             active = self._active_computer_tasks(db, key)
             if active:
                 steering = ComputerSteering(
-                    id=request_id, content=content, created_at=now
+                    id=request_id, task_id=active[0].id, content=content, created_at=now
                 )
                 db.execute(
                     "INSERT INTO computer_steering VALUES (?, ?, ?, 0, ?, ?)",
@@ -1214,6 +1216,10 @@ class Repository:
                 }
             )
             self._save_computer_task(db, updated)
+            db.execute(
+                "UPDATE computer_steering SET consumed = 1 WHERE agent_key = ? AND task_id = ?",
+                (key, str(task_id)),
+            )
             self._computer_event(db, updated)
             return updated
 
@@ -1284,7 +1290,10 @@ class Repository:
                         )
                         self._save_computer_task(db, task)
                 elif task_status in {"completed", "failed"}:
-                    if pending - consumed:
+                    task_pending = {
+                        item.id for item in current.steering if item.task_id == task_id
+                    }
+                    if task_pending - consumed:
                         raise StorageError("New steering arrived for this task", 409)
                     task = task.model_copy(
                         update={

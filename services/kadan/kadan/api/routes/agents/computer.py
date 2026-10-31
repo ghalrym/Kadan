@@ -48,7 +48,9 @@ async def computer_work(key: AgentKey, request: Request) -> ComputerWork:
     return ComputerWork(
         task=tasks[0] if tasks else None,
         queued=max(0, len(tasks) - 1),
-        pending_steering=len(thread.steering),
+        pending_steering=sum(item.task_id == tasks[0].id for item in thread.steering)
+        if tasks
+        else 0,
         last=last,
     )
 

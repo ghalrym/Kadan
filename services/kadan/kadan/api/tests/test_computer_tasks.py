@@ -63,7 +63,16 @@ class Storage:
 
     def steer(self, content):
         self.steering.append(
-            ComputerSteering(id=uuid4(), content=content, created_at=datetime.now(UTC))
+            ComputerSteering(
+                id=uuid4(),
+                task_id=next(
+                    task.id
+                    for task in self.tasks.values()
+                    if task.status in {"queued", "running"}
+                ),
+                content=content,
+                created_at=datetime.now(UTC),
+            )
         )
 
     def current(self):
@@ -248,9 +257,12 @@ def test_restart_never_repeats_an_unconfirmed_side_effect(storage, tool, repeate
         RunMessage(role="user", content=TASK_START + json.dumps(start)),
         RunMessage(role="assistant", content=pending.model_dump_json()),
     ]
+    storage.steer("Use a different approach")
     calls = serve(storage, finish())
     assert bool(storage.sandbox.calls) is repeated
-    assert ("may or may not have run" in calls.calls[0][-1].content) is not repeated
+    messages = [item.content for item in calls.calls[0]]
+    assert messages[-1] == STEERING + "Use a different approach"
+    assert ("may or may not have run" in messages[-2]) is not repeated
 
 
 def test_cancelled_task_stops_without_inference(storage):
@@ -336,3 +348,23 @@ def test_missing_instructions_fail_the_task_instead_of_retrying(storage, tmp_pat
     done = storage.tasks[task.id]
     assert done.status == "failed"
     assert "could not be read" in done.summary
+
+
+def test_cancellation_during_inference_prevents_dispatch(storage):
+    task = storage.add_task()
+    tasks = ComputerTasks(storage)
+
+    class CancelDuringInference:
+        async def call(self, *args):
+            storage.tasks[task.id] = storage.tasks[task.id].model_copy(
+                update={"status": "cancelled"}
+            )
+            return command("bash_exec", command="touch file")
+
+    tasks.inference = CancelDuringInference()
+    asyncio.run(tasks.serve("test"))
+    assert storage.sandbox.calls == []
+    assert (
+        json.loads(contents(storage)[-1].removeprefix(TASK_END))["status"]
+        == "cancelled"
+    )

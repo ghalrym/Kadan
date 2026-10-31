@@ -1,3 +1,5 @@
+import { api } from "./api.ts";
+
 export interface ComputerTask {
   id: string;
   instructions: string;
@@ -34,4 +36,8 @@ export function workLabel(work: ComputerWork | null, now = Date.now()): string {
   if (work.pending_steering) parts.push("reading your request");
   if (work.queued) parts.push(`${work.queued} more queued`);
   return parts.join(" · ");
+}
+
+export function stopComputerTask(workPath: string, taskId: string): Promise<void> {
+  return api(`${workPath}/tasks/${encodeURIComponent(taskId)}/cancel`, {});
 }

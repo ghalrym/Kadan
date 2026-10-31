@@ -29,6 +29,7 @@ class ComputerTask(BaseModel):
 
 
 class ComputerSteering(BaseModel):
+    task_id: UUID
     id: UUID
     content: str = Field(min_length=1, max_length=10000)
     created_at: datetime
