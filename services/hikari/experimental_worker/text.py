@@ -118,9 +118,10 @@ def generate_text(model, inputs, output_tokens: int, logits_processor=None):
 
 
 def reply_text(text: str) -> str:
-    """Reasoning is private even if the checkpoint ignores enable_thinking=False."""
-    if "</think>" in text:
-        text = text.rsplit("</think>", 1)[1]
+    """The prompt opens reasoning; only text after its close is a reply."""
+    if "</think>" not in text:
+        raise ValueError("LFM3 ended inside an unfinished reasoning block.")
+    text = text.rsplit("</think>", 1)[1]
     if "<think>" in text:
         raise ValueError("LFM3 ended inside an unfinished reasoning block.")
     text = text.strip()

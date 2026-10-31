@@ -2,7 +2,6 @@
 
 import unittest
 
-import numpy
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -64,6 +63,7 @@ class TextTests(unittest.TestCase):
 
     def test_unfinished_reasoning_is_an_error(self):
         for text in (
+            "not finished, with the opening marker in the prompt",
             "<think>not finished",
             "<think>closed</think>answer<think>unfinished",
         ):
@@ -75,7 +75,7 @@ class TextTests(unittest.TestCase):
 
     def test_terminal_markers_do_not_change_tool_xml(self):
         self.assertEqual(
-            reply_text("<function=finish></function><|im_end|>\n"),
+            reply_text("private</think><function=finish></function><|im_end|>\n"),
             "<function=finish></function>",
         )
 
@@ -127,23 +127,35 @@ class TextTests(unittest.TestCase):
     def test_reasoning_is_closed_at_its_budget_then_left_alone(self):
         end = 7
         budget = ReasoningBudget(prompt_tokens=3, budget=2, end_id=end)
-        scores = numpy.zeros((1, 10))
-        budget(numpy.array([[1, 2, 3, 4]]), scores)
-        self.assertTrue((scores == 0).all())
-        budget(numpy.array([[1, 2, 3, 4, 5]]), scores)
-        self.assertEqual(scores[0, end], 0)
-        self.assertTrue(numpy.isneginf(numpy.delete(scores[0], end)).all())
-        scores = numpy.zeros((1, 10))
-        budget(numpy.array([[1, 2, 3, 4, 5, end]]), scores)
-        budget(numpy.array([[1, 2, 3, 4, 5, end, 8, 9]]), scores)
-        self.assertTrue((scores == 0).all())
+        scores = unittest.mock.MagicMock()
+        budget(self.token_ids([1, 2, 3, 4]), scores)
+        scores.__setitem__.assert_not_called()
+        budget(self.token_ids([1, 2, 3, 4, 5]), scores)
+        self.assertEqual(
+            scores.__setitem__.call_args_list,
+            [
+                unittest.mock.call((slice(None), slice(None)), float("-inf")),
+                unittest.mock.call((slice(None), end), 0),
+            ],
+        )
+        scores.reset_mock()
+        budget(self.token_ids([1, 2, 3, 4, 5, end]), scores)
+        budget(self.token_ids([1, 2, 3, 4, 5, end, 8, 9]), scores)
+        scores.__setitem__.assert_not_called()
 
     def test_reasoning_closed_early_is_never_forced(self):
         budget = ReasoningBudget(prompt_tokens=3, budget=2, end_id=7)
-        budget(numpy.array([[1, 2, 3, 7]]), numpy.zeros((1, 10)))
-        scores = numpy.zeros((1, 10))
-        budget(numpy.array([[1, 2, 3, 7, 4, 5]]), scores)
-        self.assertTrue((scores == 0).all())
+        scores = unittest.mock.MagicMock()
+        budget(self.token_ids([1, 2, 3, 7]), scores)
+        budget(self.token_ids([1, 2, 3, 7, 4, 5]), scores)
+        scores.__setitem__.assert_not_called()
+
+    @staticmethod
+    def token_ids(tokens):
+        tensor = unittest.mock.MagicMock()
+        tensor.shape = (1, len(tokens))
+        tensor.__getitem__.return_value = tokens[-1]
+        return tensor
 
     def test_invalid_token_limits_are_rejected_before_dependencies(self):
         for field in ("max_tokens", "reasoning_tokens"):
