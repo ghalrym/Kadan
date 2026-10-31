@@ -386,25 +386,39 @@ class Runtime:
                 error = "Experimental executor exited without a result."
         finally:
             # No terminal event or release may precede physical process exit.
-            if started and process.is_alive():
-                process.terminate()
-            deadline = asyncio.get_running_loop().time() + 10
-            while (
-                started
-                and process.is_alive()
-                and asyncio.get_running_loop().time() < deadline
-            ):
-                await asyncio.sleep(0.02)
-            if started and process.is_alive():
-                process.kill()
-                while process.is_alive():
+            async def join_executor():
+                if started and process.is_alive():
+                    process.terminate()
+                deadline = asyncio.get_running_loop().time() + 10
+                while (
+                    started
+                    and process.is_alive()
+                    and asyncio.get_running_loop().time() < deadline
+                ):
                     await asyncio.sleep(0.02)
-            if started:
-                process.join()
+                if started and process.is_alive():
+                    process.kill()
+                    while process.is_alive():
+                        await asyncio.sleep(0.02)
+                if started:
+                    process.join()
+
+            cleanup = asyncio.create_task(join_executor())
+            interrupted = False
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    # Disconnect or shutdown can cancel an already stopping job.
+                    # Keep its grant until the shielded cleanup actually finishes.
+                    interrupted = True
+            cleanup.result()
             self.child = None
             reader.close()
             if request["operation"] != "download":
                 self.budget = [0, 0]
+            if interrupted:
+                raise asyncio.CancelledError()
         if request_id in self.cancelled:
             await event("cancelled")
         elif error is not None:
