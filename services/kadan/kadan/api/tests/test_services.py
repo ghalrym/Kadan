@@ -70,24 +70,11 @@ def resource(kind="conversation", messages=None, **changes):
     return Resource(**{**fields, **changes})
 
 
-def ready_settings(status="complete", available=True):
+def ready_models(status="complete", available=True):
     return {
-        "tier": "go",
-        "tiers": [
-            {
-                "id": "go",
-                "models": [
-                    {
-                        "modality": "llm",
-                        "model": {
-                            "id": "test-model",
-                            "status": status,
-                            "inference_available": available,
-                        },
-                    }
-                ],
-            }
-        ],
+        "models": [
+            {"id": "lfm3-1.7b-bf16", "status": status, "inference_available": available}
+        ]
     }
 
 
@@ -95,7 +82,7 @@ class Boundary:
     def __init__(self, settings=None):
         self.current = resource()
         self.persona = resource("persona", markdown="Be precise.")
-        self.settings = settings if settings is not None else ready_settings()
+        self.settings = settings if settings is not None else ready_models()
         self.requests = []
         self.appends = []
         self.inference_body = None
@@ -105,7 +92,7 @@ class Boundary:
 
     def __call__(self, request):
         self.requests.append((request.method, request.url.path))
-        if request.url.path == "/v1/settings":
+        if request.url.path == "/v1/models":
             return httpx.Response(200, json=self.settings)
         if request.url.path == "/api/health":
             return httpx.Response(200, json={"status": "ok"})
@@ -147,21 +134,21 @@ def run(boundary, operation):
 @pytest.mark.parametrize(
     ("settings", "state"),
     [
-        ({"tier": None, "tiers": []}, "tier_required"),
-        (ready_settings(status="not_downloaded"), "model_required"),
-        (ready_settings(status="downloading"), "model_required"),
-        (ready_settings(status="failed"), "model_required"),
-        (ready_settings(available=False), "unavailable"),
-        (ready_settings(), "ready"),
-        ({"tiers": []}, "unavailable"),
+        ({"models": []}, "unavailable"),
+        (ready_models(status="not_downloaded"), "model_required"),
+        (ready_models(status="downloading"), "model_required"),
+        (ready_models(status="failed"), "model_required"),
+        (ready_models(available=False), "unavailable"),
+        (ready_models(), "ready"),
+        ({}, "unavailable"),
     ],
 )
-def test_readiness_uses_actual_selected_language_checkpoint(settings, state):
+def test_readiness_uses_actual_fixed_language_checkpoint(settings, state):
     boundary = Boundary(settings=settings)
     status = run(boundary, lambda service: service.inference_status())
     assert status.state == state
     assert status.settings_url == "http://127.0.0.1:8088/settings"
-    assert boundary.requests == [("GET", "/v1/settings")]
+    assert boundary.requests == [("GET", "/v1/models")]
 
 
 @pytest.mark.parametrize(
@@ -205,7 +192,7 @@ def test_readiness_uses_actual_selected_language_checkpoint(settings, state):
         ),
     ],
 )
-def test_explicit_lfm3_trial_requires_its_own_downloaded_worker(models, expected):
+def test_fixed_lfm3_requires_its_own_downloaded_worker(models, expected):
     async def check():
         def boundary(request):
             assert request.method == "GET"
@@ -213,15 +200,12 @@ def test_explicit_lfm3_trial_requires_its_own_downloaded_worker(models, expected
             return httpx.Response(200, json={"models": models})
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(boundary)) as client:
-            service = LocalServices(
-                client, Settings(experimental_lfm3_text=True, _env_file=None)
-            )
+            service = LocalServices(client, Settings(_env_file=None))
             status = await service.inference_status()
             assert status.state == expected
             assert status.model_id == "lfm3-1.7b-bf16"
             if expected == "ready":
                 assert status.context_limit == 262144
-                assert status.tier is None
 
     asyncio.run(check())
 
@@ -240,7 +224,7 @@ def test_unavailable_services_return_actionable_status():
     ["not_downloaded", "downloading", "cancelling", "cancelled", "failed", "complete"],
 )
 def test_status_preserves_the_selected_models_reported_download_state(download):
-    boundary = Boundary(settings=ready_settings(status=download))
+    boundary = Boundary(settings=ready_models(status=download))
 
     def transport(request):
         if request.url.path == "/model-lifecycle":
@@ -373,7 +357,7 @@ def test_docker_status_requests_internal_origins_and_returns_browser_links(unava
             raise httpx.ConnectError("offline", request=request)
         if request.url.host == "tsuchi-api":
             return httpx.Response(200, json={"status": "ok"})
-        return httpx.Response(200, json={"tier": None, "tiers": []})
+        return httpx.Response(200, json={"models": []})
 
     async def status():
         settings = Settings(
@@ -389,10 +373,10 @@ def test_docker_status_requests_internal_origins_and_returns_browser_links(unava
     result = asyncio.run(status())
     assert set(requests) == {
         "http://tsuchi-api:8000/api/health",
-        "http://hikari-api:8000/v1/settings",
+        "http://hikari-api:8000/v1/models",
     }
     assert result.tsuchi.state == ("unavailable" if unavailable else "ready")
-    assert result.hikari.state == ("unavailable" if unavailable else "tier_required")
+    assert result.hikari.state == "unavailable"
     assert result.tsuchi.browser_url == "http://localhost:18620"
     assert result.hikari.settings_url == "http://localhost:18088/settings"
 
@@ -401,11 +385,13 @@ def test_docker_status_requests_internal_origins_and_returns_browser_links(unava
     ("lifecycle", "state"),
     [
         (
-            httpx.Response(200, json={"state": "loading", "model_id": "test-model"}),
+            httpx.Response(
+                200, json={"state": "loading", "model_id": "lfm3-1.7b-bf16"}
+            ),
             "loading",
         ),
         (
-            httpx.Response(200, json={"state": "ready", "model_id": "test-model"}),
+            httpx.Response(200, json={"state": "ready", "model_id": "lfm3-1.7b-bf16"}),
             "ready",
         ),
         (httpx.Response(200, json={"state": "ready", "model_id": "other"}), "unloaded"),
@@ -458,8 +444,8 @@ def test_assignment_proxy_accepts_storage_no_content_response():
     ],
 )
 def test_ready_status_reports_the_selected_models_context_window(limits, expected):
-    settings = ready_settings()
-    settings["tiers"][0]["models"][0]["model"].update(limits)
+    settings = ready_models()
+    settings["models"][0].update(limits)
     status = run(
         Boundary(settings=settings), lambda service: service.inference_status()
     )

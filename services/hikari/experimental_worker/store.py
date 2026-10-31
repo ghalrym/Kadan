@@ -72,10 +72,6 @@ class ModelStore:
                     ),
                 }
             ],
-            "tiers": [],
-            "selected_tier": None,
-            "selected_model_id": None,
-            "selected_whisper": None,
             "whisper_formatting": True,
         }
 

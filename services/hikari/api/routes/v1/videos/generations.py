@@ -19,11 +19,11 @@ class VideoGenerationRequest(BaseModel):
         ge=1,
         le=15,
         validation_alias=AliasChoices("seconds", "duration"),
-        description="Whole seconds at 24 fps (1–15). Omit for the selected tier default; duration is also accepted.",
+        description="Whole seconds at 24 fps (1–15). Omit for the fixed default (5 seconds, 480p); duration is also accepted.",
     )
     fps: Literal[24] = 24
     resolution: Literal["480p", "768p"] | None = Field(
-        default=None, description="Omit for the selected tier default."
+        default=None, description="Omit for the fixed default (5 seconds, 480p)."
     )
     aspect: Literal["16:9", "9:16", "1:1"] = "16:9"
 

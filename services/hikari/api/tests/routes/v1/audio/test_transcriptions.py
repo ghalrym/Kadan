@@ -1,34 +1,22 @@
 import unittest
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from api.pydantic_models.inference_task import InferenceTask
 from api.routes.v1.audio import transcriptions
-from api.routes.v1.audio.transcriptions import TranscriptionRequest, get_models
+from api.routes.v1.audio.transcriptions import TranscriptionRequest
+from pydantic import ValidationError
 
 
 class TranscriptionTests(unittest.TestCase):
-    def test_model_list_and_selection_come_from_worker(self):
-        snapshot = SimpleNamespace(
-            selected_whisper="tiny.en",
-            models=[
-                SimpleNamespace(id="whisper-tiny.en", kind="transcription"),
-                SimpleNamespace(id="small", kind="llm"),
-            ],
+    def test_only_fixed_whisper_checkpoint_is_accepted(self):
+        self.assertEqual(
+            TranscriptionRequest(
+                audio="data:audio/wav;base64,AAAA", model="medium"
+            ).model,
+            "medium",
         )
-        with patch(
-            "api.routes.v1.audio.transcriptions.inference.models_status",
-            return_value=snapshot,
-        ):
-            result = get_models()
-        self.assertEqual(result.models, ["tiny.en"])
-        self.assertEqual(result.selected, "tiny.en")
-
-    def test_requested_model_is_forwarded_for_worker_resolution(self):
-        request = TranscriptionRequest(
-            audio="data:audio/wav;base64,AAAA", model="turbo"
-        )
-        self.assertEqual(request.model, "turbo")
+        with self.assertRaises(ValidationError):
+            TranscriptionRequest(audio="data:audio/wav;base64,AAAA", model="turbo")
 
     def test_formatting_preference_is_deferred_to_worker_unless_overridden(self):
         for fields in (

@@ -7,7 +7,7 @@ from api.pydantic_models.model_store import ModelStoreStatus
 from api.services.inference_errors import InferenceFailure
 from api.services.inference import InferenceService
 from api.services.inference_worker import WorkerEvent
-from api.services.worker_hub import WorkerHub, experimental_worker, target_worker
+from api.services.worker_hub import WorkerHub, target_worker
 
 
 class ExperimentalRoutingTests(unittest.TestCase):
@@ -35,9 +35,10 @@ class ExperimentalRoutingTests(unittest.TestCase):
                 self.assertEqual(service.context, {"effective": 2048})
                 self.assertIsNone(service.error)
 
-    def test_default_chat_keeps_native_worker(self):
+    def test_default_chat_uses_fixed_lfm_worker(self):
         request = InferenceTask(input={"feature": "llm", "messages": []})
-        self.assertEqual(target_worker(request), "llm")
+        with patch.dict("os.environ", {"HIKARI_ENABLE_LFM3_TEXT": "true"}):
+            self.assertEqual(target_worker(request), "lfm3_llm")
 
     def test_explicit_model_requires_server_flag(self):
         request = InferenceTask(input={"feature": "llm", "model": "lfm3-1.7b-bf16"})
@@ -57,12 +58,10 @@ class ExperimentalRoutingTests(unittest.TestCase):
 
     def test_native_primary_settings_survive_catalog_refresh(self):
         hub = WorkerHub()
-        native = ModelStoreStatus(
-            models=[], selected_tier="plus", selected_model_id="native-moe"
-        )
+        native = ModelStoreStatus(models=[], whisper_formatting=False)
         hub.primary = "native"
         hub.workers = {"native": SimpleNamespace(models=native, kind="llm")}
         hub._refresh_models()
-        self.assertEqual(hub.models.selected_tier, "plus")
-        self.assertEqual(hub.models.selected_model_id, "native-moe")
+        self.assertFalse(hub.models.whisper_formatting)
+        self.assertEqual(hub.models.selected_model_id, "lfm3-1.7b-bf16")
         self.assertIsNot(hub.models, native)

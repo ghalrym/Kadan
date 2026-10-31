@@ -307,7 +307,7 @@ export type CompletionRequest = {
   /**
    * Model
    */
-  model?: string | null
+  model?: 'lfm3-1.7b-bf16'
   /**
    * Reuse Prefix
    *
@@ -350,18 +350,6 @@ export type CompletionResponse = {
    * Object
    */
   object?: 'chat.completion'
-}
-
-/**
- * ContextRequest
- */
-export type ContextRequest = {
-  /**
-   * Context Limit
-   *
-   * Total context tokens; null uses the checkpoint architecture maximum on load.
-   */
-  context_limit: number | null
 }
 
 /**
@@ -683,9 +671,13 @@ export type Lfm3Function = {
 /**
  * Lfm3Message
  *
- * Structured history consumed only by the explicit experimental checkpoint.
+ * Structured history consumed by the fixed LFM3 language checkpoint.
  */
 export type Lfm3Message = {
+  /**
+   * Meta
+   */
+  meta?: string | null
   /**
    * Role
    */
@@ -834,6 +826,46 @@ export type MetricsResponse = {
 }
 
 /**
+ * ModelAssignments
+ *
+ * Fixed capability assignments, independent of machine resources.
+ */
+export type ModelAssignments = {
+  /**
+   * Decisions
+   */
+  decisions?: 'laya'
+  /**
+   * Formatting
+   */
+  formatting?: 'superwhisper-s1-mini'
+  /**
+   * Image
+   */
+  image?: 'qwen-image-2.1-turbo'
+  /**
+   * Llm
+   */
+  llm?: 'lfm3-1.7b-bf16'
+  /**
+   * Speech
+   */
+  speech?: 'qwen-tts-1.7b-custom'
+  /**
+   * Transcription
+   */
+  transcription?: 'whisper-medium'
+  /**
+   * Video
+   */
+  video?: 'h3-fl2va-int8-turbo'
+  /**
+   * Vision
+   */
+  vision?: 'lfm3-vl-2b-bf16'
+}
+
+/**
  * ModelLifecycleStatus
  */
 export type ModelLifecycleStatus = {
@@ -852,7 +884,7 @@ export type ModelLifecycleStatus = {
   /**
    * Max Output Tokens
    */
-  max_output_tokens?: number
+  max_output_tokens?: number | null
   /**
    * Memory
    */
@@ -871,26 +903,6 @@ export type ModelLifecycleStatus = {
    * Supported Context Limit
    */
   supported_context_limit?: number | null
-}
-
-/**
- * ModelLoadRequest
- */
-export type ModelLoadRequest = {
-  /**
-   * Context Limit
-   *
-   * Omit to retain saved/default context; explicit null uses the architecture maximum.
-   */
-  context_limit?: number | null
-  /**
-   * Model Id
-   */
-  model_id?:
-    | 'qwen3.6-35b-a3b-q4-k-m'
-    | 'qwen3.8-flash-next-ud-iq3-xxs'
-    | 'qwen3.8-flash-next-q3-k-xl'
-    | null
 }
 
 /**
@@ -1198,20 +1210,8 @@ export type ScoreQuestion = {
 
 /**
  * SettingsRequest
- *
- * Persist the hardware tier and transcription formatting.
  */
 export type SettingsRequest = {
-  /**
-   * License Acknowledged
-   *
-   * The user read the license notices of the tier's checkpoints.
-   */
-  license_acknowledged?: boolean
-  /**
-   * Tier
-   */
-  tier?: 'go' | 'plus' | 'pro' | null
   /**
    * Whisper Formatting
    */
@@ -1220,24 +1220,16 @@ export type SettingsRequest = {
 
 /**
  * SettingsResponse
- *
- * Expose the hardware tier and transcription formatting.
  */
 export type SettingsResponse = {
+  defaults: ModelAssignments
   /**
-   * Tier
-   *
-   * The selected hardware tier; null until the user chooses one.
+   * Models
    */
-  tier: 'go' | 'plus' | 'pro' | null
-  /**
-   * Tiers
-   */
-  tiers: Array<TierSetting>
+  models: Array<CheckpointStatus>
+  video_defaults: VideoDefaults
   /**
    * Whisper Formatting
-   *
-   * Normalize speech transcripts with S1-mini by Superwhisper; retain raw text.
    */
   whisper_formatting: boolean
 }
@@ -1327,52 +1319,6 @@ export type SpeechUnavailable = {
 }
 
 /**
- * TierModel
- *
- * A tier's checkpoint for one modality, with its live download state.
- */
-export type TierModel = {
-  /**
-   * Modality
-   */
-  modality:
-    'llm' | 'image' | 'video' | 'speech' | 'transcription' | 'formatting'
-  /**
-   * Null while the tier assigns no checkpoint to this modality.
-   */
-  model: CheckpointStatus | null
-}
-
-/**
- * TierSetting
- *
- * A selectable hardware tier and the checkpoints it downloads.
- */
-export type TierSetting = {
-  /**
-   * Id
-   */
-  id: 'go' | 'plus' | 'pro'
-  /**
-   * Models
-   */
-  models: Array<TierModel>
-  /**
-   * Name
-   */
-  name: string
-  /**
-   * Ram Gb
-   */
-  ram_gb: number
-  video_defaults: VideoDefaults
-  /**
-   * Vram Gb
-   */
-  vram_gb: number
-}
-
-/**
  * TranscriptionRequest
  */
 export type TranscriptionRequest = {
@@ -1395,7 +1341,7 @@ export type TranscriptionRequest = {
   /**
    * Model
    */
-  model?: string | null
+  model?: 'medium' | null
 }
 
 /**
@@ -1479,11 +1425,11 @@ export type VideoDefaults = {
   /**
    * Duration
    */
-  duration: number
+  duration?: number
   /**
    * Resolution
    */
-  resolution: '480p' | '768p'
+  resolution?: '480p' | '768p'
 }
 
 /**
@@ -1513,13 +1459,13 @@ export type VideoGenerationRequest = {
   /**
    * Resolution
    *
-   * Omit for the selected tier default.
+   * Omit for the fixed default (5 seconds, 480p).
    */
   resolution?: '480p' | '768p' | null
   /**
    * Seconds
    *
-   * Whole seconds at 24 fps (1–15). Omit for the selected tier default; duration is also accepted.
+   * Whole seconds at 24 fps (1–15). Omit for the fixed default (5 seconds, 480p); duration is also accepted.
    */
   seconds?: number | null
   /**
@@ -1608,30 +1554,6 @@ export type VideosResponse = {
    * Jobs
    */
   jobs: Array<VideoJob>
-}
-
-/**
- * WhisperModels
- */
-export type WhisperModels = {
-  /**
-   * Models
-   */
-  models: Array<string>
-  /**
-   * Selected
-   */
-  selected: string | null
-}
-
-/**
- * WhisperSelection
- */
-export type WhisperSelection = {
-  /**
-   * Model
-   */
-  model: string
 }
 
 /**
@@ -1775,36 +1697,6 @@ export type GetModelLifecycleStatusResponses = {
 export type GetModelLifecycleStatusResponse =
   GetModelLifecycleStatusResponses[keyof GetModelLifecycleStatusResponses]
 
-export type LoadSelectedModelData = {
-  /**
-   * Body
-   */
-  body?: ModelLoadRequest | null
-  path?: never
-  query?: never
-  url: '/model-lifecycle/load'
-}
-
-export type LoadSelectedModelErrors = {
-  /**
-   * Validation Error
-   */
-  422: HttpValidationError
-}
-
-export type LoadSelectedModelError =
-  LoadSelectedModelErrors[keyof LoadSelectedModelErrors]
-
-export type LoadSelectedModelResponses = {
-  /**
-   * Successful Response
-   */
-  202: ModelLifecycleStatus
-}
-
-export type LoadSelectedModelResponse =
-  LoadSelectedModelResponses[keyof LoadSelectedModelResponses]
-
 export type UnloadSelectedModelData = {
   body?: never
   path?: never
@@ -1918,50 +1810,6 @@ export type TranscribeAudioResponses = {
 
 export type TranscribeAudioResponse =
   TranscribeAudioResponses[keyof TranscribeAudioResponses]
-
-export type GetWhisperModelsData = {
-  body?: never
-  path?: never
-  query?: never
-  url: '/v1/audio/transcriptions/models'
-}
-
-export type GetWhisperModelsResponses = {
-  /**
-   * Successful Response
-   */
-  200: WhisperModels
-}
-
-export type GetWhisperModelsResponse =
-  GetWhisperModelsResponses[keyof GetWhisperModelsResponses]
-
-export type SelectWhisperModelData = {
-  body: WhisperSelection
-  path?: never
-  query?: never
-  url: '/v1/audio/transcriptions/models'
-}
-
-export type SelectWhisperModelErrors = {
-  /**
-   * Validation Error
-   */
-  422: HttpValidationError
-}
-
-export type SelectWhisperModelError =
-  SelectWhisperModelErrors[keyof SelectWhisperModelErrors]
-
-export type SelectWhisperModelResponses = {
-  /**
-   * Successful Response
-   */
-  200: WhisperModels
-}
-
-export type SelectWhisperModelResponse =
-  SelectWhisperModelResponses[keyof SelectWhisperModelResponses]
 
 export type CreateCompletionData = {
   body: CompletionRequest
@@ -2217,38 +2065,6 @@ export type ListModelsV1ModelsGetResponses = {
 
 export type ListModelsV1ModelsGetResponse =
   ListModelsV1ModelsGetResponses[keyof ListModelsV1ModelsGetResponses]
-
-export type ConfigureContextV1ModelsModelIdContextPutData = {
-  body: ContextRequest
-  path: {
-    /**
-     * Model Id
-     */
-    model_id: string
-  }
-  query?: never
-  url: '/v1/models/{model_id}/context'
-}
-
-export type ConfigureContextV1ModelsModelIdContextPutErrors = {
-  /**
-   * Validation Error
-   */
-  422: HttpValidationError
-}
-
-export type ConfigureContextV1ModelsModelIdContextPutError =
-  ConfigureContextV1ModelsModelIdContextPutErrors[keyof ConfigureContextV1ModelsModelIdContextPutErrors]
-
-export type ConfigureContextV1ModelsModelIdContextPutResponses = {
-  /**
-   * Successful Response
-   */
-  200: ModelsResponse
-}
-
-export type ConfigureContextV1ModelsModelIdContextPutResponse =
-  ConfigureContextV1ModelsModelIdContextPutResponses[keyof ConfigureContextV1ModelsModelIdContextPutResponses]
 
 export type CancelDownloadV1ModelsModelIdDownloadDeleteData = {
   body?: never

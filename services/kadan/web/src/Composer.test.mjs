@@ -10,6 +10,7 @@ const modules = {
     export const useLayoutEffect = () => {};
     export const useRef = current => ({ current });
     export const useState = value => [value, () => {}];`,
+  "./AttachmentPicker": "export default function AttachmentPicker() {}",
   "./VoiceCallControl": "export default function VoiceCallControl() {}",
   "./voiceInput": "export const microphoneUnavailable = () => null; export class VoiceInput {}",
 };
@@ -35,12 +36,13 @@ loader.deregister();
 const status = {
   tsuchi: { state: "ready", message: "Connected", browser_url: "http://localhost:8620" },
   hikari: {
-    state: "tier_required", tier: null, model_id: null,
-    message: "Choose a tier", settings_url: "http://localhost:8088/settings",
+    state: "model_required", model_id: "lfm3-1.7b-bf16",
+    message: "Download the LFM3 model", settings_url: "http://localhost:8088/settings",
   },
 };
 function compose(overrides = {}) {
   return Composer({
+    attachments: { ready: true, entries: [] },
     agentName: "Haru", value: "My pending question", onChange() {}, onSend() {},
     sending: false, blocked: false, status, personas: [{ id: "persona", title: "Me" }],
     persona: "persona", onPersona() {}, pet: null, voiceCall: { active: false },
@@ -54,18 +56,15 @@ function elements(node) {
 const find = (tree, type) => elements(tree).find(node => node.type === type);
 const prompt = tree => elements(tree).find(node => node.props?.className === "plan-prompt");
 
-test("no plan shows an explicit explanation and a separate-tab route to selection", () => {
-  const notice = prompt(compose());
-  assert.equal(notice.props.role, "status");
-  assert.equal(find(notice, "strong").props.children, "Select a plan to enable replies");
-  assert.match(find(notice, "p").props.children, /keep writing or save a note/);
-  const link = find(notice, "a");
-  assert.equal(link.props.href, status.hikari.settings_url);
-  assert.equal(link.props.target, "_blank");
-  assert.equal(link.props.onClick, undefined);
+test("missing model shows an explicit separate-tab route to downloads", () => {
+  const notice = elements(compose()).find(node => node.props?.className === "attention");
+  assert.equal(notice.props.href, status.hikari.settings_url);
+  assert.equal(notice.props.target, "_blank");
+  assert.equal(notice.props.onClick, undefined);
+  assert.ok([notice.props.children].flat(Infinity).includes("Download a model · notes only"));
 });
 
-test("no-plan prompt leaves the draft editable and preserves explicit note sending", () => {
+test("missing model leaves the draft editable and preserves explicit note sending", () => {
   const sends = [], edits = [];
   const tree = compose({ onSend: value => sends.push(value), onChange: value => edits.push(value) });
   assert.deepEqual(sends, []);
@@ -80,10 +79,10 @@ test("no-plan prompt leaves the draft editable and preserves explicit note sendi
   assert.deepEqual(sends, [false]);
 });
 
-test("ready plan removes the prompt and keeps chat and persona selection", () => {
+test("ready model removes the prompt and keeps chat and persona selection", () => {
   const sends = [];
   const tree = compose({
-    status: { ...status, hikari: { ...status.hikari, state: "ready", tier: "go" } },
+    status: { ...status, hikari: { ...status.hikari, state: "ready" } },
     onSend: value => sends.push(value),
   });
   assert.equal(prompt(tree), undefined);
@@ -112,8 +111,10 @@ test("unknown and unavailable states are not presented as no-plan states", () =>
 
 test("missing settings link keeps guidance visible without a dead action", () => {
   const tree = compose({ status: { ...status, hikari: { ...status.hikari, settings_url: null } } });
-  assert.ok(prompt(tree));
-  assert.equal(find(prompt(tree), "a"), undefined);
+  const notice = elements(tree).find(node => node.props?.className === "attention");
+  assert.ok(notice);
+  assert.equal(notice.props.href, undefined);
+  assert.equal(notice.props["aria-disabled"], true);
 });
 
 
@@ -129,4 +130,38 @@ test("response cancellation has a visible label and explains independent coding 
   const pending = elements(compose({ onStop() {}, stopping: true })).find(node => node.props?.["aria-label"] === "Stop response");
   assert.equal(pending.props.disabled, true);
   assert.ok(pending.props.children.includes("Stopping…"));
+});
+
+
+test("file selection in notes-only mode resets the picker without sending", () => {
+  const added = [], sends = [];
+  const tree = compose({
+    attachments: { ready: true, entries: [], add: files => added.push(files) },
+    onSend: value => sends.push(value),
+  });
+  const attach = elements(tree).find(node => node.props?.["aria-label"] === "Attach files");
+  assert.equal(attach.props.disabled, false);
+  const selected = new File(["test"], "notes.txt");
+  const target = { files: [selected], value: "notes.txt" };
+  find(tree, "input").props.onChange({ target });
+  assert.deepEqual(added, [[selected]]);
+  assert.equal(target.value, "");
+  assert.deepEqual(sends, []);
+  find(tree, "form").props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(sends, [false]);
+});
+
+test("unresolved uploads block both sending choices and Enter", () => {
+  const sends = [];
+  const tree = compose({
+    attachments: { ready: false, entries: [] },
+    status: { ...status, hikari: { state: "ready" } },
+    onSend: value => sends.push(value),
+  });
+  for (const label of ["Send message", "Save as note without a reply"]) {
+    assert.equal(elements(tree).find(node => node.props?.["aria-label"] === label).props.disabled, true);
+  }
+  find(tree, "form").props.onSubmit({ preventDefault() {} });
+  find(tree, "textarea").props.onKeyDown({ key: "Enter", shiftKey: false, nativeEvent: {}, preventDefault() {} });
+  assert.deepEqual(sends, []);
 });

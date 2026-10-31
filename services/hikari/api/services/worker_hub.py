@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from api.pydantic_models.inference_task import InferenceTask
-from api.pydantic_models.model_store import ModelStoreStatus
+from api.pydantic_models.model_store import ModelAssignments, ModelStoreStatus
 from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
 from api.services.inference_worker import (
@@ -49,7 +49,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 log = logging.getLogger(__name__)
 
-PROTOCOL = 4
+PROTOCOL = 5
 
 # Features served by an inference worker; settings go to every worker and a
 # download goes to a worker of its checkpoint's type.
@@ -82,6 +82,7 @@ EXPERIMENTAL_MODELS = {
     "lfm3-audio-2b-bf16": ("lfm3_audio", "HIKARI_ENABLE_LFM3_AUDIO"),
 }
 EXPERIMENTAL_FEATURES = {
+    "llm": "lfm3-1.7b-bf16",
     "vision": "lfm3-vl-2b-bf16",
     "audio_call": "lfm3-audio-2b-bf16",
 }
@@ -126,8 +127,6 @@ def gib(budget: list[int]) -> str:
 def settings(models: ModelStoreStatus) -> tuple:
     """What a model store snapshot says that can change a memory requirement."""
     return (
-        models.selected_tier,
-        models.selected_whisper,
         models.whisper_formatting,
         tuple(
             sorted(
@@ -300,7 +299,7 @@ class WorkerHub:
         self.calls: dict[str, frozenset[str]] = {}
 
     def _refresh_models(self):
-        """Append opt-in checkpoints without replacing the native tier or defaults."""
+        """Combine fixed checkpoints and the opt-in audio experiment from their workers."""
         primary = self.workers.get(self.primary or "")
         base = primary.models if primary is not None else None
         snapshot = (
@@ -320,6 +319,8 @@ class WorkerHub:
                 if kind == worker.kind and model.id not in known:
                     snapshot.models.append(model.model_copy(deep=True))
                     known.add(model.id)
+        visible = set(ModelAssignments().model_dump().values()) | {"lfm3-audio-2b-bf16"}
+        snapshot.models = [model for model in snapshot.models if model.id in visible]
         self.models = snapshot if base is not None or snapshot.models else None
 
     @contextmanager
@@ -877,15 +878,6 @@ class WorkerHub:
         if source is None or target is None:
             return
         tasks = []
-        if source.selected_tier and source.selected_tier != target.selected_tier:
-            tasks.append({"feature": "tier_selection", "tier": source.selected_tier})
-        if (
-            source.selected_whisper
-            and source.selected_whisper != target.selected_whisper
-        ):
-            tasks.append(
-                {"feature": "whisper_selection", "model": source.selected_whisper}
-            )
         if source.whisper_formatting != target.whisper_formatting:
             tasks.append(
                 {"feature": "whisper_formatting", "enabled": source.whisper_formatting}
@@ -967,7 +959,7 @@ class WorkerHub:
             requirement.key = requirement_key(fields)
             return requirement
         except InferenceFailure as error:
-            # Preparation reports the real problem (no tier, no download) once
+            # Preparation reports the real problem (no download) once
             # the worker runs; a host-only budget lets it get that far.
             log.info("No memory requirement for %s: %s", worker.name, error)
             return Requirement(
@@ -1100,7 +1092,7 @@ class WorkerHub:
             key=lambda slot: (slot.priority, slot.last_used),
         )
         for slot in waiting:
-            # The unloaded language tier keeps room for its minimum.
+            # The unloaded language model keeps room for its minimum.
             for other in slots:
                 if (
                     other.requirement is None

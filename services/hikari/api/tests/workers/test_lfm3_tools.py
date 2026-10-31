@@ -49,6 +49,20 @@ class Lfm3ToolPromptTests(unittest.TestCase):
             ],
         }
 
+    def test_omitted_model_uses_fixed_checkpoint_and_preserves_tool_history(self):
+        body = self.body()
+        body.pop("model")
+        request = CompletionRequest.model_validate(body)
+        self.assertEqual(request.model, "lfm3-1.7b-bf16")
+        self.assertEqual(request.messages[-1].tool_call_id, "call_0")
+        self.assertEqual(request.tools[0].function.name, "read_file")
+
+    def test_other_language_checkpoints_are_rejected(self):
+        body = self.body()
+        body["model"] = "qwen3.6-35b-a3b-q4-k-m"
+        with self.assertRaises(ValidationError):
+            CompletionRequest.model_validate(body)
+
     def test_typed_request_and_worker_queue_preserve_native_template_fields(self):
         body = CompletionRequest.model_validate(self.body())
         request = InferenceTask(

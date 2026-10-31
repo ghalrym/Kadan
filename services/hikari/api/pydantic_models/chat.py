@@ -43,10 +43,11 @@ class Lfm3ToolCall(BaseModel):
 
 
 class Lfm3Message(BaseModel):
-    """Structured history consumed only by the explicit experimental checkpoint."""
+    """Structured history consumed by the fixed LFM3 language checkpoint."""
 
     model_config = ConfigDict(extra="forbid")
     role: Literal["system", "user", "assistant", "tool"]
+    meta: str | None = None
     text: str = Field(default="", validation_alias=AliasChoices("text", "content"))
     tool_calls: list[Lfm3ToolCall] | None = None
     tool_call_id: str | None = Field(default=None, min_length=1, max_length=120)
@@ -63,16 +64,19 @@ class Lfm3Message(BaseModel):
 
 
 def lfm3_messages(values):
-    """Select the rich message schema only for this user-selected experiment."""
+    """Validate structured history for the fixed language checkpoint."""
     if (
         isinstance(values, dict)
-        and (values.get("model_id") or values.get("model")) == "lfm3-1.7b-bf16"
+        and (values.get("model_id") or values.get("model") or "lfm3-1.7b-bf16")
+        == "lfm3-1.7b-bf16"
     ):
         values = {
             **values,
             "messages": [
                 Lfm3Message.model_validate(
-                    row.model_dump() if isinstance(row, BaseModel) else row
+                    row.model_dump(exclude_none=True)
+                    if isinstance(row, BaseModel)
+                    else row
                 )
                 for row in values.get("messages", [])
             ],
@@ -81,9 +85,9 @@ def lfm3_messages(values):
 
 
 def require_lfm3_tools(model, messages, tools):
-    if model != "lfm3-1.7b-bf16" and (
+    if model not in (None, "lfm3-1.7b-bf16") and (
         tools is not None or any(isinstance(row, Lfm3Message) for row in messages)
     ):
         raise ValueError(
-            "Structured tools and tool history require the explicit experimental LFM3 text model"
+            "Structured tools and tool history require the LFM3 text model"
         )

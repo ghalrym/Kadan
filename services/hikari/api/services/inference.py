@@ -17,14 +17,11 @@ from api.pydantic_models.inference_task import (
     AudioCallTask,
     DownloadTask,
     InferenceTask,
-    TierSelectionTask,
     VideoTask,
 )
 from api.pydantic_models.model_store import (
     DownloadObservation,
-    HardwareTier,
     ModelStoreStatus,
-    TierId,
 )
 from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
@@ -133,6 +130,49 @@ class InferenceService:
             "supported_context_limit": self.context.get("supported"),
         }
 
+    def language_status(self):
+        model_id = "lfm3-1.7b-bf16"
+        checkpoint = (
+            next(
+                (model for model in self.worker.models.models if model.id == model_id),
+                None,
+            )
+            if self.worker.models
+            else None
+        )
+        workers = [
+            worker
+            for worker in self.worker.workers.values()
+            if worker.kind == "lfm3_llm"
+        ]
+        error = None
+        if not workers or checkpoint is None:
+            error = "The LFM3 conversation worker is unavailable."
+        elif checkpoint.status != "complete":
+            error = (
+                "Download the language checkpoint in Hikari Settings before inference."
+            )
+        elif any(not worker.residency_known for worker in workers):
+            error = "Language-model cleanup is unconfirmed."
+        active = any(
+            job.worker == "lfm3_llm" and not job.result.done()
+            for job in self.worker.jobs.values()
+        )
+        return {
+            "state": "error" if error else "loading" if active else "unloaded",
+            "model_id": model_id,
+            "error": error,
+            "memory": self.worker.memory.model_dump() if self.worker.memory else None,
+            "configured_context_limit": checkpoint.context_limit
+            if checkpoint
+            else None,
+            "effective_context_limit": None,
+            "supported_context_limit": checkpoint.architecture_context_limit
+            if checkpoint
+            else None,
+            "max_output_tokens": None,
+        }
+
     def models_status(self) -> ModelStoreStatus:
         if self.worker.models is None:
             raise InferenceFailure("Worker model status is unavailable.", 503)
@@ -145,6 +185,14 @@ class InferenceService:
         return snapshot
 
     async def download(self, model_id: str, license_acknowledged: bool):
+        if not license_acknowledged:
+            raise InferenceFailure(
+                "Review and acknowledge model licenses before downloading.", 422
+            )
+        if not any(model.id == model_id for model in self.models_status().models):
+            raise InferenceFailure(
+                "The checkpoint is unavailable from connected workers.", 422
+            )
         if model_id in self._download_admissions or any(
             job.request.feature == "models"
             and job.request.input.model_id == model_id
@@ -317,19 +365,10 @@ class InferenceService:
             video = request.input
             if video.duration is None or video.resolution is None:
                 status = self.models_status()
-                tier = next(
-                    (tier for tier in status.tiers if tier.id == status.selected_tier),
-                    None,
-                )
-                if tier is None:
-                    raise InferenceFailure(
-                        "Choose a hardware tier in Settings before submitting a video.",
-                        422,
-                    )
                 if video.duration is None:
-                    video.duration = tier.video_defaults.duration
+                    video.duration = status.video_defaults.duration
                 if video.resolution is None:
-                    video.resolution = tier.video_defaults.resolution
+                    video.resolution = status.video_defaults.resolution
             video_jobs.prepare(request.id, video)
         try:
             job = await self.worker.submit(request, streaming=streaming)
@@ -456,52 +495,13 @@ class InferenceService:
                     error = None if job.result.cancelled() else job.result.exception()
                     self._finish_video_error(job, error or asyncio.CancelledError())
 
-    def tier(self, tier: TierId) -> HardwareTier:
-        for candidate in self.models_status().tiers:
-            if candidate.id == tier:
-                return candidate
-        raise InferenceFailure(f"Unknown hardware tier: {tier}", 422)
-
-    async def select_tier(self, tier: TierId) -> None:
-        """Save the tier, then unload a different resident language model after earlier chats."""
-        language_model = self.tier(tier).models.llm
-        await self.submit(
-            TierSelectionTask(tier=tier),
-            feature="tier_selection",
-            operation="configure",
-        )
-        if (
-            self.state in ("loading", "ready", "offloaded")
-            and self.model_id != language_model
-        ):
-            await self.unload(cancel_llm=False)
-
-    async def download_tier(self, tier: TierId, license_acknowledged: bool) -> None:
-        """Queue the tier's assigned checkpoints that are neither complete nor queued."""
-        states = {model.id: model.status for model in self.models_status().models}
-        for model_id in dict.fromkeys(
-            model_id for _, model_id in self.tier(tier).models
-        ):
-            if model_id is None or states.get(model_id) in (
-                "complete",
-                "downloading",
-                "cancelling",
-            ):
-                continue
-            await self.download(model_id, license_acknowledged)
-
-    async def unload(self, cancel_llm: bool = True):
-        """Unload through the FIFO; cancel_llm=False lets earlier chats finish first."""
+    async def unload(self):
+        """Cancel language requests and await confirmed cold-worker cleanup."""
         for job in tuple(self.worker.jobs.values()):
-            if cancel_llm and job.request.feature == "llm":
+            if job.request.feature == "llm":
                 await self.cancel(job.request.id)
-        job = await self.worker.submit(
-            InferenceTask(operation="unload", input={"feature": "llm"})
-        )
-        status = await self._complete(job)
-        # The engine is closed; give its budget back to other workers.
-        await self.worker.offload("llm")
-        return status
+        await self.worker.offload("lfm3_llm")
+        return self.language_status()
 
 
 inference = InferenceService()

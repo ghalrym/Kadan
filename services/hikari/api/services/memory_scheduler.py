@@ -232,7 +232,7 @@ def _shrink_options(slot: WorkerSlot) -> list[list[int]]:
 
 
 def _reserve(ledger: MachineLedger, target: WorkerSlot) -> list[int]:
-    """Room kept for the language tier while it is not loaded.
+    """Room kept for the language model while it is not loaded.
 
     Other workers never take its minimum, so the language model can start while
     an image or video runs instead of queueing behind it. The minimum is placed
@@ -384,7 +384,7 @@ def plan_growth(ledger: MachineLedger) -> list[Action]:
     for slot in sorted(ledger.workers.values(), key=lambda slot: slot.priority):
         if not slot.loaded or slot.busy or slot.releasing or slot.requirement is None:
             continue
-        # Growth never takes the room kept for the language tier.
+        # Growth never takes the room kept for the language model.
         free = [
             value - kept for value, kept in zip(ledger.free(), _reserve(ledger, slot))
         ]

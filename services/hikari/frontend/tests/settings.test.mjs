@@ -40,11 +40,11 @@ test('every capability reads its fixed checkpoint from the model snapshot', asyn
   ] })
   const result = await api.fetchModels(new AbortController().signal)
   assert.deepEqual(result.map(row => row.capability.label),
-    ['Language', 'Vision', 'Image', 'Video', 'Text to speech', 'Speech to text', 'Speech formatter'])
+    ['Language', 'Vision', 'Image', 'Video', 'Text to speech', 'Speech to text', 'Speech formatter', 'Decisions'])
   assert.equal(result[0].model.id, 'lfm3-1.7b-bf16')
   assert.equal(result[1].model.id, 'lfm3-vl-2b-bf16')
   assert.equal(result[2].model, null)
-  assert.equal(capabilities.length, 7)
+  assert.equal(capabilities.length, 8)
   assert.deepEqual(calls.map(call => call.name), ['listModelsV1ModelsGet'])
 })
 
@@ -63,7 +63,7 @@ test('overall progress weights each checkpoint by size', async () => {
   const { api, rows } = await settingsApi()
   const language = checkpoint('lfm3-1.7b-bf16', { status: 'downloading', downloaded_bytes: 150, total_bytes: 300 })
   const active = rows({ 'lfm3-1.7b-bf16': language, 'lfm3-vl-2b-bf16': null })
-  assert.equal(api.modelsProgress(active), 81)
+  assert.equal(api.modelsProgress(active), 83)
   assert.equal(api.modelsDownloading(active), true)
   assert.equal(api.modelsComplete(active), false)
   assert.equal(api.modelsComplete(rows({})), true)
@@ -107,6 +107,16 @@ test('downloading requires acknowledgement and queues only idle incomplete check
   }
 })
 
+test('the fixed Decisions checkpoint can be explicitly downloaded after acknowledgement', async () => {
+  const { api, calls, rows } = await settingsApi()
+  const models = rows({ laya: checkpoint('laya') })
+  await assert.rejects(api.downloadModels(models, false, new AbortController().signal), /acknowledge/)
+  assert.equal(calls.length, 0)
+  await api.downloadModels(models, true, new AbortController().signal)
+  assert.deepEqual(calls.map(call => call.args.path.model_id), ['laya'])
+  assert.equal(calls[0].args.body.license_acknowledged, true)
+})
+
 test('API details and missing responses become actionable errors', async () => {
   const rejected = await settingsApi({ ok: false, status: 409 }, null, { detail: 'Already downloading' })
   await assert.rejects(rejected.api.fetchModels(new AbortController().signal), /Already downloading/)
@@ -114,4 +124,22 @@ test('API details and missing responses become actionable errors', async () => {
   await assert.rejects(failed.api.downloadModels(failed.rows({ 'whisper-medium': checkpoint('whisper-medium') }), true, new AbortController().signal), /HTTP 503/)
   const offline = await settingsApi(null, null)
   await assert.rejects(offline.api.fetchModels(new AbortController().signal), /Cannot reach the settings API/)
+})
+
+
+test('an enabled audio trial is visible and requires acknowledged download without replacing defaults', async () => {
+  const audio = checkpoint('lfm3-audio-2b-bf16', { license_notice: 'Review audio license' })
+  const { api, calls, capabilities } = await settingsApi({ ok: true }, { models: [audio] })
+  const rows = api.capabilityModels([audio])
+  assert.equal(rows.length, capabilities.length + 1)
+  assert.equal(rows[0].capability.id, 'lfm3-1.7b-bf16')
+  assert.equal(rows.at(-1).capability.label, 'Audio call trial')
+  assert.deepEqual(api.licenseNotices(rows).map(model => model.id), [audio.id])
+  const signal = new AbortController().signal
+  await assert.rejects(api.downloadModels(rows, false, signal), /acknowledge/)
+  assert.equal(calls.length, 0)
+  await api.downloadModels(rows, true, signal)
+  assert.deepEqual(calls.map(call => call.args.path.model_id), [audio.id])
+  assert.equal(calls[0].args.body.license_acknowledged, true)
+  assert.equal(api.capabilityModels([]).some(row => row.capability.id === audio.id), false)
 })

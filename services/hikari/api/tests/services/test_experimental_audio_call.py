@@ -18,7 +18,6 @@ def audio_snapshot():
         update={"id": "lfm3-audio-2b-bf16", "kind": "audio"}
     )
     status.models = [model]
-    status.selected_tier = None
     return status
 
 
@@ -27,7 +26,7 @@ class AudioModelsTests(unittest.TestCase):
         status = audio_snapshot()
         models = CallModels.selected(status, "lfm3")
         self.assertEqual(models.participants(), frozenset(("lfm3-audio-2b-bf16",)))
-        self.assertIsNone(models.tier)
+        self.assertEqual(models.backend, "lfm3")
         status.models[0].status = "not_downloaded"
         with self.assertRaisesRegex(InferenceFailure, "license"):
             CallModels.selected(status, "lfm3")

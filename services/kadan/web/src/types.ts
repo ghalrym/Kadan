@@ -27,6 +27,7 @@ export interface Resource {
   markdown: string;
   parent_id: string | null;
   tags: string[];
+  sources: { label: string; url: string }[];
   messages: Message[];
   attachment_ids: string[];
   version: number;
@@ -51,9 +52,8 @@ export interface Status {
     browser_url: string | null;
   };
   hikari: {
-    state: "ready" | "tier_required" | "model_required" | "unavailable";
+    state: "ready" | "model_required" | "unavailable";
     message: string;
-    tier: string | null;
     model_id: string | null;
     download_state?: "not_downloaded" | "downloading" | "cancelling" | "cancelled" | "failed" | "complete" | null;
     /** Whether the selected language model is resident in Hikari; null when unknown. */

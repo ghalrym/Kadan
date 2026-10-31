@@ -7,9 +7,14 @@ export const capabilities = [
   { id: 'qwen-tts-1.7b-custom', label: 'Text to speech', short: 'TTS', tone: 'tts' },
   { id: 'whisper-medium', label: 'Speech to text', short: 'STT', tone: 'stt' },
   { id: 'superwhisper-s1-mini', label: 'Speech formatter', short: 'Formatter', tone: 'formatter' },
+  { id: 'laya', label: 'Decisions', short: 'Decisions', tone: 'decision' },
 ] as const
 
-export type Capability = (typeof capabilities)[number]
+export const audioTrialCapability = {
+  id: 'lfm3-audio-2b-bf16', label: 'Audio call trial', short: 'Audio trial', tone: 'tts',
+} as const
+
+export type Capability = (typeof capabilities)[number] | typeof audioTrialCapability
 
 /** Clip settings the video form starts from. */
 export const videoDefaults = { duration: 5, resolution: '480p' } as const

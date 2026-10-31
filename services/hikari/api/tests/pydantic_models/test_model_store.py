@@ -2,28 +2,18 @@ import unittest
 
 from pydantic import ValidationError
 
-from api.pydantic_models.model_store import TierModels
+from api.pydantic_models.model_store import ModelAssignments, ModelStoreStatus
 
 
-class TierModelsTests(unittest.TestCase):
-    def test_language_model_is_required(self):
-        for assignments in ({}, {"llm": None}):
-            with (
-                self.subTest(assignments=assignments),
-                self.assertRaises(ValidationError),
-            ):
-                TierModels.model_validate(assignments)
+class ModelAssignmentsTests(unittest.TestCase):
+    def test_machine_resources_cannot_change_assignments(self):
+        for field in ModelAssignments.model_fields:
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                ModelAssignments(**{field: "another-model"})
 
-    def test_unassigned_modalities_serialize_as_null(self):
-        models = TierModels(llm="language-model")
-        self.assertEqual(
-            models.model_dump(),
-            {
-                "llm": "language-model",
-                "image": None,
-                "video": None,
-                "speech": None,
-                "transcription": None,
-                "formatting": None,
-            },
-        )
+    def test_new_store_has_fixed_assignments_without_a_saved_selection(self):
+        status = ModelStoreStatus(models=[])
+        self.assertEqual(status.defaults.transcription, "whisper-medium")
+        self.assertEqual(status.defaults.formatting, "superwhisper-s1-mini")
+        self.assertEqual(status.defaults.speech, "qwen-tts-1.7b-custom")
+        self.assertEqual(status.selected_model_id, status.defaults.llm)
