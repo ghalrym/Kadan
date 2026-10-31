@@ -4,10 +4,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from api.pydantic_models.inference_task import InferenceTask
-from api.pydantic_models.model_store import ModelStoreStatus
+from api.pydantic_models.model_store import CheckpointStatus, ModelStoreStatus
 from api.services.inference import InferenceService
 from api.services.inference_worker import InferenceJob
-from api.pydantic_models.model_store import CheckpointStatus
 
 
 class LanguageLifecycleTests(unittest.IsolatedAsyncioTestCase):
