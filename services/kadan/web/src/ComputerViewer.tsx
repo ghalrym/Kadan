@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { MousePointer2, RotateCw, X } from "lucide-react";
-import type RFB from "@novnc/novnc";
+import { ComputerControl } from "./computerControl";
 import { vncUrl } from "./presence";
 
 type Connection = "connecting" | "connected" | "disconnected";
@@ -28,7 +28,7 @@ interface Props {
 export default function ComputerViewer({ agentName, onClose }: Props) {
   const panel = useRef<HTMLElement>(null);
   const screen = useRef<HTMLDivElement>(null);
-  const rfb = useRef<RFB | null>(null);
+  const viewer = useRef<ComputerControl | null>(null);
   const [connection, setConnection] = useState<Connection>("connecting");
   const [control, setControl] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -43,27 +43,26 @@ export default function ComputerViewer({ agentName, onClose }: Props) {
     import("@novnc/novnc").then(({ default: Client }) => {
       if (closed) return;
       const client = new Client(target, vncUrl(location));
+      const computer = new ComputerControl(client);
       client.scaleViewport = true;
-      client.viewOnly = true;
       client.background = "transparent";
       client.addEventListener("connect", () => setConnection("connected"));
       client.addEventListener("disconnect", () => {
-        if (rfb.current === client) setConnection("disconnected");
+        if (viewer.current === computer) setConnection("disconnected");
       });
-      rfb.current = client;
+      viewer.current = computer;
     }).catch(() => {
       if (!closed) setConnection("disconnected");
     });
     return () => {
       closed = true;
-      const client = rfb.current;
-      rfb.current = null;
-      client?.disconnect();
+      const computer = viewer.current;
+      viewer.current = null;
+      computer?.disconnect();
     };
   }, [attempt]);
   useEffect(() => {
-    if (rfb.current) rfb.current.viewOnly = !control;
-    if (control) rfb.current?.focus();
+    viewer.current?.setControl(control);
   }, [control, connection]);
 
   function resize(event: React.PointerEvent<HTMLDivElement>) {

@@ -2,10 +2,12 @@ import asyncio
 from uuid import UUID
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
+from ....config import ServiceError
 from ....pydantic_models.agent_runs import AgentRun, ImageJob
-from ....pydantic_models.resources import AgentKey, Resource
+from ....pydantic_models.conversation_work import AgentRunSummary, ImageJobSummary
+from ....pydantic_models.resources import AgentKey, Resource, ResourceKind
 from .notes import NoteInput
 
 router = APIRouter()
@@ -13,6 +15,13 @@ router = APIRouter()
 
 class RunInput(NoteInput):
     persona_id: UUID | None
+    resume_coding_job_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def continuation_length(self) -> "RunInput":
+        if self.resume_coding_job_id is not None and len(self.content) > 16000:
+            raise ValueError("A Codex follow-up cannot exceed 16000 characters")
+        return self
 
 
 class RunCreated(BaseModel):
@@ -21,8 +30,8 @@ class RunCreated(BaseModel):
 
 
 class ConversationRuns(BaseModel):
-    runs: list[AgentRun]
-    images: list[ImageJob]
+    runs: list[AgentRunSummary]
+    images: list[ImageJobSummary]
     conversation: Resource
 
 
@@ -49,11 +58,27 @@ async def conversation_runs(
         services.json_request(
             "Tsuchi", "GET", f"/api/agents/{key}/resources/{conversation_id}/image-jobs"
         ),
-        services.resource(key, conversation_id),
+        services.resource_of_kinds(key, conversation_id, (ResourceKind.CONVERSATION,)),
     )
+    if not isinstance(runs, list) or not isinstance(images, list):
+        raise ServiceError(
+            "Tsuchi returned an invalid work collection.", 502, "invalid_response"
+        )
+    run_records = [AgentRun.model_validate(value) for value in runs]
+    image_records = [ImageJob.model_validate(value) for value in images]
+    if any(
+        record.agent_key != key or record.conversation_id != conversation_id
+        for record in [*run_records, *image_records]
+    ):
+        raise ServiceError(
+            "Tsuchi returned work outside this conversation.", 502, "invalid_response"
+        )
     return ConversationRuns(
-        runs=sorted(runs, key=lambda run: (run["created_at"], run["id"])),
-        images=images,
+        runs=[
+            AgentRunSummary.model_validate(run)
+            for run in sorted(run_records, key=lambda run: (run.created_at, run.id))
+        ],
+        images=[ImageJobSummary.model_validate(image) for image in image_records],
         conversation=conversation,
     )
 

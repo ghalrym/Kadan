@@ -58,6 +58,7 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "worker-host-tests",
     "kadan-worker-formatting",
     "preparation-tests",
+    "chat-load-tests",
     "s1-mini-metadata-tests",
     "text-tokenizer-tests",
     "inference-worker-text-tests",
@@ -178,6 +179,17 @@ def lint_cpp(
 def api() -> None:
     """Run isolated API unit tests."""
     run([sys.executable, "-m", "unittest", "discover", "-s", "api/tests", "-v"])
+    run(
+        [
+            sys.executable,
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "experimental_worker/tests",
+            "-v",
+        ]
+    )
 
 
 @app.command("frontend-lint")

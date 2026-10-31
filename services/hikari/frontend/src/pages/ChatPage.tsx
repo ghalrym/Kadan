@@ -56,6 +56,7 @@ export default function ChatPage() {
             setMessages([...conversation, { role: 'assistant', text }])
         },
         conversationId.current,
+        'lfm3-1.7b-bf16',
       )
       if (active.current !== controller || controller.signal.aborted) return
       setMessages([...conversation, message])
@@ -99,6 +100,7 @@ export default function ChatPage() {
 
   return (
     <div className="chat-page">
+      <p className="faint">LFM3 1.7B BF16</p>
       <div
         className="chat-history"
         role="log"
@@ -109,7 +111,8 @@ export default function ChatPage() {
           {messages.length === 0 && (
             <p className="muted">
               Send a message to test the chat API. Conversation history stays in
-              this browser tab; the backend determines the response and model.
+              this browser tab. Download LFM3 in Settings before sending a
+              message.
             </p>
           )}
           {messages.map((message, index) => (
@@ -183,6 +186,8 @@ export default function ChatPage() {
                 setError(null)
                 setRetryMessages(null)
                 setNotice('')
+                conversationId.current = null
+                activeConversation.current = []
               }}
             >
               New chat
@@ -207,8 +212,8 @@ export default function ChatPage() {
           </div>
           <p id="chat-input-help" className="faint">
             {draft.length} characters · Enter to send, Shift+Enter for a new
-            line. The loaded model’s configured token context determines
-            conversation capacity.
+            line. The selected model’s token context determines conversation
+            capacity.
           </p>
         </form>
       </div>

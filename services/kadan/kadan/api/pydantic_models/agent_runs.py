@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from .resources import AgentKey
 
@@ -12,6 +12,14 @@ from .resources import AgentKey
 class RunMessage(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: str = Field(max_length=1000000)
+
+
+class ToolCommand(BaseModel):
+    """One tool call, persisted in the run transcript before it executes."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    tool: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_]+$")
+    arguments: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class AgentRunState(BaseModel):
@@ -51,11 +59,20 @@ class AgentRun(AgentRunState):
     created_at: datetime
     updated_at: datetime
 
+    @property
+    def initial_command(self) -> RunMessage | None:
+        if self.transcript and self.transcript[0].role == "assistant":
+            return self.transcript[0]
+        return None
+
 
 class ImageJobState(BaseModel):
     status: Literal[
         "queued", "running", "completed", "failed", "cancelling", "cancelled"
     ] = "queued"
+    upload_status: Literal["not_started", "pending", "completed", "failed"] = (
+        "not_started"
+    )
     owner_id: UUID | None = None
     lease_expires_at: datetime | None = None
     asset_id: UUID | None = None
@@ -75,6 +92,14 @@ class ImageJobState(BaseModel):
             raise ValueError("Lease timestamps require a timezone")
         if (self.status == "completed") != (self.asset_id is not None):
             raise ValueError("Only completed image jobs require an image asset")
+        if self.upload_status == "pending" and self.status in {
+            "completed",
+            "failed",
+            "cancelled",
+        }:
+            raise ValueError("An unresolved upload must remain recoverable")
+        if self.status == "completed" and self.upload_status == "failed":
+            raise ValueError("A failed upload cannot complete an image job")
         return self
 
 

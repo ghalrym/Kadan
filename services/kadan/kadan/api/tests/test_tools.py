@@ -1,16 +1,22 @@
 """The agent's tools, called against a recording sandbox client, never a computer."""
 
 import asyncio
+from unittest.mock import Mock
 
 import pytest
 from pydantic import ValidationError
 
+from kadan.runner.agent_inference import ToolCommand
+from kadan.runner.agent_runs import validate
 from kadan.runner.tools import (
     ALL_TOOLS,
     COMPUTER_TOOLS,
     CONVERSATION_TOOLS,
     TOOLS_BY_NAME,
+    VISION_TOOLS,
 )
+from kadan.runner.tools.base import body
+from kadan.runner.tools.bash import bash_exec
 from kadan.runner.tools.browser import (
     browser_click,
     browser_close_tab,
@@ -67,12 +73,17 @@ def required(schema: dict, root: dict) -> dict:
 
 
 def test_every_tool_has_a_unique_name_and_a_description():
-    assert len(TOOLS_BY_NAME) == len(ALL_TOOLS) == 21
-    assert len(CONVERSATION_TOOLS) == 4
+    assert len(ALL_TOOLS) == 31
+    assert len(TOOLS_BY_NAME) == len(ALL_TOOLS) + len(VISION_TOOLS)
+    assert len(CONVERSATION_TOOLS) == 9
     assert all(tool.description for tool in ALL_TOOLS)
 
 
-@pytest.mark.parametrize("tool", COMPUTER_TOOLS, ids=lambda tool: tool.name)
+@pytest.mark.parametrize(
+    "tool",
+    [tool for tool in COMPUTER_TOOLS if not tool.name.startswith("codex_")],
+    ids=lambda tool: tool.name,
+)
 def test_every_computer_tool_calls_one_route_with_its_declared_method(tool):
     schema = tool.args_schema.model_json_schema()
     method, path, _ = call(tool, **required(schema, schema))
@@ -164,3 +175,78 @@ def test_display_actions_and_mcp_calls_send_their_own_body():
 def test_invalid_arguments_are_rejected_by_the_tool_schema(tool, arguments):
     with pytest.raises(ValidationError):
         tool.args_schema.model_validate(arguments)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"title": "   "},
+        {"markdown": "   "},
+        {"markdown": "x" * 16001},
+        {"expected_version": 0},
+        {"expected_version": True},
+        {"agent_key": "other"},
+    ],
+)
+def test_persona_tool_rejects_invalid_content_and_scope_override(changes):
+    from kadan.runner.tools.persona import UpdatePersonaArguments
+
+    with pytest.raises(ValidationError):
+        UpdatePersonaArguments.model_validate(
+            {
+                "title": "Persona",
+                "markdown": "Be concise.",
+                "expected_version": None,
+                **changes,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "timeout",
+    [float("nan"), float("inf"), float("-inf"), "NaN", "Infinity", "-Infinity"],
+)
+def test_bash_schema_rejects_nonfinite_timeouts(timeout):
+    with pytest.raises(ValidationError):
+        bash_exec.args_schema.model_validate({"command": "inert", "timeout": timeout})
+
+
+@pytest.mark.parametrize(
+    "timeout",
+    [float("nan"), float("inf"), float("-inf"), "NaN", "Infinity", "-Infinity"],
+)
+def test_bash_validation_returns_nonfinite_timeout_correction_feedback(timeout):
+    # Isolate typed tool validation from ToolCommand's JSON boundary.
+    command = Mock(
+        spec=ToolCommand,
+        tool="bash_exec",
+        arguments={"command": "inert", "timeout": timeout},
+    )
+    rejection = validate(command, [bash_exec])
+    assert rejection is not None
+    assert rejection.tool == "bash_exec"
+    assert rejection.problems[0].field.startswith("timeout")
+    assert "finite_number" in {problem.code for problem in rejection.problems}
+    assert "inert" not in rejection.model_dump_json()
+
+
+@pytest.mark.parametrize("timeout", [-1.5, 0, 2.5, "-1.5", "0", "2.5", None])
+def test_bash_finite_timeouts_and_nan_command_text_remain_valid(timeout):
+    command = ToolCommand(
+        tool="bash_exec", arguments={"command": "NaN", "timeout": timeout}
+    )
+    assert validate(command, [bash_exec]) is None
+    args = bash_exec.args_schema.model_validate(command.arguments)
+    assert args.command == "NaN"
+    assert args.timeout == (None if timeout is None else float(timeout))
+    assert "timeout" in args.model_fields_set
+    assert ("timeout" in body(args)) is (timeout is not None)
+
+
+def test_bash_omitted_timeout_retains_none_and_is_left_out_of_body():
+    command = ToolCommand(tool="bash_exec", arguments={"command": "NaN"})
+    assert validate(command, [bash_exec]) is None
+    args = bash_exec.args_schema.model_validate(command.arguments)
+    assert args.timeout is None
+    assert "timeout" not in args.model_fields_set
+    assert "timeout" not in body(args)

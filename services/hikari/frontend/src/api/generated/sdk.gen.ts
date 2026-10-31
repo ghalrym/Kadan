@@ -18,12 +18,12 @@ import type {
   CancelVideoData,
   CancelVideoErrors,
   CancelVideoResponses,
-  ConfigureContextV1ModelsModelIdContextPutData,
-  ConfigureContextV1ModelsModelIdContextPutErrors,
-  ConfigureContextV1ModelsModelIdContextPutResponses,
   CreateCompletionData,
   CreateCompletionErrors,
   CreateCompletionResponses,
+  DescribeScreenshotData,
+  DescribeScreenshotErrors,
+  DescribeScreenshotResponses,
   DownloadModelV1ModelsModelIdDownloadPostData,
   DownloadModelV1ModelsModelIdDownloadPostErrors,
   DownloadModelV1ModelsModelIdDownloadPostResponses,
@@ -60,8 +60,6 @@ import type {
   GetVideoData,
   GetVideoErrors,
   GetVideoResponses,
-  GetWhisperModelsData,
-  GetWhisperModelsResponses,
   HealthData,
   HealthResponses,
   ListImagesData,
@@ -79,12 +77,6 @@ import type {
   ListSpeechResponses,
   ListVideosData,
   ListVideosResponses,
-  LoadSelectedModelData,
-  LoadSelectedModelErrors,
-  LoadSelectedModelResponses,
-  SelectWhisperModelData,
-  SelectWhisperModelErrors,
-  SelectWhisperModelResponses,
   TranscribeAudioData,
   TranscribeAudioErrors,
   TranscribeAudioResponses,
@@ -137,31 +129,6 @@ export const getModelLifecycleStatus = <ThrowOnError extends boolean = false>(
     unknown,
     ThrowOnError
   >({ url: '/model-lifecycle', ...options })
-
-/**
- * Load Selected Model
- *
- * Prepare and load through the same FIFO as inference, retaining cancellation ownership.
- */
-export const loadSelectedModel = <ThrowOnError extends boolean = false>(
-  options?: Options<LoadSelectedModelData, ThrowOnError>,
-): RequestResult<
-  LoadSelectedModelResponses,
-  LoadSelectedModelErrors,
-  ThrowOnError
-> =>
-  (options?.client ?? client).post<
-    LoadSelectedModelResponses,
-    LoadSelectedModelErrors,
-    ThrowOnError
-  >({
-    url: '/model-lifecycle/load',
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options?.headers,
-    },
-  })
 
 /**
  * Unload Selected Model
@@ -243,43 +210,6 @@ export const transcribeAudio = <ThrowOnError extends boolean = false>(
     ThrowOnError
   >({
     url: '/v1/audio/transcriptions',
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  })
-
-/**
- * Get Models
- *
- * List all unique official checkpoints and the persisted selection.
- */
-export const getWhisperModels = <ThrowOnError extends boolean = false>(
-  options?: Options<GetWhisperModelsData, ThrowOnError>,
-): RequestResult<GetWhisperModelsResponses, unknown, ThrowOnError> =>
-  (options?.client ?? client).get<
-    GetWhisperModelsResponses,
-    unknown,
-    ThrowOnError
-  >({ url: '/v1/audio/transcriptions/models', ...options })
-
-/**
- * Select Model
- */
-export const selectWhisperModel = <ThrowOnError extends boolean = false>(
-  options: Options<SelectWhisperModelData, ThrowOnError>,
-): RequestResult<
-  SelectWhisperModelResponses,
-  SelectWhisperModelErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).put<
-    SelectWhisperModelResponses,
-    SelectWhisperModelErrors,
-    ThrowOnError
-  >({
-    url: '/v1/audio/transcriptions/models',
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -469,31 +399,6 @@ export const listModelsV1ModelsGet = <ThrowOnError extends boolean = false>(
   >({ url: '/v1/models', ...options })
 
 /**
- * Configure Context
- */
-export const configureContextV1ModelsModelIdContextPut = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<ConfigureContextV1ModelsModelIdContextPutData, ThrowOnError>,
-): RequestResult<
-  ConfigureContextV1ModelsModelIdContextPutResponses,
-  ConfigureContextV1ModelsModelIdContextPutErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).put<
-    ConfigureContextV1ModelsModelIdContextPutResponses,
-    ConfigureContextV1ModelsModelIdContextPutErrors,
-    ThrowOnError
-  >({
-    url: '/v1/models/{model_id}/context',
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  })
-
-/**
  * Cancel Download
  */
 export const cancelDownloadV1ModelsModelIdDownloadDelete = <
@@ -578,11 +483,6 @@ export const getRequest = <ThrowOnError extends boolean = false>(
 
 /**
  * Get Settings
- *
- * Read the shared model store, including each tier's download progress.
- *
- * Raise HTTP 503 if the worker status is unavailable; this read does not load
- * a model or configure another modality.
  */
 export const getSettings = <ThrowOnError extends boolean = false>(
   options?: Options<GetSettingsData, ThrowOnError>,
@@ -594,8 +494,6 @@ export const getSettings = <ThrowOnError extends boolean = false>(
 
 /**
  * Update Settings
- *
- * Persist the hardware tier and queue downloads of its checkpoints, and transcription formatting. The tier selects the language, image and video models and unloads a resident language model of another tier after earlier chats finish.
  */
 export const updateSettings = <ThrowOnError extends boolean = false>(
   options: Options<UpdateSettingsData, ThrowOnError>,
@@ -688,3 +586,26 @@ export const getVideoContent = <ThrowOnError extends boolean = false>(
     GetVideoContentErrors,
     ThrowOnError
   >({ url: '/v1/videos/{video_id}/content', ...options })
+
+/**
+ * Describe Screenshot
+ */
+export const describeScreenshot = <ThrowOnError extends boolean = false>(
+  options: Options<DescribeScreenshotData, ThrowOnError>,
+): RequestResult<
+  DescribeScreenshotResponses,
+  DescribeScreenshotErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    DescribeScreenshotResponses,
+    DescribeScreenshotErrors,
+    ThrowOnError
+  >({
+    url: '/v1/vision/describe',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })

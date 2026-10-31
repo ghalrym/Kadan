@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
@@ -24,6 +25,7 @@ from langgraph.errors import NodeCancelledError
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ValidationError
 
+from ..api.coding_client import CodingClient
 from ..api.config import ServiceError
 from ..api.pydantic_models.agent_runs import (
     AgentRun,
@@ -31,7 +33,13 @@ from ..api.pydantic_models.agent_runs import (
     ImageJob,
     RunMessage,
 )
-from ..api.pydantic_models.resources import Message, ResourceKind
+from ..api.pydantic_models.coding import (
+    CodingContinuation,
+    CodingOutcome,
+    CodingStart,
+    CodingTask,
+)
+from ..api.pydantic_models.resources import Message, Resource, ResourceKind
 from ..api.run_client import RunClient
 from ..api.services import parse_resource
 from .agent_inference import (
@@ -40,10 +48,30 @@ from .agent_inference import (
     parse_command,
     tool_characters,
 )
+from .conversation_history import (
+    ReadHistoryArguments,
+    SearchHistoryArguments,
+    history_page,
+)
 from .memories import AgentMemories
-from .tools import ALL_TOOLS, CONVERSATION_TOOLS, MEMORY_TOOLS, TOOLS_BY_NAME
+from .tools import (
+    ALL_TOOLS,
+    CODING_TOOLS,
+    CONVERSATION_TOOLS,
+    MEMORY_TOOLS,
+    PERSONA_TOOLS,
+    TOOLS_BY_NAME,
+    VISION_TOOLS,
+)
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
-from .tools.workspace import CreateWorkspaceDocumentArguments
+from .tools.persona import UpdatePersonaArguments
+from .tools.workspace import (
+    CreateWorkspaceDocumentArguments,
+    OpenWorkspaceFileArguments,
+    ReadWorkspaceFileArguments,
+    SaveWorkspaceFileArguments,
+)
+from .workspace_files import WorkspaceFiles
 
 if TYPE_CHECKING:
     from ..api.services import LocalServices
@@ -51,6 +79,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 60
 MAX_COMMANDS = 24
+MAX_ARGUMENT_CORRECTIONS = 2
+ARGUMENT_REJECTION = "Rejected tool arguments: "
 # Transcript budget in characters when Hikari does not report a context window.
 MAX_CONTEXT = 48000
 # Tool results are JSON, which tokenizes densely; three characters per token
@@ -58,6 +88,8 @@ MAX_CONTEXT = 48000
 CHARACTERS_PER_TOKEN = 3
 RESERVED_TOKENS = 1024
 TOOL_RESULT = "Tool result: "
+CODING_POLL_SECONDS = 2
+CODING_RECOVERY_SECONDS = 120
 
 
 def context_characters(context_limit: int | None) -> int:
@@ -103,18 +135,91 @@ def transcript_messages(transcript: list[RunMessage]) -> list[BaseMessage]:
     return messages
 
 
-def validate(command: ToolCommand, tools: list[StructuredTool]) -> None:
-    """Reject unknown tools and invalid arguments before the call is saved."""
+class ArgumentProblem(BaseModel):
+    field: str
+    code: str
+
+
+class ArgumentRejection(BaseModel):
+    tool: str
+    problems: list[ArgumentProblem]
+    error: str = (
+        "No tool was executed. Correct the arguments using the bound tool schema; "
+        "do not repeat the unchanged call."
+    )
+
+
+def validate(
+    command: ToolCommand, tools: list[StructuredTool]
+) -> ArgumentRejection | None:
+    """Reject before execution, retaining field diagnostics without input values."""
     if command.tool not in {tool.name for tool in tools}:
         raise ServiceError(f"unknown tool {command.tool!r}", 502, "invalid_command")
     try:
         TOOLS_BY_NAME[command.tool].args_schema.model_validate(command.arguments)
     except ValidationError as error:
-        raise ServiceError(
-            f"invalid {command.tool} arguments: {error.errors()[0]['msg']}",
-            502,
-            "invalid_command",
-        ) from error
+        return ArgumentRejection(
+            tool=command.tool,
+            problems=[
+                ArgumentProblem(
+                    field=".".join(
+                        str(part)
+                        if re.fullmatch(
+                            r"[A-Za-z_][A-Za-z0-9_]{0,63}|[0-9]{1,6}", str(part)
+                        )
+                        else "[redacted]"
+                        for part in problem["loc"][:4]
+                    )
+                    or "arguments",
+                    code=problem["type"],
+                )
+                for problem in error.errors(
+                    include_url=False, include_input=False, include_context=False
+                )[:5]
+            ],
+        )
+    return None
+
+
+def coding_continuation_command(
+    run: AgentRun, start: ToolCommand, transcript: list[RunMessage]
+) -> ToolCommand:
+    task = CodingContinuation.model_validate(start.arguments)
+    if not transcript:
+        return start
+    if (
+        len(transcript) != 2
+        or transcript[0].role != "assistant"
+        or parse_command(transcript[0].content) != start
+        or transcript[1].role != "user"
+        or not transcript[1].content.startswith(TOOL_RESULT)
+    ):
+        raise ServiceError("The saved coding continuation has an invalid result.", 502)
+    result = CodingOutcome.model_validate_json(
+        transcript[1].content.removeprefix(TOOL_RESULT)
+    )
+    if result.job_id != uuid5(run.id, "command:1"):
+        raise ServiceError("The coding result belongs to another action.", 502)
+    labels = {
+        "completed": "Codex completed the continuation.",
+        "failed": "Codex could not finish the continuation.",
+        "cancelled": "Codex continuation was cancelled; file changes remain.",
+        "timed_out": "Codex continuation timed out; inspect partial changes.",
+        "interrupted": "Codex continuation was interrupted; inspect partial changes.",
+        "cleanup_required": "Codex cleanup needs attention. Further coding is blocked.",
+        "unconfirmed": "Codex continuation could not be confirmed. Do not resubmit automatically.",
+        "rejected": "Codex continuation could not start.",
+    }
+    content = labels[result.status]
+    if result.error or result.message:
+        content += "\n\n" + (result.error or result.message)
+    content += f"\n\nJob: `{result.job_id}`"
+    if result.session_id:
+        content += f"\nCodex session: `{result.session_id}`"
+    content += f"\nContinued job: `{task.resume_job_id}`"
+    return ToolCommand(
+        tool="send_message", arguments={"content": content, "end_run": True}
+    )
 
 
 class RunConversation:
@@ -127,6 +232,67 @@ class RunConversation:
         self.end_run = False
         self.finished = False
         self.replayed = replayed
+
+    async def delegate_coding(self, args: CodingTask) -> dict:
+        if not self.runs.services.sandbox.configured:
+            return {
+                "job_id": str(self.action_id),
+                "error": "No computer is configured for this agent.",
+            }
+        client = CodingClient(self.runs.services.sandbox)
+        request = CodingStart(request_id=self.action_id, **args.model_dump())
+        # The saved action stays pending in Tsuchi throughout this wait. Recovery
+        # uses the same idempotent submission, never a new continuation run.
+        deadline = monotonic() + args.timeout_seconds + CODING_RECOVERY_SECONDS
+        job = None
+        while True:
+            await self.runs.owned(self.run)
+            if monotonic() >= deadline:
+                return {
+                    "job_id": str(self.action_id),
+                    "status": "unconfirmed",
+                    "error": "Coding status could not be confirmed before the recovery deadline. "
+                    "The job may have changed files. Do not resubmit it automatically.",
+                }
+            try:
+                job = (
+                    await client.start(request)
+                    if job is None
+                    else await client.job(self.action_id)
+                )
+            except ServiceError as error:
+                if error.code != "coding_unconfirmed":
+                    return {"job_id": str(self.action_id), "error": str(error)}
+                # Retrying this ID can only recover its existing submission.
+                # Transport reconnects require no model decision or new action.
+            await self.runs.owned(self.run)
+            if job is not None:
+                try:
+                    created = datetime.fromisoformat(job.created_at)
+                except ValueError as error:
+                    raise ServiceError(
+                        "The computer returned an invalid coding timestamp.", 502
+                    ) from error
+                if created.utcoffset() is None:
+                    raise ServiceError(
+                        "The computer returned an invalid coding timestamp.", 502
+                    )
+                remaining = (
+                    (created - datetime.now(UTC)).total_seconds()
+                    + args.timeout_seconds
+                    + CODING_RECOVERY_SECONDS
+                )
+                deadline = min(deadline, monotonic() + max(0, remaining))
+                if job.status not in {"starting", "running", "stopping"}:
+                    return {
+                        "job_id": str(job.id),
+                        "status": job.status,
+                        "session_id": job.session_id,
+                        "message": job.message,
+                    }
+            await asyncio.sleep(
+                min(CODING_POLL_SECONDS, max(0, deadline - monotonic()))
+            )
 
     async def send_message(self, args: SendMessageArguments) -> dict:
         message = Message(id=self.action_id, role="assistant", content=args.content)
@@ -173,8 +339,113 @@ class RunConversation:
             "delivered": image.delivered_message_id is not None,
         }
 
+    async def conversation_history(
+        self, args: ReadHistoryArguments | SearchHistoryArguments
+    ) -> dict:
+        try:
+            async with self.runs.lock:
+                current = await self.runs.owned(self.run)
+                if (current.agent_key, current.conversation_id) != (
+                    self.run.agent_key,
+                    self.run.conversation_id,
+                ):
+                    raise ValueError("Run conversation scope changed.")
+                resource = await self.runs.services.resource(
+                    self.run.agent_key, self.run.conversation_id
+                )
+                if (
+                    resource.id != self.run.conversation_id
+                    or resource.agent_key != self.run.agent_key
+                    or resource.kind != ResourceKind.CONVERSATION
+                    or resource.deleted_at is not None
+                ):
+                    raise ValueError("The run conversation is no longer available.")
+                return history_page(resource, args)
+        except (ServiceError, ValueError) as error:
+            return {"error": str(error), "history_available": False}
+
     async def finish(self) -> None:
         self.finished = True
+
+    async def read_persona(self) -> dict:
+        persona = await self.runs.services.agent_persona(self.run.agent_key)
+        return {
+            "persona": persona.model_dump(
+                mode="json", include={"id", "title", "markdown", "version"}
+            )
+            if persona
+            else None
+        }
+
+    async def update_persona(self, args: UpdatePersonaArguments) -> dict:
+        # Stop or loss of the lease must fence a write that has not started yet.
+        await self.runs.owned(self.run)
+        value = await self.runs.services.json_request(
+            "Tsuchi",
+            "PUT",
+            f"/api/agents/{self.run.agent_key}/persona",
+            json=args.model_dump(mode="json"),
+        )
+        persona = Resource.model_validate(value)
+        if (
+            persona.agent_key != self.run.agent_key
+            or persona.kind != ResourceKind.PERSONA
+            or persona.deleted_at
+        ):
+            raise ServiceError("Tsuchi returned an invalid saved persona.", 502)
+        return {
+            "persona": persona.model_dump(
+                mode="json", include={"id", "title", "markdown", "version"}
+            )
+        }
+
+    async def save_workspace_file(self, args: SaveWorkspaceFileArguments) -> dict:
+        result = {"tool": "save_workspace_file", "file_id": str(self.action_id)}
+        files = WorkspaceFiles(self.runs.services, self.run.agent_key)
+        try:
+            saved = await files.save(
+                self.action_id,
+                args.path,
+                args.title,
+                lambda: self.runs.owned(self.run),
+                replayed=self.replayed,
+            )
+        except ServiceError as error:
+            return {**result, "error": str(error)}
+        except OSError as error:
+            return {
+                **result,
+                "error": "The file transfer could not be confirmed. Check this file_id "
+                "with read_workspace_file before retrying. " + str(error),
+            }
+        return {**result, **saved}
+
+    async def open_workspace_file(self, args: OpenWorkspaceFileArguments) -> dict:
+        result = {"tool": "open_workspace_file", "file_id": str(args.file_id)}
+        try:
+            opened = await WorkspaceFiles(self.runs.services, self.run.agent_key).open(
+                args.file_id,
+                self.action_id,
+                lambda: self.runs.owned(self.run),
+                replayed=self.replayed,
+            )
+        except (ServiceError, OSError) as error:
+            return {**result, "error": str(error)}
+        return {**result, **opened}
+
+    async def read_workspace_file(self, args: ReadWorkspaceFileArguments) -> dict:
+        await self.runs.owned(self.run)
+        try:
+            saved = await WorkspaceFiles(self.runs.services, self.run.agent_key).read(
+                args.file_id
+            )
+        except ServiceError as error:
+            return {
+                "tool": "read_workspace_file",
+                "file_id": str(args.file_id),
+                "error": str(error),
+            }
+        return {"tool": "read_workspace_file", **saved}
 
     async def create_workspace_document(
         self, args: CreateWorkspaceDocumentArguments
@@ -233,7 +504,7 @@ class AgentRuns(RunClient):
         graph.add_node("tool", self.invoke_tool)
         graph.add_edge(START, "prepare")
         graph.add_edge("prepare", "model")
-        graph.add_edge("model", "tool")
+        graph.add_conditional_edges("model", self.after_model)
         graph.add_conditional_edges("tool", self.after_tool)
         # Tsuchi owns checkpoints and side-effect receipts. A second persistence
         # store here would compete with its version/lease fencing.
@@ -256,7 +527,9 @@ class AgentRuns(RunClient):
     async def owned(self, run: AgentRun) -> AgentRun:
         current = await self.get(run.agent_key, run.id)
         if (
-            current.status != "running"
+            (current.id, current.agent_key, current.conversation_id)
+            != (run.id, run.agent_key, run.conversation_id)
+            or current.status != "running"
             or current.owner_id != self.owner
             or current.lease_expires_at is None
             or current.lease_expires_at <= datetime.now(UTC)
@@ -325,13 +598,23 @@ class AgentRuns(RunClient):
     async def context(
         self, run: AgentRun, limit: int | None = None
     ) -> list[RunMessage]:
-        instructions = await asyncio.to_thread(
-            Path(self.services.settings.agent_instruction_file).read_text
-        )
+        instruction_file = Path(self.services.settings.agent_instruction_file)
+        try:
+            instructions = await asyncio.to_thread(instruction_file.read_text)
+        except UnicodeError as error:
+            raise ServiceError(
+                f"The shared agent instructions file {instruction_file} could not "
+                "be decoded. Check its text encoding."
+            ) from error
         conversation = await self.services.resource(run.agent_key, run.conversation_id)
         if conversation.kind != ResourceKind.CONVERSATION or conversation.deleted_at:
             raise ServiceError("The conversation is no longer available.", 409)
-        if run.persona_id:
+        owned_persona = await self.services.agent_persona(run.agent_key)
+        if owned_persona:
+            instructions += "\nYour saved persona:\n" + owned_persona.markdown
+        if run.persona_id and (
+            owned_persona is None or run.persona_id != owned_persona.id
+        ):
             persona = await self.services.resource(run.agent_key, run.persona_id)
             if persona.kind != ResourceKind.PERSONA or persona.deleted_at:
                 raise ServiceError("The selected persona is no longer available.", 409)
@@ -428,6 +711,9 @@ class AgentRuns(RunClient):
     async def after_tool(self, state: RunState) -> str:
         return END if state.run.status == "completed" else "model"
 
+    async def after_model(self, state: RunState) -> str:
+        return "tool" if state.command is not None else "model"
+
     async def prepare(self, state: RunState) -> dict:
         run = state.run
         if not run.transcript:
@@ -440,15 +726,48 @@ class AgentRuns(RunClient):
     async def infer_command(self, state: RunState) -> dict:
         run = state.run
         run = await self.owned(run)
-        replayed = run.transcript[-1].role == "assistant"
-        if replayed:
+        replayed = bool(run.transcript) and run.transcript[-1].role == "assistant"
+        initial = (
+            parse_command(run.initial_command.content) if run.initial_command else None
+        )
+        if (
+            initial is not None
+            and initial.tool == "codex_start"
+            and initial.arguments.get("resume_job_id") is not None
+        ):
+            # An explicit UI continuation is durable work, not a model decision.
+            prefix = run.transcript[:-1] if replayed else run.transcript
+            command = coding_continuation_command(run, initial, prefix)
+            if replayed and parse_command(run.transcript[-1].content) != command:
+                raise ServiceError(
+                    "The saved coding continuation command changed.", 502
+                )
+        elif replayed:
             command = parse_command(run.transcript[-1].content)
         else:
+            rejections = [
+                item.content.removeprefix(ARGUMENT_REJECTION)
+                for item in run.transcript
+                if item.role == "user" and item.content.startswith(ARGUMENT_REJECTION)
+            ]
+            if len(rejections) > MAX_ARGUMENT_CORRECTIONS:
+                rejection = ArgumentRejection.model_validate_json(rejections[-1])
+                detail = "; ".join(
+                    f"{problem.field}: {problem.code}" for problem in rejection.problems
+                )
+                raise ServiceError(
+                    f"The agent exhausted its {MAX_ARGUMENT_CORRECTIONS} tool-argument "
+                    f"correction attempts. Invalid {rejection.tool} arguments: {detail}. "
+                    "Check the tool schema before trying again.",
+                    502,
+                    "invalid_command",
+                )
             if (
                 sum(
                     item.role == "assistant" and item.content.startswith('{"tool":')
                     for item in run.transcript
                 )
+                + len(rejections)
                 >= MAX_COMMANDS
             ):
                 raise ServiceError("The agent reached its 24-command run limit.", 422)
@@ -472,7 +791,7 @@ class AgentRuns(RunClient):
                     f"kadan:{run.agent_key}:{run.conversation_id}",
                     tools,
                 )
-                validate(command, tools)
+                rejection = validate(command, tools)
             finally:
                 logger.info(
                     "Agent inference ended run=%s at=%s elapsed_seconds=%.3f",
@@ -480,6 +799,21 @@ class AgentRuns(RunClient):
                     datetime.now(UTC).isoformat(),
                     monotonic() - started,
                 )
+            if rejection is not None:
+                # A rejection is feedback, never a pending assistant action. Save
+                # it atomically so restart cannot replay it or reset the budget.
+                run = await self.update(
+                    run,
+                    transcript=[
+                        *run.transcript,
+                        RunMessage(
+                            role="user",
+                            content=ARGUMENT_REJECTION + rejection.model_dump_json(),
+                        ),
+                    ],
+                )
+                return {"run": run, "command": None, "replayed": False}
+        if not replayed:
             # Persist the action before side effects. Recovery reuses its derived ID.
             run = await self.update(
                 run,
@@ -505,11 +839,9 @@ class AgentRuns(RunClient):
 
     def bound_tools(self) -> list[StructuredTool]:
         """All tools; the computer's only when one is configured."""
-        return (
-            ALL_TOOLS
-            if self.services.sandbox.configured
-            else [*CONVERSATION_TOOLS, *MEMORY_TOOLS]
-        )
+        if not self.services.sandbox.configured:
+            return [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]
+        return [*ALL_TOOLS, *VISION_TOOLS]
 
     @traced("kadan.agent_runs.invoke_tool")
     async def invoke_tool(self, state: RunState) -> dict:
@@ -520,9 +852,24 @@ class AgentRuns(RunClient):
         conversation = RunConversation(self, run, state.replayed)
         if tool is None:
             result = {"tool": command.tool, "error": "This tool no longer exists."}
+        elif tool in PERSONA_TOOLS:
+            if state.replayed and command.tool == "update_persona":
+                result = {
+                    "error": "The runner restarted before this persona save reported "
+                    "a result. It may or may not have saved; read_persona before retrying."
+                }
+            else:
+                try:
+                    result = await tool.ainvoke(
+                        command.arguments,
+                        config={"configurable": {"conversation": conversation}},
+                    )
+                except (ServiceError, ValidationError) as error:
+                    result = {"error": str(error)}
+
         elif tool in MEMORY_TOOLS:
             result = await self.use_memory(tool, command, run, state.replayed)
-        elif tool in CONVERSATION_TOOLS:
+        elif tool in CONVERSATION_TOOLS or tool in CODING_TOOLS:
             result = await tool.ainvoke(
                 command.arguments,
                 config={"configurable": {"conversation": conversation}},

@@ -49,7 +49,7 @@ export default function TextToSpeechPage() {
     const controller = new AbortController()
     void fetchSpeechHistory(controller.signal)
       .then((items) => {
-        if (!controller.signal.aborted) setAudio(items)
+        if (!controller.signal.aborted) setAudio((current) => [...current, ...items])
       })
       .catch((failure) => {
         if (!controller.signal.aborted)

@@ -4,6 +4,8 @@ import json
 import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.utils.function_calling import convert_to_openai_tool
+from pydantic import ValidationError
 
 from kadan.api.config import ServiceError
 from kadan.runner.agent_inference import (
@@ -18,9 +20,10 @@ from kadan.runner.agent_inference import (
     render_tool_call,
 )
 from kadan.runner.tools import CONVERSATION_TOOLS
+from kadan.runner.tools.file import file_grep_files, file_read_file
 from kadan.runner.tools.shell import shell_exec_command
 
-TOOLS = [*CONVERSATION_TOOLS, shell_exec_command]
+TOOLS = [*CONVERSATION_TOOLS, shell_exec_command, file_read_file]
 
 
 def chunk(content="", finish=None):
@@ -41,13 +44,21 @@ def call(name, **arguments):
     return render_tool_call(name, arguments)
 
 
-def invoke(stream, status=200, media_type="text/event-stream", seen=None):
+def invoke(
+    stream,
+    status=200,
+    media_type="text/event-stream",
+    seen=None,
+    model_id="selected-model",
+    bound_tools=TOOLS,
+    history=None,
+):
     async def run():
         def respond(request):
             body = json.loads(request.content)
             if seen is not None:
                 seen.append(body)
-            assert body["model"] == "selected-model"
+            assert body["model"] == model_id
             assert body["stream"] is True
             assert body["conversation_id"] == "kadan:test:conversation"
             assert request.extensions["timeout"]["read"] is None
@@ -57,13 +68,78 @@ def invoke(stream, status=200, media_type="text/event-stream", seen=None):
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             return await AgentInference(client, "http://hikari").call(
-                [SystemMessage(content="Instructions"), HumanMessage(content="Hello")],
-                "selected-model",
+                history
+                if history is not None
+                else [
+                    SystemMessage(content="Instructions"),
+                    HumanMessage(content="Hello"),
+                ],
+                model_id,
                 "kadan:test:conversation",
-                TOOLS,
+                bound_tools,
             )
 
     return asyncio.run(run())
+
+
+def test_lfm3_plain_answer_after_tool_uses_existing_reply_action():
+    history = [
+        SystemMessage(content="Instructions"),
+        HumanMessage(content="What is on the screen?"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "computer_look",
+                    "args": {"question": "Describe the screen"},
+                    "id": "call_0",
+                }
+            ],
+        ),
+        ToolMessage(content="Google search page", tool_call_id="call_0"),
+    ]
+    answer = 'One clearly visible word is **"Google"**.'
+    assert invoke(
+        completed(answer), model_id="lfm3-1.7b-bf16", history=history
+    ) == ToolCommand(
+        tool="send_message",
+        arguments={"content": answer, "end_run": True},
+    )
+
+
+def test_native_plain_answer_still_finishes_without_delivery():
+    assert invoke(completed("A plain answer")) == ToolCommand(tool="finish")
+
+
+@pytest.mark.parametrize("answer", ["", "   ", call("finish")])
+def test_lfm3_empty_answer_and_explicit_finish_remain_silent(answer):
+    assert invoke(completed(answer), model_id="lfm3-1.7b-bf16") == ToolCommand(
+        tool="finish"
+    )
+
+
+def test_lfm3_plain_answer_cannot_create_unbound_reply_action():
+    assert invoke(
+        completed("A plain answer"),
+        model_id="lfm3-1.7b-bf16",
+        bound_tools=[shell_exec_command],
+    ) == ToolCommand(tool="finish")
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "<tool_call>unfinished",
+        "<function=send_message>unfinished",
+        "<parameter=content>Hello",
+        "Answer </tool_call>",
+        "<FUNCTION send_message>",
+    ],
+)
+def test_lfm3_malformed_tool_output_is_not_published_as_plain_answer(answer):
+    with pytest.raises(ServiceError) as error:
+        invoke(completed(answer), model_id="lfm3-1.7b-bf16")
+    assert error.value.code == "invalid_command"
 
 
 def test_every_bound_tool_is_rendered_in_the_checkpoint_tool_format():
@@ -80,6 +156,55 @@ def test_every_bound_tool_is_rendered_in_the_checkpoint_tool_format():
     ]
     assert rendered == [tool.name for tool in TOOLS]
     assert seen[0]["messages"][1] == {"role": "user", "content": "Hello"}
+
+
+def test_lfm3_sends_structured_tools_and_true_tool_result_roles():
+    seen = []
+
+    async def run():
+        def respond(request):
+            seen.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                text=completed(call("finish")),
+                headers={"content-type": "text/event-stream"},
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            return await AgentInference(client, "http://hikari").call(
+                [
+                    SystemMessage(content="Owned instructions"),
+                    HumanMessage(content="Read it"),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "file_read_file",
+                                "args": {"file": "/tmp/a"},
+                                "id": "call_0",
+                            }
+                        ],
+                    ),
+                    ToolMessage(content="Result", tool_call_id="call_0"),
+                ],
+                "lfm3-1.7b-bf16",
+                "test-conversation",
+                TOOLS,
+            )
+
+    assert asyncio.run(run()) == ToolCommand(tool="finish")
+    body = seen[0]
+    assert body["messages"][0] == {"role": "system", "content": "Owned instructions"}
+    assert body["messages"][-1] == {
+        "role": "tool",
+        "content": "Result",
+        "tool_call_id": "call_0",
+    }
+    assert body["messages"][-2]["tool_calls"][0]["function"]["arguments"] == {
+        "file": "/tmp/a"
+    }
+    assert body["tools"] == [convert_to_openai_tool(tool) for tool in TOOLS]
+    assert not body["messages"][0]["content"].startswith(TOOLS_HEADER)
 
 
 @pytest.mark.parametrize(
@@ -151,6 +276,82 @@ def test_calls_without_the_tool_call_wrapper_are_parsed():
     assert calls[0]["args"] == {"content": "Hello!", "end_run": True}
 
 
+@pytest.mark.parametrize(
+    ("key", "first", "second"),
+    [
+        ("file", "/tmp/first", "/tmp/second"),
+        ("file", "/tmp/first", "/tmp/first"),
+        ("file", "", "/tmp/second"),
+        ("sudo", "false", "true"),
+        ("start_line", "null", "1"),
+    ],
+)
+def test_duplicate_parameters_are_rejected(key, first, second):
+    reply = (
+        "<tool_call>\n<function=file_read_file>\n"
+        f"<parameter={key}>\n{first}\n</parameter>\n"
+        f"<parameter={key}>\n{second}\n</parameter>\n"
+        "</function>\n</tool_call>"
+    )
+    with pytest.raises(ServiceError) as error:
+        parse_tool_calls(reply, [convert_to_openai_tool(file_read_file)])
+    assert str(error.value) == "The agent returned an invalid tool command."
+    assert error.value.status == 502
+    assert error.value.code == "invalid_command"
+
+
+def test_wrapperless_duplicate_parameters_are_rejected():
+    reply = (
+        "<function=file_read_file>\n"
+        "<parameter=file>\n/tmp/first\n</parameter>\n"
+        "<parameter=file>\n/tmp/second\n</parameter>\n"
+        "</function>"
+    )
+    with pytest.raises(ServiceError) as error:
+        parse_tool_calls(reply, [convert_to_openai_tool(file_read_file)])
+    assert error.value.code == "invalid_command"
+
+
+@pytest.mark.parametrize("prefix", ["", call("finish") + "\n"])
+def test_duplicate_parameters_reject_the_response_before_first_call_selection(prefix):
+    reply = (
+        prefix + "<tool_call>\n<function=file_read_file>\n"
+        "<parameter=file>\n/tmp/first\n</parameter>\n"
+        "<parameter=file>\n/tmp/second\n</parameter>\n"
+        "</function>\n</tool_call>"
+    )
+    with pytest.raises(ServiceError) as error:
+        invoke(completed(reply))
+    assert str(error.value) == "The agent returned an invalid tool command."
+    assert error.value.status == 502
+    assert error.value.code == "invalid_command"
+
+
+def test_parameter_names_are_scoped_to_each_call():
+    reply = call("file_read_file", file="/tmp/first") + (
+        "\n<function=file_read_file>\n"
+        "<parameter=file>\n/tmp/second\n</parameter>\n</function>"
+    )
+    text, calls = parse_tool_calls(reply, [convert_to_openai_tool(file_read_file)])
+    assert text == ""
+    assert calls == [
+        {"name": "file_read_file", "args": {"file": "/tmp/first"}, "id": "call_0"},
+        {"name": "file_read_file", "args": {"file": "/tmp/second"}, "id": "call_1"},
+    ]
+    assert invoke(completed(reply)) == ToolCommand(
+        tool="file_read_file", arguments={"file": "/tmp/first"}
+    )
+
+
+def test_structured_parameters_retain_their_json_values():
+    arguments = {"path": "/tmp", "pattern": "example", "include": ["*.py", "*.txt"]}
+    text, calls = parse_tool_calls(
+        call("file_grep_files", **arguments), [convert_to_openai_tool(file_grep_files)]
+    )
+    assert text == ""
+    assert calls[0]["args"] == arguments
+
+
 def test_only_the_first_of_several_calls_is_taken():
     reply = call("finish") + "\n" + call("send_message", content="x", end_run=True)
     assert invoke(completed(reply)) == ToolCommand(tool="finish")
@@ -185,6 +386,49 @@ def test_saved_commands_round_trip_and_accept_older_formats():
     assert error.value.code == "command_too_large"
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("location", ["direct", "object", "array"])
+def test_nonfinite_command_arguments_are_rejected_before_checkpoint(value, location):
+    argument = {"direct": value, "object": {"value": value}, "array": [value]}[location]
+    arguments = {"command": "inert", "timeout": argument}
+    with pytest.raises(ValidationError):
+        ToolCommand(tool="bash_exec", arguments=arguments)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("location", ["direct", "object", "array"])
+def test_saved_nonfinite_command_maps_to_invalid_command(value, location):
+    argument = {"direct": value, "object": {"value": value}, "array": [value]}[location]
+    arguments = {"command": "inert", "timeout": argument}
+    with pytest.raises(ServiceError) as error:
+        parse_command(json.dumps({"tool": "bash_exec", "arguments": arguments}))
+    assert str(error.value) == "The agent returned an invalid tool command."
+    assert error.value.status == 502
+    assert error.value.code == "invalid_command"
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_streamed_command_is_an_invalid_command(value):
+    reply = call("shell_exec_command", command="inert", timeout=value)
+    with pytest.raises(ServiceError) as error:
+        invoke(completed(reply))
+    assert str(error.value) == "The agent returned an invalid tool command."
+    assert error.value.status == 502
+    assert error.value.code == "invalid_command"
+
+
+def test_finite_command_arguments_and_nan_text_survive_checkpoint():
+    arguments = {
+        "command": "NaN",
+        "values": [-1.5, 0, "-1.5", "NaN", None, {"value": 2.5}],
+    }
+    command = ToolCommand(tool="bash_exec", arguments=arguments)
+    assert parse_command(command.model_dump_json()).arguments == arguments
+    assert invoke(completed(call("shell_exec_command", command="NaN"))).arguments == {
+        "command": "NaN"
+    }
+
+
 @pytest.mark.parametrize(
     "ending",
     [
@@ -192,7 +436,6 @@ def test_saved_commands_round_trip_and_accept_older_formats():
         chunk(finish="stop"),
         "data: [DONE]\n\n",
         chunk(finish="stop") + "data: [DONE]",
-        chunk(finish="length") + "data: [DONE]\n\n",
         chunk(finish="tool_calls") + "data: [DONE]\n\n",
         chunk(finish="stop") + chunk("more") + "data: [DONE]\n\n",
         'data: {"choices": []}\n\n',
@@ -204,6 +447,21 @@ def test_incomplete_or_invalid_stream_cannot_execute_even_a_valid_command(ending
     with pytest.raises(ServiceError) as error:
         invoke(chunk(call("finish")) + ending)
     assert error.value.code in {"incomplete_stream", "invalid_stream"}
+
+
+@pytest.mark.parametrize("model_id", ["selected-model", "lfm3-1.7b-bf16"])
+@pytest.mark.parametrize(
+    "reply", [call("finish"), "42", "<tool_call>\n<function=send_message>"]
+)
+def test_output_limit_is_reported_without_returning_a_command(model_id, reply):
+    stream = chunk(reply) + chunk(finish="length") + "data: [DONE]\n\n"
+    with pytest.raises(ServiceError) as error:
+        invoke(stream, model_id=model_id)
+    assert error.value.code == "response_limit"
+    assert error.value.status == 502
+    assert str(error.value) == (
+        "Hikari reached the model's output limit before completing the agent response."
+    )
 
 
 def test_command_size_is_bounded_across_deltas():

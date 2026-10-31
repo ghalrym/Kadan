@@ -1,10 +1,10 @@
 # Inference architecture
 
-Hikari manages model loading and memory allocations across inference workers so users can switch inference types without manually unloading models. The user-visible contract is described in [Inference operations](../../user-expectations/hikari/inference.md).
+Hikari manages model loading and memory allocations across inference workers so users can switch inference types without manually unloading models. The user expectations for [inference operations](../../user-expectations/hikari/inference.md) describe the user-visible contract.
 
 ## Mixture-of-experts language models
 
-Every hardware tier uses a mixture-of-experts (MoE) language checkpoint. Hikari is designed to run checkpoints larger than GPU memory by keeping routed experts across GPU memory (VRAM), system memory (RAM) and disk. The complete checkpoint does not have to fit in VRAM.
+Public conversations use the fixed separate LFM3 worker. The retained native mixture-of-experts (MoE) engine accepts explicit internal checkpoints; it is designed to run checkpoints larger than GPU memory by keeping routed experts across GPU memory (VRAM), system memory (RAM) and disk. The complete checkpoint does not have to fit in VRAM.
 
 Frequently used routed experts should stay in VRAM where capacity permits. Other routed experts can remain in RAM, with disk holding those that do not fit in either memory tier. Placement adapts to expert use within the memory available to the language model. Only routed experts move between these tiers. Non-expert matrices, including shared experts, remain pinned in VRAM while the language model is loaded, so sufficient VRAM for those weights and execution state is still required.
 
@@ -15,6 +15,8 @@ Offloading preserves the selected checkpoint rather than substituting a smaller 
 ## Memory accounting
 
 Workers on the same computer share that computer's memory capacity, including when they run in separate containers. Hikari accounts for RAM and each physical GPU separately. Several GPUs may participate where supported, but their VRAM is not one contiguous allocation; each GPU must satisfy its own placement requirements. Workers on different computers use their respective computers' resources.
+
+Worker registration separates `physical_ram_free`, the current local `ram_free` observation, and the container-only `ram_limit`. Physical free memory initializes the computer's shared capacity. The container ceiling is its cgroup maximum minus the existing host margin, or null for an uncapped container; it does not shrink permanently when other workers hold RAM during registration. Cgroup limits apply to the reporting worker, not every worker sharing its boot ID. Admission and idle growth respect both the shared ledger and the individual ceiling. Older registrations without the physical field conservatively initialize shared capacity from `ram_free`; without a container ceiling field, their reported `ram_free` also remains their conservative worker limit. Later registrations never inflate an existing ledger.
 
 Concurrent requests require enough RAM and VRAM for each worker. Requests wait when their combined requirements exceed available memory. Placement admission must remain independent of the total number of expert slices.
 
@@ -32,7 +34,7 @@ A higher-priority request does not interrupt inference already running. It may w
 
 Hikari first tries to make room by reducing an idle worker's memory allocation before unloading its model entirely. It reclaims memory from lower-priority workers first, and from the least recently used workers within a priority. An idle worker with no queued requests can yield memory even to a lower-priority type. A worker with queued requests yields only to a strictly higher-priority type. Memory becomes available to another worker only after its release is confirmed.
 
-Where possible, Hikari keeps enough room for the selected language tier's minimum requirements so chat can start while another type runs. This reservation is best effort: if preserving it prevents other work from fitting, Hikari can let that work proceed. Chat therefore has no unconditional immediate-start guarantee, and sustained higher-priority demand can delay lower-priority work.
+Where possible, Hikari keeps enough room for the language worker's minimum requirements so chat can start while another type runs. This reservation is best effort: if preserving it prevents other work from fitting, Hikari can let that work proceed. Chat therefore has no unconditional immediate-start guarantee, and sustained higher-priority demand can delay lower-priority work.
 
 For example, an idle chat model holding more memory than it needs can have its allocation reduced to admit an image request. An active video request continues to completion even if chat is waiting for its memory.
 
@@ -47,6 +49,12 @@ The API hub also expires resident models after `HIKARI_MODEL_IDLE_SECONDS` (defa
 Requests must respect their actual input and memory requirements. Hikari must not silently truncate chat history or reduce requested media settings to force a fit. Cancellation must finish cleanup before the released resources are reused.
 
 Concurrent throughput, model quality and physical memory fit require manual validation on the target machine. Scheduling and offloading policies alone do not establish measured latency or guarantee that every combination of inference requests fits.
+
+## Submission and cancellation ownership
+
+Hikari keeps a job's submission scopes open until every in-progress send returns, including an overlapping worker handoff. It registers recipient ownership only after acquiring that connection's write lock. Cancellation while waiting for the lock can therefore retire locally without a worker reply. Once a write begins, caller cancellation preserves its completion and the lock; an error or transport deadline cannot prove that delivery failed. That recipient remains owned until a terminal event or disconnect, even if cancellation sends fail or an unknown cancellation ID produces no reply.
+
+Cancellation records an unsuccessful outcome independently of recipient retirement and stops further fanout or handoff. Earlier worker failures retain their original error. A store operation cannot report success after skipping recipients, and a terminal failure deferred by an open submission cannot restart work on another worker.
 
 ## Reusable conversation state
 

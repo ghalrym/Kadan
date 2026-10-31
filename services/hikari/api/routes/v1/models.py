@@ -1,7 +1,6 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
+from pydantic import BaseModel, ConfigDict, StrictBool
 
-from api.pydantic_models.inference_task import ModelContextTask
 from api.pydantic_models.model_store import CheckpointStatus
 from api.services.inference import inference
 from api.services.inference_errors import InferenceFailure
@@ -17,28 +16,6 @@ class ModelsResponse(BaseModel):
 class DownloadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     license_acknowledged: StrictBool = False
-
-
-class ContextRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    context_limit: StrictInt | None = Field(
-        ge=1,
-        le=2**31 - 1,
-        description="Total context tokens; null uses the checkpoint architecture maximum on load.",
-    )
-
-
-@router.put("/{model_id}/context", response_model=ModelsResponse)
-async def configure_context(model_id: str, body: ContextRequest) -> ModelsResponse:
-    try:
-        await inference.submit(
-            ModelContextTask(model_id=model_id, context_limit=body.context_limit),
-            feature="model_context",
-            operation="configure",
-        )
-        return list_models()
-    except InferenceFailure as exc:
-        raise HTTPException(exc.status_code, str(exc)) from exc
 
 
 @router.get("", response_model=ModelsResponse)

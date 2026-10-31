@@ -6,4 +6,4 @@ Resource search matches stored words and word beginnings in titles, Markdown, ta
 
 Images and attachments have separate library searches covering titles, filenames, tags and source links. They are not included as independent results in the global resource search. Search does not extract PDF text, transcribe recordings, recognize image contents or find related meanings without matching words.
 
-A loading failure must remain distinguishable from no matches. **Refresh data** or submitting another search checks saved content again. Unsaved drafts are not searchable. Opening a result does not attach it to chat or make an agent recall it.
+A loading failure must remain distinguishable from no matches. **Refresh data** or submitting a search checks saved content again, including when the query is unchanged. Unsaved drafts are not searchable. Opening a result does not attach it to chat or make an agent recall it.

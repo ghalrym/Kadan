@@ -37,9 +37,42 @@ class AgentInput(Model):
         return value.strip()
 
 
+class AgentRename(Model):
+    name: Title
+    expected_name: Title
+
+    @field_validator("name")
+    @classmethod
+    def nonblank_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Name cannot be blank")
+        return value.strip()
+
+
 class Agent(AgentInput):
     created_at: datetime
     selected_pet_id: UUID | None = None
+    persona_id: UUID | None = None
+
+
+class OwnedPersonaUpdate(Model):
+    title: str = Field(min_length=1, max_length=200)
+    markdown: str = Field(min_length=1, max_length=16000)
+    expected_version: int | None = Field(ge=1)
+
+    @field_validator("title")
+    @classmethod
+    def nonblank_title(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Title cannot be blank")
+        return value.strip()
+
+    @field_validator("markdown")
+    @classmethod
+    def nonblank_markdown(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Persona cannot be blank")
+        return value
 
 
 class Runner(Model):
@@ -160,6 +193,17 @@ resource_input_adapter = TypeAdapter(ResourceInput)
 
 class VersionInput(Model):
     expected_version: int = Field(ge=1)
+
+
+class ChatResultInput(Model):
+    title: Title
+
+    @field_validator("title")
+    @classmethod
+    def nonblank_title(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Title cannot be blank")
+        return value.strip()
 
 
 class MarkdownUpdate(MarkdownContent, VersionInput):
@@ -603,11 +647,20 @@ class AgentRun(AgentRunState):
     created_at: datetime
     updated_at: datetime
 
+    @property
+    def initial_command(self) -> RunMessage | None:
+        if self.transcript and self.transcript[0].role == "assistant":
+            return self.transcript[0]
+        return None
+
 
 class ImageJobState(Model):
     status: Literal[
         "queued", "running", "completed", "failed", "cancelling", "cancelled"
     ] = "queued"
+    upload_status: Literal["not_started", "pending", "completed", "failed"] = (
+        "not_started"
+    )
     owner_id: UUID | None = None
     lease_expires_at: datetime | None = None
     asset_id: UUID | None = None
@@ -627,6 +680,14 @@ class ImageJobState(Model):
             raise ValueError("Lease timestamps require a timezone")
         if (self.status == "completed") != (self.asset_id is not None):
             raise ValueError("Only completed image jobs require an image asset")
+        if self.upload_status == "pending" and self.status in {
+            "completed",
+            "failed",
+            "cancelled",
+        }:
+            raise ValueError("An unresolved upload must remain recoverable")
+        if self.status == "completed" and self.upload_status == "failed":
+            raise ValueError("A failed upload cannot complete an image job")
         return self
 
 
