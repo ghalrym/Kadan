@@ -42,6 +42,57 @@ def load(machine, name, budget, *, pending=0, busy=False, used=0.0, need=None):
 
 
 class CapacityTests(unittest.TestCase):
+    def test_container_cap_limits_initial_grant_and_idle_growth(self):
+        machine = ledger(ram=400)
+        slot = machine.workers["llm"]
+        slot.host_limit = 23 * GIB
+        slot.requirement = requirement(16, 1, 100, 1)
+        actions = plan_load(machine, "llm")
+        self.assertEqual(actions[0].budget, [23 * GIB, GIB])
+        machine.apply(actions[0])
+        self.assertEqual(plan_growth(machine), [])
+
+    def test_growth_that_keeps_existing_gpu_placement_still_respects_container_cap(
+        self,
+    ):
+        machine = ledger(ram=400, vram=(4, 24))
+        load(machine, "llm", [16, 4, 0], need=requirement(8, 4, 100, 10))
+        machine.workers["llm"].host_limit = 23 * GIB
+        self.assertEqual(
+            plan_growth(machine), [Action("load", "llm", [23 * GIB, 4 * GIB, 0])]
+        )
+
+    def test_container_cap_above_physical_free_does_not_inflate_grant(self):
+        machine = ledger(ram=20)
+        machine.workers["image"].host_limit = 400 * GIB
+        machine.workers["image"].requirement = requirement(10, 0, 100, 0)
+        self.assertEqual(plan_load(machine, "image")[0].budget, [20 * GIB, 0])
+
+    def test_capped_minimum_does_not_reserve_unusable_language_ram(self):
+        machine = ledger(ram=40)
+        machine.workers["llm"].host_limit = 23 * GIB
+        machine.workers["llm"].requirement = requirement(24, 0)
+        machine.workers["image"].requirement = requirement(30, 0)
+        self.assertIsNone(plan_load(machine, "llm"))
+        self.assertEqual(plan_load(machine, "image")[0].budget, [30 * GIB, 0])
+
+    def test_combined_grants_stay_within_physical_ram(self):
+        machine = ledger(ram=40)
+        language = machine.workers["llm"]
+        language.host_limit = 23 * GIB
+        language.requirement = requirement(16, 0, 100, 0)
+        machine.apply(plan_load(machine, "llm")[0])
+        language.busy = True
+        picture = machine.workers["image"]
+        picture.host_limit = 30 * GIB
+        picture.requirement = requirement(18, 0)
+        self.assertIsNone(plan_load(machine, "image"))
+        picture.requirement = requirement(10, 0, 30, 0)
+        machine.apply(plan_load(machine, "image")[0])
+        self.assertEqual(machine.free()[0], 0)
+        self.assertEqual(language.budget[0], 23 * GIB)
+        self.assertEqual(picture.budget[0], 17 * GIB)
+
     def test_capacity_is_free_memory_at_connection_not_totals(self):
         machine = ledger(ram=64, vram=(24, 12))
         self.assertEqual(machine.capacity, [64 * GIB, 24 * GIB, 12 * GIB])
@@ -353,40 +404,3 @@ class RamCachePressureTests(unittest.TestCase):
                 setattr(cache, attr, 1)
                 machine.workers["video"].requirement = requirement(6, 8)
                 self.assertIsNone(plan_load(machine, "video"))
-
-
-class FullDuplexTests(unittest.TestCase):
-    def test_call_models_have_equal_priority_without_equal_budgets(self):
-        machine = ledger(vram=(24,))
-        for name in ("llm", "tts", "speech"):
-            machine.workers[name].full_duplex = True
-        load(machine, "llm", [16, 12], need=requirement(8, 6, 16, 12))
-        load(machine, "tts", [2, 4], need=requirement(2, 4))
-        machine.workers["speech"].requirement = requirement(1, 3)
-        self.assertEqual(
-            [machine.workers[n].priority for n in ("llm", "tts", "speech")], [1, 1, 1]
-        )
-        self.assertEqual(
-            plan_load(machine, "speech"), [Action("load", "speech", [GIB, 3 * GIB])]
-        )
-        self.assertEqual(plan_growth(machine), [])
-
-    def test_call_priority_cannot_displace_busy_or_queued_equal_participants(self):
-        machine = ledger(vram=(8,))
-        for name in ("llm", "tts", "speech"):
-            machine.workers[name].full_duplex = True
-        load(machine, "llm", [8, 4], pending=1, need=requirement(8, 4))
-        load(machine, "tts", [2, 4], busy=True, need=requirement(2, 4))
-        machine.workers["speech"].requirement = requirement(1, 3)
-        self.assertIsNone(plan_load(machine, "speech"))
-
-    def test_memory_pressure_can_evict_an_idle_call_model(self):
-        machine = ledger(vram=(8,))
-        machine.workers["llm"].full_duplex = True
-        machine.workers["speech"].full_duplex = True
-        load(machine, "llm", [8, 8], need=requirement(8, 8))
-        machine.workers["speech"].requirement = requirement(1, 3)
-        self.assertEqual(
-            plan_load(machine, "speech"),
-            [Action("offload", "llm"), Action("load", "speech", [GIB, 3 * GIB])],
-        )

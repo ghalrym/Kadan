@@ -7,8 +7,20 @@ from uuid import uuid4
 import anyio
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
-from api.pydantic_models.chat import ChatMessage
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    model_validator,
+)
+from api.pydantic_models.chat import (
+    ChatMessage,
+    Lfm3Message,
+    Lfm3Tool,
+    lfm3_messages,
+    require_lfm3_tools,
+)
 from api.services.inference import inference
 from api.services.inference_http import infer
 from api.services.inference_errors import InferenceFailure
@@ -23,8 +35,9 @@ class CompletionMessage(ChatMessage):
 
 class CompletionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    messages: list[CompletionMessage] = Field(min_length=1)
-    model: str | None = None
+    messages: list[CompletionMessage | Lfm3Message] = Field(min_length=1)
+    tools: list[Lfm3Tool] | None = Field(default=None, max_length=256)
+    model: Literal["lfm3-1.7b-bf16"] = "lfm3-1.7b-bf16"
     stream: bool = False
     conversation_id: str | None = Field(
         default=None,
@@ -35,6 +48,16 @@ class CompletionRequest(BaseModel):
     reuse_prefix: bool = Field(
         default=True, description="Disable to compare against full prefill."
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def experimental_messages(cls, values):
+        return lfm3_messages(values)
+
+    @model_validator(mode="after")
+    def experimental_tools_only(self):
+        require_lfm3_tools(self.model, self.messages, self.tools)
+        return self
 
 
 class AssistantMessage(BaseModel):

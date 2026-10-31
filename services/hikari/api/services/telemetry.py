@@ -10,8 +10,7 @@ import time
 from typing import get_args
 from uuid import uuid4
 
-from api.pydantic_models.inference_task import LlmModel
-from api.pydantic_models.requests import RequestRecord
+from api.pydantic_models.requests import ObservedLanguageModel, RequestRecord
 
 GENERATION_PATHS = {
     "/v1/chat/completions": "LLM",
@@ -116,18 +115,22 @@ def summarize(body, size, complete):
     messages = value.get("messages")
     if isinstance(messages, list):
         parts.append(f"{len(messages)} messages")
-        chars = sum(
-            len(m.get("text", ""))
-            for m in messages
-            if isinstance(m, dict) and isinstance(m.get("text"), str)
-        )
+        chars = 0
+        for message in messages:
+            if not isinstance(message, dict) or (
+                "text" in message and "content" in message
+            ):
+                continue
+            text = message.get("text", message.get("content"))
+            if isinstance(text, str):
+                chars += len(text)
         parts.append(f"{chars} message characters")
     for key in ("prompt", "text", "input", "instruction", "state"):
         if isinstance(value.get(key), str):
             parts.append(f"{key}: {len(value[key])} characters")
     # Model IDs can also contain user text. Keep only the curated public IDs.
     model = value.get("model")
-    if not isinstance(model, str) or model not in get_args(LlmModel):
+    if not isinstance(model, str) or model not in get_args(ObservedLanguageModel):
         model = None
     return "; ".join(parts), model
 

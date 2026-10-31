@@ -158,6 +158,34 @@ def test_fts_search_matches_structured_slide_text_and_tags(repository):
     assert repository.list_resources("alpha", query='"***()') == []
 
 
+def test_search_with_30_words_requires_every_word(repository):
+    words = [f"term{index}" for index in range(30)]
+    complete = repository.create_resource(
+        "alpha",
+        MarkdownContent(kind="memory", title="Complete", markdown=" ".join(words)),
+    )
+    repository.create_resource(
+        "alpha",
+        MarkdownContent(
+            kind="memory", title="Missing last word", markdown=" ".join(words[:-1])
+        ),
+    )
+    assert [
+        item.id for item in repository.list_resources("alpha", query=" ".join(words))
+    ] == [complete.id]
+
+
+def test_search_with_31_words_reports_an_error_instead_of_partial_matches(repository):
+    words = [f"term{index}" for index in range(30)]
+    repository.create_resource(
+        "alpha",
+        MarkdownContent(kind="memory", title="Partial", markdown=" ".join(words)),
+    )
+    with pytest.raises(StorageError, match="30 words") as error:
+        repository.list_resources("alpha", query=" ".join([*words, "absent"]))
+    assert error.value.status_code == 422
+
+
 def test_space_cycle_is_rejected(repository):
     parent = repository.create_resource(
         "alpha", MarkdownContent(kind="space", title="Parent")
@@ -403,3 +431,125 @@ def test_kind_filters_intersect_and_empty_kind_selection_is_empty(repository):
     assert repository.list_resources(
         "alpha", kind=ResourceKind.MEMORY, kinds=[ResourceKind.MEMORY]
     ) == [saved]
+
+
+def saved_reply(repository, **changes):
+    message = Message(
+        id=uuid4(),
+        role="assistant",
+        content="A useful **result**",
+        created_at=utc_now(),
+        **changes,
+    )
+    conversation = repository.create_resource(
+        "alpha",
+        ConversationContent(kind="conversation", title="Chat", messages=[message]),
+    )
+    return conversation, message
+
+
+def test_saved_chat_result_keeps_text_links_and_source_identity(repository):
+    asset = create_asset(repository)
+    conversation, message = saved_reply(
+        repository,
+        attachment_ids=[asset.id],
+        sources=[{"label": "Reference", "url": "https://example.com/report"}],
+    )
+    document = repository.save_chat_result(
+        "alpha", conversation.id, message.id, "Report"
+    )
+    assert document.kind == "space"
+    assert document.markdown == message.content
+    assert document.attachment_ids == [asset.id]
+    assert document.sources == message.sources
+    assert document.parent_id is None
+    assert document.tags == [
+        "chat-result",
+        f"conversation:{conversation.id}",
+        f"message:{message.id}",
+    ]
+    assert len(repository.versions("alpha", document.id)) == 1
+    assert repository.get_resource("alpha", conversation.id) == conversation
+
+
+def test_saved_chat_result_retry_returns_same_document_and_preserves_edits(repository):
+    conversation, message = saved_reply(repository)
+    saved = repository.save_chat_result(
+        "alpha", conversation.id, message.id, "First title"
+    )
+    edited = repository.update_resource(
+        "alpha",
+        saved.id,
+        content(saved, title="Edited", markdown="Later work"),
+        saved.version,
+    )
+    recovered = repository.save_chat_result(
+        "alpha", conversation.id, message.id, "Retry title"
+    )
+    assert recovered == edited
+    assert len(repository.versions("alpha", saved.id)) == 2
+    assert len(repository.list_resources("alpha", kind=ResourceKind.SPACE)) == 1
+
+
+def test_saved_chat_result_concurrent_saves_have_one_identity(repository):
+    from concurrent.futures import ThreadPoolExecutor
+
+    conversation, message = saved_reply(repository)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(
+                lambda title: repository.save_chat_result(
+                    "alpha", conversation.id, message.id, title
+                ),
+                ["First", "Second"],
+            )
+        )
+    assert results[0] == results[1]
+    assert len(repository.versions("alpha", results[0].id)) == 1
+
+
+def test_saved_chat_result_does_not_recreate_a_trashed_document(repository):
+    conversation, message = saved_reply(repository)
+    saved = repository.save_chat_result("alpha", conversation.id, message.id, "First")
+    repository.trash_resource("alpha", saved.id, saved.version)
+    with pytest.raises(StorageError, match="in trash"):
+        repository.save_chat_result("alpha", conversation.id, message.id, "Retry")
+    assert (
+        len(repository.list_resources("alpha", kind=ResourceKind.SPACE, trash=True))
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "change", ["other-agent", "missing-message", "trashed-chat", "not-chat"]
+)
+def test_saved_chat_result_requires_active_owned_source(repository, change):
+    conversation, message = saved_reply(repository)
+    key, source_id, message_id = "alpha", conversation.id, message.id
+    if change == "other-agent":
+        key = "beta"
+    elif change == "missing-message":
+        message_id = uuid4()
+    elif change == "trashed-chat":
+        repository.trash_resource(key, source_id, conversation.version)
+    else:
+        source_id = repository.create_resource(
+            key, MarkdownContent(kind="space", title="Not chat")
+        ).id
+    with pytest.raises(StorageError):
+        repository.save_chat_result(key, source_id, message_id, "Result")
+    assert len(repository.list_resources("alpha", kind=ResourceKind.SPACE)) == (
+        change == "not-chat"
+    )
+
+
+@pytest.mark.parametrize(("role", "text"), [("user", "Request"), ("assistant", " ")])
+def test_saved_chat_result_rejects_non_reply_or_empty_text(repository, role, text):
+    message = Message(id=uuid4(), role=role, content=text, created_at=utc_now())
+    conversation = repository.create_resource(
+        "alpha",
+        ConversationContent(kind="conversation", title="Chat", messages=[message]),
+    )
+    with pytest.raises(StorageError, match="saved assistant reply"):
+        repository.save_chat_result("alpha", conversation.id, message.id, "Result")
+    assert repository.list_resources("alpha", kind=ResourceKind.SPACE) == []

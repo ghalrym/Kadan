@@ -71,21 +71,6 @@ struct CatalogEntry {
     static CatalogEntry parse(const Json& value);
 };
 
-struct VideoDefaults {
-    unsigned duration;
-    std::string resolution;
-};
-
-// A hardware tier fixes one checkpoint per modality (null when unassigned).
-struct HardwareTier {
-    std::string id, name;
-    unsigned vram_gb, ram_gb;
-    VideoDefaults video_defaults;
-    std::map<std::string, std::optional<std::string>> models;
-
-    static HardwareTier parse(const Json& value);
-};
-
 class ModelStore {
 public:
     using Fetch = std::function<std::int64_t(
@@ -102,16 +87,11 @@ public:
     );
     const CatalogEntry& entry(const std::string& model) const;
     fs::path acquire(const std::string& model, const std::atomic_bool& cancel);
-    // The language model of the selected hardware tier.
-    std::string selected() const;
-    std::optional<std::string> tier() const;
-    const HardwareTier& hardware_tier(const std::string& id) const;
-    void select_tier(const std::string& id);
+    fs::path require_local(const std::string& model, const std::atomic_bool& cancel);
     std::string whisper_selected() const;
     std::string whisper_model(const std::string& name) const;
     Json context(const std::string& model) const;
     void set_context(const std::string& model, const Json& value);
-    void select_whisper(const std::string& model);
     bool whisper_formatting() const;
     void set_whisper_formatting(bool enabled);
     Json status() const;
@@ -132,13 +112,13 @@ public:
     ) const;
 
 private:
+    std::optional<Bytes> completed_bytes(const CatalogEntry& entry) const;
     void
     prepare_gguf(const CatalogEntry&, const fs::path&, const std::atomic_bool& cancel);
     std::vector<ManifestFile>
     manifest(const CatalogEntry& entry, const std::atomic_bool& cancel) const;
     fs::path root_, data_;
     std::vector<CatalogEntry> catalog_;
-    std::vector<HardwareTier> tiers_;
     std::vector<std::string> assets_;
     Fetch fetch_;
     DownloadProgress progress_;
@@ -230,13 +210,7 @@ void prepare_input(
     DownloadRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
-    TierSelectionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
-);
-void prepare_input(
     ContextRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
-);
-void prepare_input(
-    WhisperSelectionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
     WhisperFormattingRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&

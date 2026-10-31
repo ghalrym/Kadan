@@ -13,12 +13,12 @@ import json
 import logging
 import os
 import time
-from contextlib import contextmanager, suppress
+from contextlib import suppress
 from datetime import UTC, datetime
 from uuid import uuid4
 
 from api.pydantic_models.inference_task import InferenceTask
-from api.pydantic_models.model_store import ModelStoreStatus
+from api.pydantic_models.model_store import ModelAssignments, ModelStoreStatus
 from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
 from api.services.inference_worker import (
@@ -49,7 +49,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 log = logging.getLogger(__name__)
 
-PROTOCOL = 4
+PROTOCOL = 5
 
 # Features served by an inference worker; settings go to every worker and a
 # download goes to a worker of its checkpoint's type.
@@ -72,7 +72,30 @@ CHECKPOINT_WORKERS = {
     "formatting": "formatting",
     "image": "image",
     "video": "video",
+    "vision": "lfm3_vision",
+    "audio": "lfm3_audio",
 }
+
+EXPERIMENTAL_MODELS = {
+    "lfm3-1.7b-bf16": ("lfm3_llm", "HIKARI_ENABLE_LFM3_TEXT"),
+    "lfm3-vl-2b-bf16": ("lfm3_vision", "HIKARI_ENABLE_LFM3_VISION"),
+    "lfm3-audio-2b-bf16": ("lfm3_audio", None),
+}
+EXPERIMENTAL_FEATURES = {
+    "llm": "lfm3-1.7b-bf16",
+    "vision": "lfm3-vl-2b-bf16",
+    "audio_call": "lfm3-audio-2b-bf16",
+}
+
+
+def experimental_worker(model: str | None) -> str | None:
+    if model not in EXPERIMENTAL_MODELS:
+        return None
+    kind, flag = EXPERIMENTAL_MODELS[model]
+    if flag is not None and os.getenv(flag, "").lower() not in ("1", "true", "yes"):
+        raise InferenceFailure(f"Experimental model requires {flag}=true.", 409)
+    return kind
+
 
 # Jobs that have not started executing can move to another worker.
 REQUEUEABLE = (JobState.QUEUED, JobState.PREPARING, JobState.WAITING)
@@ -104,8 +127,6 @@ def gib(budget: list[int]) -> str:
 def settings(models: ModelStoreStatus) -> tuple:
     """What a model store snapshot says that can change a memory requirement."""
     return (
-        models.selected_tier,
-        models.selected_whisper,
         models.whisper_formatting,
         tuple(
             sorted(
@@ -131,6 +152,15 @@ def target_worker(request: InferenceTask) -> str | None:
     """The worker type for a job; None for store work (settings, downloads)."""
     if request.operation in ("download", "configure"):
         return None
+    model = requested_model(request) or EXPERIMENTAL_FEATURES.get(request.feature)
+    experiment = experimental_worker(model)
+    if experiment is not None:
+        if request.operation in ("load", "unload"):
+            raise InferenceFailure(
+                "Experimental models load per request; manual residency is unavailable.",
+                422,
+            )
+        return experiment
     return FEATURE_WORKERS[request.feature]
 
 
@@ -149,7 +179,9 @@ class Computer:
         self.id: str = info["id"]
         self.name: str = info["name"]
         # Free memory when its first worker connects, before anything loads.
-        self.ledger = MachineLedger(capacity=[info["ram_free"]], workers={})
+        self.ledger = MachineLedger(
+            capacity=[info.get("physical_ram_free", info["ram_free"])], workers={}
+        )
         self.gpus: dict[str, int] = {}
 
     def gpu_index(self, device: dict) -> int:
@@ -177,6 +209,10 @@ class Worker:
             computer.gpu_index(device) for device in hello["machine"]["devices"]
         ]
         self.models: ModelStoreStatus | None = None
+        # A budget grant permits work; only engine observations prove residency.
+        self.resident_model: str | None = None
+        self.resident_context: dict[str, int | None] = {}
+        self.residency_known = True
         self.ready = asyncio.Event()
         self.controls: dict[str, asyncio.Future] = {}
         self.preparing: asyncio.Task | None = None
@@ -199,10 +235,31 @@ class Worker:
             budget[index] = value
         return budget
 
-    async def send(self, message: dict | bytes):
+    async def send(self, message: dict | bytes, *, job: InferenceJob | None = None):
         text = message if isinstance(message, bytes) else encode_request(message)
         async with self.write_lock:
-            await asyncio.wait_for(self.websocket.send_text(text.decode()), 10)
+            if job is not None:
+                if job.cancel_requested or job.failure is not None:
+                    return
+                if self.id not in self.computer.ledger.workers:
+                    raise InferenceFailure("Worker disconnected.", 503)
+                job.machines.add(self.id)
+                self.jobs.add(job.request.id)
+                if job.worker is not None:
+                    self.slot.pending += 1
+                job.sent = True
+            # Once entered, a write may have delivered even if its caller leaves.
+            write = asyncio.create_task(
+                asyncio.wait_for(self.websocket.send_text(text.decode()), 10)
+            )
+            try:
+                await asyncio.shield(write)
+            except asyncio.CancelledError:
+                if job is not None:
+                    job.request_cancel()
+                with suppress(Exception):
+                    await await_cleanup(write)
+                raise
 
     async def control(self, command: str, timeout: float = 30, **fields) -> dict:
         request_id = uuid4().hex
@@ -239,39 +296,31 @@ class WorkerHub:
         self.joined = asyncio.Condition()
         self.scheduler: asyncio.Task | None = None
         self.closing = False
-        self.calls: dict[str, frozenset[str]] = {}
 
-    @contextmanager
-    def full_duplex(self, models: frozenset[str]):
-        """Keep call participants at equal priority until their last call ends.
-
-        This changes retention, not grants: normal physical admission and release
-        acknowledgement still apply when the three models cannot fit together.
-        """
-        call_id = uuid4().hex
-        self.calls[call_id] = models
-        self._refresh_full_duplex()
-        self.wake.set()
-        try:
-            yield
-        finally:
-            self.calls.pop(call_id, None)
-            self._refresh_full_duplex()
-            self.wake.set()
-
-    def _refresh_full_duplex(self):
-        active = set().union(*self.calls.values())
-        for computer in self.computers.values():
-            for slot in computer.ledger.workers.values():
-                participating = (
-                    slot.kind in ("llm", "tts", "speech")
-                    and slot.requirement is not None
-                    and slot.requirement.model in active
-                )
-                if slot.full_duplex and not participating:
-                    # Give a released participant its normal idle period.
-                    slot.last_used = time.monotonic()
-                slot.full_duplex = participating
+    def _refresh_models(self):
+        """Combine fixed checkpoints from their connected workers."""
+        primary = self.workers.get(self.primary or "")
+        base = primary.models if primary is not None else None
+        snapshot = (
+            base.model_copy(deep=True)
+            if base is not None
+            else ModelStoreStatus(models=[])
+        )
+        known = {model.id for model in snapshot.models}
+        for worker in self.workers.values():
+            if not worker.kind.startswith("lfm3_") or worker.models is None:
+                continue
+            for model in worker.models.models:
+                try:
+                    kind = experimental_worker(model.id)
+                except InferenceFailure:
+                    continue
+                if kind == worker.kind and model.id not in known:
+                    snapshot.models.append(model.model_copy(deep=True))
+                    known.add(model.id)
+        visible = set(ModelAssignments().model_dump().values())
+        snapshot.models = [model for model in snapshot.models if model.id in visible]
+        self.models = snapshot if base is not None or snapshot.models else None
 
     async def start(self):
         self.scheduler = asyncio.create_task(self._schedule_loop())
@@ -297,7 +346,16 @@ class WorkerHub:
             info = hello["machine"]
             computer = self.computers.get(info["id"]) or Computer(info)
             worker = Worker(websocket, hello, computer)
-        except (TimeoutError, ValueError, KeyError, TypeError) as error:
+            for model, (kind, _) in EXPERIMENTAL_MODELS.items():
+                if worker.kind == kind:
+                    experimental_worker(model)
+        except (
+            TimeoutError,
+            ValueError,
+            KeyError,
+            TypeError,
+            InferenceFailure,
+        ) as error:
             log.warning("Rejected worker: %s", error)
             await websocket.close(code=1008)
             return
@@ -306,12 +364,13 @@ class WorkerHub:
             name=worker.id,
             kind=worker.kind,
             devices=worker.devices,
+            host_limit=info.get("ram_limit", info["ram_free"]),
             budget=[0] * len(computer.ledger.capacity),
             # A reconnect has no completion history; allow a full idle period.
             last_used=time.monotonic(),
         )
         self.workers[worker.id] = worker
-        if self.primary is None:
+        if self.primary is None and not worker.kind.startswith("lfm3_"):
             self.primary = worker.id
         log.info("Worker %s connected on %s", worker.name, computer.name)
         try:
@@ -336,8 +395,7 @@ class WorkerHub:
                 worker.slot.requirement = None
                 self.wake.set()
             worker.models = models
-            if worker.id == self.primary:
-                self.models = worker.models
+            self._refresh_models()
             return
         if state == "ready":
             # Routable only once its settings match the primary's.
@@ -349,6 +407,11 @@ class WorkerHub:
                 slot.loaded = message["loaded"]
                 slot.budget = worker.ledger(list(message["budget"]))
                 slot.releasing = False
+                if "model" in message:
+                    if worker.resident_model != message["model"]:
+                        worker.resident_context = {}
+                    worker.resident_model = message["model"]
+                    worker.residency_known = True
                 log.info(
                     "%s %s; budget %s GiB",
                     worker.name,
@@ -392,9 +455,15 @@ class WorkerHub:
         if not computer.ledger.workers:
             self.computers.pop(computer.id, None)
         if self.primary == worker.id:
-            self.primary = next(iter(self.workers), None)
-            primary = self.workers.get(self.primary or "")
-            self.models = primary.models if primary is not None else None
+            self.primary = next(
+                (
+                    current.id
+                    for current in self.workers.values()
+                    if not current.kind.startswith("lfm3_")
+                ),
+                None,
+            )
+        self._refresh_models()
         for future in worker.controls.values():
             if not future.done():
                 future.set_exception(InferenceFailure("Worker disconnected.", 503))
@@ -404,6 +473,10 @@ class WorkerHub:
             if job is None:
                 continue
             job.machines.discard(worker.id)
+            if job.cancel_requested or job.failure is not None:
+                if not job.machines:
+                    self._settle(job)
+                continue
             if job.worker is not None and job.state in REQUEUEABLE:
                 try:
                     await self._send_job(job)
@@ -438,14 +511,18 @@ class WorkerHub:
     def _store_targets(self, request: InferenceTask) -> list[Worker]:
         """Settings go to every worker; a download to one worker of its type per computer."""
         if request.operation == "configure":
-            targets = self._ready()
+            model = requested_model(request)
+            kind = experimental_worker(model)
+            targets = self._ready(kind) if kind else self._ready()
         else:
-            kind = None
+            kind = experimental_worker(request.input.model_id)
             for model in self.models.models if self.models is not None else []:
-                if model.id == request.input.model_id:
+                if model.id == request.input.model_id and kind is None:
                     kind = CHECKPOINT_WORKERS.get(model.kind)
             targets, computers = [], set()
             for worker in self._ready(kind):
+                if kind is None and worker.kind.startswith("lfm3_"):
+                    continue
                 if worker.computer.id not in computers:
                     computers.add(worker.computer.id)
                     targets.append(worker)
@@ -454,6 +531,11 @@ class WorkerHub:
         return targets
 
     async def _send_job(self, job: InferenceJob):
+        if job.result.done():
+            return
+        if job.cancel_requested or job.failure is not None:
+            self._settle(job)
+            return
         message = job.request.model_dump(mode="json")
         if job.tracing is not None:
             message.update(job.tracing.parent)
@@ -462,14 +544,25 @@ class WorkerHub:
             if job.worker is None
             else [self._route(job.worker)]
         )
-        for worker in targets:
-            job.machines.add(worker.id)
-            worker.jobs.add(job.request.id)
-            if job.worker is not None:
-                worker.slot.pending += 1
-            await worker.send(message)
-        job.sent = True
-        self.wake.set()
+        # A terminal event can arrive during send, including an overlapping requeue.
+        job.submissions += 1
+        try:
+            for worker in targets:
+                if job.cancel_requested or job.failure is not None:
+                    break
+                if worker.id not in self.workers:
+                    job.failure = InferenceFailure("Worker disconnected.", 503)
+                    break
+                await worker.send(message, job=job)
+        except BaseException as error:
+            if isinstance(error, InferenceFailure):
+                job.failure = job.failure or error
+            job.request_cancel()
+            raise
+        finally:
+            job.submissions -= 1
+            self._settle(job)
+            self.wake.set()
 
     async def _wait_for_worker(self, request: InferenceTask):
         """Gives worker containers that are still starting time to connect."""
@@ -502,6 +595,9 @@ class WorkerHub:
             if job.sent:
                 with suppress(Exception, asyncio.CancelledError):
                     await await_cleanup(asyncio.create_task(self.cancel_and_join(job)))
+            for future in (job.accepted, job.result):
+                if future.done() and not future.cancelled():
+                    future.exception()
             self._release(job)
             self.jobs.pop(request.id, None)
             job.tracing.end(failed=True)
@@ -518,25 +614,50 @@ class WorkerHub:
 
     async def cancel(self, job_id: str):
         job = self.jobs.get(job_id)
-        if job is None:
+        if job is None or job.result.done():
             return
+        job.request_cancel()
+        if not any(worker_id in self.workers for worker_id in job.machines):
+            job.machines.clear()
+            self._fail(job, InferenceFailure("Inference cancelled.", 499))
+            return
+        send_error = None
         for worker_id in tuple(job.machines):
             worker = self.workers.get(worker_id)
             if worker is not None:
-                await worker.send({"id": job_id, "command": "cancel"})
+                try:
+                    await worker.send({"id": job_id, "command": "cancel"})
+                except (
+                    InferenceFailure,
+                    RuntimeError,
+                    OSError,
+                    TimeoutError,
+                    WebSocketDisconnect,
+                ) as error:
+                    send_error = send_error or error
+        if send_error is not None:
+            raise send_error
 
     async def cancel_and_join(self, job: InferenceJob):
+        job.request_cancel()
         # A job whose workers are all gone has no one left to report its end.
         if not job.result.done() and not any(
             worker_id in self.workers for worker_id in job.machines
         ):
+            job.machines.clear()
             self._fail(job, InferenceFailure("Inference cancelled.", 499))
         if not job.result.done():
             try:
                 await self.cancel(job.request.id)
-            except (InferenceFailure, RuntimeError, OSError, TimeoutError):
-                # The worker is unreachable; it no longer runs this job.
-                self._fail(job, InferenceFailure("Inference cancelled.", 499))
+            except (
+                InferenceFailure,
+                RuntimeError,
+                OSError,
+                TimeoutError,
+                WebSocketDisconnect,
+            ):
+                # A failed send does not confirm cleanup; wait for an end or disconnect.
+                pass
         with suppress(Exception):
             await asyncio.shield(job.result)
 
@@ -554,6 +675,10 @@ class WorkerHub:
         self.wake.set()
 
     def _fail(self, job: InferenceJob, failure: InferenceFailure):
+        job.failure = job.failure or failure
+        failure = job.failure
+        if job.submissions:
+            return
         if job.tracing is not None:
             job.tracing.end(failed=True)
         job.identified.set()
@@ -565,6 +690,8 @@ class WorkerHub:
         job.machines.clear()
 
     def _settle(self, job: InferenceJob):
+        if job.submissions or job.machines or job.result.done():
+            return
         if job.tracing is not None:
             job.tracing.end(failed=job.failure is not None)
         job.identified.set()
@@ -573,8 +700,6 @@ class WorkerHub:
                 job.accepted.set_exception(job.failure)
             else:
                 job.accepted.set_result(None)
-        if job.result.done():
-            return
         if job.failure is not None:
             job.result.set_exception(job.failure)
         else:
@@ -593,6 +718,70 @@ class WorkerHub:
         if event.model is not None:
             job.model = event.model
             job.identified.set()
+        if job.request.feature == "llm" and event.context is not None:
+            job.context = event.context
+        if (
+            worker.kind == "llm"
+            and job.request.feature == "llm"
+            and event.state == "succeeded"
+        ):
+            worker.resident_model = (
+                None if job.request.operation == "unload" else job.model
+            )
+            worker.resident_context = (
+                job.context if worker.resident_model is not None else {}
+            )
+            worker.residency_known = (
+                job.request.operation == "unload" or job.model is not None
+            )
+        elif (
+            worker.kind == "llm"
+            and job.request.feature == "llm"
+            and event.state in ("failed", "cancelled")
+        ):
+            # Preparation cancellation can leave an old engine resident, while
+            # execution failure can destroy it without a control snapshot.
+            worker.residency_known = False
+            worker.resident_model = None
+            worker.resident_context = {}
+        if event.state in ("audio_answer", "audio_segment"):
+            if (
+                job.request.feature != "audio_call"
+                or job.request.input.mode != "turn"
+                or not job.request.input.sentence_tts
+                or job.events is None
+            ):
+                job.stream_error = "Unexpected sentence TTS event."
+                asyncio.create_task(self.cancel(event.id))
+            elif job.stream_error is None:
+                try:
+                    payload = (
+                        {"type": "answer", "text": event.answer}
+                        if event.state == "audio_answer"
+                        else {"type": "segment", **event.audio_segment.model_dump()}
+                    )
+                    job.events.put_nowait(payload)
+                except asyncio.QueueFull:
+                    job.stream_error = "Audio turn consumer is too slow."
+                    asyncio.create_task(self.cancel(event.id))
+            return
+        if event.state == "audio_transcript":
+            if (
+                job.request.feature != "audio_call"
+                or job.request.input.mode != "turn"
+                or job.events is None
+            ):
+                job.stream_error = "Unexpected audio transcript event."
+                asyncio.create_task(self.cancel(event.id))
+            elif job.stream_error is None:
+                try:
+                    job.events.put_nowait(
+                        {"type": "transcript", "text": event.transcript}
+                    )
+                except asyncio.QueueFull:
+                    job.stream_error = "Audio turn consumer is too slow."
+                    asyncio.create_task(self.cancel(event.id))
+            return
         if event.state == "content":
             if job.events is not None and job.stream_error is None:
                 try:
@@ -656,15 +845,6 @@ class WorkerHub:
         if source is None or target is None:
             return
         tasks = []
-        if source.selected_tier and source.selected_tier != target.selected_tier:
-            tasks.append({"feature": "tier_selection", "tier": source.selected_tier})
-        if (
-            source.selected_whisper
-            and source.selected_whisper != target.selected_whisper
-        ):
-            tasks.append(
-                {"feature": "whisper_selection", "model": source.selected_whisper}
-            )
         if source.whisper_formatting != target.whisper_formatting:
             tasks.append(
                 {"feature": "whisper_formatting", "enabled": source.whisper_formatting}
@@ -746,7 +926,7 @@ class WorkerHub:
             requirement.key = requirement_key(fields)
             return requirement
         except InferenceFailure as error:
-            # Preparation reports the real problem (no tier, no download) once
+            # Preparation reports the real problem (no download) once
             # the worker runs; a host-only budget lets it get that far.
             log.info("No memory requirement for %s: %s", worker.name, error)
             return Requirement(
@@ -789,10 +969,13 @@ class WorkerHub:
         """Fails jobs that need more memory than the worker's computer has."""
         host, device = (value / GIB for value in requirement.minimum)
         capacity = worker.computer.ledger.capacity
+        host_capacity = capacity[0]
+        if worker.slot.host_limit is not None:
+            host_capacity = min(host_capacity, worker.slot.host_limit)
         failure = InferenceFailure(
             f"{requirement.model or worker.kind} needs at least {host:.1f} GiB RAM and "
             f"{device:.1f} GiB of VRAM; {worker.name} has "
-            f"{capacity[0] / GIB:.1f} GiB RAM and "
+            f"{host_capacity / GIB:.1f} GiB RAM and "
             f"{sum(capacity[index] for index in worker.devices) / GIB:.1f} GiB free "
             f"across {len(worker.devices)} GPU(s).",
             507,
@@ -828,6 +1011,11 @@ class WorkerHub:
                     for budget, used in zip(status["budget"], status.get("used", []))
                 ] or list(status["budget"])
                 slot.loaded = status["loaded"]
+                if "model" in status:
+                    if worker.resident_model != status["model"]:
+                        worker.resident_context = {}
+                    worker.resident_model = status["model"]
+                    worker.residency_known = True
                 slot.budget = worker.ledger(local)
                 slot.releasing = False
 
@@ -865,13 +1053,12 @@ class WorkerHub:
         for slot in slots:
             if slot.requirement is None and (slot.loaded or slot.pending):
                 slot.requirement = await self._requirement(workers[slot.name])
-        self._refresh_full_duplex()
         waiting = sorted(
             (slot for slot in slots if needs_grant(ledger, slot)),
             key=lambda slot: (slot.priority, slot.last_used),
         )
         for slot in waiting:
-            # The unloaded language tier keeps room for its minimum.
+            # The unloaded language model keeps room for its minimum.
             for other in slots:
                 if (
                     other.requirement is None
@@ -881,7 +1068,12 @@ class WorkerHub:
                     other.requirement = await self._requirement(workers[other.name])
             if slot.requirement is None:
                 slot.requirement = await self._requirement(workers[slot.name])
-            if ledger.fit(slot.requirement, ledger.capacity, slot.devices) is None:
+            if (
+                ledger.fit(
+                    slot.requirement, ledger.capacity, slot.devices, slot.host_limit
+                )
+                is None
+            ):
                 await self._reject_unfittable(workers[slot.name], slot.requirement)
                 continue
             actions = plan_load(ledger, slot.name)
@@ -898,7 +1090,6 @@ class WorkerHub:
                     slot.loaded
                     and not slot.busy
                     and not slot.releasing
-                    and not slot.full_duplex
                     and now - slot.last_used >= self.model_idle_seconds
                 ):
                     await self._apply(computer, [Action("offload", slot.name)])

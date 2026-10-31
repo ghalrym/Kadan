@@ -2,7 +2,7 @@
 
 Hikari's Requests page shows recent generation requests with filters, search and individual details. It keeps a bounded history that disappears when the API restarts. Old details can expire; **Retry** cannot recover a discarded record.
 
-The page is a monitor, not a conversation or media library. Details show summaries rather than original prompts, generated content or credentials. **Copy ID** is available; replay and copying a runnable request are currently unavailable.
+The page is a monitor, not a conversation or media library. Details show summaries rather than original prompts, generated content or credentials. **Copy ID** copies the request identifier. **Copy details** copies the observed request JSON shown under **Advanced**, captured when clicked. This is an observation snapshot, not runnable cURL or a full prompt/output archive; later refreshes can change the record. A copy is confirmed only after it succeeds. If copying details fails, the JSON remains available under **Advanced** for manual selection and copying. Replay and copying a runnable request remain unavailable.
 
 Request rates, latency and errors describe recent retained observations. They can omit older requests. A missing measurement means unavailable data, and a video's accepted submission can appear before its background job finishes.
 

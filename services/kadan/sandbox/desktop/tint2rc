@@ -1,0 +1,68 @@
+# Kadan's neutral surfaces; Openbox and tint2 own window management.
+rounded = 0
+border_width = 1
+background_color = #191a20 100
+border_color = #33363f 100
+
+rounded = 6
+border_width = 0
+background_color = #252731 100
+
+rounded = 6
+border_width = 1
+background_color = #33363f 100
+border_color = #8e92a0 100
+
+panel_items = PLT
+panel_size = 100% 48
+panel_position = bottom center horizontal
+panel_padding = 8 6 8
+panel_background_id = 1
+panel_layer = top
+strut_policy = follow_size
+autohide = 0
+wm_menu = 1
+mouse_effects = 1
+font_shadow = 0
+
+button = new
+button_text = Applications
+button_font = Sans 10
+button_font_color = #eceef3 100
+button_background_id = 2
+button_padding = 12 0
+button_lclick_command = xdotool key --clearmodifiers ctrl+Escape
+button_tooltip = Applications (Ctrl+Esc)
+
+launcher_padding = 6 0 6
+launcher_background_id = 0
+launcher_icon_size = 28
+launcher_item_app = /opt/kadan/desktop/browser.desktop
+launcher_item_app = /opt/kadan/desktop/terminal.desktop
+launcher_tooltip = 1
+
+taskbar_mode = single_desktop
+taskbar_padding = 0 0 6
+taskbar_background_id = 0
+taskbar_hide_if_empty = 0
+task_text = 1
+task_icon = 1
+task_centered = 0
+task_maximum_size = 220 36
+task_padding = 10 4 6
+task_font = Sans 10
+task_font_color = #eceef3 100
+task_background_id = 2
+task_active_background_id = 3
+task_iconified_font_color = #8e92a0 100
+task_tooltip = 1
+mouse_left = toggle_iconify
+mouse_middle = none
+mouse_right = none
+mouse_scroll_up = prev_task
+mouse_scroll_down = next_task
+
+tooltip_background_id = 1
+tooltip_font_color = #eceef3 100
+tooltip_font = Sans 10
+tooltip_padding = 8 6

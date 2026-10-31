@@ -23,6 +23,9 @@ PRIORITY = {
     "formatting": 3,
     "image": 4,
     "video": 5,
+    "lfm3_llm": 1,
+    "lfm3_vision": 1,
+    "lfm3_audio": 1,
 }
 TOP_PRIORITY = min(PRIORITY.values())
 
@@ -68,12 +71,11 @@ class WorkerSlot:
     # confirms the memory is physically free.
     releasing: bool = False
     releasing_since: float = 0.0
-    full_duplex: bool = False
+    # This container's RAM ceiling, independent of current physical free RAM.
+    host_limit: int | None = None
 
     @property
     def priority(self) -> int:
-        if self.full_duplex:
-            return TOP_PRIORITY
         return PRIORITY[self.kind or self.name]
 
 
@@ -95,13 +97,18 @@ class MachineLedger:
         # the native probe's margins) is what its workers can share. Totals
         # would count memory other processes, like a desktop, already hold.
         capacity = [
-            machine["ram_free"],
+            machine.get("physical_ram_free", machine["ram_free"]),
             *(device["vram_free"] for device in machine["devices"]),
         ]
         return cls(
             capacity=capacity,
             workers={
-                name: WorkerSlot(name=name, kind=name, budget=[0] * len(capacity))
+                name: WorkerSlot(
+                    name=name,
+                    kind=name,
+                    budget=[0] * len(capacity),
+                    host_limit=machine.get("ram_limit", machine["ram_free"]),
+                )
                 for name in workers
                 if name in PRIORITY
             },
@@ -126,6 +133,7 @@ class MachineLedger:
         requirement: Requirement,
         free: list[float],
         devices: list[int] | None = None,
+        host_limit: int | None = None,
     ) -> list[int] | None:
         """The largest budget up to preferred that meets the minimum.
 
@@ -141,6 +149,8 @@ class MachineLedger:
         )
         floor = requirement.device_floor
         host = min(host_pref, free[0])
+        if host_limit is not None:
+            host = min(host, host_limit)
         if host < host_min:
             return None
         budget = [host] + [0] * (len(free) - 1)
@@ -219,7 +229,7 @@ def _shrink_options(slot: WorkerSlot) -> list[list[int]]:
 
 
 def _reserve(ledger: MachineLedger, target: WorkerSlot) -> list[int]:
-    """Room kept for the language tier while it is not loaded.
+    """Room kept for the language model while it is not loaded.
 
     Other workers never take its minimum, so the language model can start while
     an image or video runs instead of queueing behind it. The minimum is placed
@@ -237,7 +247,10 @@ def _reserve(ledger: MachineLedger, target: WorkerSlot) -> list[int]:
             continue
         minimum = replace(slot.requirement, preferred=slot.requirement.minimum)
         placed = ledger.fit(
-            minimum, [room - kept for room, kept in zip(free, reserve)], slot.devices
+            minimum,
+            [room - kept for room, kept in zip(free, reserve)],
+            slot.devices,
+            slot.host_limit,
         )
         if placed is None:
             # It cannot start here anyway; keeping nothing lets others run.
@@ -250,7 +263,7 @@ def _plan(
     ledger: MachineLedger, target: WorkerSlot, reserve: list[int]
 ) -> list[Action] | None:
     free = [value - kept for value, kept in zip(ledger.free(), reserve)]
-    budget = ledger.fit(target.requirement, free, target.devices)
+    budget = ledger.fit(target.requirement, free, target.devices, target.host_limit)
     if budget is not None:
         return [Action("load", target.name, budget)]
     candidates = sorted(
@@ -274,7 +287,9 @@ def _plan(
                 trial[index] += value - (0 if option is None else released[index])
             kind = "offload" if option is None else "load"
             step = Action(kind, slot.name, option)
-            budget = ledger.fit(target.requirement, trial, target.devices)
+            budget = ledger.fit(
+                target.requirement, trial, target.devices, target.host_limit
+            )
             if budget is not None:
                 return [*actions, step, Action("load", target.name, budget)]
             # A shrink that is not enough is superseded by the offload.
@@ -316,7 +331,7 @@ def needs_grant(ledger: MachineLedger, slot: WorkerSlot) -> bool:
     if not slot.loaded:
         return True
     return slot.requirement is not None and (
-        ledger.fit(slot.requirement, slot.budget, slot.devices) is None
+        ledger.fit(slot.requirement, slot.budget, slot.devices, slot.host_limit) is None
     )
 
 
@@ -329,12 +344,14 @@ def _grown(ledger: MachineLedger, slot: WorkerSlot, free: list[float]) -> list[i
     """
     requirement = slot.requirement
     available = [room + held for room, held in zip(free, slot.budget)]
-    candidate = ledger.fit(requirement, available, slot.devices)
+    candidate = ledger.fit(requirement, available, slot.devices, slot.host_limit)
     if candidate is not None and all(
         new >= old for new, old in zip(candidate, slot.budget)
     ):
         return candidate
     host_pref, device_pref = requirement.preferred
+    if slot.host_limit is not None:
+        host_pref = min(host_pref, slot.host_limit)
     budget = list(slot.budget)
     budget[0] = max(slot.budget[0], min(host_pref, available[0]))
     devices = sorted(
@@ -364,7 +381,7 @@ def plan_growth(ledger: MachineLedger) -> list[Action]:
     for slot in sorted(ledger.workers.values(), key=lambda slot: slot.priority):
         if not slot.loaded or slot.busy or slot.releasing or slot.requirement is None:
             continue
-        # Growth never takes the room kept for the language tier.
+        # Growth never takes the room kept for the language model.
         free = [
             value - kept for value, kept in zip(ledger.free(), _reserve(ledger, slot))
         ]

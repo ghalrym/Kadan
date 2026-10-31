@@ -80,7 +80,7 @@ export default function Hatch({ open, onClose, onHatched }: Props) {
         <div className="hatch-stage">
           {open && <Pet sheet={agentPet(preview)} state={mood} size={144} look grounded />}
         </div>
-        <h2 id="hatch-title">Hatch an agent</h2>
+        <h2 id="hatch-title">Hatch your agent</h2>
         <label>
           Name
           <input

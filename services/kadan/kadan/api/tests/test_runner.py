@@ -12,6 +12,7 @@ from kadan.api.config import ServiceError
 from kadan.api.pydantic_models.agent_runs import AgentRun
 from kadan.api.pydantic_models.runners import Runner
 from kadan.api.run_client import RunClient
+from kadan.api.routes.agents.conversations.runs import RunInput
 from kadan.runner.config import RunnerSettings
 from kadan.runner.service import AgentRunner
 
@@ -161,6 +162,76 @@ def test_completed_task_releases_key_for_next_durable_run():
     asyncio.run(scenario())
 
 
+def test_restored_queued_conversation_waits_for_current_work_without_duplication():
+    async def scenario():
+        older, current = make_run(), make_run()
+        boundary = Boundary(["agent"], [current])
+        runner = AgentRunner(boundary, RunnerSettings(_env_file=None))
+        try:
+            # Storage excludes the older run while its conversation is in trash.
+            await runner.reconcile()
+            await asyncio.sleep(0)
+            assert boundary.started == [current.id]
+            boundary.values = [older, current]
+            await runner.reconcile()
+            await asyncio.sleep(0)
+            assert boundary.started == [current.id]
+            boundary.release.set()
+            await asyncio.sleep(0)
+            boundary.values = [older]
+            await runner.reconcile()
+            await asyncio.sleep(0)
+            assert boundary.started == [current.id, older.id]
+        finally:
+            await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_unavailable_running_conversation_stops_local_task_before_current_work():
+    async def scenario():
+        older, current = make_run(), make_run()
+        boundary = Boundary(["agent"], [older, current])
+        runner = AgentRunner(boundary, RunnerSettings(_env_file=None))
+        try:
+            await runner.reconcile()
+            await asyncio.sleep(0)
+            assert boundary.started == [older.id]
+            boundary.values = [current]
+            await runner.reconcile()
+            assert boundary.cancelled == [older.id]
+            await asyncio.sleep(0)
+            assert boundary.started == [older.id, current.id]
+            assert not any(path.endswith("/cancel") for _, _, path, _ in boundary.calls)
+            restored = older.model_copy(
+                update={
+                    "status": "running",
+                    "owner_id": boundary.owner,
+                    "lease_expires_at": datetime.now(UTC) + timedelta(seconds=60),
+                }
+            )
+            boundary.release.set()
+            await asyncio.sleep(0)
+            boundary.values = [restored]
+            await runner.reconcile()
+            assert runner.work == {}
+            assert boundary.started == [older.id, current.id]
+            boundary.values = [
+                restored.model_copy(
+                    update={
+                        "lease_expires_at": datetime.now(UTC) - timedelta(seconds=1)
+                    }
+                )
+            ]
+            await runner.reconcile()
+            await asyncio.sleep(0)
+            assert boundary.started == [older.id, current.id, older.id]
+        finally:
+            await runner.close()
+
+    asyncio.run(scenario())
+
+
 def test_duplicate_runner_ownership_exits_and_cancels_work():
     async def scenario():
         run = make_run()
@@ -220,8 +291,8 @@ def test_api_run_client_only_persists_enqueue_and_cancellation():
             return run.model_dump(mode="json")
 
         client = RunClient(SimpleNamespace(json_request=request))
-        value = SimpleNamespace(
-            message_id=uuid4(),
+        value = RunInput(
+            message_id=run.id,
             content="Hello",
             persona_id=None,
             expected_version=1,

@@ -22,10 +22,7 @@ native Whisper.
 
 ## Engine
 
-- Native Whisper at the size chosen in settings, or named by the request.
-  Requests use sizes such as `medium` or `large`. The catalog stores them as
-  `whisper-medium` and `whisper-large-v3`, so estimates and preparation
-  normalize names the same way.
+- Native Whisper medium (`whisper-medium`). The optional request `model` can only name `medium`; admission and preparation resolve the same fixed checkpoint.
 
 ## Memory
 
@@ -46,13 +43,13 @@ native Whisper.
 
 The browser converts decodable audio to mono 16-bit PCM WAV at 16 kHz. It does not trim or split clips, and recording does not automatically stop at the native 30-second limit. `POST /v1/audio/transcriptions` accepts a WAV data URL rather than fetching remote audio references.
 
-The page follows the saved Whisper checkpoint, defaulting to medium. API clients can save another supported selection or override `model` per request. Selection does not implicitly download a checkpoint. The catalog normalization above keeps preparation and admission consistent.
+The page uses fixed Whisper medium. The former checkpoint-list/selection endpoints are removed, and old saved selection files are ignored. Preparation requires a verified local download before exporting native assets; it never starts a network download.
 
 Formatting defaults on unless its saved setting changes. An omitted or null `formatting` field uses that setting; a boolean overrides it for one request. Successful recognition retains `raw_text` alongside `text`, with `formatting_status` equal to `disabled`, `formatted`, `failed` or `empty`, plus formatter identity/error when applicable. Empty raw input skips formatting. A formatter error returns the raw transcript instead of discarding successful recognition. See [Formatting worker](worker-formatting.md) for its input/output budgets and memory ownership.
 
 The browser keeps audio and results locally. Cancel ignores late results while server cleanup finishes; navigation also stops recording, releases microphone access and aborts pending requests. Clipboard failure does not change the transcription result.
 
-See [Speech to text and formatting](../../user-expectations/hikari/transcription.md) for user expectations.
+See the user expectations for [speech to text and formatting](../../user-expectations/hikari/transcription.md).
 
 ## Pinned Whisper assets
 

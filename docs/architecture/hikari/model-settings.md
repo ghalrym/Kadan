@@ -1,14 +1,18 @@
 # Model settings and downloads
 
-Hikari separates saved tier selection, checkpoint acquisition and model residency. Persisting a choice must not imply that its download or load succeeded. See [Model settings and downloads](../../user-expectations/hikari/model-settings.md) for user expectations and [Model lifecycle](model-lifecycle.md) for loading and context settings.
+Hikari separates fixed capability assignments, checkpoint acquisition and model residency. `ModelAssignments` defines the API's assignments; the frontend presents the same seven user-facing capabilities. The native catalog retains explicit MoE checkpoint metadata for the retained engine, but these entries are not exposed as model choices. See [model expectations](../../user-expectations/hikari/model-settings.md).
 
-`PUT /v1/settings` saves the tier and queues incomplete checkpoints. Omitted settings retain their values; a null tier does not clear the selection. Transcription formatting is an independent saved switch with a per-request override, so changing tiers alone does not toggle it. Settings and model-status reads do not run inference.
+`GET /v1/settings` returns fixed assignments, observed checkpoints, five-second/480p video defaults and the saved transcription formatting switch. `PUT` changes only formatting. Tier selection, Whisper selection, manual language loading and public saved-context controls are removed. Old tier and Whisper selection files are ignored without deleting or rewriting them. Existing checkpoint directories and volumes are untouched.
 
-`POST /v1/models/{model_id}/download` queues acquisition, and `DELETE` on the same path requests cancellation. HTTP 202 acknowledges the operation rather than completed downloading or immediate resource release. Clients poll model status for the outcome. A second active download for the same checkpoint, or cancellation with no active download, is a conflict. Cancellation does not delete a completed checkpoint.
+Worker protocol 5 rejects older workers whose settings and preparation still depend on tiers. Fixed text and vision use their separate pinned Python stores; native media, Whisper, S1-mini and decisions continue through the native store. The API combines their reported checkpoints, exposing only fixed assignments and the separately enabled audio experiment. Audio remains opt-in and does not replace Qwen speech, Whisper transcription or S1-mini formatting.
 
-Native request preparation can acquire a missing checkpoint. An unusable existing directory or acquisition failure remains an error. Kadan separately gates ordinary chat sending on its reported downloaded-language-model state. These entry points therefore have different prerequisites without changing model ownership.
+`POST /v1/models/{model_id}/download` requires explicit `license_acknowledged: true` and queues acquisition. `DELETE` on the same path requests cancellation. HTTP 202 acknowledges the operation rather than completion or immediate resource release. Clients poll model status for the outcome. A second active download for the same checkpoint, or cancellation with no active download, is a conflict. Cancellation does not delete a completed checkpoint. Unknown or unavailable checkpoints fail before queueing.
 
-Progress is reported per checkpoint. Aggregate percentages may use catalog estimates before byte totals are known; checkpoint state establishes completion. Tier changes can unload the prior resident language model after earlier chat work finishes, but do not delete its stored checkpoint.
+Inference preparation requires a verified local checkpoint and never initiates acquisition. GGUF preparation retains its metadata validation and derived-asset checks; image encoders/tokenizers, Qwen speech tokenizer assets, Whisper exports and the native image/video runtime remain in place. Missing or unusable files produce an error. Formatting remains independent, including per-request overrides and raw-transcript recovery.
+
+Progress is reported per checkpoint. Aggregate percentages may use catalog estimates before byte totals are known; checkpoint state establishes completion.
+
+Completed native status reports sum the downloaded artifact sizes recorded in a validated completion manifest. Existing layout-specific checks remain, including pinned composite/GGUF file lists and single-file revisions. Both downloaded and total bytes use that sum; invalid or incomplete stores do not receive completed totals. Markers and derived caches are excluded. Settings uses observed totals first, labels catalog fallbacks as estimates, and identifies missing sizes explicitly.
 
 ## Checkpoint storage
 

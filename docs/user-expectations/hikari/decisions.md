@@ -2,6 +2,8 @@
 
 Hikari's Decisions page evaluates supplied text against questions using its specialist model. Users add questions and choose **Evaluate**. Inputs and answers are kept only in the open page and disappear on navigation or reload.
 
+The fixed Laya checkpoint must be downloaded through Settings after reviewing and accepting its license. Evaluating a question does not start a model download. A connected worker alone does not confirm that the checkpoint is available or that evaluation will succeed.
+
 **Choice** selects one supplied option. **Score** evaluates an ordered rubric and can return a value between levels. **Noul** estimates how likely a criterion is to be true. These are model judgments, not verified facts or measured real-world frequencies.
 
 Questions and options must be complete and unambiguous. Invalid inputs produce an error, and unavailable specialist inference does not fall back to the chat model.

@@ -3,8 +3,6 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from api.services.inference import inference
-from api.services.inference_errors import InferenceFailure
 from api.services.inference_http import infer
 from api.services.transcription import transcribe
 
@@ -16,7 +14,7 @@ class TranscriptionRequest(BaseModel):
     audio: str = Field(
         min_length=1, description="Base64 mono 16-bit PCM WAV data URL at 16000 Hz"
     )
-    model: str | None = None
+    model: Literal["medium"] | None = None
     language: str | None = None
     formatting: bool | None = Field(
         default=None,
@@ -44,42 +42,6 @@ class TranscriptionResponse(BaseModel):
 
 class TranscriptionUnavailable(BaseModel):
     detail: str
-
-
-class WhisperModels(BaseModel):
-    models: list[str]
-    selected: str | None
-
-
-class WhisperSelection(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    model: str
-
-
-@router.get("/models", operation_id="getWhisperModels")
-def get_models() -> WhisperModels:
-    """List all unique official checkpoints and the persisted selection."""
-    try:
-        snapshot = inference.models_status()
-    except InferenceFailure as exc:
-        raise HTTPException(exc.status_code, str(exc)) from exc
-    return WhisperModels(
-        models=sorted(
-            model.id.removeprefix("whisper-")
-            for model in snapshot.models
-            if model.kind == "transcription"
-        ),
-        selected=snapshot.selected_whisper,
-    )
-
-
-@router.put("/models", operation_id="selectWhisperModel")
-async def select_model(body: WhisperSelection) -> WhisperModels:
-    try:
-        await inference.submit(body, feature="whisper_selection", operation="configure")
-    except InferenceFailure as exc:
-        raise HTTPException(exc.status_code, str(exc)) from exc
-    return get_models()
 
 
 @router.post(

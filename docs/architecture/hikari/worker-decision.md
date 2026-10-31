@@ -47,4 +47,4 @@ Choice returns an option key and optional probabilities. Score is the expected z
 
 The playground starts with empty state and no questions. New Choice questions have one empty option; Score questions have two empty levels. Answers remain associated with the evaluated input, and later edits mark them outdated. Retry uses the current form. Cancellation ignores late responses while native cleanup finishes.
 
-See [Decisions](../../user-expectations/hikari/decisions.md) for user expectations.
+See the user expectations for [decisions](../../user-expectations/hikari/decisions.md).

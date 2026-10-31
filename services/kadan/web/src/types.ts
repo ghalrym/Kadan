@@ -3,6 +3,13 @@ export interface Agent {
   name: string;
   created_at: string;
 }
+export interface Runner {
+  runner_id: string;
+  worker_id: string;
+  capacity: number;
+  lease_expires_at: string;
+  agent_keys: string[];
+}
 export interface Message {
   id: string;
   role: "system" | "user" | "assistant" | "tool";
@@ -20,6 +27,7 @@ export interface Resource {
   markdown: string;
   parent_id: string | null;
   tags: string[];
+  sources: { label: string; url: string }[];
   messages: Message[];
   attachment_ids: string[];
   version: number;
@@ -44,9 +52,8 @@ export interface Status {
     browser_url: string | null;
   };
   hikari: {
-    state: "ready" | "tier_required" | "model_required" | "unavailable";
+    state: "ready" | "model_required" | "unavailable";
     message: string;
-    tier: string | null;
     model_id: string | null;
     download_state?: "not_downloaded" | "downloading" | "cancelling" | "cancelled" | "failed" | "complete" | null;
     /** Whether the selected language model is resident in Hikari; null when unknown. */
@@ -57,16 +64,23 @@ export interface Status {
 export interface AgentRun {
   id: string;
   conversation_id: string;
+  trigger_message_id: string | null;
+  trigger_job_id: string | null;
+  delivered_message_ids: string[];
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   error: string | null;
   created_at: string;
+  updated_at: string;
 }
 export interface ImageJob {
   id: string;
   conversation_id: string;
+  prompt: string;
   status: "queued" | "running" | "completed" | "failed" | "cancelling" | "cancelled";
   error: string | null;
   delivered_message_id: string | null;
+  created_at: string;
+  updated_at: string;
 }
 export interface RunSnapshot {
   runs: AgentRun[];

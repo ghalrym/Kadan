@@ -1,5 +1,5 @@
-import { cancelVideo, generateVideo, getSettings, getVideo, listVideos } from './generated/sdk.gen'
-import type { VideoDefaults, VideoGenerationRequest, VideoJob } from './generated/types.gen'
+import { cancelVideo, generateVideo, getVideo, listVideos } from './generated/sdk.gen'
+import type { VideoGenerationRequest, VideoJob } from './generated/types.gen'
 
 export type { VideoJob, VideoGenerationRequest }
 
@@ -49,15 +49,6 @@ function validateJob(job: VideoJob | undefined): VideoJob {
   )
     throw new Error('The API returned an invalid video job.')
   return job
-}
-
-/** Read clip defaults from the worker's selected hardware tier. */
-export async function loadVideoDefaults(signal: AbortSignal): Promise<VideoDefaults> {
-  const result = await getSettings({ signal })
-  checkResponse(result.response)
-  const tier = result.data?.tiers.find((tier) => tier.id === result.data?.tier)
-  if (!tier) throw new Error('Choose a hardware tier in Settings before submitting a video.')
-  return tier.video_defaults
 }
 
 /**

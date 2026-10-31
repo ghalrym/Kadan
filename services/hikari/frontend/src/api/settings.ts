@@ -1,20 +1,24 @@
-import { getSettings, updateSettings } from './generated/sdk.gen'
-import type {
-  CheckpointStatus,
-  SettingsResponse,
-  TierModel,
-  TierSetting,
-} from './generated/types.gen'
+import {
+  downloadModelV1ModelsModelIdDownloadPost,
+  listModelsV1ModelsGet,
+} from './generated/sdk.gen'
+import type { CheckpointStatus } from './generated/types.gen'
+import { capabilities, type Capability } from '../data/models'
 
-export type { SettingsResponse, TierModel, TierSetting }
-export type TierId = TierSetting['id']
+export type { CheckpointStatus }
 export type DownloadState =
-  | 'unassigned'
+  | 'unavailable'
   | 'not_downloaded'
   | 'queued'
   | 'downloading'
   | 'complete'
   | 'failed'
+
+/** One capability and its checkpoint; null while the worker does not report it. */
+export interface CapabilityModel {
+  capability: Capability
+  model: CheckpointStatus | null
+}
 
 /**
  * Turn a missing or rejected response into an actionable Settings error,
@@ -30,27 +34,41 @@ function settingsError(response: Response | undefined, error: unknown): Error {
   )
 }
 
-/** Read the tiers, the selected tier and each assigned checkpoint's download state. */
-export async function fetchSettings(signal: AbortSignal): Promise<SettingsResponse> {
-  const result = await getSettings({ signal })
+/** Pair each capability with its checkpoint from a model snapshot. */
+export function capabilityModels(models: CheckpointStatus[]): CapabilityModel[] {
+  return capabilities.map((capability) => ({
+    capability,
+    model: models.find((model) => model.id === capability.id) ?? null,
+  }))
+}
+
+/** Read each capability's checkpoint and download state. */
+export async function fetchModels(signal: AbortSignal): Promise<CapabilityModel[]> {
+  const result = await listModelsV1ModelsGet({ signal })
   if (!result.response?.ok || !result.data) throw settingsError(result.response, result.error)
-  return result.data
+  return capabilityModels(result.data.models)
 }
 
 /**
- * Save the tier and queue its incomplete downloads. The caller has shown the
- * tier's license notices before acknowledging them.
+ * Queue every incomplete, idle checkpoint in order. The caller has shown the
+ * license notices and obtained explicit acknowledgement.
  */
-export async function chooseTier(
-  tier: TierId,
+export async function downloadModels(
+  rows: CapabilityModel[],
+  acknowledged: boolean,
   signal: AbortSignal,
-): Promise<SettingsResponse> {
-  const result = await updateSettings({
-    body: { tier, license_acknowledged: true },
-    signal,
-  })
-  if (!result.response?.ok || !result.data) throw settingsError(result.response, result.error)
-  return result.data
+): Promise<CapabilityModel[]> {
+  if (!acknowledged) throw new Error('Review and acknowledge the model licenses before downloading.')
+  let current = rows
+  for (const { model } of rows) {
+    if (!model || !canDownload(model)) continue
+    const result = await downloadModelV1ModelsModelIdDownloadPost({
+      path: { model_id: model.id }, body: { license_acknowledged: true }, signal,
+    })
+    if (!result.response?.ok || !result.data) throw settingsError(result.response, result.error)
+    current = capabilityModels(result.data.models)
+  }
+  return current
 }
 
 /**
@@ -58,43 +76,48 @@ export async function chooseTier(
  * queue until the worker confirms.
  */
 export function downloadState(model: CheckpointStatus | null): DownloadState {
-  if (!model) return 'unassigned'
+  if (!model) return 'unavailable'
   if (model.status === 'complete') return 'complete'
   if (model.status === 'failed' || model.status === 'cancelled') return 'failed'
   if (model.status === 'not_downloaded') return 'not_downloaded'
   return model.total_bytes > 0 ? 'downloading' : 'queued'
 }
 
-/** Assigned checkpoints of a tier, deduplicated when modalities share one. */
-function assigned(tier: TierSetting): CheckpointStatus[] {
+function canDownload(model: CheckpointStatus): boolean {
+  const state = downloadState(model)
+  return state === 'not_downloaded' || state === 'failed'
+}
+
+/** Reported checkpoints, deduplicated when capabilities share one. */
+function reported(rows: CapabilityModel[]): CheckpointStatus[] {
   const models = new Map<string, CheckpointStatus>()
-  for (const { model } of tier.models) if (model) models.set(model.id, model)
+  for (const { model } of rows) if (model) models.set(model.id, model)
   return [...models.values()]
 }
 
-export function tierDownloading(tier: TierSetting): boolean {
-  return assigned(tier).some((model) => {
+export function modelsDownloading(rows: CapabilityModel[]): boolean {
+  return reported(rows).some((model) => {
     const state = downloadState(model)
     return state === 'queued' || state === 'downloading'
   })
 }
 
-export function tierCanDownload(tier: TierSetting): boolean {
-  return !tierDownloading(tier) && !tierComplete(tier)
+export function modelsCanDownload(rows: CapabilityModel[]): boolean {
+  return reported(rows).some(canDownload)
 }
 
-export function tierComplete(tier: TierSetting): boolean {
-  return assigned(tier).every((model) => model.status === 'complete')
+export function modelsComplete(rows: CapabilityModel[]): boolean {
+  return rows.every(({ model }) => model?.status === 'complete')
 }
 
 /**
- * Whole-tier progress in percent, weighting each checkpoint by its catalog
+ * Overall progress in percent, weighting each checkpoint by its catalog
  * estimate until the worker reports the exact size.
  */
-export function tierProgress(tier: TierSetting): number {
+export function modelsProgress(rows: CapabilityModel[]): number {
   let done = 0
   let total = 0
-  for (const model of assigned(tier)) {
+  for (const model of reported(rows)) {
     const size = model.total_bytes || model.estimated_bytes
     total += size
     done += model.status === 'complete' ? size : Math.min(model.downloaded_bytes, size)
@@ -102,9 +125,7 @@ export function tierProgress(tier: TierSetting): number {
   return total ? Math.floor((done / total) * 100) : 0
 }
 
-/** License notices the user must read before the tier's downloads start. */
-export function licenseNotices(tier: TierSetting): CheckpointStatus[] {
-  return assigned(tier).filter(
-    (model) => model.license_notice && model.status !== 'complete',
-  )
+/** License notices the user must read before downloads start. */
+export function licenseNotices(rows: CapabilityModel[]): CheckpointStatus[] {
+  return reported(rows).filter((model) => model.license_notice && model.status !== 'complete')
 }

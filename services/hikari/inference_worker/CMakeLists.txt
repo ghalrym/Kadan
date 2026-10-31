@@ -108,7 +108,7 @@ target_link_libraries(kadan_layer_math PUBLIC kadan_resources)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_layer_math PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
-# Native GGUF text models for the hardware tiers.
+# Retained native GGUF text models.
 add_library(kadan_gguf_text src/models/text/gguf_engine.cpp src/models/text/gguf_weights.cpp
   src/models/text/gguf_placement.cpp src/models/text/cpu_matvec.cpp
   src/models/text/qwen_layers.cpp src/models/text/qwen35moe.cpp src/models/text/qwen4exp.cpp)
@@ -416,6 +416,10 @@ if(BUILD_TESTING)
   target_compile_options(preparation-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
   target_link_options(preparation-tests PRIVATE -Wl,--wrap=pread)
   add_test(NAME preparation COMMAND preparation-tests)
+  add_executable(chat-load-tests tests/chat_load.cpp src/inference/inference_chat.cpp)
+  target_link_libraries(chat-load-tests PRIVATE kadan_preparation kadan_gguf_text kadan_text_tokenizer)
+  target_compile_options(chat-load-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  add_test(NAME chat-load COMMAND chat-load-tests)
   add_executable(inference-request-tests tests/inference_request.cpp)
   target_link_libraries(inference-request-tests PRIVATE kadan_preparation)
   target_compile_options(inference-request-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)

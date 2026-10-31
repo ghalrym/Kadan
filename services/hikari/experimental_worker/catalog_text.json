@@ -1,0 +1,81 @@
+{
+  "artifacts": [
+    {
+      "name": "LICENSE",
+      "size": 10574,
+      "digest": "25e731c697c4fe4c52ee654cedf7106a827748d2",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-1.7B/resolve/40ebe0aa6662c9d40389c2f5d565b6a2c6aebacd/LICENSE"
+    },
+    {
+      "name": "chat_template.jinja",
+      "size": 12129,
+      "digest": "d0747b8b5fc99eaecfe02a04eefcff75eb181334",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-1.7B/resolve/40ebe0aa6662c9d40389c2f5d565b6a2c6aebacd/chat_template.jinja"
+    },
+    {
+      "name": "config.json",
+      "size": 1454,
+      "digest": "99c878848ecd01f7b599148315c84634b5c5c656",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-1.7B/resolve/40ebe0aa6662c9d40389c2f5d565b6a2c6aebacd/config.json"
+    },
+    {
+      "name": "configuration_lfm3.py",
+      "size": 6113,
+      "digest": "a3cc0e726e8f4656f8468df5c8445f26e6dc8464",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-1.7B/resolve/40ebe0aa6662c9d40389c2f5d565b6a2c6aebacd/configuration_lfm3.py"
+    },
+    {
+      "name": "generation_config.json",
+      "size": 328,
+      "digest": "828e9a1ac7789d8b38af0dfe573ab6362598745b",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-1.7B/resolve/40ebe0aa6662c9d40389c2f5d565b6a2c6aebacd/generation_config.json"
+    },
+    {
+      "name": "lfm3_conv.py",
+      "size": 8532,
+      "digest": "a1b67afdb605452f5a99751862863d5460a1fa69",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-1.7B/resolve/40ebe0aa6662c9d40389c2f5d565b6a2c6aebacd/lfm3_conv.py"
+    },
+    {
+      "name": "model.safetensors",
+      "size": 3457635448,
+      "digest": "135922caef64e81e52af88ede8b7c3ddaa9d6da220a9737fb3065275dbfb4330",
+      "algorithm": "sha256",
+      "url": "https://huggingface.co/LiquidAI/LFM3-1.7B/resolve/40ebe0aa6662c9d40389c2f5d565b6a2c6aebacd/model.safetensors"
+    },
+    {
+      "name": "modeling_lfm3.py",
+      "size": 42359,
+      "digest": "0ccffc7ed179c2e3aaa19ab93bba735abb1d124d",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-1.7B/resolve/40ebe0aa6662c9d40389c2f5d565b6a2c6aebacd/modeling_lfm3.py"
+    },
+    {
+      "name": "special_tokens_map.json",
+      "size": 92,
+      "digest": "5d871daaacbf26aaa9cb47c2935f30e797ee35a7",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-1.7B/resolve/40ebe0aa6662c9d40389c2f5d565b6a2c6aebacd/special_tokens_map.json"
+    },
+    {
+      "name": "tokenizer.json",
+      "size": 17908635,
+      "digest": "7e226e34bface23ccf6e495d157bf77186c1c30a7659880e1a8994db528c3701",
+      "algorithm": "sha256",
+      "url": "https://huggingface.co/LiquidAI/LFM3-1.7B/resolve/40ebe0aa6662c9d40389c2f5d565b6a2c6aebacd/tokenizer.json"
+    },
+    {
+      "name": "tokenizer_config.json",
+      "size": 1545,
+      "digest": "562b1ed0762f36c964646b8737081ced6af40754",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-1.7B/resolve/40ebe0aa6662c9d40389c2f5d565b6a2c6aebacd/tokenizer_config.json"
+    }
+  ]
+}

@@ -4,6 +4,8 @@ import { registerHooks } from "node:module";
 import { afterEach, beforeEach, test } from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import * as agentRuns from "./agentRuns.ts";
+import * as outbox from "./outbox.ts";
 
 const state = [];
 const reactUrl = `data:text/javascript,${encodeURIComponent("export const state = []; export const useState = value => [value, next => state.push(next)];")}`;
@@ -108,22 +110,22 @@ test("Chat passes saved history to export while its draft and optimistic outgoin
     react: {
       Fragment: "Fragment", useEffect() {}, useLayoutEffect() {}, useCallback: callback => callback,
       useRef: current => ({ current }),
-      useState: initial => [slot++ === 8 ? outgoing : typeof initial === "function" ? initial() : initial, () => {}],
+      useState: initial => [slot++ === 12 ? outgoing : typeof initial === "function" ? initial() : initial, () => {}],
     },
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "lucide-react": {},
     "./Markdown": { default: "Markdown" },
     "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true }) },
     "./Pet": { default: "Pet", useMood: () => ["idle", () => {}] },
+    "./Activity": {}, "./CodingIndicator": {},
+    "./attachments": { ChatAttachments: class { entries = []; } },
+    "./SaveChatResult": {},
     "./AgentCard": {}, "./ComputerViewer": {}, "./ChatExport": { default: "ChatExport" },
     "./VoiceCallControl": { useVoiceCall: () => ({ active: false }) },
     "./presence": {}, "./PetContext": { useAgentPet: () => null },
     "./api": {}, "./uuid": {},
-    "./agentRuns": {
-      latestConversation: current => current, responseProgress: () => null,
-      activeRun: () => false, cancellableImage: () => false,
-    },
-    "./outbox": { readPending: () => null, confirmSend: () => null },
+    "./agentRuns": agentRuns,
+    "./outbox": outbox,
   };
   const exports = {};
   const { outputText } = ts.transpileModule(readFileSync(new URL("./Chat.tsx", import.meta.url), "utf8"), {
@@ -131,7 +133,7 @@ test("Chat passes saved history to export while its draft and optimistic outgoin
   });
   runInNewContext(outputText, {
     exports, require: name => { assert.ok(name in modules, name); return modules[name]; },
-    sessionStorage: { getItem: key => key === "kadan.draft.haru" ? "Unsent draft" : null },
+    sessionStorage: { getItem: key => key === outbox.chatStorageKeys("haru", snapshot.id).draft ? "Unsent draft" : null },
   });
   const tree = exports.default({ agentKey: "haru", agentName: "Haru", chain: snapshot, personas: [], status: null });
   function elements(node) {

@@ -51,7 +51,7 @@ public:
             dlclose(library_);
     }
 
-    Footprint probe() const {
+    Footprint probe(bool container_limit = true) const {
         Footprint available(devices_ + 1);
         std::ifstream meminfo("/proc/meminfo");
         std::string line;
@@ -66,7 +66,8 @@ public:
             current_file("/sys/fs/cgroup/memory.current");
         std::string limit;
         Bytes current = 0;
-        if (limit_file >> limit && current_file >> current && limit != "max") {
+        if (container_limit && limit_file >> limit && current_file >> current
+            && limit != "max") {
             const auto maximum = std::stoull(limit);
             available[0] = std::min<Bytes>(
                 available[0], maximum > current ? maximum - current : 0
@@ -109,9 +110,15 @@ public:
                 break;
             }
         std::ifstream limit_file("/sys/fs/cgroup/memory.max");
+        const auto physical_ram_total = ram_total;
+        Json ram_limit = nullptr;
         std::string limit;
-        if (limit_file >> limit && limit != "max")
-            ram_total = std::min<Bytes>(ram_total, std::stoull(limit));
+        if (limit_file >> limit && limit != "max") {
+            const auto maximum = std::stoull(limit);
+            ram_total = std::min<Bytes>(ram_total, maximum);
+            constexpr Bytes host_margin = 1024ULL * 1024 * 1024;
+            ram_limit = maximum > host_margin ? maximum - host_margin : 0;
+        }
         const auto free = probe();
         Json devices = Json::array();
         for (unsigned index = 0; index < devices_; ++index) {
@@ -140,6 +147,9 @@ public:
             {"name", label},
             {"ram_total", ram_total},
             {"ram_free", free[0]},
+            {"ram_limit", ram_limit},
+            {"physical_ram_total", physical_ram_total},
+            {"physical_ram_free", probe(false)[0]},
             {"disk_total", Bytes(disk.f_blocks) * disk.f_frsize},
             {"disk_free", Bytes(disk.f_bavail) * disk.f_frsize},
             {"devices", devices}
@@ -295,14 +305,14 @@ int serve(const WorkerProgram& program) {
     WorkerHost host(program.workload, memory.devices(), hooks);
     send(
         {{"state", "hello"},
-         {"protocol", 4},
+         {"protocol", 5},
          {"pid", getpid()},
          {"worker", name},
          {"instance", instance},
          {"machine", hooks.machine()}}
     );
     send({{"state", "models"}, {"models", store.status()}});
-    send({{"state", "ready"}, {"protocol", 4}, {"pid", getpid()}});
+    send({{"state", "ready"}, {"protocol", 5}, {"pid", getpid()}});
     host.start();
     int status = 0;
     try {

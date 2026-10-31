@@ -9,13 +9,13 @@ Feature = Literal[
     "image",
     "video",
     "stt",
+    "audio_call",
     "stt_formatting",
     "tts",
     "decisions",
+    "vision",
     "models",
-    "tier_selection",
     "model_context",
-    "whisper_selection",
     "whisper_formatting",
 ]
 Operation = Literal["generate", "completion", "load", "unload", "download", "configure"]

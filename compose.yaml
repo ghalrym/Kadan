@@ -1,6 +1,27 @@
 # Preserve existing volume and container identity across checkout/repository renames.
 name: kadan
 
+x-lfm3-worker: &lfm3_worker
+  build:
+    context: ./services/hikari
+    dockerfile: experimental_worker/Dockerfile
+  init: true
+  restart: unless-stopped
+  environment: &lfm3_environment
+    HIKARI_API_URL: ${HIKARI_API_URL:-ws://hikari-api:8000/v1/workers}
+    HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-insecure-api-key}
+    KADAN_MODEL_DIR: /var/lib/kadan/models
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
+  depends_on:
+    hikari-api:
+      condition: service_healthy
+
 services:
   jaeger:
     image: jaegertracing/jaeger:2.22.0@sha256:836b967b5abcf1f7758066aa6b348619267a2f1459f72d472840570f9bd88a17
@@ -68,6 +89,8 @@ services:
       HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-insecure-api-key}
       HIKARI_MODEL_IDLE_SECONDS: ${HIKARI_MODEL_IDLE_SECONDS:-3600}
       HIKARI_KV_CACHE_IDLE_SECONDS: ${HIKARI_KV_CACHE_IDLE_SECONDS:-3600}
+      HIKARI_ENABLE_LFM3_TEXT: ${HIKARI_ENABLE_LFM3_TEXT:-true}
+      HIKARI_ENABLE_LFM3_VISION: ${HIKARI_ENABLE_LFM3_VISION:-true}
       WATCHFILES_FORCE_POLLING: "true"
     depends_on:
       hikari-postgres:
@@ -85,6 +108,34 @@ services:
     volumes:
       - ./services/hikari/api:/app/api
       - ./services/hikari/bin:/app/bin
+
+  # Default BF16 conversation and screenshots; checkpoints remain outside tiers.
+  hikari-worker-lfm3-text:
+    <<: *lfm3_worker
+    environment:
+      <<: *lfm3_environment
+      HIKARI_EXPERIMENTAL_BACKEND: experimental_worker.text
+      HIKARI_ENABLE_LFM3_TEXT: ${HIKARI_ENABLE_LFM3_TEXT:-true}
+    volumes:
+      - lfm3_text_models:/var/lib/kadan/models
+
+  hikari-worker-lfm3-vision:
+    <<: *lfm3_worker
+    environment:
+      <<: *lfm3_environment
+      HIKARI_EXPERIMENTAL_BACKEND: experimental_worker.vision
+      HIKARI_ENABLE_LFM3_VISION: ${HIKARI_ENABLE_LFM3_VISION:-true}
+    volumes:
+      - lfm3_vision_models:/var/lib/kadan/models
+
+  # Calls use the same pinned audio checkpoint and volume as the former overlay.
+  hikari-worker-lfm3-audio:
+    <<: *lfm3_worker
+    environment:
+      <<: *lfm3_environment
+      HIKARI_EXPERIMENTAL_BACKEND: experimental_worker.audio
+    volumes:
+      - lfm3_audio_model_data:/var/lib/kadan/models
 
   # Language worker: the tier's mixture-of-experts model for chat.
   hikari-worker-llm:
@@ -419,7 +470,7 @@ services:
 
   # The agent computer shares the Compose network with the other services.
   kadan-sandbox:
-    image: ghcr.io/agent-infra/sandbox:1.11.0@sha256:6328d7fd2f0ff0b4c147c3d05b3df1ce331f4a482eb6e550ecd64ed1fcf906e7
+    build: ./services/kadan/sandbox
     environment:
       SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:-insecure-api-key}
       TZ: ${TZ:-UTC}
@@ -467,6 +518,9 @@ services:
       KADAN_RUNNER_ID: runner-2
 
 volumes:
+  lfm3_text_models:
+  lfm3_vision_models:
+  lfm3_audio_model_data:
   sandbox_home:
   model_data:
     name: ${HIKARI_MODEL_VOLUME:-${COMPOSE_PROJECT_NAME}_model_data}

@@ -6,6 +6,6 @@ Users are responsible for securing the machines and environments where they run 
 
 While the project is still being fleshed out, development speed takes priority. Security work adds development overhead and is the lowest priority during this phase. Users who need security are expected to configure it themselves as part of operating the system.
 
-Hikari workers use `HIKARI_WORKER_TOKEN` as a bearer API key. Kadan uses `KADAN_SANDBOX_API_KEY`, passed to the agent computer as `SANDBOX_API_KEY`. Both default to `insecure-api-key` and can be overridden. Startup does not require generating credentials.
+Hikari workers and the agent computer use configurable API keys, both defaulting to `insecure-api-key`. Startup does not require generating credentials. See the [installation configuration](../../README.md) for operator settings.
 
 The baseline has no host or origin allowlists, separate sandbox network, or container hardening requirements. Published ports listen on all host interfaces. The application interfaces have no login or access-control system. Operators decide how to restrict access to their deployment.

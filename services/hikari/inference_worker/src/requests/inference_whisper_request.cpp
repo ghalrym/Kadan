@@ -25,7 +25,7 @@ void prepare_input(
     input.assets = configured_path("KADAN_WHISPER_ASSET_ROOT", root / "assets");
     if (!fs::exists(root)) {
         const auto& entry = store.entry("whisper-" + request.model);
-        const auto source = store.acquire("whisper-" + request.model, cancel);
+        const auto source = store.require_local("whisper-" + request.model, cancel);
         export_whisper(source / (request.model + ".pt"), entry.revision, root, cancel);
     }
     if (!fs::exists(input.assets)) {
@@ -63,7 +63,7 @@ void prepare_input(
         422
     );
     request.model = "superwhisper-s1-mini";
-    request.configuration.checkpoint = store.acquire(request.model, cancel);
+    request.configuration.checkpoint = store.require_local(request.model, cancel);
     request.configuration.context_limit = 4096;
 }
 

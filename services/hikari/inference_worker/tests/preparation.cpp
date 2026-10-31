@@ -146,29 +146,141 @@ InferenceRequest request(
     return result;
 }
 
+void completed_checkpoint_size_units() {
+    for (const std::string layout :
+         {"composite", "components", "single_file", "gguf"}) {
+        Directory tmp;
+        const auto data = tmp.path / "data", root = tmp.path / "models";
+        const auto content =
+            layout == "single_file"
+                ? std::map<std::string, std::string>{{"test.pt", "metadata-only"}}
+            : layout == "gguf"
+                ? std::map<std::string, std::string>{{"model.gguf", "metadata-only"}}
+                : std::map<std::string, std::string>{
+                      {"config.json", "{}"}, {"model.safetensors", "local-bytes"}
+                  };
+        const auto files = local_manifest(tmp.path / "source", content);
+        auto model = entry("test", files);
+        model["layout"] = layout;
+        model["estimated_bytes"] = layout == "components" ? 0 : 999;
+        if (layout == "single_file") {
+            model["revision"] = files[0].at("digest");
+            model["asset_name"] = "test.pt";
+            model["asset_url"] = "https://unit.invalid/test.pt";
+        } else if (layout == "gguf") {
+            model["kind"] = "llm";
+            model["asset_name"] = "model.gguf";
+        } else if (layout == "components") {
+            model["component_paths"] = Json::array({"."});
+            model["weight_paths"] = Json::array({""});
+        }
+        catalog(data, Json::array({model}));
+        const auto checkpoint = root / ("test-" + model["revision"].get<std::string>());
+        std::uint64_t total = 0;
+        for (const auto& [name, value] : content) {
+            bytes(checkpoint / name, value);
+            total += value.size();
+        }
+        // Neither derived assets nor the completion marker are downloaded artifacts.
+        bytes(checkpoint / "derived.cache", "unrelated-derived-bytes");
+        if (layout == "gguf")
+            bytes(checkpoint / "config.json", "{}");
+        const Json marker{{"revision", model["revision"]}, {"files", files}};
+        write_document(checkpoint / "complete.json", marker);
+        unsigned transfers = 0;
+        const auto fetch = [&](const auto&,
+                               const auto&,
+                               const auto&,
+                               bool,
+                               std::uint64_t) -> std::int64_t {
+            ++transfers;
+            throw RequestError("Status must not transfer checkpoint data");
+        };
+        ModelStore store(root, data, fetch);
+        const auto status = store.status().at("models").at(0);
+        assert(store.complete(store.entry("test")));
+        assert(status.at("status") == "complete");
+        assert(status.at("downloaded_bytes") == total);
+        assert(status.at("total_bytes") == total);
+        assert(status.at("estimated_bytes") == model["estimated_bytes"]);
+        ModelStore reopened(root, data, fetch);
+        assert(reopened.status().at("models").at(0) == status);
+
+        const auto first = checkpoint / files[0].at("name").get<std::string>();
+        for (const std::string invalid :
+             {"revision",
+              "size",
+              "missing-file",
+              "missing-marker",
+              "symlink",
+              "manifest"}) {
+            write_document(checkpoint / "complete.json", marker);
+            if (invalid == "revision") {
+                auto changed = marker;
+                changed["revision"] = "wrong-revision";
+                write_document(checkpoint / "complete.json", changed);
+            } else if (invalid == "size")
+                bytes(first, "");
+            else if (invalid == "missing-file")
+                fs::remove(first);
+            else if (invalid == "missing-marker")
+                fs::remove(checkpoint / "complete.json");
+            else if (invalid == "symlink") {
+                fs::remove(first);
+                fs::create_symlink(tmp.path / "source" / first.filename(), first);
+            } else {
+                auto changed = marker;
+                if (layout == "composite" || layout == "gguf"
+                    || layout == "single_file")
+                    changed["files"][0]["digest"] = std::string(64, 'a');
+                else
+                    changed["files"][0]["name"] = "../outside";
+                write_document(checkpoint / "complete.json", changed);
+            }
+            assert(!store.complete(store.entry("test")));
+            const auto incomplete = store.status().at("models").at(0);
+            assert(incomplete.at("status") == "not_downloaded");
+            assert(incomplete.at("downloaded_bytes") == 0);
+            assert(incomplete.at("total_bytes") == 0);
+            fs::remove(first);
+            bytes(first, content.at(first.filename().string()));
+        }
+        write_document(checkpoint / "complete.json", marker);
+        fs::rename(checkpoint, tmp.path / "relocated");
+        fs::create_directory_symlink(tmp.path / "relocated", checkpoint);
+        assert(!store.complete(store.entry("test")));
+        const auto linked = store.status().at("models").at(0);
+        assert(linked.at("status") == "not_downloaded");
+        assert(linked.at("downloaded_bytes") == 0);
+        assert(linked.at("total_bytes") == 0);
+        assert(transfers == 0);
+    }
+}
+
 void pinned_catalog_units() {
     Directory tmp;
     ModelStore store(tmp.path, worker_data_directory());
-    // Without a saved choice transcription uses the tiers' Whisper medium.
+    write_document(tmp.path / "tier.json", {{"tier", "obsolete"}});
+    write_document(tmp.path / "whisper-selection.json", {{"model", "large-v3"}});
     assert(store.whisper_selected() == "medium");
-    assert(store.whisper_model("large") == "large-v3");
-    store.select_whisper("turbo");
-    assert(store.whisper_selected() == "large-v3-turbo");
-    rejects([&] { store.whisper_model("unknown"); });
-    // Memory requirements resolve Whisper sizes to their catalog entries.
+    rejects([&] { store.whisper_model("large"); });
     assert(
         worker_requirement(kadan::Workload::speech, std::nullopt, store)["model"]
-        == "whisper-large-v3-turbo"
-    );
-    assert(
-        worker_requirement(kadan::Workload::speech, "medium", store)["model"]
         == "whisper-medium"
     );
     assert(
-        worker_requirement(kadan::Workload::speech, "large", store)["model"]
-        == "whisper-large-v3"
+        worker_requirement(kadan::Workload::tts, std::nullopt, store)["model"]
+        == "qwen-tts-1.7b-custom"
+    );
+    assert(
+        worker_requirement(kadan::Workload::video, std::nullopt, store)["model"]
+        == "h3-fl2va-int8-turbo"
     );
     rejects([&] { worker_requirement(kadan::Workload::speech, "unknown", store); });
+    assert(read_document(tmp.path / "tier.json").at("tier") == "obsolete");
+    assert(
+        read_document(tmp.path / "whisper-selection.json").at("model") == "large-v3"
+    );
     const auto speech_need =
         worker_requirement(kadan::Workload::speech, "medium", store);
     assert(speech_need["minimum"][1] == speech_need["device_floor"]);
@@ -221,11 +333,15 @@ void pinned_catalog_units() {
 void shared_settings_units() {
     Directory tmp;
     ModelStore store(tmp.path, worker_data_directory());
-    const std::array<std::string, 3> tiers{"go", "plus", "pro"};
+    const std::array<std::string, 3> models{
+        "qwen3.6-35b-a3b-q4-k-m",
+        "qwen3.8-flash-next-ud-iq3-xxs",
+        "qwen3.8-flash-next-q3-k-xl"
+    };
     int start[2];
     assert(pipe(start) == 0);
     std::vector<pid_t> children;
-    for (std::size_t index = 0; index < tiers.size(); ++index) {
+    for (std::size_t index = 0; index < models.size(); ++index) {
         const auto child = fork();
         assert(child >= 0);
         if (child == 0) {
@@ -236,11 +352,9 @@ void shared_settings_units() {
             close(start[0]);
             try {
                 ModelStore worker(tmp.path, worker_data_directory());
-                const auto model = *worker.hardware_tier(tiers[index]).models.at("llm");
+                const auto& model = models[index];
                 for (int repeat = 0; repeat < 10; ++repeat) {
-                    worker.select_tier("go");
                     worker.set_context(model, 4096 + index);
-                    worker.select_whisper("medium");
                     worker.set_whisper_formatting(false);
                 }
                 _exit(0);
@@ -251,7 +365,7 @@ void shared_settings_units() {
         children.push_back(child);
     }
     close(start[0]);
-    assert(write(start[1], "xxx", tiers.size()) == ssize_t(tiers.size()));
+    assert(write(start[1], "xxx", models.size()) == ssize_t(models.size()));
     close(start[1]);
     bool succeeded = true;
     for (const auto child : children) {
@@ -260,11 +374,10 @@ void shared_settings_units() {
         succeeded &= waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
     }
     assert(succeeded);
-    assert(store.tier() == "go");
     assert(store.whisper_selected() == "medium");
     assert(!store.whisper_formatting());
-    for (std::size_t index = 0; index < tiers.size(); ++index) {
-        const auto model = *store.hardware_tier(tiers[index]).models.at("llm");
+    for (std::size_t index = 0; index < models.size(); ++index) {
+        const auto& model = models[index];
         assert(store.context(model) == 4096 + index);
     }
 }
@@ -272,7 +385,6 @@ void shared_settings_units() {
 void whisper_formatting_setting_units() {
     Directory tmp;
     ModelStore store(tmp.path, worker_data_directory());
-    store.select_whisper("large-v3");
     assert(store.whisper_formatting());
     for (const bool enabled : {false, true}) {
         auto configuration = request(
@@ -289,7 +401,7 @@ void whisper_formatting_setting_units() {
         ModelStore reopened(tmp.path, worker_data_directory());
         assert(reopened.whisper_formatting() == enabled);
         assert(reopened.status().at("whisper_formatting") == enabled);
-        assert(reopened.whisper_selected() == "large-v3");
+        assert(reopened.whisper_selected() == "medium");
     }
     rejects([&] {
         request("invalid", {{"feature", "whisper_formatting"}, {"enabled", true}});
@@ -299,9 +411,8 @@ void whisper_formatting_setting_units() {
 void whisper_formatting_request_units() {
     Directory tmp;
     ModelStore store(tmp.path, worker_data_directory());
-    store.select_whisper("large-v3");
     // Preparation checks file presence only; no model is loaded or executed.
-    const auto root = tmp.path / "whisper/large-v3";
+    const auto root = tmp.path / "whisper/medium";
     for (const auto* file :
          {"model.safetensors", "dimensions.txt", "assets/english.tokens"})
         bytes(root / file, "");
@@ -322,7 +433,7 @@ void whisper_formatting_request_units() {
             prepare_input(input, transcription, store, running);
             const bool expected = override.is_null() ? saved : override.get<bool>();
             assert(input.formatting == expected);
-            assert(transcription.model == "large-v3");
+            assert(transcription.model == "medium");
             const auto result = present_transcription(transcription, "  Hello.  ");
             assert(result.at("text") == "  Hello.  ");
             assert(result.at("raw_text") == "  Hello.  ");
@@ -348,7 +459,7 @@ void whisper_formatting_response_units() {
     auto transcription = request(
         "format", {{"feature", "stt"}, {"audio", "unused"}, {"formatting", true}}
     );
-    transcription.model = "large-v3";
+    transcription.model = "medium";
     const std::string raw = "um send it on friday no thursday";
     const auto result = present_transcription(transcription, raw);
     assert(result.at("text") == raw && result.at("raw_text") == raw);
@@ -408,25 +519,11 @@ void checkpoint_catalog_units() {
         )
         == turbo.required_files.end()
     );
-    // Each hardware tier pins one GGUF language model and the formatter.
-    const std::map<std::string, std::string> tiers{
-        {"go", "qwen3.6-35b-a3b-q4-k-m"},
-        {"plus", "qwen3.8-flash-next-ud-iq3-xxs"},
-        {"pro", "qwen3.8-flash-next-q3-k-xl"}
-    };
-    for (const auto& [tier, id] : tiers) {
-        const auto& hardware = store.hardware_tier(tier);
-        assert(hardware.models.at("llm") == id);
-        assert(hardware.models.at("formatting") == "superwhisper-s1-mini");
-        assert(hardware.models.at("image") == "qwen-image-2.1-turbo");
-        assert(hardware.models.at("video") == "h3-fl2va-int8-turbo");
-        assert(hardware.video_defaults.duration == (tier == "plus" ? 8 : 5));
-        assert(
-            hardware.video_defaults.resolution
-            == (tier == "go" || tier == "plus" ? "480p" : "768p")
-        );
-        assert(hardware.models.at("speech") == "qwen-tts-1.7b-custom");
-        assert(hardware.models.at("transcription") == "whisper-medium");
+    // Native MoE metadata remains available for explicit internal requests.
+    for (const auto* id :
+         {"qwen3.6-35b-a3b-q4-k-m",
+          "qwen3.8-flash-next-ud-iq3-xxs",
+          "qwen3.8-flash-next-q3-k-xl"}) {
         const auto& model = store.entry(id);
         assert(
             model.kind == "llm" && model.layout == "gguf" && model.inference_available
@@ -454,11 +551,10 @@ void checkpoint_catalog_units() {
           "muse-spark-open-q3-xl",
           "qwen-image-2.1"})
         rejects([&] { store.entry(removed); });
-    rejects([&] { store.hardware_tier("max"); });
-    assert(store.status().at("tiers").size() == 3);
-    assert(store.status().at("selected_tier").is_null());
+    assert(!store.status().contains("tiers"));
+    assert(!store.status().contains("selected_tier"));
     assert(transfers == 0);
-    assert(store.status().at("selected_model_id").is_null());
+    assert(store.status().at("selected_model_id") == "lfm3-1.7b-bf16");
 }
 
 void manifest_model_units() {
@@ -494,6 +590,7 @@ void typed_request_units() {
     auto chat = request(
         "chat",
         {{"feature", "llm"},
+         {"model_id", "small"},
          {"messages", Json::array({{{"role", "user"}, {"text", "Hello"}}})}},
         "completion"
     );
@@ -507,7 +604,7 @@ void typed_request_units() {
     const auto whole = chat_prompt(turns, 4096);
     const auto earlier = chat_messages(std::span(turns).first(3), 4096);
     assert(whole.starts_with(earlier) && earlier.ends_with("<|im_end|>\n"));
-    auto load = request("load", {{"feature", "llm"}}, "load");
+    auto load = request("load", {{"feature", "llm"}, {"model_id", "small"}}, "load");
     assert(!std::get<ChatRequest>(load.input).context_supplied);
     load = request("load", {{"feature", "llm"}, {"context_limit", nullptr}}, "load");
     assert(
@@ -626,7 +723,10 @@ void acquisition_units() {
             progress.emplace_back(received, total);
         }
     );
+    rejects([&] { store.require_local("test", running); });
+    assert(calls == 0);
     const auto checkpoint = store.acquire("test", running);
+    assert(store.require_local("test", running) == checkpoint);
     assert(calls == 1 && store.complete(store.entry("test")));
     assert(
         progress.front().first == 0 && progress.back().first == 14
@@ -1032,6 +1132,7 @@ void upstream_manifest_units() {
     rejects([&] { store.acquire("test", running); });
     assert(read_bytes(root / ".test.partial/config.json", 32) == "{");
     const auto checkpoint = store.acquire("test", running);
+    assert(store.require_local("test", running) == checkpoint);
     assert(bodies == 5 && store.complete(CatalogEntry::parse(model)));
     assert(fetched.front() == "model.safetensors.index.json");
     assert(store.acquire("test", running) == checkpoint && bodies == 5);
@@ -1492,18 +1593,6 @@ void gguf_acquisition_units() {
             }
         }
     }
-
-    // Choosing a hardware tier is what selects the language model.
-    Directory tmp;
-    ModelStore published(tmp.path, worker_data_directory());
-    rejects([&] { published.selected(); });
-    rejects([&] { published.select_tier("max"); });
-    published.select_tier("pro");
-    assert(published.selected() == "qwen3.8-flash-next-q3-k-xl");
-    assert(read_document(tmp.path / "tier.json") == Json({{"tier", "pro"}}));
-    assert(published.status().at("selected_tier") == "pro");
-    ModelStore reopened(tmp.path, worker_data_directory());
-    assert(reopened.tier() == "pro");
 }
 
 void job_units() {
@@ -1528,23 +1617,6 @@ void job_units() {
         );
     }
     catalog(data, models);
-    auto document = read_document(data / "catalog.json");
-    document["tiers"] = Json::array(
-        {{{"id", "go"},
-          {"name", "Go"},
-          {"vram_gb", 8},
-          {"ram_gb", 32},
-          {"video_defaults", {{"duration", 5}, {"resolution", "480p"}}},
-          {"models",
-           {{"llm", "small"},
-            {"image", "qwen-image-2.1-turbo"},
-            {"video", nullptr},
-            {"speech", nullptr},
-            {"transcription", nullptr},
-            {"formatting", nullptr}}}}}
-    );
-    write_document(data / "catalog.json", document);
-    write_document(root / "tier.json", {{"tier", "go"}});
     write_document(root / "context.json", {{"small", 4096}});
     JobWorkspace files(jobs);
     ModelStore store(
@@ -1555,7 +1627,7 @@ void job_units() {
         }
     );
     const auto initial = store.status();
-    assert(initial.at("selected_model_id") == "small");
+    assert(initial.at("selected_model_id") == "lfm3-1.7b-bf16");
     assert(!initial.contains("selected_image"));
     auto context = request(
         "context",
@@ -1569,21 +1641,10 @@ void job_units() {
     files.cleanup(context.id);
     store.set_context("small", 4096);
     rejects([&] { store.set_context("small", 300000); });
-    auto selection = request(
-        "selection", {{"feature", "tier_selection"}, {"tier", "go"}}, "configure"
-    );
-    prepare_task(selection, store, files, running);
-    assert(store.status().at("selected_model_id") == "small");
-    assert(store.status().at("selected_tier") == "go");
-    rejects([&] {
-        auto unknown = request(
-            "unknown-tier",
-            {{"feature", "tier_selection"}, {"tier", "max"}},
-            "configure"
-        );
-        prepare_task(unknown, store, files, running);
-    });
-    files.cleanup(selection.id);
+    for (const auto* removed : {"tier_selection", "whisper_selection"})
+        rejects([&] {
+            request("removed-selection", {{"feature", removed}}, "configure");
+        });
     std::string oversized_prompt;
     for (unsigned index = 0; index < 3000; ++index)
         oversized_prompt += "狐";
@@ -1625,16 +1686,14 @@ void job_units() {
     assert(std::get<VideoRequest>(explicit_video.input).duration == 15);
     assert(std::get<VideoRequest>(explicit_video.input).short_edge == 768);
     files.cleanup(explicit_video.id);
-    // Turbo serves every tier, so images need no tier choice.
-    fs::remove(root / "tier.json");
-    auto untiered = request(
-        "untiered-image", {{"feature", "image"}, {"prompt", "mountain"}, {"count", 1}}
+    auto default_image = request(
+        "default_image-image",
+        {{"feature", "image"}, {"prompt", "mountain"}, {"count", 1}}
     );
-    prepare_task(untiered, store, files, running);
-    assert(untiered.model == "qwen-image-2.1-turbo");
-    files.cleanup(untiered.id);
-    write_document(root / "tier.json", {{"tier", "go"}});
-    // Image selection was removed; Turbo is every tier's image model.
+    prepare_task(default_image, store, files, running);
+    assert(default_image.model == "qwen-image-2.1-turbo");
+    files.cleanup(default_image.id);
+    // Image selection is unavailable; all image requests use Turbo.
     rejects([&] {
         request(
             "image-selection",
@@ -1784,6 +1843,7 @@ void job_units() {
     auto chat = request(
         "chat",
         {{"feature", "llm"},
+         {"model_id", "small"},
          {"messages", Json::array({{{"role", "user"}, {"text", "Hello"}}})}},
         "completion"
     );
@@ -1791,7 +1851,7 @@ void job_units() {
     assert(fs::is_empty(chat.workspace));
     assert(std::get<ChatRequest>(chat.input).messages[0].text == "Hello");
     files.cleanup(chat.id);
-    auto load = request("load", {{"feature", "llm"}}, "load");
+    auto load = request("load", {{"feature", "llm"}, {"model_id", "small"}}, "load");
     prepare_task(load, store, files, running);
     assert(load.context->effective == 4096);
     files.cleanup("load");
@@ -1804,7 +1864,11 @@ void job_units() {
     assert(load.context->effective == 262144);
     assert(!load.context->configured);
     files.cleanup("maximum");
-    load = request("bad", {{"feature", "llm"}, {"context_limit", 999999}}, "load");
+    load = request(
+        "bad",
+        {{"feature", "llm"}, {"model_id", "small"}, {"context_limit", 999999}},
+        "load"
+    );
     rejects([&] { prepare_task(load, store, files, running); });
     files.cleanup("bad");
     std::atomic_bool cancel{true};
@@ -1986,6 +2050,7 @@ void tokenizer_asset_units() {
 
 int main() {
     manifest_model_units();
+    completed_checkpoint_size_units();
     pinned_catalog_units();
     shared_settings_units();
     whisper_formatting_setting_units();

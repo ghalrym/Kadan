@@ -6,11 +6,13 @@ The agent's tools in `kadan/runner/tools/` call its routes through `run`.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, BinaryIO
 from urllib.parse import quote
 
 import httpx
+from pydantic import BaseModel, Field, ValidationError
 
 from .config import ServiceError
 
@@ -21,6 +23,7 @@ if TYPE_CHECKING:
 MAX_RESULT_CHARACTERS = 4000
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024
+MAX_FILE_BYTES = 100 * 1024 * 1024
 OPERATION_SECONDS = 300
 # Event streams never end on their own; return what arrived in this window.
 STREAM_SECONDS = 10
@@ -46,6 +49,22 @@ def truncated(value: str, limit: int) -> dict:
     if len(value) <= limit:
         return {"body": value}
     return {"body": value[:limit], "truncated": True, "characters": len(value)}
+
+
+class DownloadedFile(BaseModel):
+    size_bytes: int
+    sha256: str
+
+
+class UploadedFile(BaseModel):
+    file_path: str
+    file_size: int = Field(ge=0, strict=True)
+    success: bool = Field(strict=True)
+
+
+class FileUploadResponse(BaseModel):
+    success: bool = Field(strict=True)
+    data: UploadedFile
 
 
 class SandboxClient:
@@ -129,6 +148,132 @@ class SandboxClient:
                 "invalid_response",
             )
         return response.content, media_type.split(";")[0]
+
+    async def upload_file(self, path: str, source: BinaryIO) -> None:
+        """Upload a staged file and require the sandbox's full success receipt."""
+        size = source.seek(0, 2)
+        source.seek(0)
+        if size > MAX_FILE_BYTES:
+            raise ServiceError("Files cannot exceed 100 MiB.", 413, "file_too_large")
+        try:
+            async with asyncio.timeout(OPERATION_SECONDS):
+                response = await self.request(
+                    "POST",
+                    "/v1/file/upload",
+                    seconds=OPERATION_SECONDS,
+                    data={"path": path},
+                    files={"file": ("file", source, "application/octet-stream")},
+                )
+                receipt = FileUploadResponse.model_validate_json(response.content)
+        except TimeoutError as error:
+            raise ServiceError(
+                "The agent's computer did not confirm the file upload.",
+                503,
+                "computer_unavailable",
+            ) from error
+        except ValidationError as error:
+            raise ServiceError(
+                "The agent's computer returned an invalid file upload receipt.",
+                502,
+                "invalid_file_upload",
+            ) from error
+        if (
+            not receipt.success
+            or not receipt.data.success
+            or receipt.data.file_path != path
+            or receipt.data.file_size != size
+        ):
+            raise ServiceError(
+                "The agent's computer did not confirm the complete file upload.",
+                502,
+                "invalid_file_upload",
+            )
+
+    async def download_file(self, path: str, output: BinaryIO) -> DownloadedFile:
+        """Copy a complete file into the caller's empty temporary stream."""
+        size = 0
+        digest = hashlib.sha256()
+        try:
+            async with asyncio.timeout(OPERATION_SECONDS):
+                async with self.services.client.stream(
+                    "GET",
+                    self.base_url + "/v1/file/download",
+                    params={"path": path, "change_policy": "abort"},
+                    headers={**self.headers(), "Accept-Encoding": "identity"},
+                    timeout=httpx.Timeout(OPERATION_SECONDS, connect=3),
+                ) as response:
+                    if response.status_code == 404:
+                        raise ServiceError(
+                            "The file was not found on the agent's computer.",
+                            404,
+                            "file_not_found",
+                        )
+                    if response.status_code == 409:
+                        raise ServiceError(
+                            "The source file changed during download. Wait for writing to finish before saving it.",
+                            409,
+                            "file_changed",
+                        )
+                    if response.status_code != 200:
+                        raise ServiceError(
+                            f"The agent's computer could not download the file (HTTP {response.status_code}).",
+                            502 if response.status_code < 500 else 503,
+                            "computer_error",
+                        )
+                    if (
+                        response.headers.get("content-encoding", "identity").lower()
+                        != "identity"
+                    ):
+                        raise ServiceError(
+                            "The agent's computer returned an encoded file download.",
+                            502,
+                            "invalid_file_download",
+                        )
+                    length = response.headers.get("content-length")
+                    expected_size = None
+                    if length is not None:
+                        try:
+                            if not length.isascii() or not length.isdigit():
+                                raise ValueError
+                            expected_size = int(length)
+                        except ValueError as error:
+                            raise ServiceError(
+                                "The agent's computer returned an invalid file length.",
+                                502,
+                                "invalid_file_download",
+                            ) from error
+                    if expected_size is not None and expected_size > MAX_FILE_BYTES:
+                        raise ServiceError(
+                            "Files cannot exceed 100 MiB.", 413, "file_too_large"
+                        )
+                    async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+                        size += len(chunk)
+                        if size > MAX_FILE_BYTES:
+                            raise ServiceError(
+                                "Files cannot exceed 100 MiB.", 413, "file_too_large"
+                            )
+                        if expected_size is not None and size > expected_size:
+                            raise ServiceError(
+                                "The downloaded file does not match its reported length.",
+                                502,
+                                "invalid_file_download",
+                            )
+                        output.write(chunk)
+                        digest.update(chunk)
+                    if expected_size is not None and size != expected_size:
+                        raise ServiceError(
+                            "The file download ended before all bytes arrived.",
+                            502,
+                            "invalid_file_download",
+                        )
+        except (httpx.RequestError, TimeoutError) as error:
+            raise ServiceError(
+                "The agent's computer did not complete the file download.",
+                503,
+                "computer_unavailable",
+            ) from error
+        output.seek(0)
+        return DownloadedFile(size_bytes=size, sha256=digest.hexdigest())
 
     async def run(
         self,

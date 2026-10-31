@@ -14,16 +14,14 @@ from api.pydantic_models.inference import (
     Operation,
 )
 from api.pydantic_models.inference_task import (
+    AudioCallTask,
     DownloadTask,
     InferenceTask,
-    TierSelectionTask,
     VideoTask,
 )
 from api.pydantic_models.model_store import (
     DownloadObservation,
-    HardwareTier,
     ModelStoreStatus,
-    TierId,
 )
 from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
@@ -48,11 +46,14 @@ class InferenceStream:
         result = await self.completion
         if self.job.stream_error:
             raise InferenceFailure(self.job.stream_error, 502)
-        yield {
-            key: result[key]
-            for key in ("finish_reason", "timing", "cache")
-            if key in result
-        }
+        if self.job.request.feature == "audio_call":
+            yield {"type": "reply", **result}
+        else:
+            yield {
+                key: result[key]
+                for key in ("finish_reason", "timing", "cache")
+                if key in result
+            }
 
     async def aclose(self):
         await await_cleanup(
@@ -72,6 +73,7 @@ class InferenceService:
         self.context = {}
         self.progress: InferenceProgress | None = None
         self.downloads: dict[str, DownloadObservation] = {}
+        self._download_admissions: set[str] = set()
 
     async def start(self):
         await self.worker.start()
@@ -85,16 +87,91 @@ class InferenceService:
 
     def status(self):
         memory = self.worker.memory
-        return dict(
-            state=self.state,
-            model_id=self.model_id,
-            error=self.error,
-            memory=memory.model_dump() if memory is not None else None,
-            max_output_tokens=256,
-            configured_context_limit=self.context.get("configured"),
-            effective_context_limit=self.context.get("effective"),
-            supported_context_limit=self.context.get("supported"),
+        state, model_id = self.state, self.model_id
+        error = self.error
+        context = {} if state == "error" else self.context
+        loading = any(
+            job.request.feature == "llm"
+            and job.model == model_id
+            and job.state in ("loading", "running", "waiting_for_resources")
+            and not job.result.done()
+            and any(worker_id in self.worker.workers for worker_id in job.machines)
+            for job in self.worker.jobs.values()
         )
+        if state in ("ready", "offloaded") or (state == "loading" and not loading):
+            resident = next(
+                (
+                    worker
+                    for worker in self.worker.workers.values()
+                    if worker.kind == "llm"
+                    and worker.residency_known
+                    and worker.resident_model == model_id
+                    and model_id is not None
+                ),
+                None,
+            )
+            state = "ready" if resident is not None else "unloaded"
+            model_id = resident.resident_model if resident is not None else None
+            context = resident.resident_context if resident is not None else {}
+            if resident is None and any(
+                worker.kind == "llm" and not worker.residency_known
+                for worker in self.worker.workers.values()
+            ):
+                state, model_id = "error", self.model_id
+                error = "Language-model residency is unconfirmed after a failed or cancelled request."
+        return {
+            "state": state,
+            "model_id": model_id,
+            "error": error,
+            "memory": memory.model_dump() if memory is not None else None,
+            "max_output_tokens": 256,
+            "configured_context_limit": self.context.get("configured"),
+            "effective_context_limit": context.get("effective"),
+            "supported_context_limit": self.context.get("supported"),
+        }
+
+    def language_status(self):
+        model_id = "lfm3-1.7b-bf16"
+        checkpoint = (
+            next(
+                (model for model in self.worker.models.models if model.id == model_id),
+                None,
+            )
+            if self.worker.models
+            else None
+        )
+        workers = [
+            worker
+            for worker in self.worker.workers.values()
+            if worker.kind == "lfm3_llm"
+        ]
+        error = None
+        if not workers or checkpoint is None:
+            error = "The LFM3 conversation worker is unavailable."
+        elif checkpoint.status != "complete":
+            error = (
+                "Download the language checkpoint in Hikari Settings before inference."
+            )
+        elif any(not worker.residency_known for worker in workers):
+            error = "Language-model cleanup is unconfirmed."
+        active = any(
+            job.worker == "lfm3_llm" and not job.result.done()
+            for job in self.worker.jobs.values()
+        )
+        return {
+            "state": "error" if error else "loading" if active else "unloaded",
+            "model_id": model_id,
+            "error": error,
+            "memory": self.worker.memory.model_dump() if self.worker.memory else None,
+            "configured_context_limit": checkpoint.context_limit
+            if checkpoint
+            else None,
+            "effective_context_limit": None,
+            "supported_context_limit": checkpoint.architecture_context_limit
+            if checkpoint
+            else None,
+            "max_output_tokens": None,
+        }
 
     def models_status(self) -> ModelStoreStatus:
         if self.worker.models is None:
@@ -108,16 +185,24 @@ class InferenceService:
         return snapshot
 
     async def download(self, model_id: str, license_acknowledged: bool):
-        for job in self.worker.jobs.values():
-            if (
-                job.request.feature == "models"
-                and job.request.input.model_id == model_id
-                and not job.result.done()
-            ):
-                raise InferenceFailure(
-                    "A download is already queued for this model.", 409
-                )
-        self.downloads[model_id] = DownloadObservation()
+        if not license_acknowledged:
+            raise InferenceFailure(
+                "Review and acknowledge model licenses before downloading.", 422
+            )
+        if not any(model.id == model_id for model in self.models_status().models):
+            raise InferenceFailure(
+                "The checkpoint is unavailable from connected workers.", 422
+            )
+        if model_id in self._download_admissions or any(
+            job.request.feature == "models"
+            and job.request.input.model_id == model_id
+            and not job.result.done()
+            for job in self.worker.jobs.values()
+        ):
+            raise InferenceFailure("A download is already queued for this model.", 409)
+        observation = DownloadObservation()
+        self.downloads[model_id] = observation
+        self._download_admissions.add(model_id)
         try:
             _, completion = await self._submit(
                 DownloadTask(
@@ -131,7 +216,20 @@ class InferenceService:
                 status="failed", error="Download was not queued"
             )
             raise
-        completion.add_done_callback(self._background_finished)
+        finally:
+            self._download_admissions.discard(model_id)
+
+        def finished(task):
+            error = None if task.cancelled() else task.exception()
+            # Keep a late failure attached to this download, not a newer retry.
+            if error is not None and observation.status in (
+                "downloading",
+                "cancelling",
+            ):
+                observation.status, observation.error = "failed", str(error)
+            self._background_finished(task)
+
+        completion.add_done_callback(finished)
         return self.models_status()
 
     async def cancel_download(self, model_id: str):
@@ -169,9 +267,10 @@ class InferenceService:
         if job.request.operation == "configure":
             return
         feature = job.request.feature
-        if event.context is not None:
+        native_language = feature == "llm" and job.worker != "lfm3_llm"
+        if native_language and event.context is not None:
             self.context = event.context
-        if feature == "llm" and event.model is not None:
+        if native_language and event.model is not None:
             self.model_id = event.model
         image = job.image_progress
         if image is not None:
@@ -215,16 +314,13 @@ class InferenceService:
             job.progress = None
             if self.progress and self.progress.job_id == job.request.id:
                 self.progress = None
-        if event.state == "loading":
-            if feature == "llm":
-                self.model_id, self.state, self.error = (
-                    event.model or self.model_id,
-                    "loading",
-                    None,
-                )
-            elif self.state == "ready":
-                self.state = "offloaded"
-        if feature == "llm":
+        if event.state == "loading" and native_language:
+            self.model_id, self.state, self.error = (
+                event.model or self.model_id,
+                "loading",
+                None,
+            )
+        if native_language:
             if event.state == "succeeded":
                 self.state = (
                     "unloaded" if job.request.operation == "unload" else "ready"
@@ -269,19 +365,10 @@ class InferenceService:
             video = request.input
             if video.duration is None or video.resolution is None:
                 status = self.models_status()
-                tier = next(
-                    (tier for tier in status.tiers if tier.id == status.selected_tier),
-                    None,
-                )
-                if tier is None:
-                    raise InferenceFailure(
-                        "Choose a hardware tier in Settings before submitting a video.",
-                        422,
-                    )
                 if video.duration is None:
-                    video.duration = tier.video_defaults.duration
+                    video.duration = status.video_defaults.duration
                 if video.resolution is None:
-                    video.resolution = tier.video_defaults.resolution
+                    video.resolution = status.video_defaults.resolution
             video_jobs.prepare(request.id, video)
         try:
             job = await self.worker.submit(request, streaming=streaming)
@@ -320,6 +407,14 @@ class InferenceService:
         if not task.cancelled() and task.exception() is not None:
             log.warning("Background request failed: %s", task.exception())
 
+    async def open_audio_turn(self, body: AudioCallTask):
+        if body.mode != "turn":
+            raise InferenceFailure("Audio streaming requires a complete turn.", 422)
+        job, completion = await self._submit(
+            body, "audio_call", "generate", streaming=True
+        )
+        return InferenceStream(self, job, completion)
+
     async def open_chat_stream(self, body: BaseModel):
         job, completion = await self._submit(body, "llm", "completion", streaming=True)
         try:
@@ -335,6 +430,7 @@ class InferenceService:
 
     @traced("kadan.inference.wait_and_deliver")
     async def _complete(self, job):
+        failure = None
         try:
             result = await asyncio.shield(job.result)
             with span("kadan.result.delivery"):
@@ -350,6 +446,9 @@ class InferenceService:
                 if job.request.operation in ("load", "unload"):
                     return self.status()
                 return result
+        except (Exception, asyncio.CancelledError) as error:
+            failure = error
+            raise
         finally:
             try:
                 if not job.result.done():
@@ -360,6 +459,19 @@ class InferenceService:
                 if self.progress and self.progress.job_id == job.request.id:
                     self.progress = None
                 self.worker.jobs.pop(job.request.id, None)
+                if failure is not None and job.result.done():
+                    self._finish_video_error(job, failure)
+
+    @staticmethod
+    def _finish_video_error(job, error):
+        if job.request.feature != "video":
+            return
+        cancelled = isinstance(error, asyncio.CancelledError) or (
+            isinstance(error, InferenceFailure) and error.status_code == 499
+        )
+        video_jobs.finish_error(
+            job.request.id, cancelled=cancelled, error=None if cancelled else str(error)
+        )
 
     async def cancel(self, job_id):
         if job_id not in self.worker.jobs:
@@ -379,53 +491,17 @@ class InferenceService:
                     )
             finally:
                 self.worker.jobs.pop(job_id, None)
+                if job.result.done():
+                    error = None if job.result.cancelled() else job.result.exception()
+                    self._finish_video_error(job, error or asyncio.CancelledError())
 
-    def tier(self, tier: TierId) -> HardwareTier:
-        for candidate in self.models_status().tiers:
-            if candidate.id == tier:
-                return candidate
-        raise InferenceFailure(f"Unknown hardware tier: {tier}", 422)
-
-    async def select_tier(self, tier: TierId) -> None:
-        """Save the tier, then unload a different resident language model after earlier chats."""
-        language_model = self.tier(tier).models.llm
-        await self.submit(
-            TierSelectionTask(tier=tier),
-            feature="tier_selection",
-            operation="configure",
-        )
-        if (
-            self.state in ("loading", "ready", "offloaded")
-            and self.model_id != language_model
-        ):
-            await self.unload(cancel_llm=False)
-
-    async def download_tier(self, tier: TierId, license_acknowledged: bool) -> None:
-        """Queue the tier's assigned checkpoints that are neither complete nor queued."""
-        states = {model.id: model.status for model in self.models_status().models}
-        for model_id in dict.fromkeys(
-            model_id for _, model_id in self.tier(tier).models
-        ):
-            if model_id is None or states.get(model_id) in (
-                "complete",
-                "downloading",
-                "cancelling",
-            ):
-                continue
-            await self.download(model_id, license_acknowledged)
-
-    async def unload(self, cancel_llm: bool = True):
-        """Unload through the FIFO; cancel_llm=False lets earlier chats finish first."""
+    async def unload(self):
+        """Cancel language requests and await confirmed cold-worker cleanup."""
         for job in tuple(self.worker.jobs.values()):
-            if cancel_llm and job.request.feature == "llm":
+            if job.request.feature == "llm":
                 await self.cancel(job.request.id)
-        job = await self.worker.submit(
-            InferenceTask(operation="unload", input={"feature": "llm"})
-        )
-        status = await self._complete(job)
-        # The engine is closed; give its budget back to other workers.
-        await self.worker.offload("llm")
-        return status
+        await self.worker.offload("lfm3_llm")
+        return self.language_status()
 
 
 inference = InferenceService()

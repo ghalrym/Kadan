@@ -7,7 +7,7 @@ Saving content does not run an agent or guarantee future recall. Confirmed saves
 | Feature | What to expect |
 | --- | --- |
 | [Agent namespaces](namespaces.md) | Create and switch between agents with separate stored content. |
-| [Personas](personas.md) | Store response instructions and metadata without automatically selecting them in Kadan. |
+| [Personas](personas.md) | Inspect owned and named persona instructions, with revisions and recovery. |
 | [Memories](memories.md) | Create and search saved notes without a promise of automatic agent recall. |
 | [Spaces](spaces.md) | Edit documents and organize resources through parent and child relationships. |
 | [Slide decks](slide-decks.md) | Edit slides, layouts, notes and linked images within the supported deck format. |

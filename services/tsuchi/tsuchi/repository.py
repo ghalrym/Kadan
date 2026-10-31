@@ -13,6 +13,7 @@ from .models import (
     Activity,
     Agent,
     AgentInput,
+    AgentRename,
     AgentRun,
     AgentRunState,
     Asset,
@@ -20,8 +21,11 @@ from .models import (
     ExportRevision,
     ImageJob,
     ImageJobState,
+    MarkdownContent,
+    MarkdownResource,
     Message,
     Metadata,
+    OwnedPersonaUpdate,
     PetJob,
     PetManifest,
     PetReferenceMode,
@@ -32,6 +36,7 @@ from .models import (
     ResourceKind,
     ResourceRecord,
     ResourceVersion,
+    RunMessage,
     Runner,
     Stats,
     resource_adapter,
@@ -42,7 +47,9 @@ from .models import (
 
 def search_expression(query: str) -> str:
     """Treat punctuation and FTS operators as text, never SQL/FTS syntax."""
-    tokens = re.findall(r"\w+", query, flags=re.UNICODE)[:30]
+    tokens = re.findall(r"\w+", query, flags=re.UNICODE)
+    if len(tokens) > 30:
+        raise StorageError("Resource searches cannot exceed 30 words.", 422)
     return " AND ".join(f'"{token}"*' for token in tokens)
 
 
@@ -145,6 +152,8 @@ class Repository:
             columns = {row[1] for row in db.execute("PRAGMA table_info(agents)")}
             if "selected_pet_id" not in columns:
                 db.execute("ALTER TABLE agents ADD COLUMN selected_pet_id TEXT")
+            if "persona_id" not in columns:
+                db.execute("ALTER TABLE agents ADD COLUMN persona_id TEXT")
             db.commit()
 
     @contextmanager
@@ -415,9 +424,14 @@ class Repository:
         message: Message,
         expected_version: int,
         persona_id: UUID | None = None,
+        initial_command: RunMessage | None = None,
     ) -> AgentRun:
         if message.role != "user":
             raise StorageError("An agent run must start with a user message", 409)
+        if initial_command is not None and initial_command.role != "assistant":
+            raise StorageError(
+                "An initial command must be an assistant checkpoint", 409
+            )
         with self.connect(write=True) as db:
             conversation = self._conversation(db, key, conversation_id)
             row = db.execute(
@@ -430,6 +444,7 @@ class Repository:
                     and existing.conversation_id == conversation_id
                     and existing.trigger_message_id == message.id
                     and existing.persona_id == persona_id
+                    and existing.initial_command == initial_command
                     and any(
                         item.model_dump(exclude={"created_at"})
                         == message.model_dump(exclude={"created_at"})
@@ -453,6 +468,7 @@ class Repository:
                 conversation_id=conversation_id,
                 trigger_message_id=message.id,
                 persona_id=persona_id,
+                transcript=[initial_command] if initial_command is not None else [],
                 version=1,
                 created_at=now,
                 updated_at=now,
@@ -470,7 +486,10 @@ class Repository:
                 (
                     AgentRun.model_validate_json(row[0])
                     for row in db.execute(
-                        "SELECT data FROM agent_runs WHERE status IN ('queued', 'running')"
+                        "SELECT r.data FROM agent_runs r JOIN resources c "
+                        "ON c.id = r.conversation_id AND c.agent_key = r.agent_key "
+                        "WHERE r.status IN ('queued', 'running') "
+                        "AND c.kind = 'conversation' AND c.deleted = 0"
                     )
                 ),
                 key=lambda run: (run.created_at, run.id),
@@ -511,6 +530,8 @@ class Repository:
             current = self._run(db, key, run_id)
             self._assigned_worker(db, key, worker_id)
             self._check_version(current, expected_version)
+            if value.transcript[: len(current.transcript)] != current.transcript:
+                raise StorageError("Persisted agent transcript is immutable", 409)
             now = utc_now()
             claiming = current.status == "queued" or (
                 current.status == "running" and current.lease_expires_at <= now
@@ -529,8 +550,6 @@ class Repository:
                 self._owned_run(db, current, worker_id)
                 if value.status not in {"running", "completed", "failed", "cancelled"}:
                     raise StorageError("Invalid agent run state transition", 409)
-                if value.transcript[: len(current.transcript)] != current.transcript:
-                    raise StorageError("Persisted agent transcript is immutable", 409)
             if value.status == "running":
                 if value.owner_id != worker_id:
                     raise StorageError("A worker must own its agent run lease", 409)
@@ -791,7 +810,16 @@ class Repository:
                     raise StorageError(
                         "Image job lease must expire within five minutes", 409
                     )
+            if value.upload_status != current.upload_status and not (
+                current.upload_status == "not_started"
+                and value.upload_status == "pending"
+                and current.status == value.status == "running"
+                and not claiming
+            ):
+                raise StorageError("Only storage can settle an image upload", 409)
             if value.status == "completed":
+                if value.asset_id != uuid5(job_id, "image"):
+                    raise StorageError("Image artwork identity cannot change", 409)
                 asset = self._asset(db, key, value.asset_id)
                 if asset.deleted_at or not asset.is_image:
                     raise StorageError(
@@ -808,6 +836,23 @@ class Repository:
             self._save_image_job(db, updated)
             if updated.status in terminal:
                 self._image_event(db, updated)
+            return updated
+
+    def fail_image_upload(self, key: str, job_id: UUID) -> ImageJob:
+        # FileStorage holds the upload's file lock: no old request may register
+        # artwork after this transaction closes its persisted upload gate.
+        with self.connect(write=True) as db:
+            job = self._image_job(db, key, job_id)
+            if job.upload_status != "pending":
+                return job
+            updated = job.model_copy(
+                update={
+                    "upload_status": "failed",
+                    "version": job.version + 1,
+                    "updated_at": utc_now(),
+                }
+            )
+            self._save_image_job(db, updated)
             return updated
 
     def cancel_image_job(self, key: str, job_id: UUID) -> ImageJob:
@@ -840,12 +885,86 @@ class Repository:
         with self.connect() as db:
             return self._agent(db, key)
 
+    def _owned_persona(
+        self, db: sqlite3.Connection, key: str
+    ) -> MarkdownResource | None:
+        agent = self._agent(db, key)
+        if agent.persona_id is None:
+            return None
+        persona = self._resource(db, key, agent.persona_id)
+        self._active(persona)
+        if persona.kind != ResourceKind.PERSONA:
+            raise StorageError(
+                "The agent's owned persona must be a persona resource", 409
+            )
+        return persona
+
+    def get_owned_persona(self, key: str) -> MarkdownResource | None:
+        with self.connect() as db:
+            return self._owned_persona(db, key)
+
+    def save_owned_persona(
+        self, key: str, value: OwnedPersonaUpdate
+    ) -> MarkdownResource:
+        with self.connect(write=True) as db:
+            current = self._owned_persona(db, key)
+            if current is None:
+                if value.expected_version is not None:
+                    raise StorageError(
+                        "This agent has no saved persona. Reload before saving.", 409
+                    )
+                now = utc_now()
+                persona = MarkdownResource(
+                    kind=ResourceKind.PERSONA,
+                    title=value.title,
+                    markdown=value.markdown,
+                    id=uuid4(),
+                    agent_key=key,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+                self._save_resource(db, persona)
+                db.execute(
+                    "UPDATE agents SET persona_id = ? WHERE key = ?",
+                    (str(persona.id), key),
+                )
+                self._activity(
+                    db, key, "created", "resource", str(persona.id), persona.title
+                )
+                return persona
+            if value.expected_version is None:
+                raise StorageError(
+                    "This agent already has a persona. Reload before saving.", 409
+                )
+            content = MarkdownContent.model_validate(
+                {
+                    **current.model_dump(exclude=set(ResourceRecord.model_fields)),
+                    "title": value.title,
+                    "markdown": value.markdown,
+                }
+            )
+            return self._update_resource(
+                db, key, current, content, value.expected_version, "updated"
+            )
+
     def list_agents(self) -> list[Agent]:
         with self.connect() as db:
             return [
                 Agent.model_validate(dict(row))
                 for row in db.execute("SELECT * FROM agents ORDER BY name, key")
             ]
+
+    def rename_agent(self, key: str, value: AgentRename) -> Agent:
+        with self.connect(write=True) as db:
+            current = self._agent(db, key)
+            if current.name == value.name:
+                return current
+            if current.name != value.expected_name:
+                raise StorageError("Agent name changed since it was loaded.", 409)
+            db.execute("UPDATE agents SET name = ? WHERE key = ?", (value.name, key))
+            self._activity(db, key, "updated", "agent", key, value.name)
+            return current.model_copy(update={"name": value.name})
 
     def create_agent(self, value: AgentInput) -> Agent:
         agent = Agent(**value.model_dump(), created_at=utc_now())
@@ -886,6 +1005,21 @@ class Repository:
             ),
         )
 
+    @staticmethod
+    def _require_no_other_active_pet(
+        db: sqlite3.Connection, key: str, pet_id: UUID
+    ) -> None:
+        if db.execute(
+            "SELECT 1 FROM pet_jobs WHERE agent_key = ? AND id != ? "
+            "AND status IN ('queued', 'running', 'cancelling') LIMIT 1",
+            (key, str(pet_id)),
+        ).fetchone():
+            raise StorageError(
+                "Another pet creation or repair is active for this agent. "
+                "Wait for it to finish or cancel it first.",
+                409,
+            )
+
     def create_pet(
         self,
         key: str,
@@ -920,6 +1054,7 @@ class Repository:
                 ):
                     return current
                 raise StorageError("This pet job ID is already in use", 409)
+            self._require_no_other_active_pet(db, key, pet_id)
             self._save_pet(db, pet)
         return pet
 
@@ -1009,6 +1144,7 @@ class Repository:
                 ):
                     return current
                 raise StorageError("This pet job ID is already in use", 409)
+            self._require_no_other_active_pet(db, key, revision_id)
             now = utc_now()
             steps = [step for step in source.steps if step.name not in rejected_names]
             revision = PetJob(
@@ -1105,6 +1241,8 @@ class Repository:
             }
             if value.status not in transitions[current.status]:
                 raise StorageError("Invalid pet job state transition", 409)
+            if value.status == "queued":
+                self._require_no_other_active_pet(db, key, pet_id)
             updated_steps = {step.name: step for step in value.steps}
             if any(updated_steps.get(step.name) != step for step in current.steps):
                 raise StorageError("Completed pet steps are immutable", 409)
@@ -1420,6 +1558,66 @@ class Repository:
             )
         return resource
 
+    def save_chat_result(
+        self, key: str, conversation_id: UUID, message_id: UUID, title: str
+    ) -> Resource:
+        """Keep one editable document per saved reply, including after a lost receipt."""
+        document_id = uuid5(conversation_id, f"chat-result:{message_id}")
+        with self.connect(write=True) as db:
+            self._agent(db, key)
+            conversation = self._resource(db, key, conversation_id)
+            if (
+                conversation.kind != ResourceKind.CONVERSATION
+                or conversation.deleted_at
+            ):
+                raise StorageError("An active conversation is required", 409)
+            message = next(
+                (item for item in conversation.messages if item.id == message_id), None
+            )
+            if message is None:
+                raise StorageError("Saved reply not found", 404)
+            if message.role != "assistant" or not message.content.strip():
+                raise StorageError(
+                    "Choose a saved assistant reply containing text", 409
+                )
+            existing = db.execute(
+                "SELECT data FROM resources WHERE agent_key = ? AND id = ?",
+                (key, str(document_id)),
+            ).fetchone()
+            if existing:
+                document = resource_adapter.validate_json(existing[0])
+                if document.deleted_at:
+                    raise StorageError(
+                        "This result is in trash. Restore it in Tsuchi.", 409
+                    )
+                return document
+            now = utc_now()
+            document = resource_adapter.validate_python(
+                {
+                    "id": document_id,
+                    "agent_key": key,
+                    "kind": "space",
+                    "title": title,
+                    "markdown": message.content,
+                    "attachment_ids": message.attachment_ids,
+                    "sources": message.sources,
+                    "tags": [
+                        "chat-result",
+                        f"conversation:{conversation_id}",
+                        f"message:{message_id}",
+                    ],
+                    "version": 1,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+            self._validate_links(db, key, document, document_id)
+            self._save_resource(db, document)
+            self._activity(
+                db, key, "created", "resource", str(document_id), document.title
+            )
+            return document
+
     def update_resource(
         self, key: str, resource_id: UUID, value: ResourceInput, expected_version: int
     ) -> Resource:
@@ -1621,9 +1819,18 @@ class Repository:
             ),
         )
 
-    def create_asset(self, asset: Asset) -> Asset:
+    def create_asset(self, asset: Asset, image_job_id: UUID | None = None) -> Asset:
         with self.connect(write=True) as db:
             self._agent(db, asset.agent_key)
+            job = None
+            if image_job_id is not None:
+                job = self._image_job(db, asset.agent_key, image_job_id)
+                if job.upload_status not in {"pending", "completed"}:
+                    raise StorageError("This image upload is closed", 409)
+                if asset.id != uuid5(job.id, "image") or not asset.is_image:
+                    raise StorageError(
+                        "Image uploads require their reserved artwork", 409
+                    )
             row = db.execute(
                 "SELECT data FROM assets WHERE id = ?", (str(asset.id),)
             ).fetchone()
@@ -1644,12 +1851,29 @@ class Repository:
                     getattr(current, field) == getattr(asset, field)
                     for field in replay_fields
                 ):
-                    return current
-                raise StorageError("This asset ID is already in use", 409)
-            self._save_asset(db, asset)
-            self._activity(
-                db, asset.agent_key, "uploaded", "asset", str(asset.id), asset.title
-            )
+                    asset = current
+                else:
+                    raise StorageError("This asset ID is already in use", 409)
+            else:
+                if job is not None and job.upload_status == "completed":
+                    raise StorageError(
+                        "Completed image artwork cannot be recreated", 409
+                    )
+                self._save_asset(db, asset)
+                self._activity(
+                    db, asset.agent_key, "uploaded", "asset", str(asset.id), asset.title
+                )
+            if job is not None and job.upload_status == "pending":
+                self._save_image_job(
+                    db,
+                    job.model_copy(
+                        update={
+                            "upload_status": "completed",
+                            "version": job.version + 1,
+                            "updated_at": utc_now(),
+                        }
+                    ),
+                )
         return asset
 
     def update_asset(

@@ -16,19 +16,8 @@ class Checkpoint(BaseModel):
     architecture_context_limit: int | None = None
 
 
-class TierModel(BaseModel):
-    modality: str
-    model: Checkpoint | None
-
-
-class HardwareTier(BaseModel):
-    id: str
-    models: list[TierModel]
-
-
-class HikariSettings(BaseModel):
-    tier: str | None
-    tiers: list[HardwareTier]
+class HikariModels(BaseModel):
+    models: list[Checkpoint]
 
 
 class HikariModelLifecycle(BaseModel):

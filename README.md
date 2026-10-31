@@ -7,14 +7,18 @@ Their management interfaces are for inspecting and operating those services.
 
 | Service | Responsibility | Local interface |
 | --- | --- | --- |
-| [Kadan](docs/user-expectations/kadan/overview.md) | Agent conversations and actions | <http://127.0.0.1:8630> |
-| [Tsuchi](docs/user-expectations/tsuchi/overview.md) | Durable per-agent storage, search and history | <http://127.0.0.1:8620> |
-| [Hikari](docs/user-expectations/hikari/overview.md) | Chat, decisions, images, video, speech and transcription | <http://127.0.0.1:8088> |
+| Kadan | Agent conversations and actions | <http://127.0.0.1:8630> |
+| Tsuchi | Durable per-agent storage, search and history | <http://127.0.0.1:8620> |
+| Hikari | Chat, decisions, images, video, speech and transcription | <http://127.0.0.1:8088> |
 
 [Start all services with Docker](#docker-compose). Kadan owns agent decisions;
 Tsuchi owns storage and retrieval; Hikari owns inference. Kadan and Tsuchi run
 without a GPU. Hikari's API does too; its GPU worker containers need a supported
 NVIDIA host.
+
+[User expectations](docs/user-expectations/README.md) describe current behavior,
+limits and recovery by feature. [Open proposals](docs/user-expectations/proposals.md)
+are separate from behavior available on master.
 
 ## Hikari rename and existing installations
 
@@ -76,7 +80,7 @@ to generate a response. Startup does not generate content or load a model.
 
 All published ports bind to `0.0.0.0`. This is a single-owner prototype;
 namespace keys are storage selectors, not credentials. Operators are responsible
-for securing access to their deployment. See [security expectations](docs/user-expectations/security.md). Within Compose, Kadan uses `http://tsuchi-api:8000` for
+for securing access to their deployment. See [security and operator responsibility](docs/user-expectations/security.md). Within Compose, Kadan uses `http://tsuchi-api:8000` for
 storage and `http://hikari-api:8000` for inference. Browser links use the loopback
 URLs above. Each frontend container runs Vite and proxies its API paths, including streaming
 responses, through the same browser origin. Only the frontends and Hikari's API publish ports.

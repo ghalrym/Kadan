@@ -38,6 +38,46 @@ test("loose files match the spritesheet by name", async () => {
   assert.equal(result.info.displayName, "ember");
 });
 
+test("a folder must contain the declared sheet, even with only one other image", async () => {
+  const result = await resolvePetPackage(files({
+    "fox/pet.json": JSON.stringify({ spritesheetPath: "art/sheet.png" }),
+    "fox/preview.png": "",
+  }), read);
+  assert.equal(result.kind, "error");
+  assert.match(result.message, /missing.*art\/sheet\.png/i);
+});
+
+test("a same-name sheet in another folder cannot replace the declared sheet", async () => {
+  for (const manifest of ["fox/pet.json", "pet.json"]) {
+    const result = await resolvePetPackage(files({
+      [manifest]: JSON.stringify({ spritesheetPath: "art/sheet.png" }),
+      "other/sheet.png": "",
+      "preview.png": "",
+    }), read);
+    assert.equal(result.kind, "error");
+    assert.match(result.message, /missing.*art\/sheet\.png/i);
+  }
+});
+
+test("loose files can follow a nested manifest path by basename", async () => {
+  const result = await resolvePetPackage(files({
+    "pet.json": JSON.stringify({ spritesheetPath: "art/sheet.png" }),
+    "sheet.png": "",
+    "preview.png": "",
+  }), read);
+  assert.equal(result.kind, "files");
+  assert.deepEqual(paths(result), ["pet.json", "sheet.png"]);
+});
+
+test("loose files still require the declared sheet name", async () => {
+  const result = await resolvePetPackage(files({
+    "pet.json": JSON.stringify({ spritesheetPath: "sheet.png" }),
+    "preview.png": "",
+  }), read);
+  assert.equal(result.kind, "error");
+  assert.match(result.message, /missing.*sheet\.png/i);
+});
+
 test("a lone spritesheet is enough", async () => {
   const result = await resolvePetPackage(files({ "ember.webp": "" }), read);
   assert.deepEqual(paths(result), ["ember.webp"]);
@@ -47,7 +87,7 @@ test("a lone spritesheet is enough", async () => {
 test("ambiguous or incomplete selections explain what is missing", async () => {
   for (const [entries, message] of [
     [{ "a.png": "", "b.png": "" }, /Several images/],
-    [{ "pet.json": "{}" }, /Add the pet's spritesheet/],
+    [{ "pet.json": "{}" }, /missing.*spritesheet\.webp/i],
     [{ "pet.json": "{", "s.webp": "" }, /could not be read/],
     [{ "a/pet.json": "{}", "b/pet.json": "{}", "a/spritesheet.webp": "" }, /more than one pet/],
   ]) {

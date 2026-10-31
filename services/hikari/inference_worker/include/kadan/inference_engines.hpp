@@ -60,11 +60,7 @@ std::unique_ptr<InferenceEngine>
     transcription_formatting_engine(std::shared_ptr<Resources>, Progress);
 std::unique_ptr<InferenceEngine> whisper_engine(std::shared_ptr<Resources>, Progress);
 std::unique_ptr<InferenceEngine> speech_engine(std::shared_ptr<Resources>, Progress);
-class ModelStore;
 std::unique_ptr<InferenceEngine> chat_engine(
-    std::shared_ptr<Resources>,
-    Progress,
-    std::function<void(const std::string&)>,
-    ModelStore&
+    std::shared_ptr<Resources>, Progress, std::function<void(const std::string&)>
 );
 }  // namespace kadan::serving

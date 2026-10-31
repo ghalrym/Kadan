@@ -5,13 +5,13 @@ import { CallActivity, CallPlayback, VoiceCallSession, callUnavailable } from ".
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const originals = new Map(["window", "navigator", "AudioWorkletNode", "AudioContext", "WebSocket"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 const install = (key, value) => Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-let track, capture, context, socket, sources, states, errors;
+let track, capture, capturedTracks, context, socket, sources, states, errors;
 function fakeContext() {
   return {
     state: "running", sampleRate: 16000, currentTime: 0, destination: {}, closed: false,
     audioWorklet: { addModule: async () => {} },
     resume: async () => {}, close() { this.closed = true; return Promise.resolve(); },
-    createMediaStreamSource: () => ({ connect() {}, disconnect() {} }),
+    createMediaStreamSource: stream => ({ connect() { capturedTracks = stream.getAudioTracks().map(track => track.enabled); }, disconnect() {} }),
     decodeAudioData: async () => ({ duration: 0.1 }),
     createBufferSource() {
       const source = { buffer: null, starts: [], stops: 0, onended: null, connect() {}, disconnect() {}, start(time) { this.starts.push(time); }, stop() { this.stops++; } };
@@ -28,7 +28,7 @@ function message(event) { socket.onmessage({ data: JSON.stringify(event) }); }
 function session() { return new VoiceCallSession(state => states.push(state), error => errors.push(error)); }
 async function connected() {
   const call = session();
-  await call.start("Short spoken replies.");
+  await call.start("test", "selected-persona");
   socket.readyState = 1;
   socket.onopen();
   message({ type: "ready" });
@@ -36,7 +36,7 @@ async function connected() {
 }
 
 beforeEach(() => {
-  sources = []; states = []; errors = [];
+  sources = []; states = []; errors = []; capturedTracks = [];
   track = { enabled: true, stopped: false, onended: null, stop() { this.stopped = true; } };
   install("window", { isSecureContext: true, location: { href: "https://kadan.local/" } });
   install("navigator", { mediaDevices: { getUserMedia: async () => ({ getTracks: () => [track], getAudioTracks: () => [track] }) } });
@@ -104,7 +104,8 @@ test("stopping playback cancels all scheduled segments and invalidates queued en
 
 test("capture continues during playback and onset cancels old audio before sending new speech", async () => {
   const call = await connected();
-  assert.equal(socket.url, "wss://kadan.local/api/calls");
+  assert.equal(socket.url, "wss://kadan.local/api/agents/test/calls");
+  assert.deepEqual(socket.sent[0], { type: "start", persona_id: "selected-persona" });
   speech(); silence();
   assert.deepEqual(socket.sent.map(event => event.type), ["start", "interrupt", "utterance"]);
   assert.equal(socket.sent[2].turn, 1);
@@ -142,6 +143,37 @@ test("mute discards a partial utterance and keeps received playback usable", asy
   call.end();
 });
 
+for (const { name, mutes, enabled } of [
+  { name: "muting before microphone permission disables arriving tracks before capture connects", mutes: [true], enabled: false },
+  { name: "unmuted startup keeps arriving tracks enabled when capture connects", mutes: [], enabled: true },
+  { name: "muting then unmuting before microphone permission keeps arriving tracks enabled", mutes: [true, false], enabled: true },
+]) {
+  test(name, async () => {
+    let permit;
+    navigator.mediaDevices.getUserMedia = () => new Promise(done => { permit = done; });
+    const tracks = [track, { ...track }];
+    const call = session();
+    const starting = call.start("Hi");
+    await flush();
+    assert.deepEqual(states, [{ status: "Starting audio…", muted: false }, { status: "Waiting for microphone…", muted: false }]);
+    for (const muted of mutes) call.setMuted(muted);
+    permit({ getTracks: () => tracks, getAudioTracks: () => tracks });
+    await starting;
+    try {
+      assert.deepEqual(capturedTracks, [enabled, enabled]);
+      assert.deepEqual(tracks.map(track => track.enabled), [enabled, enabled]);
+      assert.deepEqual(states, [
+        { status: "Starting audio…", muted: false },
+        { status: "Waiting for microphone…", muted: false },
+        ...mutes.map(muted => ({ status: muted ? "Muted" : "Waiting for microphone…", muted })),
+        { status: enabled ? "Preparing microphone…" : "Muted", muted: !enabled },
+        { status: enabled ? "Connecting to call…" : "Muted", muted: !enabled },
+      ]);
+      assert.deepEqual(errors, []);
+    } finally { call.end(); }
+  });
+}
+
 test("only completed playback is acknowledged; done waits for queued audio", async () => {
   const call = await connected();
   speech(); silence();
@@ -161,7 +193,7 @@ test("ending before permission resolves releases a late microphone without openi
   navigator.mediaDevices.getUserMedia = () => new Promise(done => { permit = done; });
   socket = null;
   const call = session();
-  const starting = call.start("Hi");
+  const starting = call.start("test", null);
   await flush();
   call.end();
   permit({ getTracks: () => [track], getAudioTracks: () => [track] });
@@ -176,7 +208,7 @@ test("ending before worklet loading resolves cannot attach capture afterwards", 
   install("AudioContext", function () { context = fakeContext(); context.audioWorklet.addModule = () => new Promise(done => { finishModule = done; }); return context; });
   capture = null;
   const call = session();
-  const starting = call.start("Hi");
+  const starting = call.start("test", null);
   await flush();
   call.end();
   finishModule();
@@ -188,10 +220,10 @@ test("ending before worklet loading resolves cannot attach capture afterwards", 
 test("upstream errors release audio and mic and ignore late messages", async () => {
   const call = await connected();
   const receive = socket.onmessage;
-  message({ type: "error", message: "Install the tier's speech model." });
+  message({ type: "error", message: "Download the LFM3 audio model in Hikari Settings." });
   receive({ data: JSON.stringify({ type: "audio", turn: 0, audio: "AAAA" }) });
   await flush();
-  assert.equal(errors[0], "Install the tier's speech model.");
+  assert.equal(errors[0], "Download the LFM3 audio model in Hikari Settings.");
   assert.equal(sources.length, 0);
   assert.equal(track.stopped, true);
   assert.equal(context.closed, true);
@@ -203,7 +235,7 @@ test("browser-trusted HTTP origins can start calls over an unencrypted WebSocket
   window.location.href = "http://kadan.local/";
   assert.equal(callUnavailable(), null);
   const call = await connected();
-  assert.equal(socket.url, "ws://kadan.local/api/calls");
+  assert.equal(socket.url, "ws://kadan.local/api/agents/test/calls");
   call.end();
 });
 
@@ -212,7 +244,161 @@ test("untrusted origins and denied permissions return useful errors", async () =
   assert.match(callUnavailable(), /HTTPS or localhost/);
   window.isSecureContext = true;
   navigator.mediaDevices.getUserMedia = async () => { throw new Error("Permission denied"); };
-  await session().start("Hi");
+  await session().start("test", null);
   assert.equal(errors[0], "Permission denied");
+  assert.equal(context.closed, true);
+});
+
+
+test("starting without an additional persona sends an explicit null selection", async () => {
+  const call = session();
+  await call.start("test", null);
+  socket.readyState = 1;
+  socket.onopen();
+  assert.deepEqual(socket.sent[0], { type: "start", persona_id: null });
+  call.end();
+});
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+for (const ending of ["end", "timeout"]) {
+  test(`pending browser audio startup settles on ${ending} and never requests a microphone afterwards`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const resume = deferred();
+    let microphoneRequests = 0;
+    install("AudioContext", function () { context = fakeContext(); context.resume = () => resume.promise; return context; });
+    navigator.mediaDevices.getUserMedia = async () => { microphoneRequests++; throw new Error("Unexpected microphone request"); };
+    socket = null;
+    const call = session();
+    const starting = call.start("test", null);
+    await flush();
+    assert.equal(states.at(-1).status, "Starting audio…");
+    if (ending === "timeout") t.mock.timers.tick(20000);
+    else call.end();
+    await starting;
+    assert.equal(context.closed, true);
+    assert.equal(errors.length, 1);
+    if (ending === "timeout") assert.match(errors[0], /Browser audio did not start/);
+    const previousStates = states.length;
+    resume.resolve();
+    await flush();
+    assert.equal(states.length, previousStates);
+    assert.equal(microphoneRequests, 0);
+    assert.equal(socket, null);
+  });
+}
+
+for (const ending of ["end", "timeout"]) {
+  test(`pending microphone startup settles on ${ending} and stops every late granted track`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const permission = deferred();
+    navigator.mediaDevices.getUserMedia = () => permission.promise;
+    capture = null; socket = null;
+    const call = session();
+    const starting = call.start("test", null);
+    await flush();
+    assert.equal(states.at(-1).status, "Waiting for microphone…");
+    if (ending === "timeout") t.mock.timers.tick(20000);
+    else call.end();
+    await starting;
+    assert.equal(context.closed, true);
+    assert.equal(errors.length, 1);
+    if (ending === "timeout") assert.match(errors[0], /Microphone access timed out/);
+    const tracks = [track, { ...track }];
+    permission.resolve({ getTracks: () => tracks, getAudioTracks: () => tracks });
+    await flush();
+    assert.deepEqual(tracks.map(track => track.stopped), [true, true]);
+    assert.equal(capture, null);
+    assert.equal(socket, null);
+    assert.equal(errors.length, 1);
+  });
+}
+
+test("a late microphone rejection after timeout cannot report a second failure", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const permission = deferred();
+  navigator.mediaDevices.getUserMedia = () => permission.promise;
+  const call = session();
+  const starting = call.start("test", null);
+  await flush();
+  t.mock.timers.tick(20000);
+  await starting;
+  permission.reject(new Error("Permission denied after timeout"));
+  await flush();
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /Microphone access timed out/);
+});
+
+test("worklet timeout closes the granted microphone and ignores late setup completion", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const worklet = deferred();
+  install("AudioContext", function () { context = fakeContext(); context.audioWorklet.addModule = () => worklet.promise; return context; });
+  capture = null; socket = null;
+  const call = session();
+  const starting = call.start("test", null);
+  await flush();
+  assert.equal(states.at(-1).status, "Preparing microphone…");
+  t.mock.timers.tick(20000);
+  await starting;
+  assert.match(errors[0], /Microphone setup timed out/);
+  assert.equal(track.stopped, true);
+  assert.equal(context.closed, true);
+  worklet.resolve();
+  await flush();
+  assert.equal(capture, null);
+  assert.equal(socket, null);
+});
+
+test("one deadline spans browser audio, permission, recording setup and server readiness", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const resume = deferred(), permission = deferred(), worklet = deferred();
+  install("AudioContext", function () {
+    context = fakeContext(); context.resume = () => resume.promise;
+    context.audioWorklet.addModule = () => worklet.promise; return context;
+  });
+  navigator.mediaDevices.getUserMedia = () => permission.promise;
+  const call = session();
+  const starting = call.start("test", null);
+  t.mock.timers.tick(5000); resume.resolve(); await flush();
+  t.mock.timers.tick(5000); permission.resolve({ getTracks: () => [track], getAudioTracks: () => [track] }); await flush();
+  t.mock.timers.tick(5000); worklet.resolve(); await starting;
+  assert.equal(states.at(-1).status, "Connecting to call…");
+  t.mock.timers.tick(4999);
+  assert.deepEqual(errors, []);
+  t.mock.timers.tick(1);
+  assert.match(errors[0], /Call connection timed out/);
+  assert.equal(socket.closed, true);
+  assert.equal(track.stopped, true);
+  assert.equal(context.closed, true);
+});
+
+test("server readiness cancels the startup deadline", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const call = await connected();
+  t.mock.timers.tick(60000);
+  assert.deepEqual(errors, []);
+  assert.equal(track.stopped, false);
+  assert.equal(states.at(-1).status, "Listening");
+  call.end();
+});
+
+
+test("ending between permission resolution and startup continuation still stops the grant", async () => {
+  const permission = deferred();
+  navigator.mediaDevices.getUserMedia = () => permission.promise;
+  capture = null; socket = null;
+  const call = session();
+  const starting = call.start("test", null);
+  await flush();
+  permission.resolve({ getTracks: () => [track], getAudioTracks: () => [track] });
+  queueMicrotask(() => call.end());
+  await starting;
+  assert.equal(track.stopped, true);
+  assert.equal(capture, null);
+  assert.equal(socket, null);
   assert.equal(context.closed, true);
 });

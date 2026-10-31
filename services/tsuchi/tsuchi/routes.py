@@ -12,16 +12,20 @@ from .models import (
     Agent,
     AgentInput,
     AgentKey,
+    AgentRename,
     AgentRun,
     AgentRunState,
     Asset,
     AssetUpdate,
+    ChatResultInput,
     ImageJob,
     ImageJobState,
+    MarkdownResource,
     Message,
     MessageAppend,
     Metadata,
     Model,
+    OwnedPersonaUpdate,
     PetJob,
     PetManifest,
     PetReferenceMode,
@@ -31,6 +35,7 @@ from .models import (
     ResourceKind,
     ResourceUpdate,
     ResourceVersion,
+    RunMessage,
     Runner,
     Stats,
     VersionInput,
@@ -93,6 +98,7 @@ class RunCreate(Model):
     expected_version: int = Field(ge=1)
     message: Message
     persona_id: UUID | None = None
+    initial_command: RunMessage | None = None
 
 
 class RunUpdate(AgentRunState):
@@ -173,6 +179,22 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     def create_agent(value: AgentInput):
         return repository.create_agent(value)
 
+    @router.get("/agents/{key}/persona", response_model=MarkdownResource | None)
+    def get_owned_persona(key: AgentKey):
+        return repository.get_owned_persona(key)
+
+    @router.put("/agents/{key}/persona", response_model=MarkdownResource)
+    def save_owned_persona(key: AgentKey, value: OwnedPersonaUpdate):
+        return repository.save_owned_persona(key, value)
+
+    @router.get("/agents/{key}", response_model=Agent)
+    def get_agent(key: AgentKey):
+        return repository.get_agent(key)
+
+    @router.put("/agents/{key}", response_model=Agent)
+    def rename_agent(key: AgentKey, value: AgentRename):
+        return repository.rename_agent(key, value)
+
     @router.get("/agent-runs", response_model=list[AgentRun])
     def active_runs():
         return repository.active_runs()
@@ -195,6 +217,7 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
             value.message,
             value.expected_version,
             value.persona_id,
+            value.initial_command,
         )
 
     @router.get("/agents/{key}/runs/{run_id}", response_model=AgentRun)
@@ -257,6 +280,12 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     @router.post("/agents/{key}/image-jobs/{job_id}/cancel", response_model=ImageJob)
     def cancel_image_job(key: AgentKey, job_id: UUID):
         return repository.cancel_image_job(key, job_id)
+
+    @router.post(
+        "/agents/{key}/image-jobs/{job_id}/upload/resolve", response_model=ImageJob
+    )
+    def resolve_image_upload(key: AgentKey, job_id: UUID):
+        return files.resolve_image_upload(key, job_id)
 
     @router.get("/pet-jobs", response_model=list[PetJob])
     def active_pet_jobs():
@@ -334,6 +363,20 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     def create_resource(key: AgentKey, value: ResourceInput):
         return repository.create_resource(key, value)
 
+    @router.post(
+        "/agents/{key}/resources/{conversation_id}/messages/{message_id}/document",
+        response_model=Resource,
+    )
+    def save_chat_result(
+        key: AgentKey,
+        conversation_id: UUID,
+        message_id: UUID,
+        value: ChatResultInput,
+    ):
+        return repository.save_chat_result(
+            key, conversation_id, message_id, value.title
+        )
+
     @router.get("/agents/{key}/resources/{resource_id}", response_model=Resource)
     def get_resource(key: AgentKey, resource_id: UUID):
         return repository.get_resource(key, resource_id)
@@ -399,6 +442,7 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         tags: Annotated[str, Form()] = "[]",
         sources: Annotated[str, Form()] = "[]",
         asset_id: Annotated[UUID | None, Form()] = None,
+        image_job_id: Annotated[UUID | None, Form()] = None,
     ):
         try:
             metadata = Metadata(
@@ -410,7 +454,9 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
             raise StorageError(
                 "Upload title, tags or sources are invalid", 422
             ) from error
-        return files.upload(key, file.file, file.filename, metadata, asset_id)
+        return files.upload(
+            key, file.file, file.filename, metadata, asset_id, image_job_id
+        )
 
     @router.get("/agents/{key}/assets/{asset_id}", response_model=Asset)
     def get_asset(key: AgentKey, asset_id: UUID):

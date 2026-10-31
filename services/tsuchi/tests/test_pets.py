@@ -1,7 +1,9 @@
 import io
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from datetime import timedelta
+from threading import Barrier
 from unittest.mock import MagicMock, Mock
 from uuid import uuid4
 
@@ -166,6 +168,180 @@ def test_creation_idempotent_and_scoped(repository):
     with pytest.raises(StorageError, match="not found"):
         repository.get_pet("beta", pet.id)
     assert repository.selected_pet("alpha") is None
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "cancelling"])
+def test_pet_exclusivity_rejects_competing_creation(repository, status):
+    current = repository.create_pet("alpha", uuid4(), "First pet")
+    if status != "queued":
+        current = claim(repository, current)
+    if status == "cancelling":
+        current = repository.update_pet(
+            "alpha",
+            current.id,
+            state(current, status="cancelling", cancel_requested=True),
+            current.version,
+        )
+    with pytest.raises(StorageError, match="Another pet") as raised:
+        repository.create_pet("alpha", uuid4(), "Second pet")
+    assert raised.value.status_code == 409
+    assert repository.list_pets("alpha") == [current]
+
+
+def test_pet_exclusivity_serializes_two_tab_creations(repository):
+    barrier = Barrier(2)
+
+    def create(pet_id):
+        # Each tab reaches storage through its own repository connection.
+        other = Repository(repository.data_dir)
+        barrier.wait(timeout=5)
+        try:
+            return other.create_pet("alpha", pet_id, "Fox")
+        except StorageError as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as threads:
+        results = list(threads.map(create, [uuid4(), uuid4()]))
+    saved = [result for result in results if isinstance(result, PetJob)]
+    errors = [result for result in results if isinstance(result, StorageError)]
+    assert len(saved) == len(errors) == 1
+    assert errors[0].status_code == 409
+    assert repository.list_pets("alpha") == saved
+    assert repository.selected_pet("alpha") is None
+
+
+def test_pet_exclusivity_blocks_creation_and_repair_against_each_other(repository):
+    original = ready_pet(repository)
+    repository.select_pet("alpha", original.id)
+    creation = repository.create_pet("alpha", uuid4(), "Another pet")
+    revision_id = uuid4()
+    with pytest.raises(StorageError, match="Another pet"):
+        repository.revise_pet(
+            "alpha", original.id, revision_id, original.version, ["idle/2"], "Clipped"
+        )
+    creation = repository.update_pet(
+        "alpha",
+        creation.id,
+        state(creation, status="cancelled", cancel_requested=True),
+        creation.version,
+    )
+    revision = repository.revise_pet(
+        "alpha", original.id, revision_id, original.version, ["idle/2"], "Clipped"
+    )
+    with pytest.raises(StorageError, match="Another pet"):
+        repository.create_pet("alpha", uuid4(), "Third pet")
+    assert repository.get_pet("alpha", creation.id) == creation
+    assert repository.get_pet("alpha", original.id) == original
+    assert repository.get_pet("alpha", revision.id) == revision
+    assert repository.selected_pet("alpha") == original
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled", "interrupted"])
+def test_pet_exclusivity_blocks_resume_while_repair_is_active(repository, status):
+    original = ready_pet(repository)
+    stopped = claim(repository, repository.create_pet("alpha", uuid4(), "Fox"))
+    stopped = repository.update_pet(
+        "alpha",
+        stopped.id,
+        state(
+            stopped,
+            status=status,
+            cancel_requested=status == "cancelled",
+            owner_id=None,
+            lease_expires_at=None,
+        ),
+        stopped.version,
+        stopped.owner_id,
+    )
+    revision = repository.revise_pet(
+        "alpha", original.id, uuid4(), original.version, ["idle/2"], "Clipped"
+    )
+    with pytest.raises(StorageError, match="Another pet") as raised:
+        repository.update_pet(
+            "alpha",
+            stopped.id,
+            state(stopped, status="queued", cancel_requested=False),
+            stopped.version,
+        )
+    assert raised.value.status_code == 409
+    assert repository.get_pet("alpha", stopped.id) == stopped
+    assert repository.get_pet("alpha", revision.id) == revision
+
+
+def test_pet_exclusivity_is_scoped_to_agent_and_releases_stopped_slot(repository):
+    alpha = repository.create_pet("alpha", uuid4(), "Fox")
+    beta = repository.create_pet("beta", uuid4(), "Owl")
+    beta = repository.update_pet(
+        "beta",
+        beta.id,
+        state(beta, status="cancelled", cancel_requested=True),
+        beta.version,
+    )
+    resumed = repository.update_pet(
+        "beta",
+        beta.id,
+        state(beta, status="queued", cancel_requested=False),
+        beta.version,
+    )
+    assert resumed.status == "queued"
+    assert repository.get_pet("alpha", alpha.id) == alpha
+
+
+def test_pet_exclusivity_preserves_exact_retries_and_existing_active_updates(
+    repository,
+):
+    original = ready_pet(repository)
+    revision_id = uuid4()
+    revision = repository.revise_pet(
+        "alpha", original.id, revision_id, original.version, ["idle/2"], "Clipped"
+    )
+    # Old storage can already contain multiple active jobs. They must still finish.
+    legacy = PetJob(
+        id=uuid4(),
+        agent_key="alpha",
+        prompt="Legacy job",
+        version=1,
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    with repository.connect(write=True) as db:
+        repository._save_pet(db, legacy)
+    assert repository.create_pet("alpha", legacy.id, legacy.prompt) == legacy
+    assert (
+        repository.revise_pet(
+            "alpha", original.id, revision_id, original.version, ["idle/2"], "Clipped"
+        )
+        == revision
+    )
+    with pytest.raises(StorageError, match="already in use"):
+        repository.create_pet("alpha", legacy.id, "Changed prompt")
+    with pytest.raises(StorageError, match="already in use"):
+        repository.revise_pet(
+            "alpha",
+            original.id,
+            revision_id,
+            original.version,
+            ["idle/2"],
+            "Changed reason",
+        )
+    running = claim(repository, revision)
+    running = repository.update_pet(
+        "alpha",
+        running.id,
+        state(running, stage="Working"),
+        running.version,
+        running.owner_id,
+    )
+    stopped = repository.update_pet(
+        "alpha",
+        running.id,
+        state(running, status="failed", owner_id=None, lease_expires_at=None),
+        running.version,
+        running.owner_id,
+    )
+    assert stopped.steps == revision.steps
+    assert stopped.status == "failed"
+    assert repository.get_pet("alpha", legacy.id) == legacy
 
 
 @pytest.mark.parametrize("reference_mode", ["single_image", "character_sheet"])
