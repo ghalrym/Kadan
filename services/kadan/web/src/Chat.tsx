@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowUp, ArrowDown, ArrowUpRight, RotateCw, Search, X } from "lucide-react";
 import Markdown from "./Markdown";
+import RequestReferences, { type SelectedReference } from "./RequestReferences";
 import Composer, { readiness } from "./Composer";
 import Pet, { useMood } from "./Pet";
 import AgentCard from "./AgentCard";
@@ -115,6 +116,7 @@ export default function Chat({
     return () => attachments.stop();
   }, [attachments]);
   const [persona, setPersona] = useState("");
+  const [references, setReferences] = useState<SelectedReference[]>(pending.current?.references ?? []);
   const [sending, setSending] = useState(false);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [images, setImages] = useState<ImageJob[]>([]);
@@ -276,7 +278,10 @@ export default function Chat({
 
   function syncPending(messages: Resource["messages"]) {
     // Coding shares this outbox while Messages stays mounted behind its dialog.
-    savePending(confirmSend(readPending(sessionStorage.getItem(pendingKey)), messages));
+    const stored = readPending(sessionStorage.getItem(pendingKey));
+    const confirmed = confirmSend(stored, messages);
+    if (stored?.generate && !confirmed && !stored.resume_coding_job_id) setReferences([]);
+    savePending(confirmed);
   }
   function savePending(value: PendingMessage | null) {
     pending.current = value;
@@ -307,6 +312,7 @@ export default function Chat({
     }
     const message = queueSend(pending.current, retry ?? {
       id: randomUuid(), content: text, generate, persona, attachment_ids: attachments.ids(),
+      references: generate ? references : [],
     });
     const messageId = message.id;
     const personaId = message.persona;
@@ -350,6 +356,7 @@ export default function Chat({
           content: text,
           expected_version: currentChain.current.version,
           persona_id: personaId || null,
+          references: (message.references ?? []).map(({ resource_id, expected_version }) => ({ resource_id, expected_version })),
           message_id: messageId,
           attachment_ids: message.attachment_ids ?? [],
           ...(message.resume_coding_job_id ? { resume_coding_job_id: message.resume_coding_job_id } : {}),
@@ -671,6 +678,8 @@ export default function Chat({
           }}>Discard</button>
         </div>
       )}
+      <RequestReferences agentKey={agentKey} selected={references} onChange={setReferences}
+        disabled={sending || blocked || !!recovery} />
       <Composer
         agentName={agentName}
         attachments={attachments}

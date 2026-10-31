@@ -110,7 +110,7 @@ test("Chat passes saved history to export while its draft and optimistic outgoin
     react: {
       Fragment: "Fragment", useEffect() {}, useLayoutEffect() {}, useCallback: callback => callback,
       useRef: current => ({ current }),
-      useState: initial => [slot++ === 12 ? outgoing : typeof initial === "function" ? initial() : initial, () => {}],
+      useState: initial => [slot++ === 13 ? outgoing : typeof initial === "function" ? initial() : initial, () => {}],
     },
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "lucide-react": {},
@@ -120,6 +120,7 @@ test("Chat passes saved history to export while its draft and optimistic outgoin
     "./Activity": {}, "./CodingIndicator": {},
     "./attachments": { ChatAttachments: class { entries = []; } },
     "./SaveChatResult": {},
+    "./RequestReferences": { default: "RequestReferences" },
     "./AgentCard": {}, "./ComputerViewer": {}, "./ChatExport": { default: "ChatExport" },
     "./VoiceCallControl": { useVoiceCall: () => ({ active: false }) },
     "./presence": {}, "./PetContext": { useAgentPet: () => null },

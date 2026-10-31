@@ -11,8 +11,8 @@ from pydantic import ValidationError
 from kadan.api.config import ServiceError
 from kadan.api.pydantic_models.agent_runs import AgentRun
 from kadan.api.pydantic_models.runners import Runner
-from kadan.api.run_client import RunClient
 from kadan.api.routes.agents.conversations.runs import RunInput
+from kadan.api.run_client import RunClient
 from kadan.runner.config import RunnerSettings
 from kadan.runner.service import AgentRunner
 
@@ -294,6 +294,7 @@ def test_api_run_client_only_persists_enqueue_and_cancellation():
         value = RunInput(
             message_id=run.id,
             content="Hello",
+            references=[],
             persona_id=None,
             expected_version=1,
         )

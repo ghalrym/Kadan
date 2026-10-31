@@ -605,6 +605,19 @@ class PetJob(PetState):
     updated_at: datetime
 
 
+class RequestReference(Model):
+    resource_id: UUID
+    expected_version: int = Field(ge=1, strict=True)
+
+
+class ReferenceSnapshot(Model):
+    resource_id: UUID
+    kind: Literal["space", "memory"]
+    title: str = Field(min_length=1, max_length=500)
+    version: int = Field(ge=1)
+    markdown: str = Field(max_length=12000)
+
+
 class RunMessage(Model):
     role: Literal["system", "user", "assistant"]
     content: str = Field(max_length=1000000)
@@ -642,6 +655,7 @@ class AgentRun(AgentRunState):
     trigger_message_id: UUID | None = None
     trigger_job_id: UUID | None = None
     persona_id: UUID | None = None
+    references: list[ReferenceSnapshot] = Field(default_factory=list, max_length=3)
     delivered_message_ids: list[UUID] = Field(default_factory=list)
     version: int = Field(ge=1)
     created_at: datetime
