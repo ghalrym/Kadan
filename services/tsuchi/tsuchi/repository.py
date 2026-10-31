@@ -32,6 +32,8 @@ from .models import (
     PetReferenceMode,
     PetRejection,
     PetState,
+    ReferenceSnapshot,
+    RequestReference,
     Resource,
     ResourceInput,
     ResourceKind,
@@ -356,7 +358,9 @@ class Repository:
                 str(run.conversation_id),
                 run.status,
                 run.updated_at.isoformat(),
-                run.model_dump_json(),
+                run.model_dump_json(
+                    exclude={"references"} if not run.references else None
+                ),
             ),
         )
 
@@ -426,7 +430,13 @@ class Repository:
         expected_version: int,
         persona_id: UUID | None = None,
         initial_command: RunMessage | None = None,
+        references: list[RequestReference] | None = None,
     ) -> AgentRun:
+        references = references or []
+        if len(references) > 3 or len({item.resource_id for item in references}) != len(
+            references
+        ):
+            raise StorageError("Select up to three distinct references", 422)
         if message.role != "user":
             raise StorageError("An agent run must start with a user message", 409)
         if initial_command is not None and initial_command.role != "assistant":
@@ -446,6 +456,12 @@ class Repository:
                     and existing.trigger_message_id == message.id
                     and existing.persona_id == persona_id
                     and existing.initial_command == initial_command
+                    and [
+                        (item.resource_id, item.version) for item in existing.references
+                    ]
+                    == [
+                        (item.resource_id, item.expected_version) for item in references
+                    ]
                     and any(
                         item.model_dump(exclude={"created_at"})
                         == message.model_dump(exclude={"created_at"})
@@ -460,6 +476,32 @@ class Repository:
                 self._active(persona)
                 if persona.kind != ResourceKind.PERSONA:
                     raise StorageError("Persona must be a persona resource", 409)
+            snapshots = []
+            for selected in references:
+                resource = self._resource(db, key, selected.resource_id)
+                self._active(resource)
+                if resource.kind not in {ResourceKind.SPACE, ResourceKind.MEMORY}:
+                    raise StorageError(
+                        "References require Markdown spaces or memories", 409
+                    )
+                self._check_version(resource, selected.expected_version)
+                if (
+                    sum(len(item.markdown) for item in snapshots)
+                    + len(resource.markdown)
+                    > 12000
+                ):
+                    raise StorageError(
+                        "Selected references exceed 12000 characters", 422
+                    )
+                snapshots.append(
+                    ReferenceSnapshot(
+                        resource_id=resource.id,
+                        kind=resource.kind,
+                        title=resource.title,
+                        version=resource.version,
+                        markdown=resource.markdown,
+                    )
+                )
             self._append_run_message(db, key, conversation, message)
             now = utc_now()
             run = AgentRun(
@@ -470,6 +512,7 @@ class Repository:
                 trigger_message_id=message.id,
                 persona_id=persona_id,
                 transcript=[initial_command] if initial_command is not None else [],
+                references=snapshots,
                 version=1,
                 created_at=now,
                 updated_at=now,
@@ -764,6 +807,7 @@ class Repository:
                 conversation_id=job.conversation_id,
                 trigger_job_id=job.id,
                 persona_id=origin.persona_id,
+                references=origin.references,
                 version=1,
                 created_at=now,
                 updated_at=now,

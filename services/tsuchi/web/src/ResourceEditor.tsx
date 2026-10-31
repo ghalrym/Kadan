@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import { randomUuid } from "./uuid";
-import { Download, History, RotateCcw, Save, Trash2 } from "lucide-react";
+import { Copy, Download, History, RotateCcw, Save, Trash2 } from "lucide-react";
 import {
   agentPath,
   allResources,
@@ -96,6 +96,7 @@ export function ResourceEditor({
   const [messageError, setMessageError] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [copiedSpace, setCopiedSpace] = useState(false);
   const [formKey, setFormKey] = useState(0);
   const formId = useId();
   const {
@@ -131,6 +132,7 @@ export function ResourceEditor({
   const accept = (resource: Resource) => {
     setCurrent(resource);
     setDraft(resourceInput(resource));
+    setCopiedSpace(false);
     setFormKey((key) => key + 1);
     onChanged();
   };
@@ -191,6 +193,25 @@ export function ResourceEditor({
       onClose();
   };
   const readOnly = Boolean(current?.deleted_at);
+  const canCopy =
+    current && !readOnly && draft.kind !== "conversation" && tab !== "history";
+  const makeCopy = () => {
+    if (!canCopy || pending) return;
+    const copy = structuredClone(resourceInput(draft));
+    copy.title = copy.title.trim()
+      ? `Copy of ${copy.title.trim()}`.slice(0, 300).replace(/[\uD800-\uDBFF]$/, "")
+      : "";
+    setCurrent(null);
+    setDraft(copy);
+    setTab("content");
+    setMarkdownMode("edit");
+    setMessageDraft(emptyMessageDraft());
+    setMessageError("");
+    setError("");
+    setNotice("");
+    setCopiedSpace(copy.kind === "space");
+    setFormKey((key) => key + 1);
+  };
   return (
     <Dialog
       title={current ? current.title : `New ${singularLabels[draft.kind]}`}
@@ -222,6 +243,12 @@ export function ResourceEditor({
             </button>
           ))}
         </div>
+        {copiedSpace && (
+          <p className="muted" role="status">
+            Only this Space document is copied; children are not included.
+            Project tags are kept.
+          </p>
+        )}
         {tab !== "history" && (
           <form
             id={formId}
@@ -488,6 +515,12 @@ export function ResourceEditor({
                   ? "In trash"
                   : notice || (current ? `Version ${current.version}` : "")}
         </div>
+        {canCopy && (
+          <button type="button" disabled={pending} onClick={makeCopy}>
+            <Copy size={16} />
+            Make a copy
+          </button>
+        )}
         {current && !readOnly && (
           <button
             className="danger"

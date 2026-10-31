@@ -16,6 +16,7 @@ Saving content does not run an agent or guarantee future recall. Confirmed saves
 | [Stored conversations](conversation-records.md) | Manage saved messages without triggering agent responses or repeating actions. |
 | [Search](search.md) | Find active resources and file metadata within the selected agent. |
 | [Revisions](revisions.md) | Inspect saved snapshots and restore earlier contents as a new revision. |
+| [Resource copies](resource-copies.md) | Start an unsaved variation of a persona, memory, Space document or deck. |
 | [Trash](trash.md) | Remove items from active collections while retaining their content and bytes. |
 | [Restore](restore.md) | Return trashed items after restoring required parents and attachments. |
 | [Export](export.md) | Download one agent's portable records and files. |
