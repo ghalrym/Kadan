@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Monitor, Phone } from "lucide-react";
 import Pet from "./Pet";
 import { api } from "./api";
@@ -12,6 +12,8 @@ const COMPUTER_STATES: Record<ComputerStatus["state"], string> = {
 };
 /** The thumbnail is a still; the live view is one click away. */
 const REFRESH_MS = 5000;
+/** Space kept between the card and the bottom of the window. */
+const VIEWPORT_MARGIN = 16;
 
 interface Props {
   agentName: string;
@@ -23,10 +25,11 @@ interface Props {
   callTitle: string;
   onCall: () => void;
   onOpenComputer: () => void;
+  activity: ReactNode;
 }
 
-/** The agent's contact card, opened from its pet: presence, calling and its computer. */
-export default function AgentCard({ agentName, sheet, mood, presence, onClose, callDisabled, callTitle, onCall, onOpenComputer }: Props) {
+/** The agent's contact card, opened from its pet: presence, calling, its computer and conversation activity. */
+export default function AgentCard({ agentName, sheet, mood, presence, onClose, callDisabled, callTitle, onCall, onOpenComputer, activity }: Props) {
   const card = useRef<HTMLDivElement>(null);
   const [computer, setComputer] = useState<ComputerStatus | null>(null);
   const [frame, setFrame] = useState(0);
@@ -49,6 +52,18 @@ export default function AgentCard({ agentName, sheet, mood, presence, onClose, c
       document.removeEventListener("keydown", escape);
     };
   }, [onClose]);
+  useLayoutEffect(() => {
+    // The card hangs below its pet, so its room depends on where the pet sits.
+    const fit = () => {
+      const element = card.current;
+      if (!element) return;
+      const top = element.getBoundingClientRect().top;
+      element.style.maxHeight = `${Math.max(0, window.innerHeight - top - VIEWPORT_MARGIN)}px`;
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, []);
   useEffect(() => {
     let closed = false;
     async function refresh() {
@@ -102,6 +117,7 @@ export default function AgentCard({ agentName, sheet, mood, presence, onClose, c
           </span>
         </button>
       </section>
+      {activity}
     </div>
   );
 }

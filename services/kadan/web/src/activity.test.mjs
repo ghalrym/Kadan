@@ -19,7 +19,7 @@ test("failed responses retain their recorded error and remain distinct from deli
   assert.equal(earlier.items[0].state, "Response failed");
   assert.equal(earlier.items[0].detail, "Context allowance exceeded");
   assert.equal(review.items[0].state, "Response stopped");
-  assert.match(review.items[0].detail, /does not undo/);
+  assert.equal(review.items[0].detail, "");
   assert.deepEqual(progressing.items, []);
   assert.deepEqual(finished.items, []);
 });
@@ -28,14 +28,14 @@ test("response completion reports message delivery evidence without claiming tas
   const [, , finished] = conversationActivity(conversation, [
     run("silent", "completed"), run("spoken", "completed", { delivered_message_ids: ["reply"] }),
   ], []);
-  assert.equal(finished.items[0].detail, "No message delivery was recorded for this response.");
-  assert.equal(finished.items[1].detail, "1 message delivery recorded.");
+  assert.equal(finished.items[0].detail, "No message sent");
+  assert.equal(finished.items[1].detail, "");
   assert.ok(finished.items.every(item => item.state === "Response finished"));
 });
 
 test("queued and running responses stay in progress with their triggering request", () => {
   const [, progressing] = conversationActivity(conversation, [run("queued", "queued"), run("running", "running")], []);
-  assert.deepEqual(progressing.items.map(item => item.state), ["Response queued", "Waiting for response"]);
+  assert.deepEqual(progressing.items.map(item => item.state), ["Response queued", "Responding"]);
   assert.ok(progressing.items.every(item => item.title === "Research a weekend trip"));
 });
 
@@ -44,8 +44,8 @@ test("image generation waits for recorded delivery before entering finished", ()
     image("ready", "completed"), image("delivered", "completed", { delivered_message_id: "saved-image" }),
     image("stopping", "cancelling"),
   ]);
-  assert.deepEqual(progressing.items.map(item => item.state), ["Image ready · awaiting delivery", "Stopping image"]);
-  assert.equal(finished.items[0].state, "Image delivered");
+  assert.deepEqual(progressing.items.map(item => item.state), ["Image ready, not sent yet", "Stopping image"]);
+  assert.equal(finished.items[0].state, "Image sent");
 });
 
 test("images fail and cancel independently from response records", () => {
