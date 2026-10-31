@@ -6,9 +6,9 @@ from experimental_worker.decision import _questions, evaluate
 
 MODEL_ID = "d1-2b-cpu-f32"
 REVISION = "10e7671d44e4b37700020b1eed3f594c5f2af0b4"
-CONTEXT_LIMIT = 1024
-# Covers the measured F32 peak, with the runtime's separate 1 GiB headroom
-# fitting alongside this grant inside a 16 GiB container.
+CONTEXT_LIMIT = 65536
+# Fixed reservation and monitored RSS budget, not a 64K fit estimate. The runtime
+# retains its separate 1 GiB headroom and terminates work that exceeds the grant.
 REQUIREMENT = (15 * 1024**3, 0)
 MAX_EXECUTOR_SECONDS = 180
 MODEL = {
@@ -21,6 +21,7 @@ MODEL = {
     "display_name": "d1 2B CPU F32 (experimental)",
     "kind": "decision",
     "context_limit": CONTEXT_LIMIT,
+    "architecture_context_limit": 128000,
 }
 
 
@@ -42,7 +43,7 @@ class BoundedDecisionModel:
         self.input_tokens = sum(lengths)
         if self.input_tokens > CONTEXT_LIMIT:
             raise ValueError(
-                "The d1 trial input exceeds 1024 encoded tokens; nothing was truncated."
+                "The d1 trial input exceeds 65,536 encoded tokens; nothing was truncated."
             )
         self.emit(
             {

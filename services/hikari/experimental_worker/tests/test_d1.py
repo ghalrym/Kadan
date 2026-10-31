@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from experimental_worker.d1 import (
     CONTEXT_LIMIT,
+    MAX_EXECUTOR_SECONDS,
     MODEL,
     MODEL_ID,
     REQUIREMENT,
@@ -93,10 +94,11 @@ class BoundedD1Tests(unittest.TestCase):
 
     def test_exact_total_token_limit_precedes_forward_and_never_truncates(self):
         for lengths, allowed in (
+            ([65536], True),
+            ([32768, 32768], True),
+            ([65537], False),
+            ([32768, 32769], False),
             ([1024], True),
-            ([512, 512], True),
-            ([1025], False),
-            ([600, 600], False),
             ([], False),
             ([0], False),
         ):
@@ -119,8 +121,10 @@ class BoundedD1Tests(unittest.TestCase):
                         ],
                     )
                 else:
-                    with self.assertRaises(ValueError):
+                    with self.assertRaises(ValueError) as error:
                         bounded.system_one("state", {"q": {}}, score_readout="mean")
+                    if lengths and all(length > 0 for length in lengths):
+                        self.assertIn("65,536 encoded tokens", str(error.exception))
                     model.system_one.assert_not_called()
                     self.assertEqual(model.events, [])
 
@@ -143,7 +147,9 @@ class BoundedD1Tests(unittest.TestCase):
         )
         store = ModelStore(Path("/unused"), MODEL, manifest)
         self.assertEqual(REQUIREMENT, (15 * 1024**3, 0))
-        self.assertEqual(CONTEXT_LIMIT, 1024)
+        self.assertEqual(CONTEXT_LIMIT, 65536)
+        self.assertEqual(MODEL["architecture_context_limit"], 128000)
+        self.assertEqual(MAX_EXECUTOR_SECONDS, 180)
         self.assertEqual(len(store.artifacts), 34)
         self.assertEqual(sum(item["size"] for item in store.artifacts), 3_854_681_959)
         self.assertTrue(

@@ -14,7 +14,12 @@ store; evaluation never acquires artifacts. Importing the adapter or transport
 loads no inference library. The admitted disposable child loads only local files,
 disables external hub kernels and uses CPU F32 with two Torch threads. The pinned
 engine's exact text sequences are encoded before inference, rejecting more than
-1,024 total tokens rather than relying on its batching budget or truncating.
+65,536 total tokens rather than relying on its batching budget or truncating.
+This counts state, questions, options/rubrics and template/special tokens across
+all encoded sequences. It is an opt-in ceiling, not a measured capacity. The
+pinned checkpoint's architectural context is 128,000 tokens. Existing request
+limits remain 8,000 state characters and 16,000 serialized characters; raising
+the encoded ceiling does not widen those validation rules or ordinary Laya calls.
 
 The candidate is the original `LiquidAI/d1-2B` checkpoint at revision
 `10e7671d44e4b37700020b1eed3f594c5f2af0b4`, under the
@@ -38,15 +43,21 @@ process-shared lock can leave named semaphores registered with the long-lived
 parent after executor termination. Protocol events provide progress instead,
 including the accepted encoded-token count immediately before evaluation.
 
-The hub reserves 15 GiB host RAM and no VRAM before spawning the executor. This
-envelope covers the measured F32 initialization peak below and leaves the
-worker's 1 GiB headroom inside a 16 GiB container cap; it is
-not evidence that all admitted inputs fit. The runtime monitors executor RSS and
+The hub's fixed minimum and preferred grant are 15 GiB host RAM and no VRAM
+before spawning the executor. This reservation covers the measured short-input
+F32 initialization peak below and leaves the worker's 1 GiB headroom inside a
+16 GiB container cap. It does not estimate 64K memory needs or grow automatically
+with input size. Extra free host RAM does not enlarge the grant. The runtime polls
+executor RSS and
 enforces a 180-second deadline including model loading. Cancellation, disconnect,
 RAM overrun and deadline failure terminate and join the process before publishing
 a terminal result or releasing the grant. Repeated cancellation cannot skip
 cleanup. The pure adapter's entry/publication fences are not the interrupt
 mechanism: process ownership supplies it. Existing GPU worker behavior is retained.
+RSS monitoring is not a hard OS allocation limit; operators retain their
+container/host memory limits. Inputs below the encoded ceiling can still fail
+on the granted RSS budget or deadline. No 64K inference, memory-fit or completion
+benchmark was run; raising this ceiling does not certify physical capacity.
 
 Automated validation uses fake model responses only. A separate authorized manual
 CPU experiment used the pinned original artifacts and existing dependencies:
@@ -90,7 +101,8 @@ terminated Transformers progress bar; disabling its progress bars created none.
 After the fix, another authorized run reused one Runtime for seven real executor
 jobs. Three consecutive cancellations before `loaded` settled in 0.096 to 0.142
 seconds; cancellation one second after the evaluation event settled in 0.114
-seconds. An exactly 1,024-token request entered evaluation but did not finish
+seconds. Under the earlier 1,024-token trial ceiling, an exactly 1,024-token
+request entered evaluation but did not finish
 within the unchanged 180-second deadline. Its failure settled in 180.12 seconds
 with confirmed cleanup, rather than publishing an answer. Subsequent malformed
 one-level and eleven-level Score requests failed explicitly before loading the
@@ -101,7 +113,7 @@ Sampled peak executor RSS across the run was 12,321,288,192 bytes.
 
 This establishes these bounded local lifecycle cases, not HTTP/WebSocket or
 production-hub acceptance, indefinite cancellation endurance, quality or a
-speedup over Laya. The full-limit CPU timeout, RAM reservation and narrower Score
+speedup over Laya. The measured 1,024-token CPU timeout, RAM reservation and narrower Score
 contract are explicit resource/product tradeoffs before replacing the default.
 The supported official recipe uses F32 on CPU and BF16 on CUDA/MPS; GPU resource
 use and performance are unmeasured. Laya remains the default.

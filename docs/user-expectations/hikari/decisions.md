@@ -17,10 +17,13 @@ See [Decision architecture](../../architecture/hikari/worker-decision.md) for va
 An operator-enabled d1 CPU trial is separate from ordinary evaluation, which
 continues to use Laya. The trial requires an explicitly selected checkpoint and
 an acknowledged, verified download; it never downloads during evaluation or
-falls back to Laya. It supports text only, a smaller encoded-input limit and
-Score rubrics with two to ten levels. Unsupported rubric sizes are rejected before
+falls back to Laya. It supports text only, at most 65,536 encoded tokens across
+the entire input, and Score rubrics with two to ten levels. Existing text-size
+limits still apply. Unsupported rubric sizes are rejected before
 evaluation starts; ordinary Laya evaluation keeps its existing rubric support.
 Inputs that exceed its limit fail without
 truncation. It waits for sufficient RAM, and cancellation or a time-limit failure
-keeps its resources reserved until its executor has stopped. The regular
+keeps its resources reserved until its executor has stopped. The encoded ceiling
+does not guarantee that a request fits memory or finishes in time; long inputs
+have not been benchmarked at that ceiling. The regular
 Decisions page does not select this trial.
