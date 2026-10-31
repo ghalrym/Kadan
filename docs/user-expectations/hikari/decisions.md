@@ -18,7 +18,9 @@ An operator-enabled d1 CPU trial is separate from ordinary evaluation, which
 continues to use Laya. The trial requires an explicitly selected checkpoint and
 an acknowledged, verified download; it never downloads during evaluation or
 falls back to Laya. It supports text only, a smaller encoded-input limit and
-Score rubrics with two to ten levels. Inputs that exceed its limit fail without
+Score rubrics with two to ten levels. Unsupported rubric sizes are rejected before
+evaluation starts; ordinary Laya evaluation keeps its existing rubric support.
+Inputs that exceed its limit fail without
 truncation. It waits for sufficient RAM, and cancellation or a time-limit failure
 keeps its resources reserved until its executor has stopped. The regular
 Decisions page does not select this trial.

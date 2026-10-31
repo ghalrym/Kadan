@@ -62,14 +62,22 @@ class DecisionRequest(BaseModel):
                             'Option key "{option}" is used more than once in question "{key}"',
                             {"option": option, "key": question.key},
                         )
-            if isinstance(question, ScoreQuestion) and any(
-                not level.strip() for level in question.levels
-            ):
-                raise PydanticCustomError(
-                    "blank_score_level",
-                    'Rubric levels for question "{key}" must not be blank',
-                    {"key": question.key},
-                )
+            if isinstance(question, ScoreQuestion):
+                if (
+                    self.model_id == "d1-2b-cpu-f32"
+                    and not 2 <= len(question.levels) <= 10
+                ):
+                    raise PydanticCustomError(
+                        "unsupported_d1_score_levels",
+                        'd1 requires 2 to 10 Score levels; question "{key}" has {count}',
+                        {"key": question.key, "count": len(question.levels)},
+                    )
+                if any(not level.strip() for level in question.levels):
+                    raise PydanticCustomError(
+                        "blank_score_level",
+                        'Rubric levels for question "{key}" must not be blank',
+                        {"key": question.key},
+                    )
         if not self.state.strip():
             raise PydanticCustomError("blank_state", "State must not be blank")
         if len(self.model_dump_json()) > 16000:
