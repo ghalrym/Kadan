@@ -11,6 +11,8 @@ Open **Coding** in the sidebar and choose **Sign in with ChatGPT**. Kadan shows 
 sign-in link and a one-time code. Open the link in any browser, sign in and enter
 the code. The Coding tab switches to signed in once ChatGPT confirms. No terminal
 or desktop access is needed. **Sign out** removes the sign-in from the computer.
+**Cancel sign-in** stops a pending sign-in, including while its code is still being prepared. Sign-in and thread history refresh independently: a failure in one must leave the other available, with a visible refresh error. **Refresh** retries failed reads.
+
 Signing in confirms the account, not available usage or model access; a run can
 still fail for those reasons. If Codex isn't installed on the computer, the tab says
 so and asks the person running Kadan to update it.
@@ -41,7 +43,13 @@ seconds while open.
 **Stop** appears on a thread that the agent started and that is still working. It
 ends that Codex run; changes it already made to files remain. Chat **Stop response**
 does not stop Codex, and closing the browser or restarting Kadan's API or runner
-leaves Codex running. Restarting the computer ends any running Codex work.
+leaves Codex running. Restarting the computer ends any running Codex work. Stop is confirmed only
+once Codex and its child processes have ended. If cleanup cannot be confirmed,
+the thread stays marked as working, Kadan reports the uncertainty and blocks new
+coding tasks until the computer restarts. File changes remain and need inspection.
+A restart reports unfinished coding work as failed rather than silently restarting it.
+Repeated delivery or recovery of the same saved start must not launch another task,
+even after its result has been queued for the conversation.
 
 Threads live in Codex's own history on the computer's persistent home volume.
 Removing that volume removes them. Generated replies can contain private project
@@ -49,3 +57,8 @@ content; review them before sharing.
 
 See [Agent actions](agent-actions.md), [Stopping chat work](stopping-chat-work.md)
 and [security and operator responsibility](../security.md).
+
+## Validation status
+
+The full device-sign-in and coding-cycle trial is pending the project owner's manual integration testing.
+Unit tests do not establish that the complete computer workflow works.

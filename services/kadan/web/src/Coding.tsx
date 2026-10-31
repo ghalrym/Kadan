@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import type { CodexStatus, CodexThread } from "./coding.ts";
+import type { CodexSetup, CodexStatus, CodexThread } from "./coding.ts";
 
 interface Props {
   onClose: () => void;
@@ -9,12 +9,19 @@ interface Props {
 export default function Coding({ onClose }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const active = useRef(true);
+  const reading = useRef(false);
+  const writing = useRef(false);
+  const revision = useRef(0);
   const selectedRef = useRef("");
+  const [setup, setSetup] = useState<CodexSetup | null>(null);
+  const [authError, setAuthError] = useState("");
   const [status, setStatus] = useState<CodexStatus | null>(null);
   const [thread, setThread] = useState<CodexThread | null>(null);
   const [selected, setSelected] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [threadError, setThreadError] = useState("");
+  const [actionError, setActionError] = useState("");
 
   useEffect(() => {
     active.current = true;
@@ -25,51 +32,76 @@ export default function Coding({ onClose }: Props) {
   }, []);
 
   async function refresh() {
+    if (reading.current || writing.current) return;
+    reading.current = true;
+    const read = revision.current;
+    const id = selectedRef.current;
     try {
-      const result = await api<CodexStatus>("/computer/coding");
-      if (!active.current) return;
-      setStatus(result);
-      setError("");
-      const id = selectedRef.current;
-      if (id) {
-        const current = await api<CodexThread>(`/computer/coding/threads/${encodeURIComponent(id)}`);
-        if (active.current && selectedRef.current === id) setThread(current);
-      }
-    } catch (e) {
-      if (active.current) setError((e as Error).message);
-    }
+      await Promise.all([
+        api<CodexStatus>("/computer/coding").then(result => {
+          if (active.current && read === revision.current) { setStatus(result); setError(""); }
+        }).catch(e => {
+          if (active.current && read === revision.current) setError(`Could not refresh Codex threads: ${(e as Error).message}`);
+        }),
+        api<CodexSetup>("/computer/coding/login/status").then(result => {
+          if (active.current && read === revision.current) { setSetup(result); setAuthError(""); }
+        }).catch(() => {
+          if (active.current && read === revision.current) {
+            setSetup(null);
+            setAuthError("Sign-in status unavailable. Refresh or ask the person running Kadan to update the computer.");
+          }
+        }),
+        ...(id ? [api<CodexThread>(`/computer/coding/threads/${encodeURIComponent(id)}`).then(result => {
+          if (active.current && read === revision.current && selectedRef.current === id) { setThread(result); setThreadError(""); }
+        }).catch(e => {
+          if (active.current && read === revision.current && selectedRef.current === id) setThreadError(`Could not refresh this thread: ${(e as Error).message}`);
+        })] : []),
+      ]);
+    } finally { reading.current = false; }
   }
 
   function open(id: string) {
     selectedRef.current = id;
     setSelected(id);
     setThread(null);
+    setThreadError("");
+    ++revision.current;
     void refresh();
   }
 
   async function act(name: string, path: string) {
+    if (writing.current) return;
+    writing.current = true;
+    ++revision.current;
     setBusy(name);
+    setActionError("");
+    setAuthError("");
     setError("");
     try {
-      await api(path, {});
-      await refresh();
+      const result = await api<CodexSetup>(path, {});
+      if (active.current && name !== "stop") setSetup(result);
     } catch (e) {
-      if (active.current) setError((e as Error).message);
+      if (active.current) {
+        if (name === "stop") setActionError(`Stop is unconfirmed: ${(e as Error).message}`);
+        else setAuthError(`Sign-in could not be confirmed: ${(e as Error).message}`);
+      }
     } finally {
+      writing.current = false;
       if (active.current) setBusy("");
+      void refresh();
     }
   }
 
   function close() { active.current = false; dialog.current?.close(); onClose(); }
 
-  const setup = status?.setup;
-  const summary = status?.threads.find(row => row.id === selected);
+  const summary = status?.threads.find(row => row.id === selected) ?? thread;
 
   return <dialog ref={dialog} className="coding-dialog" aria-labelledby="coding-title"
     onCancel={event => { event.preventDefault(); close(); }}>
     <div className="coding-content">
       <h2 id="coding-title">Coding</h2>
-      {!setup ? <p role="status">{error ? "Codex status unavailable" : "Checking Codex…"}</p> : <>
+      {authError && <p className="error" role="alert">{authError}</p>}
+      {setup && <>
         <div className="coding-setup">
           <p role="status">{setup.message}</p>
           {setup.state === "signed_out" && <button disabled={!!busy} onClick={() => void act("login", "/computer/coding/login")}>
@@ -79,10 +111,13 @@ export default function Coding({ onClose }: Props) {
             <a href={setup.login.url} target="_blank" rel="noreferrer">Open sign-in page<span className="sr-only"> (opens in a new tab)</span></a>
             <p>Code: <code className="coding-code">{setup.login.code}</code></p>
           </>}
-          {setup.state === "signed_in" && <button disabled={!!busy} onClick={() => void act("logout", "/computer/coding/logout")}>
-            {busy === "logout" ? "Signing out…" : "Sign out"}
+          {["signed_in", "signing_in"].includes(setup.state) && <button disabled={!!busy} onClick={() => void act("logout", "/computer/coding/logout")}>
+            {busy === "logout" ? "Signing out…" : setup.state === "signing_in" ? "Cancel sign-in" : "Sign out"}
           </button>}
         </div>
+      </>}
+      <p className="field-hint">Sign-in does not confirm model access or remaining usage. Keep passwords, codes and API keys out of chat.</p>
+      {!status ? <p role="status">{error ? "Codex status unavailable" : "Checking Codex…"}</p> : <>
         {selected ? <>
           <button onClick={() => open("")}>All threads</button>
           {summary && <>
@@ -108,7 +143,10 @@ export default function Coding({ onClose }: Props) {
           </ul>}
       </>}
       {error && <p className="error" role="alert">{error}</p>}
+      {threadError && <p className="error" role="alert">{threadError}</p>}
+      {actionError && <p className="error" role="alert">{actionError}</p>}
       <div className="form-actions">
+        <button onClick={() => void refresh()}>Refresh</button>
         <button onClick={close}>Close</button>
       </div>
     </div>

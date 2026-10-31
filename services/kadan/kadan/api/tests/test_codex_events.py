@@ -112,3 +112,12 @@ def test_conflicting_event_is_retained(boundary):
     with pytest.raises(ServiceError):
         asyncio.run(boundary.events.deliver())
     assert boundary.acknowledged == []
+
+
+def test_one_failed_event_does_not_starve_other_conversations(boundary):
+    failed, other = finished(), finished(origin=False)
+    boundary.finished = [failed, other]
+    boundary.error = ServiceError("Conflicting event", 409)
+    with pytest.raises(ServiceError):
+        asyncio.run(boundary.events.deliver())
+    assert boundary.acknowledged == [other.request_id]

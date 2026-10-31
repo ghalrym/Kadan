@@ -36,7 +36,6 @@ class CodexThread(CodexThreadSummary):
 
 
 class CodexStatus(BaseModel):
-    setup: CodexSetup
     threads: list[CodexThreadSummary]
 
 

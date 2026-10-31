@@ -133,7 +133,7 @@ def test_invalid_schema_has_safe_error():
 def test_unconfigured_computer_reports_unavailable_without_command():
     api, calls = client(None)
     api.computer.services.settings.sandbox_url = None
-    assert asyncio.run(api.status()).setup.state == "unavailable"
+    assert asyncio.run(api.login_status()).state == "unavailable"
     assert calls == []
 
 
