@@ -143,6 +143,7 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
 
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
         raise ValueError("The LFM3 BF16 trial requires a BF16-capable CUDA GPU.")
+    emit({"state": "loading"})
     tokenizer = AutoTokenizer.from_pretrained(
         model_path, local_files_only=True, trust_remote_code=True
     )
@@ -157,6 +158,7 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
         device_map="cuda:0",
         attn_implementation="sdpa",
     ).eval()
+    emit({"state": "running"})
     inputs = inputs.to(model.device)
     torch.cuda.synchronize()
     generation_started = time.perf_counter()

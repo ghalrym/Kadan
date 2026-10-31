@@ -6,7 +6,7 @@ from unittest.mock import patch
 from api.pydantic_models.inference_task import InferenceTask
 from api.pydantic_models.model_store import CheckpointStatus, ModelStoreStatus
 from api.services.inference import InferenceService
-from api.services.inference_worker import InferenceJob
+from api.services.inference_worker import InferenceJob, JobState
 
 
 class LanguageLifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -45,6 +45,22 @@ class LanguageLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(status["error"])
         self.assertIsNone(status["max_output_tokens"])
         self.assertIsNone(status["effective_context_limit"])
+
+    async def test_generation_is_ready_and_only_the_load_phase_is_loading(self):
+        service = self.service()
+        job = InferenceJob(InferenceTask(input={"feature": "llm"}), False)
+        job.worker = "lfm3_llm"
+        service.worker.jobs[job.request.id] = job
+        for state, expected in (
+            (JobState.QUEUED, "loading"),
+            (JobState.PREPARING, "loading"),
+            (JobState.WAITING, "loading"),
+            (JobState.LOADING, "loading"),
+            (JobState.RUNNING, "ready"),
+        ):
+            job.state = state
+            with self.subTest(state=state):
+                self.assertEqual(service.language_status()["state"], expected)
 
     def test_missing_checkpoint_or_worker_and_unconfirmed_cleanup_are_errors(self):
         for missing in ("worker", "checkpoint", "cleanup"):
