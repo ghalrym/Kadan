@@ -436,3 +436,127 @@ def test_retry_waits_for_existing_supervisor_to_publish_thread(home):
         result = script.start({"request_id": request_id, "origin": ORIGIN})
     assert result == {"thread_id": thread_id, "cwd": "/p", "running": True}
     launch.assert_not_called()
+
+
+def test_login_returns_existing_device_prompt(home):
+    prompt = {
+        "state": "signing_in",
+        "message": "Enter the code",
+        "login": {"url": "https://example.com", "code": "ABCD-EFGH"},
+    }
+    with (
+        patch.object(script, "setup", return_value=prompt),
+        patch.object(script, "launch") as launch,
+    ):
+        assert script.login() == prompt
+        launch.assert_not_called()
+
+
+def test_login_starts_device_authorization(home):
+    with (
+        patch.object(script, "setup", return_value={"state": "signed_out"}),
+        patch.object(script, "launch", return_value={"pid": 3}),
+        patch.object(script, "write_json") as write,
+    ):
+        assert script.login()["state"] == "signing_in"
+        assert write.call_args.args[1] == {"pid": 3}
+
+
+def test_prompt_extracts_link_and_code(home, tmp_path):
+    (tmp_path / "login.log").write_text(
+        "Open https://example.com/device and enter ABCD-EFGH"
+    )
+    with patch.object(script, "STATE", tmp_path):
+        assert script.login_prompt() == {
+            "url": "https://example.com/device",
+            "code": "ABCD-EFGH",
+        }
+
+
+def test_dead_or_unidentified_process_is_never_alive(home):
+    with (
+        patch.object(script, "process_start", return_value=None),
+        patch.object(script, "incarnation", return_value="boot"),
+    ):
+        assert not script.alive({"pid": 123, "start": None, "incarnation": "boot"})
+        assert not script.alive({"pid": 123, "start": "10", "incarnation": "boot"})
+
+
+def test_process_from_previous_computer_is_not_terminated(home):
+    with (
+        patch.object(script, "process_start", return_value="10"),
+        patch.object(script, "incarnation", return_value="new"),
+        patch.object(script.os, "killpg") as kill,
+    ):
+        script.terminate({"pid": 123, "start": "10", "incarnation": "old"})
+        kill.assert_not_called()
+
+
+def test_logout_stops_pending_login_before_removing_credentials(home):
+    calls = []
+    with (
+        patch.object(script, "login_record", return_value={"pid": 123}),
+        patch.object(
+            script, "terminate", side_effect=lambda record: calls.append("stop")
+        ),
+        patch.object(
+            script.subprocess,
+            "run",
+            side_effect=lambda *args, **kwargs: (
+                calls.append("logout") or SimpleNamespace(returncode=0)
+            ),
+        ),
+        patch.object(script, "setup", return_value={"state": "signed_out"}),
+    ):
+        assert script.logout()["state"] == "signed_out"
+        assert calls == ["stop", "logout"]
+
+
+def test_failed_logout_does_not_report_success(home):
+    with (
+        patch.object(script, "terminate"),
+        patch.object(
+            script.subprocess, "run", return_value=SimpleNamespace(returncode=1)
+        ),
+    ):
+        with pytest.raises(ValueError, match="Sign-out failed"):
+            script.logout()
+
+
+def test_signed_in_status_cleans_pending_login(home):
+    with (
+        patch.object(script.shutil, "which", return_value="codex"),
+        patch.object(
+            script.subprocess, "run", return_value=SimpleNamespace(returncode=0)
+        ),
+        patch.object(script, "login_record", return_value={"pid": 123}),
+        patch.object(script, "terminate") as terminate,
+    ):
+        assert script.setup()["state"] == "signed_in"
+        terminate.assert_called_once_with({"pid": 123})
+
+
+def test_pending_login_status_reuses_saved_prompt(home):
+    prompt = {"url": "https://example.com", "code": "ABCD-EFGH"}
+    with (
+        patch.object(script.shutil, "which", return_value="codex"),
+        patch.object(
+            script.subprocess, "run", return_value=SimpleNamespace(returncode=1)
+        ),
+        patch.object(script, "alive", return_value=True),
+        patch.object(script, "login_prompt", return_value=prompt),
+    ):
+        assert script.setup()["login"] == prompt
+
+
+def test_failed_or_expired_login_returns_to_signed_out(home):
+    with (
+        patch.object(script.shutil, "which", return_value="codex"),
+        patch.object(
+            script.subprocess, "run", return_value=SimpleNamespace(returncode=1)
+        ),
+        patch.object(script, "alive", return_value=False),
+        patch.object(script, "login_prompt") as prompt,
+    ):
+        assert script.setup()["state"] == "signed_out"
+        prompt.assert_not_called()
