@@ -6,6 +6,7 @@ import Composer, { readiness } from "./Composer";
 import Pet, { useMood } from "./Pet";
 import AgentCard from "./AgentCard";
 import ComputerViewer from "./ComputerViewer";
+import ChatExport from "./ChatExport";
 import Activity from "./Activity";
 import CodingIndicator from "./CodingIndicator";
 import { useVoiceCall } from "./VoiceCallControl";
@@ -484,6 +485,7 @@ export default function Chat({
           {agentCard}
         </div>
       )}
+      <ChatExport chain={chain} agentName={agentName} />
       <div className={`conversation-find ${find.open ? "is-open" : ""}`} onKeyDown={(event) => {
         if (find.open && event.key === "Escape") { event.preventDefault(); closeFind(); }
       }}>

@@ -61,6 +61,7 @@ function chat(chain, storageValues = {}) {
     "./Markdown": { default: "Markdown" },
     "./RequestReferences": { default: "RequestReferences" },
     "./SaveChatResult": { default: "SaveChatResult" },
+    "./ChatExport": { default: "ChatExport" },
     "./Activity": { default: "Activity" },
     "./CodingIndicator": { default: "CodingIndicator" },
     "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true }) },

@@ -16,6 +16,8 @@ While response work is pending, Kadan shows whether it is queued or waiting for 
 
 Saved history survives navigation and service recovery. **Show earlier messages** reveals older messages. [Find in conversation](finding-chat-text.md) searches saved text, and [reading controls](reading-chat.md) let users keep their place as replies arrive. Only a limited recent portion is included automatically in each response; the agent can [search and read older delivered chat](conversation-history.md) when needed. Image generation can deliver a result later in the same chat.
 
+Users can [download the saved chat as Markdown](downloading-chat.md), including older saved messages without revealing them first.
+
 Each response has a limit of 24 commands and a bounded context for instructions, recent messages and action results. Reaching either limit fails that response visibly rather than continuing indefinitely. Saved history and messages already delivered remain. Sending a new message starts new work and does not guarantee completion of the earlier task. A saved message can also wait for [runner availability](runner-availability.md).
 
 If Hikari reaches the model's output limit before completing an agent response, Kadan reports that limit and does not execute a command from the incomplete response. Actions completed earlier in the run remain completed.
