@@ -11,7 +11,7 @@ const source = ts.transpileModule(
   { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } },
 ).outputText;
 const record = (id, kind = "memory", parent_id = null) => ({
-  id, title: id, kind, parent_id, markdown: `${id} text`, tags: [],
+  id, title: id, kind, parent_id, markdown: `${id} text`, tags: [], version: 1,
   updated_at: "2026-10-22T00:00:00Z",
 });
 
@@ -50,6 +50,7 @@ function workspace() {
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "lucide-react": {},
     "./Markdown": { default: "Markdown" },
+    "./MemoryEditor": { default: "MemoryEditor" },
     "./workspaceDocuments": documentNavigation,
     "./api": {
       ApiError,
@@ -84,6 +85,7 @@ function workspace() {
   function text(node) {
     if (node == null || typeof node === "boolean") return "";
     if (typeof node === "string" || typeof node === "number") return String(node);
+    if (node.type === "MemoryEditor") return node.props.memory.markdown;
     return [node?.props?.children].flat(Infinity).map(child => text(child)).join("");
   }
   const element = predicate => find(predicate, tree);
@@ -497,6 +499,22 @@ test("changing agents ignores a pending selected-record refresh", async () => {
   await view.settle(2, { ...memory, markdown: "Old agent content" });
   assert.match(view.text(), /Select a record/);
   assert.doesNotMatch(view.text(), /Old agent content|Memory text/);
+});
+
+test("a delayed detail read cannot replace a confirmed memory correction", async () => {
+  const view = workspace();
+  view.start();
+  const memory = { ...record("Memory"), version: 2 };
+  await view.settle(0, [memory]);
+  view.click("Memory");
+  const corrected = { ...memory, version: 3, title: "Corrected", markdown: "Saved correction" };
+  view.find(node => node.type === "MemoryEditor").props.onSaved(corrected);
+  view.render();
+  await view.settle(1, memory);
+  assert.equal(view.find(node => node.type === "MemoryEditor").props.memory.version, 3);
+  assert.equal(view.find(node => node.type === "h2").props.children, "Corrected");
+  assert.match(view.text(), /Saved correction/);
+  assert.doesNotMatch(view.text(), /Memory text/);
 });
 
 test("reopening the same record supersedes an earlier refresh of that record", async () => {
