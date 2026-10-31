@@ -6,7 +6,7 @@ The page shows each model's progress. Percentages are estimates; the completed s
 
 Closing the page keeps accepted downloads running. After a failed or timed-out request, refresh model state before retrying because some downloads may already have started.
 
-The settings page no longer offers hardware tier selection. Some existing Hikari workloads still depend on a previously selected tier, so a new installation may not be able to use those workloads until the backend migration is complete. Direct inference can also download a missing model, so the first request may take longer or fail during acquisition.
+Hikari has no hardware tiers or per-machine model choices. Language uses LFM3 1.7B, vision uses LFM3-VL 2B, images use Qwen-Image Turbo, video uses H3 Turbo, speech uses Qwen3-TTS CustomVoice, transcription uses Whisper medium, and formatting uses S1-mini. All require their own available worker and verified checkpoint. Inference never starts a missing-model download; review the licenses and explicitly start downloads in Settings first. Enabling or connecting a worker does not download its model. Earlier model files remain on disk and are not deleted by this change.
 
 Downloaded checkpoints persist in their model store across ordinary container restarts. Deleting that store loses them. Hikari verifies downloads before treating a checkpoint as complete; users must not modify completed checkpoints externally or share one store between independent installations. With [remote workers](remote-workers.md), model files reside on the computers serving the workloads.
 

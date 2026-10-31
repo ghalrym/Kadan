@@ -305,14 +305,14 @@ int serve(const WorkerProgram& program) {
     WorkerHost host(program.workload, memory.devices(), hooks);
     send(
         {{"state", "hello"},
-         {"protocol", 4},
+         {"protocol", 5},
          {"pid", getpid()},
          {"worker", name},
          {"instance", instance},
          {"machine", hooks.machine()}}
     );
     send({{"state", "models"}, {"models", store.status()}});
-    send({{"state", "ready"}, {"protocol", 4}, {"pid", getpid()}});
+    send({{"state", "ready"}, {"protocol", 5}, {"pid", getpid()}});
     host.start();
     int status = 0;
     try {

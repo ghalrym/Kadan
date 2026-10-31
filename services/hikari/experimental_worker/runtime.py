@@ -287,7 +287,7 @@ class Runtime:
             await event("cancelled")
             return
         if request["operation"] == "configure":
-            # Native tier/Whisper settings are broadcast to all workers. They
+            # Native formatting/context settings are broadcast to all workers. They
             # never select or alter this explicit experimental checkpoint.
             if (
                 request["input"].get("feature") == "model_context"
@@ -478,14 +478,14 @@ class Runtime:
             await self.send(
                 {
                     "state": "hello",
-                    "protocol": 4,
+                    "protocol": 5,
                     "worker": self.kind,
                     "instance": socket.gethostname(),
                     "machine": self.info,
                 }
             )
             await self.models()
-            await self.send({"state": "ready", "protocol": 4})
+            await self.send({"state": "ready", "protocol": 5})
             consumer = asyncio.create_task(self.consume())
             try:
                 async for message in connection:

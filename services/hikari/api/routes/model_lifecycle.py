@@ -1,12 +1,10 @@
 """Hikari model loading controls, separate from versioned inference endpoints."""
 
 from typing import Literal
-from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
-from api.pydantic_models.inference_task import LlmModel
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 from api.services.inference_errors import InferenceFailure
 from api.services.inference import inference
-from api.services.inference_http import infer
 
 router = APIRouter(prefix="/model-lifecycle", tags=["Model lifecycle"])
 
@@ -19,41 +17,13 @@ class ModelLifecycleStatus(BaseModel):
     configured_context_limit: int | None = None
     effective_context_limit: int | None = None
     supported_context_limit: int | None = None
-    max_output_tokens: int = 256
-
-
-class ModelLoadRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    model_id: LlmModel | None = None
-    context_limit: StrictInt | None = Field(
-        default=None,
-        ge=1,
-        le=2**31 - 1,
-        description="Omit to retain saved/default context; explicit null uses the architecture maximum.",
-    )
+    max_output_tokens: int | None = None
 
 
 @router.get("", operation_id="getModelLifecycleStatus")
 def get_model_lifecycle() -> ModelLifecycleStatus:
     """Return current model state, context limits and shared-memory accounting without loading a model."""
-    return ModelLifecycleStatus(**inference.status())
-
-
-@router.post("/load", status_code=202, operation_id="loadSelectedModel")
-async def load_selected_model(
-    request: Request, body: ModelLoadRequest | None = None
-) -> ModelLifecycleStatus:
-    """Prepare and load through the same FIFO as inference, retaining cancellation ownership."""
-    try:
-        if body is None:
-            body = ModelLoadRequest()
-        return ModelLifecycleStatus(
-            **await infer(
-                request, inference.submit(body, feature="llm", operation="load")
-            )
-        )
-    except InferenceFailure as exc:
-        raise HTTPException(exc.status_code, str(exc)) from exc
+    return ModelLifecycleStatus(**inference.language_status())
 
 
 @router.post("/unload", operation_id="unloadSelectedModel")

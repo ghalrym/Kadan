@@ -185,14 +185,10 @@ InferenceRequest parse_request(const Json& envelope) {
         input.seed = body.value("seed", 42ULL);
         request.input = std::move(input);
         request.workload = Workload::video;
-    } else if (feature == "tier_selection") {
-        request.input = TierSelectionRequest{body.at("tier")};
     } else if (feature == "model_context") {
         request.input = ContextRequest{
             body.at("model_id"), optional<std::size_t>(body, "context_limit")
         };
-    } else if (feature == "whisper_selection") {
-        request.input = WhisperSelectionRequest{body.at("model")};
     } else if (feature == "whisper_formatting") {
         request.input = WhisperFormattingRequest{body.at("enabled")};
     } else if (feature == "models") {
@@ -201,9 +197,7 @@ InferenceRequest parse_request(const Json& envelope) {
         };
     } else
         throw RequestError("Invalid task feature", 422);
-    const bool settings = feature == "tier_selection" || feature == "model_context"
-                          || feature == "whisper_selection"
-                          || feature == "whisper_formatting";
+    const bool settings = feature == "model_context" || feature == "whisper_formatting";
     preparation_check(
         settings == (request.operation == Operation::configure),
         "Invalid settings operation",
