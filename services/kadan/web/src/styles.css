@@ -936,7 +936,8 @@ main:focus {
   border-radius: var(--r);
 }
 .activity-content:focus-visible,
-.activity-group > summary:focus-visible {
+.activity-group > summary:focus-visible,
+.activity-error-details > summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
@@ -1009,6 +1010,28 @@ main:focus {
 .activity-item.failed .activity-detail {
   color: var(--error);
 }
+.activity-error-details > summary {
+  margin-top: 3px;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.activity-error-details > summary svg {
+  vertical-align: middle;
+}
+.activity-error-details[open] > summary .activity-detail {
+  display: none;
+}
+.activity-error-details > p.activity-detail {
+  display: block;
+  overflow: visible;
+  white-space: pre-wrap;
+}
+.activity-error-details > summary:hover {
+  background: var(--raised);
+}
 .activity-group > summary {
   display: flex;
   align-items: center;
@@ -1020,16 +1043,19 @@ main:focus {
   cursor: pointer;
   list-style: none;
 }
-.activity-group > summary::-webkit-details-marker {
+.activity-group > summary::-webkit-details-marker,
+.activity-error-details > summary::-webkit-details-marker {
   display: none;
 }
 .activity-group > summary:hover {
   background: var(--raised);
 }
-.activity-group > summary svg {
+.activity-group > summary svg,
+.activity-error-details > summary svg {
   transition: transform 160ms var(--out);
 }
-.activity-group[open] > summary svg {
+.activity-group[open] > summary svg,
+.activity-error-details[open] > summary svg {
   transform: rotate(90deg);
 }
 .activity-group > summary span {

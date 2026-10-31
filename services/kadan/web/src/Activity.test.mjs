@@ -59,6 +59,52 @@ test("long groups show an explicit bound and total without hiding other groups",
   assert.match(text(tree), /Response queued/);
 });
 
+test("retained image failures cannot displace queued or running responses and images", () => {
+  const tree = view({
+    runs: [run("active", "running"), run("waiting", "queued")],
+    images: [
+      ...Array.from({ length: 12 }, (_, i) => ({
+        id: `failed-${i}`, status: "failed", conversation_id: "chat", prompt: "Old image",
+        error: "Worker unavailable", updated_at: "2026-10-24T10:00:00Z",
+      })),
+      {
+        id: "image", status: "running", conversation_id: "chat", prompt: "Current image",
+        updated_at: "2026-10-25T10:00:00Z",
+      },
+    ],
+  });
+  const rows = elements(tree).filter(node => node.type === "li");
+  assert.equal(rows.length, 13);
+  assert.match(text(tree), /3 in progress/);
+  assert.match(text(tree), /12 to review/);
+  assert.match(text(tree), /Showing 10 of 12/);
+  assert.match(text(rows[0]), /Responding|Response queued|Generating image/);
+  assert.ok(rows.some(row => text(row).includes("Responding")));
+  assert.ok(rows.some(row => text(row).includes("Response queued")));
+  assert.ok(rows.some(row => text(row).includes("Generating image")));
+});
+
+test("current and earlier failures expose their full error through a disclosure", () => {
+  const detail = `${"Worker failed during preparation. ".repeat(30)}Free memory and retry.`;
+  const tree = view({
+    runs: [{ ...run("failed", "failed"), error: detail }, run("newer", "running")],
+    images: [{
+      id: "failed-image", status: "failed", conversation_id: "chat", prompt: "Garden",
+      error: detail, updated_at: "2026-10-25T10:00:00Z",
+    }],
+  });
+  const disclosures = elements(tree).filter(node => node.type === "details" && node.props.className === "activity-error-details");
+  assert.equal(disclosures.length, 2);
+  for (const disclosure of disclosures) {
+    assert.equal(disclosure.props.open, undefined);
+    const summary = disclosure.props.children.find(node => node.type === "summary");
+    assert.match(text(summary), /Error details/);
+    assert.equal(text(disclosure.props.children.find(node => node.type === "p")), detail);
+  }
+  const earlier = elements(tree).find(node => node.type === "details" && text(node.props.children[0]).startsWith("Earlier"));
+  assert.equal(elements(earlier).filter(node => node.props?.className === "activity-error-details").length, 1);
+});
+
 test("routine polls do not open the panel or introduce live announcements and retry actions", () => {
   const tree = view({ runs: [run("failed", "failed"), run("stopped", "cancelled")] });
   assert.ok(elements(tree).filter(node => node.type === "details").every(node => node.props.open === undefined));

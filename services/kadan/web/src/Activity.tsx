@@ -21,8 +21,7 @@ const ICONS: Record<ActivityTone, typeof CircleCheck> = {
 
 export default function Activity({ conversation, runs, images, loading, error }: Props) {
   const [review, progressing, finished, earlier] = conversationActivity(conversation, runs, images);
-  const current = [...review.items, ...progressing.items];
-  const empty = current.length + finished.items.length + earlier.items.length === 0;
+  const empty = review.items.length + progressing.items.length + finished.items.length + earlier.items.length === 0;
   return (
     <section className="agent-card-activity" key={conversation.id} aria-labelledby="agent-card-activity">
       <header>
@@ -33,7 +32,8 @@ export default function Activity({ conversation, runs, images, loading, error }:
       {error && <p className="activity-error">{loading ? "Couldn’t load activity." : "Couldn’t refresh. Showing the last update."}</p>}
       {loading ? !error && <p className="activity-empty">Loading activity…</p> : empty ? <p className="activity-empty">Nothing yet.</p> : (
         <div className="activity-content" role="region" aria-label="Conversation activity" tabIndex={0}>
-          {current.length > 0 && renderItems(current)}
+          {progressing.items.length > 0 && renderItems(progressing.items)}
+          {review.items.length > 0 && renderItems(review.items)}
           {[finished, earlier].map(group => group.items.length > 0 && (
             <details key={group.title} className="activity-group">
               <summary>
@@ -62,7 +62,16 @@ function renderItems(items: ActivityItem[]) {
             <time dateTime={item.updatedAt} title={new Date(item.updatedAt).toLocaleString()}>{ago(item.updatedAt)}</time>
           </div>
           <span className="activity-state">{item.state}</span>
-          {item.detail && <p className="activity-detail">{item.detail}</p>}
+          {item.detail && (item.tone === "failed" ? (
+            <details className="activity-error-details">
+              <summary>
+                <ChevronRight size={14} aria-hidden="true" />
+                Error details
+                <span className="activity-detail">{item.detail}</span>
+              </summary>
+              <p className="activity-detail">{item.detail}</p>
+            </details>
+          ) : <p className="activity-detail">{item.detail}</p>)}
         </div>
       </li>;
     })}</ul>
