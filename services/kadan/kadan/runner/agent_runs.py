@@ -841,9 +841,7 @@ class AgentRuns(RunClient):
         """All tools; the computer's only when one is configured."""
         if not self.services.sandbox.configured:
             return [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]
-        if getattr(self.services.settings, "experimental_lfm3_vision", False):
-            return [*ALL_TOOLS, *VISION_TOOLS]
-        return ALL_TOOLS
+        return [*ALL_TOOLS, *VISION_TOOLS]
 
     @traced("kadan.agent_runs.invoke_tool")
     async def invoke_tool(self, state: RunState) -> dict:

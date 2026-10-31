@@ -5,7 +5,7 @@ Kadan agents can use their configured computer to browse websites, read and chan
 For scoped coding work, the agent can delegate to [Codex coding jobs](coding.md)
 on this same computer, with durable progress and separate process cancellation.
 
-The standard deployment uses the released LFM3 BF16 conversation worker with the same saved session, personas, tool permissions and action recovery. It requires a user-approved checkpoint download and does not fall back to a hardware tier when unavailable. Its bounded context can reject long conversations; tool-use quality and speed need manual evaluation for the work being attempted.
+The standard deployment uses the released LFM3 BF16 conversation worker with the same saved session, personas, tool permissions and action recovery. Its fixed checkpoint requires a user-approved download; unavailable workers or incomplete checkpoints produce an error. Its bounded context can reject long conversations; tool-use quality and speed need manual evaluation for the work being attempted.
 
 The current deployment shares one computer across agents. Actions and manual input can affect the same browser, files and processes. Agent separation in Tsuchi does not create separate desktops. Files created on the computer are not automatically added to Tsuchi's file library. Agents can explicitly [save completed files into Workspace](file-delivery.md) and [copy stored files onto the computer](opening-workspace-files.md).
 

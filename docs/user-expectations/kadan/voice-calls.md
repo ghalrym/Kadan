@@ -1,6 +1,8 @@
 # Voice calls
 
-The **Call** action on an agent's card opens a separate spoken conversation using the selected Hikari tier's language, transcription and speech models. All three must already be downloaded and available. Calls have no tools, access to workspace resources, or saved transcript; the text conversation remains separate. End call or leaving the chat releases the microphone and call history.
+The **Call** action on an agent's card opens a separate spoken conversation using Hikari’s fixed LFM3 language, Whisper medium transcription and Qwen3-TTS CustomVoice speech models. All three must already be downloaded and available. Calls have no tools, access to workspace resources, or saved transcript; the text conversation remains separate. End call or leaving the chat releases the microphone and call history.
+
+Hikari completes the whole LFM3 text reply before synthesizing its speech segments. The first spoken segment therefore waits for the full text reply, and cold model loading can add delay. Microphone capture, listening quality, playback acknowledgements and audible interruption on this fixed assignment still require owner acceptance; unit tests do not establish them.
 
 Starting a call shows whether Kadan is starting browser audio, waiting for the microphone, preparing recording, or connecting to the call server. Setup has one twenty-second deadline across these stages. A timeout ends setup and reports the stage that stalled; check the browser prompt or service named in the error and start a new call. End call also cancels setup. If microphone permission arrives after cancellation or timeout, Kadan immediately stops that stream and does not open a call.
 
@@ -10,6 +12,6 @@ The microphone keeps listening during spoken replies. Speaking interrupts the pr
 
 Replies arrive as short Qwen3-TTS 1.7B CustomVoice audio segments with the Ryan speaker. Each segment is synthesized before it plays; this is not incremental PCM synthesis, and gaps or model loading delays are possible. Drama 3 is deferred. Call context is bounded to recent turns.
 
-During a call, the three participating models have equal residency priority, without equal VRAM shares or a promise that they fit together. The existing worker architecture still enforces physical RAM and per-GPU limits. End, disconnect, or error restores normal priorities and idle expiry. Changing the selected tier ends the call; start again to use the new tier.
+During a call, the three participating models have equal residency priority, without equal VRAM shares or a promise that they fit together. The existing worker architecture still enforces physical RAM and per-GPU limits. End, disconnect, or error restores normal priorities and idle expiry. A loss of model availability ends the call; restore readiness before starting again.
 
 Applications using Hikari directly have separate [live voice call expectations](../hikari/voice-calls.md), including responsibility for playback acknowledgements and interruption controls.

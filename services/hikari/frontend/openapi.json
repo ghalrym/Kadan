@@ -512,15 +512,10 @@
             "type": "array"
           },
           "model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model"
+            "const": "lfm3-1.7b-bf16",
+            "default": "lfm3-1.7b-bf16",
+            "title": "Model",
+            "type": "string"
           },
           "reuse_prefix": {
             "default": true,
@@ -604,30 +599,6 @@
           "choices"
         ],
         "title": "CompletionResponse",
-        "type": "object"
-      },
-      "ContextRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "context_limit": {
-            "anyOf": [
-              {
-                "maximum": 2147483647.0,
-                "minimum": 1.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Total context tokens; null uses the checkpoint architecture maximum on load.",
-            "title": "Context Limit"
-          }
-        },
-        "required": [
-          "context_limit"
-        ],
-        "title": "ContextRequest",
         "type": "object"
       },
       "CustomVoice": {
@@ -1224,8 +1195,19 @@
       },
       "Lfm3Message": {
         "additionalProperties": false,
-        "description": "Structured history consumed only by the explicit experimental checkpoint.",
+        "description": "Structured history consumed by the fixed LFM3 language checkpoint.",
         "properties": {
+          "meta": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meta"
+          },
           "role": {
             "enum": [
               "system",
@@ -1485,6 +1467,61 @@
         "title": "MetricsResponse",
         "type": "object"
       },
+      "ModelAssignments": {
+        "description": "Fixed capability assignments, independent of machine resources.",
+        "properties": {
+          "decisions": {
+            "const": "laya",
+            "default": "laya",
+            "title": "Decisions",
+            "type": "string"
+          },
+          "formatting": {
+            "const": "superwhisper-s1-mini",
+            "default": "superwhisper-s1-mini",
+            "title": "Formatting",
+            "type": "string"
+          },
+          "image": {
+            "const": "qwen-image-2.1-turbo",
+            "default": "qwen-image-2.1-turbo",
+            "title": "Image",
+            "type": "string"
+          },
+          "llm": {
+            "const": "lfm3-1.7b-bf16",
+            "default": "lfm3-1.7b-bf16",
+            "title": "Llm",
+            "type": "string"
+          },
+          "speech": {
+            "const": "qwen-tts-1.7b-custom",
+            "default": "qwen-tts-1.7b-custom",
+            "title": "Speech",
+            "type": "string"
+          },
+          "transcription": {
+            "const": "whisper-medium",
+            "default": "whisper-medium",
+            "title": "Transcription",
+            "type": "string"
+          },
+          "video": {
+            "const": "h3-fl2va-int8-turbo",
+            "default": "h3-fl2va-int8-turbo",
+            "title": "Video",
+            "type": "string"
+          },
+          "vision": {
+            "const": "lfm3-vl-2b-bf16",
+            "default": "lfm3-vl-2b-bf16",
+            "title": "Vision",
+            "type": "string"
+          }
+        },
+        "title": "ModelAssignments",
+        "type": "object"
+      },
       "ModelLifecycleStatus": {
         "properties": {
           "configured_context_limit": {
@@ -1521,9 +1558,15 @@
             "title": "Error"
           },
           "max_output_tokens": {
-            "default": 256,
-            "title": "Max Output Tokens",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Output Tokens"
           },
           "memory": {
             "anyOf": [
@@ -1576,43 +1619,6 @@
           "state"
         ],
         "title": "ModelLifecycleStatus",
-        "type": "object"
-      },
-      "ModelLoadRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "context_limit": {
-            "anyOf": [
-              {
-                "maximum": 2147483647.0,
-                "minimum": 1.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Omit to retain saved/default context; explicit null uses the architecture maximum.",
-            "title": "Context Limit"
-          },
-          "model_id": {
-            "anyOf": [
-              {
-                "enum": [
-                  "qwen3.6-35b-a3b-q4-k-m",
-                  "qwen3.8-flash-next-ud-iq3-xxs",
-                  "qwen3.8-flash-next-q3-k-xl"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model Id"
-          }
-        },
-        "title": "ModelLoadRequest",
         "type": "object"
       },
       "ModelsResponse": {
@@ -2155,30 +2161,7 @@
       },
       "SettingsRequest": {
         "additionalProperties": false,
-        "description": "Persist the hardware tier and transcription formatting.",
         "properties": {
-          "license_acknowledged": {
-            "default": false,
-            "description": "The user read the license notices of the tier's checkpoints.",
-            "title": "License Acknowledged",
-            "type": "boolean"
-          },
-          "tier": {
-            "anyOf": [
-              {
-                "enum": [
-                  "go",
-                  "plus",
-                  "pro"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Tier"
-          },
           "whisper_formatting": {
             "anyOf": [
               {
@@ -2195,41 +2178,29 @@
         "type": "object"
       },
       "SettingsResponse": {
-        "description": "Expose the hardware tier and transcription formatting.",
         "properties": {
-          "tier": {
-            "anyOf": [
-              {
-                "enum": [
-                  "go",
-                  "plus",
-                  "pro"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The selected hardware tier; null until the user chooses one.",
-            "title": "Tier"
+          "defaults": {
+            "$ref": "#/components/schemas/ModelAssignments"
           },
-          "tiers": {
+          "models": {
             "items": {
-              "$ref": "#/components/schemas/TierSetting"
+              "$ref": "#/components/schemas/CheckpointStatus"
             },
-            "title": "Tiers",
+            "title": "Models",
             "type": "array"
           },
+          "video_defaults": {
+            "$ref": "#/components/schemas/VideoDefaults"
+          },
           "whisper_formatting": {
-            "description": "Normalize speech transcripts with S1-mini by Superwhisper; retain raw text.",
             "title": "Whisper Formatting",
             "type": "boolean"
           }
         },
         "required": [
-          "tier",
-          "tiers",
+          "models",
+          "defaults",
+          "video_defaults",
           "whisper_formatting"
         ],
         "title": "SettingsResponse",
@@ -2367,86 +2338,6 @@
         "title": "SpeechUnavailable",
         "type": "object"
       },
-      "TierModel": {
-        "description": "A tier's checkpoint for one modality, with its live download state.",
-        "properties": {
-          "modality": {
-            "enum": [
-              "llm",
-              "image",
-              "video",
-              "speech",
-              "transcription",
-              "formatting"
-            ],
-            "title": "Modality",
-            "type": "string"
-          },
-          "model": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/CheckpointStatus"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Null while the tier assigns no checkpoint to this modality."
-          }
-        },
-        "required": [
-          "modality",
-          "model"
-        ],
-        "title": "TierModel",
-        "type": "object"
-      },
-      "TierSetting": {
-        "description": "A selectable hardware tier and the checkpoints it downloads.",
-        "properties": {
-          "id": {
-            "enum": [
-              "go",
-              "plus",
-              "pro"
-            ],
-            "title": "Id",
-            "type": "string"
-          },
-          "models": {
-            "items": {
-              "$ref": "#/components/schemas/TierModel"
-            },
-            "title": "Models",
-            "type": "array"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "ram_gb": {
-            "title": "Ram Gb",
-            "type": "integer"
-          },
-          "video_defaults": {
-            "$ref": "#/components/schemas/VideoDefaults"
-          },
-          "vram_gb": {
-            "title": "Vram Gb",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "vram_gb",
-          "ram_gb",
-          "video_defaults",
-          "models"
-        ],
-        "title": "TierSetting",
-        "type": "object"
-      },
       "TranscriptionRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2482,6 +2373,7 @@
           "model": {
             "anyOf": [
               {
+                "const": "medium",
                 "type": "string"
               },
               {
@@ -2622,12 +2514,14 @@
         "description": "Suggested clip settings; request limits and memory admission are separate.",
         "properties": {
           "duration": {
+            "default": 5,
             "maximum": 15.0,
             "minimum": 1.0,
             "title": "Duration",
             "type": "integer"
           },
           "resolution": {
+            "default": "480p",
             "enum": [
               "480p",
               "768p"
@@ -2636,10 +2530,6 @@
             "type": "string"
           }
         },
-        "required": [
-          "duration",
-          "resolution"
-        ],
         "title": "VideoDefaults",
         "type": "object"
       },
@@ -2694,7 +2584,7 @@
                 "type": "null"
               }
             ],
-            "description": "Omit for the selected tier default.",
+            "description": "Omit for the fixed default (5 seconds, 480p).",
             "title": "Resolution"
           },
           "seconds": {
@@ -2708,7 +2598,7 @@
                 "type": "null"
               }
             ],
-            "description": "Whole seconds at 24 fps (1–15). Omit for the selected tier default; duration is also accepted.",
+            "description": "Whole seconds at 24 fps (1–15). Omit for the fixed default (5 seconds, 480p); duration is also accepted.",
             "title": "Seconds"
           },
           "seed": {
@@ -2862,48 +2752,6 @@
           "jobs"
         ],
         "title": "VideosResponse",
-        "type": "object"
-      },
-      "WhisperModels": {
-        "properties": {
-          "models": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Models",
-            "type": "array"
-          },
-          "selected": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Selected"
-          }
-        },
-        "required": [
-          "models",
-          "selected"
-        ],
-        "title": "WhisperModels",
-        "type": "object"
-      },
-      "WhisperSelection": {
-        "additionalProperties": false,
-        "properties": {
-          "model": {
-            "title": "Model",
-            "type": "string"
-          }
-        },
-        "required": [
-          "model"
-        ],
-        "title": "WhisperSelection",
         "type": "object"
       },
       "api__routes__v1__images__edits__ImageRequest": {
@@ -3197,55 +3045,6 @@
         ]
       }
     },
-    "/model-lifecycle/load": {
-      "post": {
-        "description": "Prepare and load through the same FIFO as inference, retaining cancellation ownership.",
-        "operationId": "loadSelectedModel",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/ModelLoadRequest"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "title": "Body"
-              }
-            }
-          }
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ModelLifecycleStatus"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Load Selected Model",
-        "tags": [
-          "Model lifecycle"
-        ]
-      }
-    },
     "/model-lifecycle/unload": {
       "post": {
         "description": "Request cooperative cancellation and wait for model cleanup before returning unloaded state.",
@@ -3413,67 +3212,6 @@
           }
         },
         "summary": "Transcribe Audio",
-        "tags": [
-          "Audio"
-        ]
-      }
-    },
-    "/v1/audio/transcriptions/models": {
-      "get": {
-        "description": "List all unique official checkpoints and the persisted selection.",
-        "operationId": "getWhisperModels",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WhisperModels"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Get Models",
-        "tags": [
-          "Audio"
-        ]
-      },
-      "put": {
-        "operationId": "selectWhisperModel",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WhisperSelection"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WhisperModels"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Select Model",
         "tags": [
           "Audio"
         ]
@@ -3877,58 +3615,6 @@
         ]
       }
     },
-    "/v1/models/{model_id}/context": {
-      "put": {
-        "operationId": "configure_context_v1_models__model_id__context_put",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "model_id",
-            "required": true,
-            "schema": {
-              "title": "Model Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ContextRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ModelsResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Configure Context",
-        "tags": [
-          "models"
-        ]
-      }
-    },
     "/v1/models/{model_id}/download": {
       "delete": {
         "operationId": "cancel_download_v1_models__model_id__download_delete",
@@ -4184,7 +3870,6 @@
     },
     "/v1/settings": {
       "get": {
-        "description": "Read the shared model store, including each tier's download progress.\n\nRaise HTTP 503 if the worker status is unavailable; this read does not load\na model or configure another modality.",
         "operationId": "getSettings",
         "responses": {
           "200": {
@@ -4204,7 +3889,6 @@
         ]
       },
       "put": {
-        "description": "Persist the hardware tier and queue downloads of its checkpoints, and transcription formatting. The tier selects the language, image and video models and unloads a resident language model of another tier after earlier chats finish.",
         "operationId": "updateSettings",
         "requestBody": {
           "content": {

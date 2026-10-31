@@ -15,9 +15,8 @@ class ServiceState(BaseModel):
 
 
 class InferenceState(BaseModel):
-    state: Literal["ready", "tier_required", "model_required", "unavailable"]
+    state: Literal["ready", "model_required", "unavailable"]
     message: str
-    tier: str | None = None
     model_id: str | None = None
     download_state: DownloadState | None = None
     # The selected language model's context window in tokens, when Hikari reports it.

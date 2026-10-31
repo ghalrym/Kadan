@@ -147,7 +147,7 @@ void downloads_and_settings_run_on_the_store_worker() {
         {{"id", id('d')},
          {"command", "submit"},
          {"operation", "configure"},
-         {"input", {{"feature", "tier_selection"}, {"tier", "go"}}}}
+         {"input", {{"feature", "whisper_formatting"}, {"enabled", false}}}}
     );
     while (harness.host->advance_all()) {
     }

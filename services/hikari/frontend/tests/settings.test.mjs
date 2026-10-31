@@ -40,11 +40,11 @@ test('every capability reads its fixed checkpoint from the model snapshot', asyn
   ] })
   const result = await api.fetchModels(new AbortController().signal)
   assert.deepEqual(result.map(row => row.capability.label),
-    ['Language', 'Vision', 'Image', 'Video', 'Text to speech', 'Speech to text', 'Speech formatter'])
+    ['Language', 'Vision', 'Image', 'Video', 'Text to speech', 'Speech to text', 'Speech formatter', 'Decisions'])
   assert.equal(result[0].model.id, 'lfm3-1.7b-bf16')
   assert.equal(result[1].model.id, 'lfm3-vl-2b-bf16')
   assert.equal(result[2].model, null)
-  assert.equal(capabilities.length, 7)
+  assert.equal(capabilities.length, 8)
   assert.deepEqual(calls.map(call => call.name), ['listModelsV1ModelsGet'])
 })
 
@@ -63,7 +63,7 @@ test('overall progress weights each checkpoint by size', async () => {
   const { api, rows } = await settingsApi()
   const language = checkpoint('lfm3-1.7b-bf16', { status: 'downloading', downloaded_bytes: 150, total_bytes: 300 })
   const active = rows({ 'lfm3-1.7b-bf16': language, 'lfm3-vl-2b-bf16': null })
-  assert.equal(api.modelsProgress(active), 81)
+  assert.equal(api.modelsProgress(active), 83)
   assert.equal(api.modelsDownloading(active), true)
   assert.equal(api.modelsComplete(active), false)
   assert.equal(api.modelsComplete(rows({})), true)
@@ -105,6 +105,16 @@ test('downloading requires acknowledgement and queues only idle incomplete check
     assert.deepEqual(call.args.body, { license_acknowledged: true })
     assert.equal(call.args.signal, signal)
   }
+})
+
+test('the fixed Decisions checkpoint can be explicitly downloaded after acknowledgement', async () => {
+  const { api, calls, rows } = await settingsApi()
+  const models = rows({ laya: checkpoint('laya') })
+  await assert.rejects(api.downloadModels(models, false, new AbortController().signal), /acknowledge/)
+  assert.equal(calls.length, 0)
+  await api.downloadModels(models, true, new AbortController().signal)
+  assert.deepEqual(calls.map(call => call.args.path.model_id), ['laya'])
+  assert.equal(calls[0].args.body.license_acknowledged, true)
 })
 
 test('API details and missing responses become actionable errors', async () => {

@@ -12,29 +12,21 @@ from api.pydantic_models.inference_task import (
     SpeechVoice,
     TranscriptionTask,
 )
-from api.pydantic_models.model_store import ModelStoreStatus, TierId
+from api.pydantic_models.model_store import ModelStoreStatus
 from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
 from pydantic import BaseModel
 
 
 class CallModels(BaseModel):
-    tier: TierId
     llm: str
     transcription: str
     speech: str
 
     @classmethod
     def selected(cls, status: ModelStoreStatus):
-        tier = next(
-            (tier for tier in status.tiers if tier.id == status.selected_tier), None
-        )
-        if tier is None:
-            raise InferenceFailure(
-                "Choose a tier in Hikari Settings before calling.", 422
-            )
         assignments = {
-            kind: getattr(tier.models, kind)
+            kind: getattr(status.defaults, kind)
             for kind in ("llm", "transcription", "speech")
         }
         for kind, model_id in assignments.items():
@@ -47,9 +39,9 @@ class CallModels(BaseModel):
                 or not model.inference_available
             ):
                 raise InferenceFailure(
-                    f"Install the selected tier's {kind} model before calling.", 422
+                    f"Download Hikari's {kind} model before calling.", 422
                 )
-        return cls(tier=tier.id, **assignments)
+        return cls(**assignments)
 
     def participants(self) -> frozenset[str]:
         return frozenset((self.llm, self.transcription, self.speech))
@@ -86,7 +78,9 @@ class VoiceCall:
 
     def check_models(self):
         if CallModels.selected(self.inference.models_status()) != self.models:
-            raise InferenceFailure("The selected tier changed. Start a new call.", 409)
+            raise InferenceFailure(
+                "Call model availability changed. Start a new call.", 409
+            )
 
     async def emit(self, turn: int, **event):
         self.check_models()

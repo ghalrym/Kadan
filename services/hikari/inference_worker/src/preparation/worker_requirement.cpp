@@ -19,16 +19,13 @@ constexpr Bytes decision_envelope = 3 * gib;
 constexpr std::size_t max_prompt_bytes = 32000;
 
 std::string default_model(Workload workload, const ModelStore& store) {
-    const auto tier_model = [&](const char* modality) {
-        const auto tier = store.tier();
-        preparation_check(bool(tier), "Choose a hardware tier first.", 409);
-        const auto& model = store.hardware_tier(*tier).models.at(modality);
-        preparation_check(bool(model), "The selected tier has no such model.", 409);
-        return *model;
-    };
     switch (workload) {
     case Workload::llm:
-        return store.selected();
+        throw RequestError(
+            "Language inference uses the LFM3 worker; native requests require an "
+            "explicit checkpoint.",
+            422
+        );
     case Workload::decision:
         return "laya";
     case Workload::formatting:
@@ -38,9 +35,9 @@ std::string default_model(Workload workload, const ModelStore& store) {
     case Workload::image:
         return "qwen-image-2.1-turbo";
     case Workload::tts:
-        return tier_model("speech");
+        return "qwen-tts-1.7b-custom";
     case Workload::video:
-        return tier_model("video");
+        return "h3-fl2va-int8-turbo";
     }
     throw std::invalid_argument("workload");
 }

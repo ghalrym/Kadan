@@ -32,6 +32,7 @@ from kadan.runner.tools import (
     CONVERSATION_TOOLS,
     MEMORY_TOOLS,
     PERSONA_TOOLS,
+    VISION_TOOLS,
 )
 
 
@@ -824,7 +825,9 @@ def test_every_conversation_and_computer_tool_is_bound(boundary):
     )
     boundary.controller.inference = Commands(finish())
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.controller.inference.tools == [[tool.name for tool in ALL_TOOLS]]
+    assert boundary.controller.inference.tools == [
+        [tool.name for tool in [*ALL_TOOLS, *VISION_TOOLS]]
+    ]
 
 
 def test_computer_result_returns_to_the_agent_and_the_run_continues(boundary):
@@ -1097,6 +1100,7 @@ def test_history_argument_rejection_is_useful_and_never_executes(
     boundary, monkeypatch, invalid, field, code
 ):
     from unittest.mock import AsyncMock
+
     from kadan.runner.agent_runs import RunConversation
 
     history = AsyncMock(side_effect=AssertionError("Rejected call executed"))
@@ -1358,7 +1362,7 @@ def test_transcript_budget_leaves_room_for_the_bound_tools(boundary):
     boundary.controller.services.sandbox.configured = True
     assert boundary.controller.transcript_limit(status) == context_characters(
         65536
-    ) - tool_characters(ALL_TOOLS)
+    ) - tool_characters([*ALL_TOOLS, *VISION_TOOLS])
 
 
 def test_smaller_model_window_drops_history_before_inference(boundary):
@@ -2053,8 +2057,9 @@ def test_lost_computer_has_bounded_wait_and_no_automatic_new_coding_turn(
 
 
 def test_coding_task_id_cannot_be_selected_by_model():
-    from kadan.runner.tools.coding import codex_start
     from pydantic import ValidationError
+
+    from kadan.runner.tools.coding import codex_start
 
     with pytest.raises(ValidationError):
         codex_start.args_schema.model_validate(

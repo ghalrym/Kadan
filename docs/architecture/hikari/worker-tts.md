@@ -1,7 +1,7 @@
 # Speech synthesis worker (`tts`)
 
-Turns text into speech with the tier's speech model (Qwen3-TTS 1.7B
-CustomVoice): named speakers, supported languages and instructions.
+Turns text into speech with fixed Qwen3-TTS 1.7B
+CustomVoice: named speakers, supported languages and instructions.
 
 ## Program and container
 
@@ -21,7 +21,7 @@ CustomVoice): named speakers, supported languages and instructions.
 
 ## Engine
 
-- The tier's `speech` model, or the request's `model_id`.
+- Fixed `qwen-tts-1.7b-custom`; the optional `model_id` accepts only that ID. Speaker, language and delivery instruction controls remain unchanged.
 
 ## Memory
 
@@ -33,7 +33,7 @@ CustomVoice): named speakers, supported languages and instructions.
 
 ## Scheduling
 
-- Priority 2. It yields to the language tier and displaces transcription, image
+- Priority 2. It yields to the language worker and displaces transcription, image
   and video when they are idle or queued.
 
 ## Constraints

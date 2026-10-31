@@ -12,23 +12,12 @@ from api.services.voice_call import CallModels, VoiceCall, speech_segment
 
 def snapshot():
     kinds = {
-        "llm": "chat",
+        "llm": "lfm3-1.7b-bf16",
         "transcription": "whisper-medium",
         "speech": "qwen-tts-1.7b-custom",
     }
     return ModelStoreStatus.model_validate(
         {
-            "selected_tier": "go",
-            "tiers": [
-                {
-                    "id": "go",
-                    "name": "Go",
-                    "vram_gb": 8,
-                    "ram_gb": 16,
-                    "video_defaults": {"duration": 5, "resolution": "480p"},
-                    "models": kinds,
-                }
-            ],
             "models": [
                 {
                     "id": model,
@@ -68,23 +57,19 @@ class Stream:
 
 
 class CallModelTests(unittest.TestCase):
-    def test_selects_all_three_tier_assignments_not_saved_whisper_override(self):
+    def test_uses_fixed_call_participants(self):
         status = snapshot()
-        status.selected_whisper = "large-v3"
         self.assertEqual(CallModels.selected(status).transcription, "whisper-medium")
         self.assertEqual(len(CallModels.selected(status).participants()), 3)
 
-    def test_missing_tier_or_checkpoint_is_actionable_without_downloading(self):
+    def test_incomplete_checkpoint_is_actionable_without_downloading(self):
         status = snapshot()
-        for kind in (None, "llm", "transcription", "speech"):
+        for kind in ("llm", "transcription", "speech"):
             with self.subTest(kind=kind):
                 value = status.model_copy(deep=True)
-                if kind is None:
-                    value.selected_tier = None
-                else:
-                    next(
-                        model for model in value.models if model.kind == kind
-                    ).status = "not_downloaded"
+                next(
+                    model for model in value.models if model.kind == kind
+                ).status = "not_downloaded"
                 with self.assertRaises(InferenceFailure):
                     CallModels.selected(value)
 
@@ -126,7 +111,7 @@ class VoiceCallTests(unittest.IsolatedAsyncioTestCase):
         service = SimpleNamespace(
             models_status=snapshot,
             submit=submit,
-            open_chat_stream=AsyncMock(return_value=(stream, "chat")),
+            open_chat_stream=AsyncMock(return_value=(stream, "lfm3-1.7b-bf16")),
         )
         call = self.call(service)
         call.turn = 1
@@ -140,7 +125,7 @@ class VoiceCallTests(unittest.IsolatedAsyncioTestCase):
             all(body.model_id == "qwen-tts-1.7b-custom" for body in submitted[1:])
         )
         chat = service.open_chat_stream.call_args.args[0]
-        self.assertEqual(chat.model, "chat")
+        self.assertEqual(chat.model, "lfm3-1.7b-bf16")
         self.assertIsNone(chat.tools)
         # The experimental task schema has an optional tools field, but native
         # calls never set it and queue serialization must still omit it.
@@ -192,7 +177,7 @@ class VoiceCallTests(unittest.IsolatedAsyncioTestCase):
             SimpleNamespace(
                 models_status=snapshot,
                 submit=submit,
-                open_chat_stream=AsyncMock(return_value=(stream, "chat")),
+                open_chat_stream=AsyncMock(return_value=(stream, "lfm3-1.7b-bf16")),
             )
         )
         call.turn = 1
@@ -216,10 +201,10 @@ class VoiceCallTests(unittest.IsolatedAsyncioTestCase):
             call.remember("user", "x" * 4000)
         self.assertLessEqual(sum(len(message.text) for message in call.history), 12000)
 
-    async def test_tier_change_ends_session_instead_of_switching_models(self):
+    async def test_lost_checkpoint_ends_session(self):
         status = snapshot()
         call = self.call(SimpleNamespace(models_status=lambda: status))
-        status.selected_tier = None
+        status.models[0].status = "not_downloaded"
         with self.assertRaises(InferenceFailure):
             call.check_models()
 
@@ -282,7 +267,7 @@ class VoiceCallTests(unittest.IsolatedAsyncioTestCase):
             SimpleNamespace(
                 models_status=snapshot,
                 submit=submit,
-                open_chat_stream=AsyncMock(return_value=(stream, "chat")),
+                open_chat_stream=AsyncMock(return_value=(stream, "lfm3-1.7b-bf16")),
             )
         )
         with self.assertRaisesRegex(InferenceFailure, "Needs 4 GiB"):
@@ -312,7 +297,7 @@ class VoiceCallTests(unittest.IsolatedAsyncioTestCase):
             SimpleNamespace(
                 models_status=snapshot,
                 submit=submit,
-                open_chat_stream=AsyncMock(return_value=(stream, "chat")),
+                open_chat_stream=AsyncMock(return_value=(stream, "lfm3-1.7b-bf16")),
             )
         )
         await asyncio.wait_for(call.respond("wav", 0), 1)

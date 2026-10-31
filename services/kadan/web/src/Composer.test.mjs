@@ -36,8 +36,8 @@ loader.deregister();
 const status = {
   tsuchi: { state: "ready", message: "Connected", browser_url: "http://localhost:8620" },
   hikari: {
-    state: "tier_required", tier: null, model_id: null,
-    message: "Choose a tier", settings_url: "http://localhost:8088/settings",
+    state: "model_required", model_id: "lfm3-1.7b-bf16",
+    message: "Download the LFM3 model", settings_url: "http://localhost:8088/settings",
   },
 };
 function compose(overrides = {}) {
@@ -56,18 +56,15 @@ function elements(node) {
 const find = (tree, type) => elements(tree).find(node => node.type === type);
 const prompt = tree => elements(tree).find(node => node.props?.className === "plan-prompt");
 
-test("no plan shows an explicit explanation and a separate-tab route to selection", () => {
-  const notice = prompt(compose());
-  assert.equal(notice.props.role, "status");
-  assert.equal(find(notice, "strong").props.children, "Select a plan to enable replies");
-  assert.match(find(notice, "p").props.children, /keep writing or save a note/);
-  const link = find(notice, "a");
-  assert.equal(link.props.href, status.hikari.settings_url);
-  assert.equal(link.props.target, "_blank");
-  assert.equal(link.props.onClick, undefined);
+test("missing model shows an explicit separate-tab route to downloads", () => {
+  const notice = elements(compose()).find(node => node.props?.className === "attention");
+  assert.equal(notice.props.href, status.hikari.settings_url);
+  assert.equal(notice.props.target, "_blank");
+  assert.equal(notice.props.onClick, undefined);
+  assert.ok([notice.props.children].flat(Infinity).includes("Download a model · notes only"));
 });
 
-test("no-plan prompt leaves the draft editable and preserves explicit note sending", () => {
+test("missing model leaves the draft editable and preserves explicit note sending", () => {
   const sends = [], edits = [];
   const tree = compose({ onSend: value => sends.push(value), onChange: value => edits.push(value) });
   assert.deepEqual(sends, []);
@@ -82,10 +79,10 @@ test("no-plan prompt leaves the draft editable and preserves explicit note sendi
   assert.deepEqual(sends, [false]);
 });
 
-test("ready plan removes the prompt and keeps chat and persona selection", () => {
+test("ready model removes the prompt and keeps chat and persona selection", () => {
   const sends = [];
   const tree = compose({
-    status: { ...status, hikari: { ...status.hikari, state: "ready", tier: "go" } },
+    status: { ...status, hikari: { ...status.hikari, state: "ready" } },
     onSend: value => sends.push(value),
   });
   assert.equal(prompt(tree), undefined);
@@ -114,8 +111,10 @@ test("unknown and unavailable states are not presented as no-plan states", () =>
 
 test("missing settings link keeps guidance visible without a dead action", () => {
   const tree = compose({ status: { ...status, hikari: { ...status.hikari, settings_url: null } } });
-  assert.ok(prompt(tree));
-  assert.equal(find(prompt(tree), "a"), undefined);
+  const notice = elements(tree).find(node => node.props?.className === "attention");
+  assert.ok(notice);
+  assert.equal(notice.props.href, undefined);
+  assert.equal(notice.props["aria-disabled"], true);
 });
 
 
