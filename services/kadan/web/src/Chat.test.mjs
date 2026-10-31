@@ -24,6 +24,10 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
   const slots = [], effects = [], timers = [], requests = [];
   const storage = new Map();
   if (storedPending) storage.set(outbox.chatStorageKeys("guide", initialConversation.id).pending, JSON.stringify(storedPending));
+  const attachments = { ready: true, entries: [], start() {}, stop() {},
+    ids() { return this.entries.map(item => item.id); },
+    removeMany(ids) { this.entries = this.entries.filter(item => !ids.includes(item.id)); },
+  };
   let cursor = 0, tree, snapshotRuns = initialRuns, sendResponse, replacementResponse;
   let selectedChain = initialConversation;
   const react = {
@@ -70,6 +74,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     "./presence": { activeLabel: () => "Not active yet" },
     "./agentRuns": agentRuns,
     "./outbox": outbox,
+    "./attachments": { ChatAttachments: class { constructor() { return attachments; } } },
     "./uuid": { randomUuid: () => "sent-message" },
     "./api": {
       agentPath: key => `/agents/${key}`,
@@ -119,7 +124,8 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
   await settle();
   render();
   return {
-    render, requests, storage,
+    render, requests, storage, attachments,
+    attachmentIds: () => elements().filter(node => typeof node.type === "function" && node.type.name === "Attachment").map(node => node.props.id),
     retry: () => elements().find(node => node.type === "button" && node.props.children === "Retry").props.onClick(),
     notices: () => elements().filter(node => node.props?.className === "notice").map(node => node.props.children),
     alerts: () => elements().filter(node => node.props?.role === "alert").map(node => node.props.children[0]),
@@ -135,7 +141,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     },
     holdSend() {
       let resolve;
-      sendResponse = new Promise(done => { resolve = done; });
+      sendResponse = new Promise((done, fail) => { resolve = done; resolve.reject = fail; });
       return resolve;
     },
     replaceConversation(value) {
@@ -333,4 +339,82 @@ test("a stale mounted Messages sender cannot replace a continuation from Coding"
   view.composer().onSend(true); await settle(); view.render();
   assert.deepEqual(JSON.parse(view.storage.get(key)), pending);
   assert.equal(view.requests.filter(row => row.body).length, 0);
+});
+
+
+test("note submission snapshots ordered attachments separately from upload confirmation", async () => {
+  const view = await chat([]);
+  view.attachments.entries = [{ id: "file-b" }, { id: "file-a" }];
+  const finish = view.holdSend();
+  view.composer().onChange("Keep these files");
+  view.render();
+  view.composer().onSend(false);
+  view.render();
+  const request = view.requests.find(request => request.body);
+  assert.equal(request.path, "/agents/guide/conversations/conversation/notes");
+  assert.deepEqual(Array.from(request.body.attachment_ids), ["file-b", "file-a"]);
+  assert.deepEqual(view.attachmentIds(), ["file-b", "file-a"]);
+  const key = outbox.chatStorageKeys("guide", chain.id).pending;
+  assert.deepEqual(JSON.parse(view.storage.get(key)).attachment_ids, ["file-b", "file-a"]);
+  assert.deepEqual(view.attachments.entries, []);
+  finish({ ...chain, version: 2, messages: [message("sent-message", "user", "Keep these files")] });
+  await settle();
+  view.render();
+  assert.equal(view.storage.has(key), false);
+});
+
+test("failed run retry keeps original attachments while newer uploads remain unresolved", async () => {
+  const view = await chat([]);
+  view.attachments.entries = [{ id: "file-b" }, { id: "file-a" }];
+  const fail = view.holdSend();
+  view.composer().onChange("Read these files");
+  view.render();
+  view.composer().onSend(true);
+  const original = view.requests.find(request => request.body).body;
+  assert.deepEqual(Array.from(original.attachment_ids), ["file-b", "file-a"]);
+  fail.reject(new Error("Lost send response"));
+  await settle();
+  view.attachments.entries = [{ id: "new-file" }];
+  view.attachments.ready = false;
+  view.render();
+  view.composer().onChange("New draft");
+  view.render();
+  const finish = view.holdSend();
+  view.retry();
+  const retry = view.requests.filter(request => request.body).at(-1).body;
+  assert.deepEqual(retry, original);
+  assert.deepEqual(view.attachments.entries, [{ id: "new-file" }]);
+  view.render();
+  assert.equal(view.composer().value, "New draft");
+  finish({ run: run("queued", "queued"), conversation: { ...chain, version: 2, messages: [message("sent-message", "user", "Read these files")] } });
+  await settle();
+});
+
+test("new sends with unresolved attachments cannot submit", async () => {
+  const view = await chat([]);
+  view.attachments.ready = false;
+  view.composer().onChange("Wait for upload");
+  view.render();
+  view.composer().onSend(false);
+  view.render();
+  assert.equal(view.requests.filter(request => request.body).length, 0);
+  assert.ok(view.alerts().some(text => /Finish uploading/.test(text)));
+});
+
+test("reloaded retry preserves attachments and explicit Codex continuation independently of the draft", async () => {
+  for (const attachment_ids of [undefined, ["saved-b", "saved-a"]]) {
+    const pending = { id: "earlier", content: "Continue", generate: true, persona: "original", resume_coding_job_id: "coding-job", ...(attachment_ids && { attachment_ids }) };
+    const view = await chat([], chain, pending);
+    view.attachments.entries = [{ id: "draft-file" }];
+    const finish = view.holdSend();
+    view.retry();
+    const request = view.requests.find(request => request.body).body;
+    assert.equal(request.message_id, "earlier");
+    assert.equal(request.resume_coding_job_id, "coding-job");
+    assert.equal(request.persona_id, "original");
+    assert.deepEqual(Array.from(request.attachment_ids), attachment_ids ?? []);
+    assert.deepEqual(view.attachments.entries, [{ id: "draft-file" }]);
+    finish({ run: run("queued", "queued"), conversation: { ...chain, version: 2, messages: [message("earlier", "user", "Continue")] } });
+    await settle();
+  }
 });

@@ -15,6 +15,7 @@ import type { PetState } from "./pet";
 import type { AgentRun, Asset, ImageJob, Message, Resource, RunSnapshot, Status } from "./types";
 import { activeRun, cancellableImage, currentResponseOutcome, imageStatus, isImageAsset, latestConversation, responseProgress } from "./agentRuns";
 import { randomUuid } from "./uuid";
+import { ChatAttachments } from "./attachments";
 import { chatStorageKeys, confirmSend, copyPendingToDraft, discardUnassignedPending, queueSend, readPending, type PendingMessage } from "./outbox";
 
 interface Props {
@@ -104,6 +105,13 @@ export default function Chat({
   const [recovery, setRecovery] = useState(pending.current);
   const [unassigned, setUnassigned] = useState(() => readPending(sessionStorage.getItem(`${draftKey}.pending`)));
   const [draft, setDraft] = useState(() => sessionStorage.getItem(draftKey) || "");
+  const [, redrawAttachments] = useState(0);
+  const [attachments] = useState(() => new ChatAttachments(agentKey, chain.id, sessionStorage,
+    () => redrawAttachments(value => value + 1)));
+  useEffect(() => {
+    attachments.start();
+    return () => attachments.stop();
+  }, [attachments]);
   const [persona, setPersona] = useState("");
   const [sending, setSending] = useState(false);
   const [runs, setRuns] = useState<AgentRun[]>([]);
@@ -286,13 +294,17 @@ export default function Chat({
   async function send(generate: boolean, retry?: PendingMessage) {
     const text = retry?.content ?? draft.trim();
     if (!text || sendLock.current || sending || blocked) return;
+    if (!retry && !attachments.ready) {
+      setError("Finish uploading or remove the unresolved attachments before sending.");
+      return;
+    }
     syncPending(currentChain.current.messages);
     if (pending.current && (!retry || retry.id !== pending.current.id)) {
       setError("Retry or discard the unsent message before sending another.");
       return;
     }
     const message = queueSend(pending.current, retry ?? {
-      id: randomUuid(), content: text, generate, persona,
+      id: randomUuid(), content: text, generate, persona, attachment_ids: attachments.ids(),
     });
     const messageId = message.id;
     const personaId = message.persona;
@@ -312,10 +324,13 @@ export default function Chat({
       content: text,
       created_at: new Date().toISOString(),
       resource_ids: generate && personaId ? [personaId] : [],
-      attachment_ids: [],
+      attachment_ids: message.attachment_ids ?? [],
       sources: [],
     });
-    if (!retry) setDraft("");
+    if (!retry) {
+      setDraft("");
+      attachments.removeMany(message.attachment_ids ?? []);
+    }
     const path = `${agentPath(agentKey)}/conversations/${chain.id}`;
     try {
       if (!generate) {
@@ -324,6 +339,7 @@ export default function Chat({
             content: text,
             expected_version: currentChain.current.version,
             message_id: messageId,
+            attachment_ids: message.attachment_ids ?? [],
           }),
         );
         react("waving");
@@ -333,6 +349,7 @@ export default function Chat({
           expected_version: currentChain.current.version,
           persona_id: personaId || null,
           message_id: messageId,
+          attachment_ids: message.attachment_ids ?? [],
           ...(message.resume_coding_job_id ? { resume_coding_job_id: message.resume_coding_job_id } : {}),
         });
         accept(result.conversation);
@@ -624,6 +641,7 @@ export default function Chat({
           <div>
             <strong>{recovery.resume_coding_job_id ? "Unconfirmed Codex continuation" : "Unsent message"}</strong>
             <p>{recovery.content}</p>
+            {recovery.attachment_ids?.map(id => <Attachment key={id} agentKey={agentKey} id={id} />)}
           </div>
           <button disabled={blocked || !ready.storage || (recovery.generate && !recovery.resume_coding_job_id && !ready.chat)}
             onClick={() => void send(recovery.generate, recovery)}>Retry</button>
@@ -649,6 +667,7 @@ export default function Chat({
       )}
       <Composer
         agentName={agentName}
+        attachments={attachments}
         value={draft}
         onChange={setDraft}
         onSend={(generate) => void send(generate)}

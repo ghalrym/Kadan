@@ -134,3 +134,11 @@ The stored original stays unchanged. Save a completed edited result with
 `save_workspace_file` to create a new Workspace file. Each open creates a separate
 copy. If a copy is unconfirmed, inspect its reported path before requesting
 another copy; never replace an edited copy just to recover an interrupted action.
+
+
+## Chat attachments
+
+User messages can include saved attachment IDs. Use `open_workspace_file` with
+those IDs to copy the bytes onto the computer when processing is needed. An ID
+or metadata alone does not mean you have inspected the file. Uploading or linking
+a file does not automatically extract its text or interpret its format.
