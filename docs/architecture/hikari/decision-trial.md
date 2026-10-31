@@ -25,8 +25,25 @@ model call or establish memory cleanup. Production integration must retain
 Hikari's admitted executor ownership, termination and confirmed cleanup; this
 adapter supplies none of those lifecycle guarantees by itself.
 
-Validation uses fake model responses only. Model compatibility, cold/warm latency,
-peak resident memory and cancellation cleanup remain unmeasured. A bounded manual
-experiment must precede any default change. The proposed CPU experiment uses the
-existing LFM image, two CPU cores, 16 GiB RAM and a 180-second process deadline;
-it has no GPU access and changes no running service or saved model store.
+Automated validation uses fake model responses only. A separate authorized manual
+CPU experiment used the pinned original artifacts and existing dependencies:
+two CPU cores, F32 parameters, 16 GiB RAM, no swap, no GPU or network access and
+a 180-second deadline per process. Encoded sequences were checked against a
+1,024-token ceiling before inference; no compilation or external hub kernels
+were enabled.
+
+The first run reached its deadline after completing four valid Choice calls over
+a 54-token sequence. Loading took 82.98 seconds; the three warm calls had a
+16.10-second median. Remaining cases did not complete, and no full-run peak was
+captured. A narrower second run completed Choice, fractional Score and Noul in
+one 120-token request: 83.65 seconds loading, 16.08 seconds initializing the
+decision engine, then 23.52 seconds evaluating. Peak process RSS was 12,319,993,856
+bytes; RSS after the response was 8,636,542,976 bytes. These are bounded CPU
+measurements, not a quality comparison or evidence of a speedup over Laya.
+
+Both test containers and their processes exited. Downloaded artifacts and evidence
+remain in a separate experiment cache; running services and their saved model
+stores were untouched. The measured F32 process does not fit the current decision
+worker's 3 GiB envelope. Production admission, worker routing and interruptible
+executor ownership remain unwired; eight-question, long-input and real worker
+cancellation acceptance remain unverified. Laya remains the default.
