@@ -228,13 +228,18 @@ export default function Composer({
                 className="send stop"
                 type="button"
                 aria-label="Stop response"
-                title="Stop"
+                aria-describedby="stop-response-help"
+                title="Stop response. Coding keeps running; use Stop coding in Coding to stop it."
                 onClick={onStop}
                 disabled={stopping}
               >
-                <Square size={13} fill="currentColor" />
+                <Square size={13} fill="currentColor" aria-hidden="true" />
+                {stopping ? "Stopping…" : "Stop response"}
               </button>
             )}
+            {onStop && <span id="stop-response-help" className="sr-only">
+              Stops current and queued replies in this conversation. Coding keeps running; use Stop coding in Coding to stop it.
+            </span>}
             <button
               className="send"
               disabled={locked || empty || !ready.storage}

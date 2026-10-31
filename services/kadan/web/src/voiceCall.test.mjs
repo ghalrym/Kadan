@@ -155,7 +155,7 @@ for (const { name, mutes, enabled } of [
     const call = session();
     const starting = call.start("Hi");
     await flush();
-    assert.deepEqual(states, [{ status: "Connecting…", muted: false }]);
+    assert.deepEqual(states, [{ status: "Starting audio…", muted: false }, { status: "Waiting for microphone…", muted: false }]);
     for (const muted of mutes) call.setMuted(muted);
     permit({ getTracks: () => tracks, getAudioTracks: () => tracks });
     await starting;
@@ -163,8 +163,11 @@ for (const { name, mutes, enabled } of [
       assert.deepEqual(capturedTracks, [enabled, enabled]);
       assert.deepEqual(tracks.map(track => track.enabled), [enabled, enabled]);
       assert.deepEqual(states, [
-        { status: "Connecting…", muted: false },
-        ...mutes.map(muted => ({ status: muted ? "Muted" : "Connecting…", muted })),
+        { status: "Starting audio…", muted: false },
+        { status: "Waiting for microphone…", muted: false },
+        ...mutes.map(muted => ({ status: muted ? "Muted" : "Waiting for microphone…", muted })),
+        { status: enabled ? "Preparing microphone…" : "Muted", muted: !enabled },
+        { status: enabled ? "Connecting to call…" : "Muted", muted: !enabled },
       ]);
       assert.deepEqual(errors, []);
     } finally { call.end(); }
@@ -264,4 +267,148 @@ test("LFM3 call selection is explicit and uses the same session transport", asyn
   socket.onopen();
   assert.deepEqual(socket.sent[0], { type: "start", persona_id: null, backend: "lfm3" });
   call.end();
+});
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+for (const ending of ["end", "timeout"]) {
+  test(`pending browser audio startup settles on ${ending} and never requests a microphone afterwards`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const resume = deferred();
+    let microphoneRequests = 0;
+    install("AudioContext", function () { context = fakeContext(); context.resume = () => resume.promise; return context; });
+    navigator.mediaDevices.getUserMedia = async () => { microphoneRequests++; throw new Error("Unexpected microphone request"); };
+    socket = null;
+    const call = session();
+    const starting = call.start("test", null);
+    await flush();
+    assert.equal(states.at(-1).status, "Starting audio…");
+    if (ending === "timeout") t.mock.timers.tick(20000);
+    else call.end();
+    await starting;
+    assert.equal(context.closed, true);
+    assert.equal(errors.length, 1);
+    if (ending === "timeout") assert.match(errors[0], /Browser audio did not start/);
+    const previousStates = states.length;
+    resume.resolve();
+    await flush();
+    assert.equal(states.length, previousStates);
+    assert.equal(microphoneRequests, 0);
+    assert.equal(socket, null);
+  });
+}
+
+for (const ending of ["end", "timeout"]) {
+  test(`pending microphone startup settles on ${ending} and stops every late granted track`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const permission = deferred();
+    navigator.mediaDevices.getUserMedia = () => permission.promise;
+    capture = null; socket = null;
+    const call = session();
+    const starting = call.start("test", null);
+    await flush();
+    assert.equal(states.at(-1).status, "Waiting for microphone…");
+    if (ending === "timeout") t.mock.timers.tick(20000);
+    else call.end();
+    await starting;
+    assert.equal(context.closed, true);
+    assert.equal(errors.length, 1);
+    if (ending === "timeout") assert.match(errors[0], /Microphone access timed out/);
+    const tracks = [track, { ...track }];
+    permission.resolve({ getTracks: () => tracks, getAudioTracks: () => tracks });
+    await flush();
+    assert.deepEqual(tracks.map(track => track.stopped), [true, true]);
+    assert.equal(capture, null);
+    assert.equal(socket, null);
+    assert.equal(errors.length, 1);
+  });
+}
+
+test("a late microphone rejection after timeout cannot report a second failure", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const permission = deferred();
+  navigator.mediaDevices.getUserMedia = () => permission.promise;
+  const call = session();
+  const starting = call.start("test", null);
+  await flush();
+  t.mock.timers.tick(20000);
+  await starting;
+  permission.reject(new Error("Permission denied after timeout"));
+  await flush();
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /Microphone access timed out/);
+});
+
+test("worklet timeout closes the granted microphone and ignores late setup completion", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const worklet = deferred();
+  install("AudioContext", function () { context = fakeContext(); context.audioWorklet.addModule = () => worklet.promise; return context; });
+  capture = null; socket = null;
+  const call = session();
+  const starting = call.start("test", null);
+  await flush();
+  assert.equal(states.at(-1).status, "Preparing microphone…");
+  t.mock.timers.tick(20000);
+  await starting;
+  assert.match(errors[0], /Microphone setup timed out/);
+  assert.equal(track.stopped, true);
+  assert.equal(context.closed, true);
+  worklet.resolve();
+  await flush();
+  assert.equal(capture, null);
+  assert.equal(socket, null);
+});
+
+test("one deadline spans browser audio, permission, recording setup and server readiness", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const resume = deferred(), permission = deferred(), worklet = deferred();
+  install("AudioContext", function () {
+    context = fakeContext(); context.resume = () => resume.promise;
+    context.audioWorklet.addModule = () => worklet.promise; return context;
+  });
+  navigator.mediaDevices.getUserMedia = () => permission.promise;
+  const call = session();
+  const starting = call.start("test", null);
+  t.mock.timers.tick(5000); resume.resolve(); await flush();
+  t.mock.timers.tick(5000); permission.resolve({ getTracks: () => [track], getAudioTracks: () => [track] }); await flush();
+  t.mock.timers.tick(5000); worklet.resolve(); await starting;
+  assert.equal(states.at(-1).status, "Connecting to call…");
+  t.mock.timers.tick(4999);
+  assert.deepEqual(errors, []);
+  t.mock.timers.tick(1);
+  assert.match(errors[0], /Call connection timed out/);
+  assert.equal(socket.closed, true);
+  assert.equal(track.stopped, true);
+  assert.equal(context.closed, true);
+});
+
+test("server readiness cancels the startup deadline", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const call = await connected();
+  t.mock.timers.tick(60000);
+  assert.deepEqual(errors, []);
+  assert.equal(track.stopped, false);
+  assert.equal(states.at(-1).status, "Listening");
+  call.end();
+});
+
+
+test("ending between permission resolution and startup continuation still stops the grant", async () => {
+  const permission = deferred();
+  navigator.mediaDevices.getUserMedia = () => permission.promise;
+  capture = null; socket = null;
+  const call = session();
+  const starting = call.start("test", null);
+  await flush();
+  permission.resolve({ getTracks: () => [track], getAudioTracks: () => [track] });
+  queueMicrotask(() => call.end());
+  await starting;
+  assert.equal(track.stopped, true);
+  assert.equal(capture, null);
+  assert.equal(socket, null);
+  assert.equal(context.closed, true);
 });

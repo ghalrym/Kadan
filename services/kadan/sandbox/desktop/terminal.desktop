@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal
+Exec=python3 /opt/kadan/desktop/launch.py terminal
+Icon=com.gexperts.Tilix
+Terminal=false

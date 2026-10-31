@@ -10,6 +10,8 @@ Native request preparation can acquire a missing checkpoint. An unusable existin
 
 Progress is reported per checkpoint. Aggregate percentages may use catalog estimates before byte totals are known; checkpoint state establishes completion. Tier changes can unload the prior resident language model after earlier chat work finishes, but do not delete its stored checkpoint.
 
+Completed native status reports sum the downloaded artifact sizes recorded in a validated completion manifest. Existing layout-specific checks remain, including pinned composite/GGUF file lists and single-file revisions. Both downloaded and total bytes use that sum; invalid or incomplete stores do not receive completed totals. Markers and derived caches are excluded. Settings uses observed totals first, labels catalog fallbacks as estimates, and identifies missing sizes explicitly.
+
 ## Checkpoint storage
 
 The catalog pins revisions and verifies downloaded files before publishing them.

@@ -1,73 +1,70 @@
-# LFM3 BF16 evaluation
+# LFM3 BF16 workers
 
-These opt-in Python worker containers provide an experimental exception to the
-native language worker's MoE policy. They use Hikari's queue, worker token and
-memory grants. They do not select a hardware tier, replace native workers, or
-accept a model license. No model weights ship in the image.
+The default conversation and screenshot workers use the existing Hikari API,
+queue, worker token and memory scheduler. They start without profiles in the normal
+Compose project, keeping Hikari and Kadan's usual URLs and saved conversations.
+Workers on one computer share that API's memory scheduler.
 
-The conversation worker loads the pinned released `LiquidAI/LFM3-1.7B` BF16
-checkpoint with its custom Transformers code. Each request starts a separate
-executor and loads the model again. Cancellation joins that process before
-releasing memory. There is no persistent model or prefix cache in this trial.
-Replies are buffered before delivery over the existing SSE chat interface.
+These workers follow Andrew's later direction to make LFM the default. They do
+not select a hardware tier, remove native workers or accept a
+model license. No model weights ship in the image. Each request loads the pinned
+checkpoint into a separate executor; cancellation joins that process before
+releasing memory. Replies are buffered, with no persistent model or prefix cache.
 
-The trial reserves a provisional 16 GiB host memory and 20 GiB on one GPU for text, bounds total
-context to 262,144 tokens, and reserves 1,024 tokens for output. Prompt overflow
-fails without truncating history. Physical fit, speed, conversation quality and
-tool reliability require a manual target-machine trial. A unit-test pass, build,
-connected worker or completed download does not establish inference success.
+## Update the existing stack
 
-## Morning conversation trial
+Run from the normal checkout with its existing Compose project and environment.
+The following updates both workers and their callers. `compose.yaml` defaults
+all four text/vision selection flags below to true; remove older false overrides
+when adopting the defaults. Service and model-volume names stay the same.
 
-1. Review the draft PR and its exact pins. Keep the existing Compose file,
-   containers and model store. Choose the experiment checkout explicitly for
-   each command; avoid a broad `docker compose up` or `down`.
-2. Build only the additive worker (this does not start it):
+```sh
+export HIKARI_ENABLE_LFM3_TEXT=true
+export HIKARI_ENABLE_LFM3_VISION=true
+export KADAN_EXPERIMENTAL_LFM3_TEXT=true
+export KADAN_EXPERIMENTAL_LFM3_VISION=true
 
-   ```sh
-   docker compose -f compose.yaml -f compose.lfm3-text.yaml --profile lfm3-text build hikari-worker-lfm3-text
-   ```
+docker compose up -d --build --no-deps \
+  hikari-api hikari-frontend kadan-api kadan-runner kadan-frontend \
+  hikari-worker-lfm3-text hikari-worker-lfm3-vision
+```
 
-3. After deciding to run the reviewed code, set `HIKARI_ENABLE_LFM3_TEXT=true`.
-   The reviewed Hikari API must also run with that flag to admit the worker and
-   explicit model requests. Recreating the API is an owner deployment step;
-   an already-running API from master does not gain these changes through the
-   new worker. Preserve its existing database, volumes and worker token.
-4. Start only the new worker against that reviewed API:
+This recreates the named services, so apply it between manual trials with the
+existing Tsuchi and other dependencies available. Keep the existing volumes,
+worker token and native workers. The API and worker flags gate admission and
+execution separately; Kadan's flags enable its corresponding agent paths.
 
-   ```sh
-   HIKARI_ENABLE_LFM3_TEXT=true docker compose -f compose.yaml -f compose.lfm3-text.yaml --profile lfm3-text up -d --no-deps hikari-worker-lfm3-text
-   ```
+In Hikari Settings, find **Experimental models**, review the linked LFM Open
+License and custom-code notice, and explicitly accept each intended download.
+Wait for **Complete**. Enabling a worker never acknowledges the license or
+downloads its checkpoint automatically. Upstream account or license prompts
+still require the user's approval.
 
-5. Open Hikari Settings and find **Experimental models**. Read the model's
-   linked LFM Open License v1.0 and custom-code notice. After accepting the
-   license, check its acceptance box and choose **Accept and download**. Wait
-   for this model to show **Complete**; failures remain visible there. The
-   existing model download API is also available. No credentials are created
-   by this trial. Stop if upstream access requires account or license approval.
-6. First compare a short explicit `model: "lfm3-1.7b-bf16"` chat request with
-   the unchanged native model. Check identity, sensible content, error handling
-   and cancellation. For the Kadan trial, run the reviewed API and runner with
-   `KADAN_EXPERIMENTAL_LFM3_TEXT=true`. Existing agent sessions, personas, tool
-   permissions and durable action recovery remain the authority. Use a short
-   conversation; start with a harmless read-only action. Inspect the real result
-   before trusting generated claims. Test stopping a pending reply and retrying.
-7. Confirm an explicitly selected native model still works and image/video
-   services are still available. Record actual response time, errors and GPU
-   usage. A single-GPU trial fitted 261,120 prompt tokens plus the 1,024-token
-   reply reservation; repeat admission and quality checks for your hardware.
-   Concurrent full-window requests have not been validated.
+## Check the selected path
 
-To leave the trial, unset the Kadan experiment flag and return its API and runner
-to the owner's existing configuration. Stop only `hikari-worker-lfm3-text` using
-the same Compose files. Leave downloaded checkpoints and all native workers in
-place. Disabling API experiment flags rejects future experimental requests.
+- Hikari Chat shows **LFM3 1.7B BF16** and explicitly requests that checkpoint.
+  Retry and **New chat** keep it. Missing workers or downloads fail instead of
+  using the native model selected by a tier.
+- In the usual Kadan conversation, try a short reply and a harmless read-only
+  action. Saved sessions, personas, tool permissions and durable action recovery
+  remain authoritative. Compare a screenshot answer with **Watching** without
+  taking control of the computer.
+- Stop a pending request and check cleanup. Record response time, errors and
+  actual memory use. A connected worker, completed download or unit-test pass
+  does not establish inference quality, speed or physical fit.
 
-Vision and audio are separate additive draft changes with their own profiles
-and trial instructions. Audio's initial integration returns buffered speech
-segments through the existing call interruption and playback-acknowledgement
-protocol; it makes no claim of full-duplex model inference.
+Text has a 262,144-token total context; vision has 128,000. Generation can use the
+space remaining after the complete prompt rather than a separate 1,024-token
+cap. Input is not truncated to fit. The provisional grants are 16 GiB RAM /
+20 GiB VRAM for text and 8 GiB RAM / 16 GiB VRAM for vision, each on one GPU.
+Full-window quality and concurrent capacity need target-machine validation.
+See [text architecture](../../../docs/architecture/hikari/worker-lfm3.md) and
+[vision architecture](../../../docs/architecture/hikari/worker-vision.md) for pins,
+contracts and measured evidence.
 
-Workers reconnect with capped backoff after an API disconnect and refresh their
-resource identity. Unconfirmed requests are not replayed. Each additive Compose
-worker also restarts unless explicitly stopped.
+## Disable
+
+Disable the corresponding Kadan and Hikari flags and reapply the affected API
+and runner configuration. Stop only the selected `hikari-worker-lfm3-*` services
+using the same Compose project. Keep downloaded checkpoints and native workers.
+Workers reconnect after transport loss, but unconfirmed work is not replayed.

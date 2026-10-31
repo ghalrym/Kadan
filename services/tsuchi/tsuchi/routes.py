@@ -34,6 +34,7 @@ from .models import (
     ResourceKind,
     ResourceUpdate,
     ResourceVersion,
+    RunMessage,
     Runner,
     Stats,
     VersionInput,
@@ -96,6 +97,7 @@ class RunCreate(Model):
     expected_version: int = Field(ge=1)
     message: Message
     persona_id: UUID | None = None
+    initial_command: RunMessage | None = None
 
 
 class RunUpdate(AgentRunState):
@@ -214,6 +216,7 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
             value.message,
             value.expected_version,
             value.persona_id,
+            value.initial_command,
         )
 
     @router.get("/agents/{key}/runs/{run_id}", response_model=AgentRun)

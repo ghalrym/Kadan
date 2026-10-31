@@ -106,8 +106,8 @@ class VisionTask(TaskInput):
     model: Literal["lfm3-vl-2b-bf16"] = "lfm3-vl-2b-bf16"
     image_base64: str = Field(min_length=1, max_length=2_796_204)
     media_type: Literal["image/png", "image/jpeg"]
-    question: str = Field(min_length=1, max_length=4000)
-    max_new_tokens: int = Field(default=1024, ge=1, le=1024, strict=True)
+    question: str = Field(min_length=1)
+    max_new_tokens: int | None = Field(default=None, ge=1, lt=128000, strict=True)
 
 
 class SpeechVoice(TaskInput):

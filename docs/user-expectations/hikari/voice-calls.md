@@ -14,4 +14,4 @@ During a call, its three models receive equal residency priority. This does not 
 
 See [Transcription](transcription.md) for supported audio and recognition limits, [Text to speech](text-to-speech.md) for synthesis limitations, and [Kadan voice calls](../kadan/voice-calls.md) for Kadan's microphone, mute and interruption controls.
 
-An optional, explicitly selected [LFM3 audio trial](lfm3-audio-trial.md) keeps this call lifecycle with a different buffered speech model. It is disabled by default and needs separate download approval and manual runtime validation.
+A proposed, explicitly selected [LFM3 audio trial](lfm3-audio-trial.md) would keep this call lifecycle with a different buffered speech model. It remains an unmerged draft, disabled by default and gated on separate download approval and owner manual audio acceptance.

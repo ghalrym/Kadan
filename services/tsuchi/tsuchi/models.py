@@ -636,6 +636,12 @@ class AgentRun(AgentRunState):
     created_at: datetime
     updated_at: datetime
 
+    @property
+    def initial_command(self) -> RunMessage | None:
+        if self.transcript and self.transcript[0].role == "assistant":
+            return self.transcript[0]
+        return None
+
 
 class ImageJobState(Model):
     status: Literal[

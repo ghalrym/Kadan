@@ -32,9 +32,10 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
+from pydantic import Field, ValidationError
 
 from ..api.config import ServiceError
+from ..api.pydantic_models.agent_runs import ToolCommand
 
 MAX_COMMAND_CHARACTERS = 48000
 MAX_EVENT_CHARACTERS = 300000
@@ -66,14 +67,6 @@ PARAMETER = re.compile(r"<parameter=([^>\s]+)>\n?(.*?)\n?</parameter>", re.DOTAL
 TOOL_MARKUP = re.compile(
     r"</?(?:tool_call|function|parameter|tool_response)(?:[=>\s]|$)", re.IGNORECASE
 )
-
-
-class ToolCommand(BaseModel):
-    """One tool call, persisted in the run transcript before it executes."""
-
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
-    tool: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_]+$")
-    arguments: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 def unique_fields(pairs: list[tuple[str, object]]) -> dict:
@@ -384,7 +377,7 @@ class HikariChatModel(BaseChatModel):
                         reason = choice.get("finish_reason")
                         if not isinstance(text, str) or finished:
                             raise ValueError("Invalid or post-terminal delta")
-                        if reason is not None and reason != "stop":
+                        if reason not in (None, "stop", "length"):
                             raise ValueError("Incomplete inference")
                     except (ValueError, KeyError, TypeError) as error:
                         raise ServiceError(
@@ -392,6 +385,12 @@ class HikariChatModel(BaseChatModel):
                             502,
                             "invalid_stream",
                         ) from error
+                    if reason == "length":
+                        raise ServiceError(
+                            "Hikari reached the model's output limit before completing the agent response.",
+                            502,
+                            "response_limit",
+                        )
                     length += len(text)
                     if length > MAX_COMMAND_CHARACTERS:
                         raise ServiceError(

@@ -180,7 +180,9 @@ class Computer:
         self.id: str = info["id"]
         self.name: str = info["name"]
         # Free memory when its first worker connects, before anything loads.
-        self.ledger = MachineLedger(capacity=[info["ram_free"]], workers={})
+        self.ledger = MachineLedger(
+            capacity=[info.get("physical_ram_free", info["ram_free"])], workers={}
+        )
         self.gpus: dict[str, int] = {}
 
     def gpu_index(self, device: dict) -> int:
@@ -394,6 +396,7 @@ class WorkerHub:
             name=worker.id,
             kind=worker.kind,
             devices=worker.devices,
+            host_limit=info.get("ram_limit", info["ram_free"]),
             budget=[0] * len(computer.ledger.capacity),
             # A reconnect has no completion history; allow a full idle period.
             last_used=time.monotonic(),
@@ -1007,10 +1010,13 @@ class WorkerHub:
         """Fails jobs that need more memory than the worker's computer has."""
         host, device = (value / GIB for value in requirement.minimum)
         capacity = worker.computer.ledger.capacity
+        host_capacity = capacity[0]
+        if worker.slot.host_limit is not None:
+            host_capacity = min(host_capacity, worker.slot.host_limit)
         failure = InferenceFailure(
             f"{requirement.model or worker.kind} needs at least {host:.1f} GiB RAM and "
             f"{device:.1f} GiB of VRAM; {worker.name} has "
-            f"{capacity[0] / GIB:.1f} GiB RAM and "
+            f"{host_capacity / GIB:.1f} GiB RAM and "
             f"{sum(capacity[index] for index in worker.devices) / GIB:.1f} GiB free "
             f"across {len(worker.devices)} GPU(s).",
             507,
@@ -1104,7 +1110,12 @@ class WorkerHub:
                     other.requirement = await self._requirement(workers[other.name])
             if slot.requirement is None:
                 slot.requirement = await self._requirement(workers[slot.name])
-            if ledger.fit(slot.requirement, ledger.capacity, slot.devices) is None:
+            if (
+                ledger.fit(
+                    slot.requirement, ledger.capacity, slot.devices, slot.host_limit
+                )
+                is None
+            ):
                 await self._reject_unfittable(workers[slot.name], slot.requirement)
                 continue
             actions = plan_load(ledger, slot.name)

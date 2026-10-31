@@ -70,12 +70,27 @@ From the repository root, generate the API schema, then the frontend client:
 .venv/bin/python services/hikari/bin/hikari.py generate api
 ```
 
-# Text inference design
+# Models and retained native inference
 
-The project exists to run mixture-of-experts models larger than the GPU by tiering routed experts across VRAM, RAM and disk (the Strata/FreeToken approach). In short:
+Hikari has no hardware tiers. It runs one fixed model per capability, and users do not choose models:
 
-- Every hardware tier's language model must be a mixture-of-experts checkpoint. Never add a dense language model to the catalog or a tier.
-- Andrew has explicitly authorized an opt-in LFM3 BF16 experiment with separate conversation, screenshot-understanding and audio workers. These dense checkpoints belong only to the experimental workers' catalogs, never hardware tiers or the native inference path. Keep the experiment disabled by default and preserve existing workers for side-by-side trials. This exception does not relax the production MoE design.
+| Capability | Checkpoint |
+| --- | --- |
+| Language | LFM3 1.7B BF16 (`lfm3-1.7b-bf16`) |
+| Vision | LFM3-VL 2B BF16 (`lfm3-vl-2b-bf16`) |
+| Image | Qwen-Image 2.1 Turbo (`qwen-image-2.1-turbo`) |
+| Video | MiniMax H3 Turbo (`h3-fl2va-int8-turbo`) |
+| Text to speech | Qwen3-TTS 1.7B CustomVoice (`qwen-tts-1.7b-custom`) |
+| Speech to text | Whisper medium (`whisper-medium`) |
+| Speech formatter | S1-mini by Superwhisper (`superwhisper-s1-mini`) |
+
+- Do not reintroduce hardware tiers or per-machine model choices.
+- LFM language and vision checkpoints run in their separate Python workers with pinned catalogs, not in the native engine. Downloads require explicit license acknowledgement; enabling a worker does not acquire a model.
+- Preserve Qwen Image Turbo, its required encoders/tokenizers and the shared native image/video runtime.
+- Preserve physical RAM/VRAM admission, cancellation, ownership and confirmed cleanup. Requests that cannot fit fail without silent truncation, quantization or another model.
+
+The retained native MoE language path places routed experts across VRAM, RAM and disk. Its execution rules remain:
+
 - Only routed experts move between VRAM, RAM and disk; every non-expert matrix stays pinned in VRAM.
 - Decode-time projections go through the batched `GgufWeights::project` / `dense_gguf_batch` path with packed weights decoded in-kernel; do not reintroduce per-matrix blocking device calls or F32 weight expansion on the decode path.
 - Routed experts held in host RAM run on the host (ggml-cpu kernels) concurrently with the device batch, split against PCIe streaming by measured rates; do not route them over PCIe by default.

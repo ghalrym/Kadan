@@ -60,7 +60,17 @@ class FakeSocket:
         return [message for message in self.sent if message.get("command") == command]
 
 
-def hello(kind, *, computer="boot-1", instance=None, gpus=(("GPU-0", 24),), protocol=4):
+def hello(
+    kind,
+    *,
+    computer="boot-1",
+    instance=None,
+    gpus=(("GPU-0", 24),),
+    protocol=4,
+    ram_free=64,
+    physical_ram_free=None,
+    ram_limit=...,
+):
     return {
         "state": "hello",
         "protocol": protocol,
@@ -71,7 +81,17 @@ def hello(kind, *, computer="boot-1", instance=None, gpus=(("GPU-0", 24),), prot
             "id": computer,
             "name": "box-" + computer,
             "ram_total": 68 * GIB,
-            "ram_free": 64 * GIB,
+            "ram_free": ram_free * GIB,
+            **(
+                {"ram_limit": None if ram_limit is None else ram_limit * GIB}
+                if ram_limit is not ...
+                else {}
+            ),
+            **(
+                {"physical_ram_free": physical_ram_free * GIB}
+                if physical_ram_free is not None
+                else {}
+            ),
             "devices": [
                 {
                     "index": index,
@@ -558,6 +578,49 @@ class AuthorizationTests(unittest.TestCase):
 
 
 class RegistrationTests(HubTestCase):
+    async def test_physical_ram_is_independent_of_capped_worker_registration_order(
+        self,
+    ):
+        with patch.dict(os.environ, {"HIKARI_ENABLE_LFM3_TEXT": "true"}):
+            for order in (("lfm3_llm", "video"), ("video", "lfm3_llm")):
+                with self.subTest(order=order):
+                    workers = {}
+                    for kind in order:
+                        _, workers[kind] = await self.connect(
+                            kind,
+                            computer="-".join(order),
+                            ram_free=23 if kind == "lfm3_llm" else 400,
+                            physical_ram_free=400,
+                            ram_limit=23 if kind == "lfm3_llm" else None,
+                            gpus=(("GPU-a", 23), ("GPU-b", 23)),
+                            replies={
+                                "load": ok,
+                                "requirement": needs((16, 0), (16, 0)),
+                            },
+                        )
+                    language, video = workers["lfm3_llm"], workers["video"]
+                    self.assertIs(language.computer, video.computer)
+                    ledger = video.computer.ledger
+                    self.assertEqual(ledger.capacity, [400 * GIB, 23 * GIB, 23 * GIB])
+                    self.assertEqual(language.slot.host_limit, 23 * GIB)
+                    self.assertIsNone(video.slot.host_limit)
+                    video.slot.pending = 1
+                    video.slot.requirement = Requirement(
+                        "h3", (117 * GIB, 3 * GIB), (117 * GIB, 3 * GIB)
+                    )
+                    await self.hub._schedule(video.computer)
+                    self.assertEqual(video.slot.budget[0], 117 * GIB)
+                    self.assertTrue(video.slot.loaded)
+
+    async def test_legacy_first_registration_retains_conservative_physical_baseline(
+        self,
+    ):
+        _, old = await self.connect("image", ram_free=23)
+        _, new = await self.connect("video", ram_free=400, physical_ram_free=400)
+        self.assertIs(old.computer, new.computer)
+        self.assertEqual(new.computer.ledger.capacity[0], 23 * GIB)
+        self.assertEqual(old.slot.host_limit, 23 * GIB)
+
     async def test_unsupported_protocol_and_unknown_types_are_rejected(self):
         for message in (hello("llm", protocol=3), hello("gpu")):
             socket = FakeSocket()
@@ -1874,6 +1937,87 @@ class ModelIdleTests(HubTestCase):
 
 
 class SchedulingTests(HubTestCase):
+    async def test_uncapped_reconnect_can_reclaim_ram_after_low_free_snapshot(self):
+        _, picture = await self.connect(
+            "image", physical_ram_free=400, ram_free=400, ram_limit=None
+        )
+        old_video, _ = await self.connect(
+            "video", physical_ram_free=400, ram_free=400, ram_limit=None
+        )
+        await old_video.close()
+        await self.settle()
+        picture.slot.loaded = True
+        picture.slot.busy = True
+        picture.slot.budget = [350 * GIB, 0]
+        picture.slot.requirement = Requirement(
+            "resident", (350 * GIB, 0), (350 * GIB, 0)
+        )
+        socket, video = await self.connect(
+            "video",
+            physical_ram_free=49,
+            ram_free=49,
+            ram_limit=None,
+            replies={"load": ok, "requirement": needs((117, 3), (117, 3))},
+        )
+        job = await self.hub.submit(
+            InferenceTask(input={"feature": "video", "prompt": "red ball"})
+        )
+        await self.hub._schedule(video.computer)
+        self.assertEqual(video.computer.ledger.capacity[0], 400 * GIB)
+        self.assertIsNone(video.slot.host_limit)
+        self.assertFalse(socket.commands("cancel"))
+        self.assertFalse(socket.commands("load"))
+        self.assertEqual(video.slot.pending, 1)
+        self.assertFalse(job.result.done())
+        # Confirmed release makes the ledger capacity available again.
+        picture.slot.loaded = False
+        picture.slot.busy = False
+        picture.slot.budget = [0, 0]
+        await self.hub._schedule(video.computer)
+        self.assertEqual(socket.commands("load")[-1]["budget"][0], 117 * GIB)
+        self.assertTrue(video.slot.loaded)
+
+    async def test_container_ceiling_is_not_transient_free_ram(self):
+        socket, worker = await self.connect(
+            "llm",
+            physical_ram_free=400,
+            ram_free=2,
+            ram_limit=23,
+            replies={"requirement": needs((16, 1), (100, 1)), "load": ok},
+        )
+        await self.hub.submit(chat())
+        await self.hub._schedule(worker.computer)
+        self.assertEqual(socket.commands("load")[-1]["budget"][0], 23 * GIB)
+
+    async def test_worker_ram_limit_rejects_work_even_when_physical_host_fits(self):
+        socket, worker = await self.connect(
+            "llm",
+            ram_free=23,
+            physical_ram_free=400,
+            ram_limit=23,
+            replies={"requirement": needs((24, 1), (24, 1)), "load": ok},
+        )
+        job = await self.hub.submit(chat())
+        with self.assertLogs("api.services.worker_hub", level="WARNING"):
+            await self.hub._schedule(worker.computer)
+        with self.assertRaises(InferenceFailure) as raised:
+            await job.result
+        self.assertEqual(raised.exception.status_code, 507)
+        self.assertIn("has 23.0 GiB RAM", str(raised.exception))
+        self.assertFalse(socket.commands("load"))
+        self.assertEqual(socket.commands("cancel")[0]["id"], job.request.id)
+
+    async def test_legacy_worker_stays_capped_with_a_new_physical_baseline(self):
+        await self.connect("image", ram_free=400, physical_ram_free=400)
+        socket, worker = await self.connect(
+            "llm",
+            ram_free=23,
+            replies={"requirement": needs((16, 1), (100, 1)), "load": ok},
+        )
+        await self.hub.submit(chat())
+        await self.hub._schedule(worker.computer)
+        self.assertEqual(socket.commands("load")[-1]["budget"][0], 23 * GIB)
+
     async def test_waiting_worker_gets_a_budget(self):
         _, worker = await self.connect(
             "llm", replies={"requirement": needs((1, 4), (2, 30)), "load": ok}

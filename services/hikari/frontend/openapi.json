@@ -810,11 +810,17 @@
             "type": "string"
           },
           "max_new_tokens": {
-            "default": 1024,
-            "maximum": 1024.0,
-            "minimum": 1.0,
-            "title": "Max New Tokens",
-            "type": "integer"
+            "anyOf": [
+              {
+                "exclusiveMaximum": 128000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max New Tokens"
           },
           "media_type": {
             "enum": [
@@ -831,7 +837,6 @@
             "type": "string"
           },
           "question": {
-            "maxLength": 4000,
             "minLength": 1,
             "title": "Question",
             "type": "string"
@@ -853,7 +858,6 @@
             "type": "string"
           },
           "text": {
-            "maxLength": 32000,
             "minLength": 1,
             "title": "Text",
             "type": "string"
@@ -1818,6 +1822,12 @@
           "model": {
             "anyOf": [
               {
+                "enum": [
+                  "qwen3.6-35b-a3b-q4-k-m",
+                  "qwen3.8-flash-next-ud-iq3-xxs",
+                  "qwen3.8-flash-next-q3-k-xl",
+                  "lfm3-1.7b-bf16"
+                ],
                 "type": "string"
               },
               {

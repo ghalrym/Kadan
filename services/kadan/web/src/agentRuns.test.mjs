@@ -1,6 +1,23 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeRun, cancellableImage, imageStatus, isImageAsset, latestConversation, responseProgress } from "./agentRuns.ts";
+import { activeRun, cancellableImage, currentResponseOutcome, imageStatus, isImageAsset, latestConversation, responseProgress } from "./agentRuns.ts";
+
+test("earlier failure remains historical when a newer response starts or succeeds", () => {
+  const conversation = { id: "chat", messages: [] };
+  const failed = { id: "failed", conversation_id: "chat", status: "failed" };
+  assert.equal(currentResponseOutcome(conversation, [failed]), failed);
+  for (const status of ["queued", "running", "completed"]) {
+    assert.equal(currentResponseOutcome(conversation, [failed, { ...failed, id: "new", status }]), undefined);
+  }
+  assert.equal(currentResponseOutcome({ ...conversation, id: "another" }, [failed]), undefined);
+});
+
+test("a later saved user message makes a prior failure historical before its run poll arrives", () => {
+  const conversation = { id: "chat", messages: [{ id: "new", role: "user", created_at: "2026-10-30T12:00:00Z" }] };
+  const failed = { id: "failed", conversation_id: "chat", status: "failed", trigger_message_id: "old", created_at: "2026-10-30T11:00:00Z" };
+  assert.equal(currentResponseOutcome(conversation, [failed]), undefined);
+  assert.equal(currentResponseOutcome(conversation, [{ ...failed, trigger_message_id: "new" }])?.id, "failed");
+});
 
 test("only queued and running responses offer cancellation", () => {
   for (const status of ["queued", "running"]) assert.equal(activeRun({ status }), true);

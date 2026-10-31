@@ -132,6 +132,7 @@ public:
     ) const;
 
 private:
+    std::optional<Bytes> completed_bytes(const CatalogEntry& entry) const;
     void
     prepare_gguf(const CatalogEntry&, const fs::path&, const std::atomic_bool& cancel);
     std::vector<ManifestFile>

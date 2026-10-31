@@ -435,7 +435,7 @@ export type DescribeRequest = {
   /**
    * Max New Tokens
    */
-  max_new_tokens?: number
+  max_new_tokens?: number | null
   /**
    * Media Type
    */
@@ -1019,7 +1019,12 @@ export type RequestRecord = {
   /**
    * Model
    */
-  model?: string | null
+  model?:
+    | 'qwen3.6-35b-a3b-q4-k-m'
+    | 'qwen3.8-flash-next-ud-iq3-xxs'
+    | 'qwen3.8-flash-next-q3-k-xl'
+    | 'lfm3-1.7b-bf16'
+    | null
   /**
    * Output
    */

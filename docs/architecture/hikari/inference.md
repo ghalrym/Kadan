@@ -16,6 +16,8 @@ Offloading preserves the selected checkpoint rather than substituting a smaller 
 
 Workers on the same computer share that computer's memory capacity, including when they run in separate containers. Hikari accounts for RAM and each physical GPU separately. Several GPUs may participate where supported, but their VRAM is not one contiguous allocation; each GPU must satisfy its own placement requirements. Workers on different computers use their respective computers' resources.
 
+Worker registration separates `physical_ram_free`, the current local `ram_free` observation, and the container-only `ram_limit`. Physical free memory initializes the computer's shared capacity. The container ceiling is its cgroup maximum minus the existing host margin, or null for an uncapped container; it does not shrink permanently when other workers hold RAM during registration. Cgroup limits apply to the reporting worker, not every worker sharing its boot ID. Admission and idle growth respect both the shared ledger and the individual ceiling. Older registrations without the physical field conservatively initialize shared capacity from `ram_free`; without a container ceiling field, their reported `ram_free` also remains their conservative worker limit. Later registrations never inflate an existing ledger.
+
 Concurrent requests require enough RAM and VRAM for each worker. Requests wait when their combined requirements exceed available memory. Placement admission must remain independent of the total number of expert slices.
 
 ## Memory priority and reclamation

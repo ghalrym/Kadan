@@ -6,7 +6,6 @@ import time
 MODEL_ID = "lfm3-1.7b-bf16"
 REVISION = "40ebe0aa6662c9d40389c2f5d565b6a2c6aebacd"
 CONTEXT_LIMIT = 262144
-MAX_NEW_TOKENS = 1024
 PREFILL_CHUNK_TOKENS = 512
 GIB = 1024**3
 # A provisional reservation for the full advertised window, not a measured fit.
@@ -74,11 +73,11 @@ def template_inputs(tokenizer, task: dict):
     )
 
 
-def generate_text(model, inputs):
+def generate_text(model, inputs, output_tokens: int):
     """Use Transformers 5.21's hybrid-cache-aware prefill, without slicing history."""
     return model.generate(
         **inputs,
-        max_new_tokens=MAX_NEW_TOKENS,
+        max_new_tokens=output_tokens,
         prefill_chunk_size=PREFILL_CHUNK_TOKENS,
         cache_implementation="dynamic",
         disable_compile=True,
@@ -106,13 +105,22 @@ def reply_text(text: str) -> str:
     return text.strip()
 
 
-def validate_context(prompt_tokens: int, context: int = CONTEXT_LIMIT) -> None:
-    if type(context) is not int or not MAX_NEW_TOKENS < context <= CONTEXT_LIMIT:
-        raise ValueError("LFM3 context must be between 1025 and 262144 tokens.")
-    if prompt_tokens + MAX_NEW_TOKENS > context:
+def output_budget(prompt_tokens: int, context: int = CONTEXT_LIMIT) -> int:
+    if type(context) is not int or not 1 <= context <= CONTEXT_LIMIT:
+        raise ValueError("LFM3 context must be between 1 and 262144 tokens.")
+    if type(prompt_tokens) is not int or prompt_tokens < 0:
+        raise ValueError("LFM3 prompt token count must be a nonnegative integer.")
+    if prompt_tokens >= context:
         raise ValueError(
-            "LFM3 prompt and reserved reply exceed the supported context; history was not truncated."
+            "LFM3 prompt leaves no reply space in the supported context; history was not truncated."
         )
+    return context - prompt_tokens
+
+
+def finish_reason(generated, eos_token_id: int | list[int] | None) -> str:
+    """EOS completes a turn even when it occupies the final available position."""
+    endings = [eos_token_id] if isinstance(eos_token_id, int) else eos_token_id or []
+    return "stop" if len(generated) and int(generated[-1]) in endings else "length"
 
 
 def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict:
@@ -125,7 +133,7 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
     messages(task)
     context = task.get("context_limit")
     context = CONTEXT_LIMIT if context is None else context
-    validate_context(0, context)
+    output_budget(0, context)
 
     # Inference dependencies and checkpoint code belong exclusively to the spawned
     # executor: importing them in the transport would retain CUDA allocations.
@@ -140,7 +148,7 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
     )
     inputs = template_inputs(tokenizer, task)
     prompt_tokens = inputs["input_ids"].shape[-1]
-    validate_context(prompt_tokens, context)
+    output_tokens = output_budget(prompt_tokens, context)
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         local_files_only=True,
@@ -164,7 +172,7 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
             ]
         ),
     ):
-        output = generate_text(model, inputs)
+        output = generate_text(model, inputs, output_tokens)
     torch.cuda.synchronize()
     generation_seconds = time.perf_counter() - generation_started
     generated = output[0, prompt_tokens:]
@@ -172,7 +180,7 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
     # classify these as special tokens, so skipping them could leak private text.
     text = reply_text(tokenizer.decode(generated, skip_special_tokens=False))
     # Never expose an incomplete agent command: the existing runner rejects length.
-    finish = "length" if len(generated) >= MAX_NEW_TOKENS else "stop"
+    finish = finish_reason(generated, model.generation_config.eos_token_id)
     if task.get("stream") and text:
         emit({"state": "content", "content": text})
     return {
