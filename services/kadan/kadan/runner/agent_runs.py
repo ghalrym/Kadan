@@ -25,19 +25,19 @@ from langgraph.errors import NodeCancelledError
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ValidationError
 
-from ..api.config import ServiceError
 from ..api.coding_client import CodingClient
-from ..api.pydantic_models.coding import (
-    CodingContinuation,
-    CodingOutcome,
-    CodingStart,
-    CodingTask,
-)
+from ..api.config import ServiceError
 from ..api.pydantic_models.agent_runs import (
     AgentRun,
     AgentRunState,
     ImageJob,
     RunMessage,
+)
+from ..api.pydantic_models.coding import (
+    CodingContinuation,
+    CodingOutcome,
+    CodingStart,
+    CodingTask,
 )
 from ..api.pydantic_models.resources import Message, Resource, ResourceKind
 from ..api.run_client import RunClient
@@ -787,9 +787,7 @@ class AgentRuns(RunClient):
         """All tools; the computer's only when one is configured."""
         if not self.services.sandbox.configured:
             return [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]
-        if getattr(self.services.settings, "experimental_lfm3_vision", False):
-            return [*ALL_TOOLS, *VISION_TOOLS]
-        return ALL_TOOLS
+        return [*ALL_TOOLS, *VISION_TOOLS]
 
     @traced("kadan.agent_runs.invoke_tool")
     async def invoke_tool(self, state: RunState) -> dict:
