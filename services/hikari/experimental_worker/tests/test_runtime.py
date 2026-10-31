@@ -135,6 +135,69 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         reply = self.runtime.socket.messages[-1]
         self.assertEqual(reply["device_floor"], reply["minimum"][1])
 
+    async def test_disconnect_waits_for_cleanup_despite_repeated_cancellation(self):
+        runtime = self.runtime
+        granted = list(runtime.backend.REQUIREMENT)
+        runtime.budget = granted.copy()
+        runtime.store.complete = lambda: True
+        cleanup_waiting, exited = asyncio.Event(), asyncio.Event()
+        process = SimpleNamespace(pid=0, live=False, joined=False, terminating=False)
+        process.start = lambda: setattr(process, "live", True)
+        process.is_alive = lambda: process.live
+        process.terminate = lambda: setattr(process, "terminating", True)
+        process.kill = process.terminate
+
+        def join():
+            self.assertFalse(process.live)
+            process.joined = True
+
+        process.join = join
+        pipe = SimpleNamespace(poll=lambda: False, close=lambda: None)
+        context = SimpleNamespace(
+            Pipe=lambda **kwargs: (pipe, pipe), Process=lambda **kwargs: process
+        )
+        original_sleep = asyncio.sleep
+
+        async def cleanup_pause(delay):
+            self.assertTrue(process.terminating)
+            cleanup_waiting.set()
+            await exited.wait()
+
+        def cancel_request(message):
+            if message["state"] == "running":
+                runtime.cancelled.add("a" * 32)
+
+        runtime.socket.on_send = cancel_request
+        with (
+            patch("multiprocessing.get_context", return_value=context),
+            patch("experimental_worker.runtime.asyncio.sleep", new=cleanup_pause),
+        ):
+            job = asyncio.create_task(runtime.run_job(self.request()))
+            try:
+                await cleanup_waiting.wait()
+                job.cancel()
+                await original_sleep(0)
+                first_finished_early = job.done()
+                job.cancel()
+                await original_sleep(0)
+                second_finished_early = job.done()
+                self.assertIs(runtime.child, process)
+                self.assertEqual(runtime.budget, granted)
+            finally:
+                process.live = False
+                exited.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await job
+        self.assertFalse(first_finished_early)
+        self.assertFalse(second_finished_early)
+        self.assertTrue(process.joined)
+        self.assertIsNone(runtime.child)
+        self.assertEqual(runtime.budget, [0, 0])
+        self.assertFalse(
+            {"cancelled", "succeeded", "failed", "released"}
+            & {message["state"] for message in runtime.socket.messages}
+        )
+
     async def test_grant_arriving_during_wait_event_is_not_lost(self):
         runtime = self.runtime
         runtime.store.complete = lambda: True
