@@ -2,7 +2,7 @@
 
 Kadan lets users select up to three saved Markdown Spaces or memories belonging to the current agent as references for the next text response. The composer shows the selected titles and versions. Their combined Markdown text must fit within 12,000 characters. File attachments remain separate and can accompany the same message.
 
-The picker searches up to 200 records from each collection and reports when results may be capped. Narrow the search to find other records. Loading and failures must remain distinguishable from an empty result; late results from an earlier search or agent must not replace the current choices.
+The picker shows each record's kind, version and length, and the composer shows the selection's combined length. The picker searches up to 200 records from each collection and reports when results may be capped. Narrow the search to find other records. Loading and failures must remain distinguishable from an empty result; late results from an earlier search or agent must not replace the current choices.
 
 Tsuchi checks and saves the selected versions together with the message and response work. A changed, trashed, unavailable, wrong-kind or oversized selection rejects the submission without saving its message or starting a response. Refresh the picker and select the current version before making a new submission. An uncertain send retains its original message, attachments, persona and reference versions for retry; check saved history before discarding it and submitting again.
 

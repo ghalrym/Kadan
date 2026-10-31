@@ -30,6 +30,7 @@ function picker(resources, initial = []) {
       return [slots[index], value => { slots[index] = value; }];
     } },
     "react/jsx-runtime": { jsx, jsxs: jsx },
+    "lucide-react": new Proxy({}, { get: (_, name) => name }),
     "./api": { agentPath: key => `/agents/${key}`, api: async path => typeof resources === "function" ?
       resources(path) : resources.filter(item => path.includes("/memories?") ? item.kind === "memory" : item.kind !== "memory") },
   };
@@ -64,7 +65,7 @@ test("picker lists only active same-agent Markdown resources and selects explici
   assert.equal(choices.length, 2);
   choices[0].props.onChange();
   assert.deepEqual(JSON.parse(JSON.stringify(view.selected())),
-    [{ resource_id: "plan", expected_version: 5, title: "Title plan" }]);
+    [{ resource_id: "plan", expected_version: 5, title: "Title plan", characters: 10 }]);
 });
 
 test("picker disables a fourth selection and permits removing selected items", async () => {

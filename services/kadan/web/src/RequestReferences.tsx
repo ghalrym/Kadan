@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { BookOpen, Brain, Check, FileText, Search, X } from "lucide-react";
 import { api, agentPath } from "./api";
 import type { Resource } from "./types";
 
@@ -6,12 +7,18 @@ export interface SelectedReference {
   resource_id: string;
   expected_version: number;
   title: string;
+  characters?: number;
 }
+
+export const REFERENCE_LIMIT = 3;
+export const REFERENCE_CHARACTERS = 12_000;
 
 export function eligibleReferences(resources: Resource[], agentKey: string): Resource[] {
   return resources.filter((item) => item.agent_key === agentKey && !item.deleted_at &&
     (item.kind === "space" || item.kind === "memory"));
 }
+
+const count = (value: number) => value.toLocaleString("en-US");
 
 export default function RequestReferences({ agentKey, selected, onChange, disabled }: {
   agentKey: string;
@@ -26,6 +33,7 @@ export default function RequestReferences({ agentKey, selected, onChange, disabl
   const [loading, setLoading] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const request = useRef(0);
+  const searched = useRef("");
   const agent = useRef(agentKey);
   agent.current = agentKey;
   useEffect(() => {
@@ -35,10 +43,17 @@ export default function RequestReferences({ agentKey, selected, onChange, disabl
     setError("");
     setLoading(false);
     setTruncated(false);
+    searched.current = "";
     return () => { request.current++; };
   }, [agentKey]);
+  useEffect(() => {
+    if (!open || disabled || query === searched.current) return;
+    const timer = setTimeout(() => void load(), 250);
+    return () => clearTimeout(timer);
+  }, [open, query, disabled]);
   async function load() {
     const revision = ++request.current;
+    searched.current = query;
     setOpen(true);
     setError("");
     setResources([]);
@@ -56,36 +71,71 @@ export default function RequestReferences({ agentKey, selected, onChange, disabl
       if (revision === request.current && agent.current === agentKey) setLoading(false);
     }
   }
-  return <div className="request-references">
-    <button disabled={disabled} onClick={() => {
-      if (open) { request.current++; setOpen(false); }
-      else void load();
-    }}>
-      References{selected.length ? ` (${selected.length}/3)` : ""}
-    </button>
-    {selected.map((item) => <button key={item.resource_id} disabled={disabled}
-      onClick={() => onChange(selected.filter((value) => value.resource_id !== item.resource_id))}>
-      {item.title} · v{item.expected_version} ×
-    </button>)}
-    {open && <div>
-      <p>Choose up to three saved Markdown spaces or memories for your next reply, with at most 12,000 Markdown characters combined. The agent can read these versions; use is not guaranteed.</p>
-      <form onSubmit={(event) => { event.preventDefault(); if (!disabled) void load(); }}>
-        <input aria-label="Search references" value={query} onChange={(event) => setQuery(event.target.value)} />
-        <button disabled={disabled}>Search</button>
+  function close() {
+    request.current++;
+    setOpen(false);
+    setLoading(false);
+  }
+  const remove = (id: string) => onChange(selected.filter((value) => value.resource_id !== id));
+  const full = selected.length >= REFERENCE_LIMIT;
+  const measured = selected.every((item) => item.characters !== undefined);
+  const total = selected.reduce((sum, item) => sum + (item.characters ?? 0), 0);
+  const over = total > REFERENCE_CHARACTERS;
+  return <div className="request-references"
+    onKeyDown={(event) => { if (open && event.key === "Escape") { event.stopPropagation(); close(); } }}
+    onBlur={(event) => { if (open && !event.currentTarget.contains(event.relatedTarget as Node | null)) close(); }}>
+    <div className="reference-row">
+      <button type="button" className={`chip${open || selected.length ? " active" : ""}`} disabled={disabled}
+        aria-expanded={open} aria-haspopup="dialog" onClick={() => { if (open) close(); else void load(); }}>
+        <BookOpen size={14} />
+        References{selected.length ? ` ${selected.length}/${REFERENCE_LIMIT}` : ""}
+      </button>
+      {selected.map((item) => <span key={item.resource_id} className="reference-pill" title={item.title}>
+        <span className="reference-pill-title">{item.title}</span>
+        <span className="reference-pill-version">v{item.expected_version}</span>
+        <button type="button" disabled={disabled} aria-label={`Remove ${item.title}`}
+          onClick={() => remove(item.resource_id)}>
+          <X size={12} />
+        </button>
+      </span>)}
+      {selected.length > 0 && measured &&
+        <span className={`reference-budget${over ? " over" : ""}`}>
+          {count(total)} / {count(REFERENCE_CHARACTERS)}
+        </span>}
+    </div>
+    {open && <div className="reference-panel" role="dialog" aria-label="Choose references">
+      <form className="reference-search" onSubmit={(event) => { event.preventDefault(); if (!disabled) void load(); }}>
+        <Search size={14} />
+        <input aria-label="Search references" placeholder="Search" autoFocus
+          value={query} onChange={(event) => setQuery(event.target.value)} />
+        <button type="button" className="icon" aria-label="Close references" onClick={close}><X size={14} /></button>
       </form>
-      {loading && <p role="status">Loading references…</p>}
-      {error && <p role="alert">{error}</p>}
-      {!loading && !error && resources.length === 0 && <p>No matching references.</p>}
-      {resources.map((item) => {
-        const checked = selected.some((value) => value.resource_id === item.id);
-        return <label key={item.id} style={{ display: "block" }}><input type="checkbox" checked={checked}
-          disabled={disabled || loading || (!checked && selected.length >= 3)}
-          onChange={() => onChange(checked ? selected.filter((value) => value.resource_id !== item.id) :
-            [...selected, { resource_id: item.id, expected_version: item.version, title: item.title }])} />
-          {item.title} · {item.kind} · v{item.version}
-        </label>;
-      })}
-      {truncated && <p>Showing at most 200 records from each collection. Search to narrow these results.</p>}
+      <p className="reference-hint">Up to {REFERENCE_LIMIT}, {count(REFERENCE_CHARACTERS)} characters total.</p>
+      <div className="reference-list">
+        {loading && <p className="reference-empty" role="status">Loading references…</p>}
+        {error && <p className="reference-empty error" role="alert">{error}</p>}
+        {!loading && !error && resources.length === 0 &&
+          <p className="reference-empty">{query ? "No matches." : "Nothing saved yet."}</p>}
+        {resources.map((item) => {
+          const checked = selected.some((value) => value.resource_id === item.id);
+          const blocked = !checked && full;
+          const Icon = item.kind === "memory" ? Brain : FileText;
+          return <label key={item.id} className={`reference-option${checked ? " checked" : ""}${blocked ? " blocked" : ""}`}>
+            <input type="checkbox" checked={checked}
+              disabled={disabled || loading || blocked}
+              onChange={() => onChange(checked ? selected.filter((value) => value.resource_id !== item.id) :
+                [...selected, { resource_id: item.id, expected_version: item.version, title: item.title,
+                  characters: item.markdown.length }])} />
+            <span className="reference-check">{checked && <Check size={12} />}</span>
+            <Icon size={14} className="reference-kind" />
+            <span className="reference-option-title">{item.title || "Untitled"}</span>
+            <span className="reference-option-meta">
+              {item.kind === "memory" ? "Memory" : "Space"} · v{item.version} · {count(item.markdown.length)} chars
+            </span>
+          </label>;
+        })}
+      </div>
+      {truncated && <p className="reference-hint">Showing the first 200 of each. Search to narrow.</p>}
     </div>}
   </div>;
 }
