@@ -77,6 +77,7 @@ Hikari has no hardware tiers. It runs one fixed model per capability, and users 
 | Capability | Checkpoint |
 | --- | --- |
 | Language | LFM3 1.7B BF16 (`lfm3-1.7b-bf16`) |
+| Voice calls | LFM3 Audio 2B BF16 (`lfm3-audio-2b-bf16`) |
 | Vision | LFM3-VL 2B BF16 (`lfm3-vl-2b-bf16`) |
 | Image | Qwen-Image 2.1 Turbo (`qwen-image-2.1-turbo`) |
 | Video | MiniMax H3 Turbo (`h3-fl2va-int8-turbo`) |

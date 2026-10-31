@@ -13,7 +13,7 @@ import json
 import logging
 import os
 import time
-from contextlib import contextmanager, suppress
+from contextlib import suppress
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -79,7 +79,7 @@ CHECKPOINT_WORKERS = {
 EXPERIMENTAL_MODELS = {
     "lfm3-1.7b-bf16": ("lfm3_llm", "HIKARI_ENABLE_LFM3_TEXT"),
     "lfm3-vl-2b-bf16": ("lfm3_vision", "HIKARI_ENABLE_LFM3_VISION"),
-    "lfm3-audio-2b-bf16": ("lfm3_audio", "HIKARI_ENABLE_LFM3_AUDIO"),
+    "lfm3-audio-2b-bf16": ("lfm3_audio", None),
 }
 EXPERIMENTAL_FEATURES = {
     "llm": "lfm3-1.7b-bf16",
@@ -92,7 +92,7 @@ def experimental_worker(model: str | None) -> str | None:
     if model not in EXPERIMENTAL_MODELS:
         return None
     kind, flag = EXPERIMENTAL_MODELS[model]
-    if os.getenv(flag, "").lower() not in ("1", "true", "yes"):
+    if flag is not None and os.getenv(flag, "").lower() not in ("1", "true", "yes"):
         raise InferenceFailure(f"Experimental model requires {flag}=true.", 409)
     return kind
 
@@ -296,10 +296,9 @@ class WorkerHub:
         self.joined = asyncio.Condition()
         self.scheduler: asyncio.Task | None = None
         self.closing = False
-        self.calls: dict[str, frozenset[str]] = {}
 
     def _refresh_models(self):
-        """Combine fixed checkpoints and the opt-in audio experiment from their workers."""
+        """Combine fixed checkpoints from their connected workers."""
         primary = self.workers.get(self.primary or "")
         base = primary.models if primary is not None else None
         snapshot = (
@@ -319,41 +318,9 @@ class WorkerHub:
                 if kind == worker.kind and model.id not in known:
                     snapshot.models.append(model.model_copy(deep=True))
                     known.add(model.id)
-        visible = set(ModelAssignments().model_dump().values()) | {"lfm3-audio-2b-bf16"}
+        visible = set(ModelAssignments().model_dump().values())
         snapshot.models = [model for model in snapshot.models if model.id in visible]
         self.models = snapshot if base is not None or snapshot.models else None
-
-    @contextmanager
-    def full_duplex(self, models: frozenset[str]):
-        """Keep call participants at equal priority until their last call ends.
-
-        This changes retention, not grants: normal physical admission and release
-        acknowledgement still apply when the three models cannot fit together.
-        """
-        call_id = uuid4().hex
-        self.calls[call_id] = models
-        self._refresh_full_duplex()
-        self.wake.set()
-        try:
-            yield
-        finally:
-            self.calls.pop(call_id, None)
-            self._refresh_full_duplex()
-            self.wake.set()
-
-    def _refresh_full_duplex(self):
-        active = set().union(*self.calls.values())
-        for computer in self.computers.values():
-            for slot in computer.ledger.workers.values():
-                participating = (
-                    slot.kind in ("llm", "tts", "speech")
-                    and slot.requirement is not None
-                    and slot.requirement.model in active
-                )
-                if slot.full_duplex and not participating:
-                    # Give a released participant its normal idle period.
-                    slot.last_used = time.monotonic()
-                slot.full_duplex = participating
 
     async def start(self):
         self.scheduler = asyncio.create_task(self._schedule_loop())
@@ -1086,7 +1053,6 @@ class WorkerHub:
         for slot in slots:
             if slot.requirement is None and (slot.loaded or slot.pending):
                 slot.requirement = await self._requirement(workers[slot.name])
-        self._refresh_full_duplex()
         waiting = sorted(
             (slot for slot in slots if needs_grant(ledger, slot)),
             key=lambda slot: (slot.priority, slot.last_used),
@@ -1124,7 +1090,6 @@ class WorkerHub:
                     slot.loaded
                     and not slot.busy
                     and not slot.releasing
-                    and not slot.full_duplex
                     and now - slot.last_used >= self.model_idle_seconds
                 ):
                     await self._apply(computer, [Action("offload", slot.name)])

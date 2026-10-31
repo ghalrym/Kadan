@@ -832,6 +832,10 @@ export type MetricsResponse = {
  */
 export type ModelAssignments = {
   /**
+   * Audio Call
+   */
+  audio_call?: 'lfm3-audio-2b-bf16'
+  /**
    * Decisions
    */
   decisions?: 'laya'

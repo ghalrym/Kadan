@@ -20,7 +20,7 @@ MODEL = {
     "revision": "9d49701c372d6011d900f6abb40c6b296fb706dd",
     "license": "lfm1.0",
     "license_url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/blob/9d49701c372d6011d900f6abb40c6b296fb706dd/LICENSE",
-    "display_name": "LFM3 Audio 2B BF16 (experimental)",
+    "display_name": "LFM3 Audio 2B BF16",
     "short_name": "LFM3 Audio",
     "estimated_bytes": 4_170_027_447,
     "kind": "audio",
@@ -40,7 +40,7 @@ def audio_bytes(uri: str) -> bytes:
     """Accept the browser's bounded mono 16-kHz PCM utterance, never a URL."""
     prefix = "data:audio/wav;base64,"
     if not isinstance(uri, str) or len(uri) > 900_000 or not uri.startswith(prefix):
-        raise ValueError("Audio trial requires a bounded WAV data URI")
+        raise ValueError("Audio calls require a bounded WAV data URI")
     try:
         data = base64.b64decode(uri[len(prefix) :], validate=True)
         with wave.open(io.BytesIO(data), "rb") as source:
@@ -50,7 +50,7 @@ def audio_bytes(uri: str) -> bytes:
                 source.getframerate(),
                 source.getcomptype(),
             ) != (1, 2, 16000, "NONE"):
-                raise ValueError("Audio trial requires mono 16-kHz PCM16 WAV")
+                raise ValueError("Audio calls require mono 16-kHz PCM16 WAV")
             frames = source.getnframes()
             if not 1 <= frames <= 20 * 16000:
                 raise ValueError("Audio utterance must be at most twenty seconds")
@@ -255,7 +255,7 @@ def generate(
             endings.add(model.config.text_end_token_id)
         if not len(tokens) or int(tokens[-1]) not in endings:
             raise ValueError(
-                "Audio generation reached the trial limit before completing the reply"
+                "Audio generation reached the context limit before completing the reply"
             )
         decoded = processor.decode(tokens, skip_special_tokens=False)
         if tts:
@@ -411,7 +411,7 @@ def execute(
 
     imported = time.perf_counter()
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
-        raise ValueError("The BF16 audio trial needs a CUDA GPU supporting BF16")
+        raise ValueError("The BF16 audio worker needs a CUDA GPU supporting BF16")
     path = str(Path(model_path).resolve())
     model = AutoModelForMultimodalLM.from_pretrained(
         path,

@@ -90,6 +90,45 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             **fields,
         }
 
+    async def test_default_audio_worker_reports_checkpoint_without_probe_or_download(
+        self,
+    ):
+        with (
+            patch.dict(
+                "os.environ", {"KADAN_MODEL_DIR": self.directory.name}, clear=True
+            ),
+            patch("experimental_worker.runtime.machine") as probe,
+            patch("multiprocessing.get_context") as process,
+            patch("experimental_worker.store.ModelStore.download") as download,
+        ):
+            runtime = Runtime(
+                "audio", {"devices": [{"uuid": "GPU-test", "vram_total": 24 * GIB}]}
+            )
+            runtime.socket = Socket()
+            await runtime.models()
+            self.assertEqual(runtime.kind, "lfm3_audio")
+            model = runtime.socket.messages[-1]["models"]["models"][0]
+            self.assertEqual(model["id"], "lfm3-audio-2b-bf16")
+            self.assertEqual(model["status"], "not_downloaded")
+            self.assertTrue(model["inference_available"])
+            await runtime.run_job(
+                {
+                    "id": "a" * 32,
+                    "command": "submit",
+                    "operation": "completion",
+                    "input": {
+                        "feature": "audio_call",
+                        "model_id": model["id"],
+                        "mode": "transcribe",
+                        "audio": "wav",
+                    },
+                }
+            )
+            self.assertEqual(runtime.socket.messages[-1]["status_code"], 409)
+            probe.assert_not_called()
+            process.assert_not_called()
+            download.assert_not_called()
+
     async def test_unselected_model_does_not_enter_queue(self):
         await self.runtime.handle(self.request(input={"feature": "llm"}))
         self.assertTrue(self.runtime.queue.empty())

@@ -90,6 +90,13 @@ def test_unavailable_hikari_closes_call_with_actionable_error(monkeypatch, send_
             "type": "websocket.receive",
             "text": json.dumps({"type": "start", "persona_id": "invalid"}),
         },
+        *[
+            {
+                "type": "websocket.receive",
+                "text": json.dumps({"type": "start", "backend": backend}),
+            }
+            for backend in ("native", "lfm3")
+        ],
         {
             "type": "websocket.receive",
             "text": json.dumps(
@@ -219,24 +226,3 @@ def test_failed_upstream_cleanup_still_closes_browser(monkeypatch):
         asyncio.run(calls.voice_call("test", browser))
     upstream.close.assert_awaited_once()
     browser.close.assert_awaited_once_with(1013)
-
-
-def test_experimental_audio_opt_in_keeps_persona_authority_and_existing_relay(
-    monkeypatch,
-):
-    browser = socket()
-    browser.receive.return_value["text"] = json.dumps(
-        {"type": "start", "persona_id": None, "backend": "lfm3"}
-    )
-    upstream = AsyncMock()
-    monkeypatch.setattr(calls, "connect", AsyncMock(return_value=upstream))
-    relay = AsyncMock()
-    monkeypatch.setattr(calls, "relay", relay)
-    asyncio.run(calls.voice_call("test", browser))
-    browser.app.state.services.call_instruction.assert_awaited_once_with("test", None)
-    assert json.loads(upstream.send.call_args.args[0]) == {
-        "type": "start",
-        "instruction": "Saved persona instructions.",
-        "backend": "lfm3",
-    }
-    relay.assert_awaited_once_with(browser, upstream)

@@ -220,10 +220,10 @@ test("ending before worklet loading resolves cannot attach capture afterwards", 
 test("upstream errors release audio and mic and ignore late messages", async () => {
   const call = await connected();
   const receive = socket.onmessage;
-  message({ type: "error", message: "Install the tier's speech model." });
+  message({ type: "error", message: "Download the LFM3 audio model in Hikari Settings." });
   receive({ data: JSON.stringify({ type: "audio", turn: 0, audio: "AAAA" }) });
   await flush();
-  assert.equal(errors[0], "Install the tier's speech model.");
+  assert.equal(errors[0], "Download the LFM3 audio model in Hikari Settings.");
   assert.equal(sources.length, 0);
   assert.equal(track.stopped, true);
   assert.equal(context.closed, true);
@@ -256,16 +256,6 @@ test("starting without an additional persona sends an explicit null selection", 
   socket.readyState = 1;
   socket.onopen();
   assert.deepEqual(socket.sent[0], { type: "start", persona_id: null });
-  call.end();
-});
-
-
-test("LFM3 call selection is explicit and uses the same session transport", async () => {
-  const call = session();
-  await call.start("test", null, "lfm3");
-  socket.readyState = WebSocket.OPEN;
-  socket.onopen();
-  assert.deepEqual(socket.sent[0], { type: "start", persona_id: null, backend: "lfm3" });
   call.end();
 });
 

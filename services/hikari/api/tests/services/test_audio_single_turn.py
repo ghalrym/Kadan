@@ -58,7 +58,7 @@ class SingleTurnCallTests(unittest.IsolatedAsyncioTestCase):
         )
         call = VoiceCall(
             service,
-            CallModels.selected(audio_snapshot(), "lfm3"),
+            CallModels.selected(audio_snapshot()),
             "Persona",
             AsyncMock(),
         )
@@ -130,7 +130,6 @@ class SingleTurnCallTests(unittest.IsolatedAsyncioTestCase):
 
     def test_shared_history_keeps_exact_existing_call_bounds(self):
         call = self.call(TurnStream())
-        call.models.backend = "native"
         raw = []
         for text in [
             "a" * 4001,
@@ -140,13 +139,12 @@ class SingleTurnCallTests(unittest.IsolatedAsyncioTestCase):
             *[str(i) for i in range(15)],
             "   ",
         ]:
-            raw = append_call_history(raw, "user", text)
+            raw = append_call_history(raw, "user", text, model_bounded=True)
             call.remember("user", text)
             self.assertEqual(
                 [message.model_dump(exclude_none=True) for message in call.history], raw
             )
             self.assertLessEqual(len(raw), 12)
-            self.assertLessEqual(sum(len(message["text"]) for message in raw), 12000)
         self.assertEqual(raw[-1]["text"], "14")
 
 

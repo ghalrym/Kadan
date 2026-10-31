@@ -71,14 +71,11 @@ class WorkerSlot:
     # confirms the memory is physically free.
     releasing: bool = False
     releasing_since: float = 0.0
-    full_duplex: bool = False
     # This container's RAM ceiling, independent of current physical free RAM.
     host_limit: int | None = None
 
     @property
     def priority(self) -> int:
-        if self.full_duplex:
-            return TOP_PRIORITY
         return PRIORITY[self.kind or self.name]
 
 

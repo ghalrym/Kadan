@@ -20,7 +20,6 @@ router = APIRouter()
 class CallStart(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["start"]
-    backend: Literal["native", "lfm3"] = "native"
     persona_id: UUID | None
 
 
@@ -52,11 +51,6 @@ async def voice_call(key: AgentKey, socket: WebSocket):
                     {
                         "type": "start",
                         "instruction": instruction,
-                        **(
-                            {"backend": start.backend}
-                            if start.backend != "native"
-                            else {}
-                        ),
                     }
                 )
             )
