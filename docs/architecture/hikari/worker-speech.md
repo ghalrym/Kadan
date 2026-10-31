@@ -27,7 +27,8 @@ native Whisper.
 ## Memory
 
 - **Minimum:** 1 GiB RAM and 2.4 GiB VRAM.
-- **Preferred:** checkpoint size plus those floors.
+- **Preferred:** checkpoint size plus the host floor in RAM; runtime F32 weight
+  inventory plus the GPU floor in VRAM.
 - **Several GPUs:** each GPU it uses needs its own 2.4 GiB floor.
 
 Whisper medium's pinned catalog entry declares `runtime_weight_bytes` separately
