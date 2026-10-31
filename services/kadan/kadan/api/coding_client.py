@@ -7,7 +7,12 @@ from uuid import UUID, uuid4
 from pydantic import ValidationError
 
 from .config import ServiceError
-from .pydantic_models.coding import CodingJob, CodingStart, CodingStatus, CodexLoginStatus
+from .pydantic_models.coding import (
+    CodingJob,
+    CodingStart,
+    CodingStatus,
+    CodexLoginStatus,
+)
 from .sandbox_client import SandboxClient
 
 
@@ -15,7 +20,9 @@ class CodingClient:
     def __init__(self, computer: SandboxClient):
         self.computer = computer
 
-    async def request(self, operation: str, *, login_control: bool = False, **arguments) -> dict:
+    async def request(
+        self, operation: str, *, login_control: bool = False, **arguments
+    ) -> dict:
         session_id = f"kadan-coding-control-{uuid4()}"
         payload = base64.urlsafe_b64encode(
             json.dumps(
@@ -123,4 +130,8 @@ class CodingClient:
         try:
             return CodexLoginStatus.model_validate(result)
         except ValidationError as error:
-            raise ServiceError("The computer returned an invalid sign-in status.", 502, "coding_invalid_response") from error
+            raise ServiceError(
+                "The computer returned an invalid sign-in status.",
+                502,
+                "coding_invalid_response",
+            ) from error

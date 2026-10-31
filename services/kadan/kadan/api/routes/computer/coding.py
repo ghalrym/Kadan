@@ -25,7 +25,9 @@ async def login(request: Request) -> CodexLoginStatus:
 
 @router.post("/logout")
 async def logout(request: Request) -> CodexLoginStatus:
-    return await CodingClient(request.app.state.services.sandbox).login_control("logout")
+    return await CodingClient(request.app.state.services.sandbox).login_control(
+        "logout"
+    )
 
 
 @router.get("/{job_id}")

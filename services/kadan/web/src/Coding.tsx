@@ -39,6 +39,7 @@ export default function Coding({ agentKey, conversation, onQueued, onClose }: Pr
   const revision = useRef(0);
   const [status, setStatus] = useState<CodingStatus | null>(null);
   const [login, setLogin] = useState<LoginStatus | null>(null);
+  const [authError, setAuthError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [stopping, setStopping] = useState("");
@@ -65,8 +66,21 @@ export default function Coding({ agentKey, conversation, onQueued, onClose }: Pr
     reading.current = true;
     const read = revision.current;
     try {
-      const [result, auth] = await Promise.all([api<CodingStatus>("/computer/coding"), api<LoginStatus>("/computer/coding/login/status")]);
-      if (active.current && read === revision.current) { setStatus(result); setLogin(auth); setError(""); }
+      await Promise.all([
+        api<CodingStatus>("/computer/coding").then(result => {
+          if (active.current && read === revision.current) { setStatus(result); setError(""); }
+        }).catch(e => {
+          if (active.current && read === revision.current) setError(`Could not refresh coding jobs: ${(e as Error).message}`);
+        }),
+        api<LoginStatus>("/computer/coding/login/status").then(auth => {
+          if (active.current && read === revision.current) { setLogin(auth); setAuthError(""); }
+        }).catch(() => {
+          if (active.current && read === revision.current) {
+            setLogin(null);
+            setAuthError("Sign-in status unavailable. Refresh or ask the person running Kadan to update the computer.");
+          }
+        }),
+      ]);
     } catch (e) {
       if (active.current && read === revision.current) setError(`Could not refresh coding jobs: ${(e as Error).message}`);
     } finally {
@@ -80,12 +94,12 @@ export default function Coding({ agentKey, conversation, onQueued, onClose }: Pr
     writing.current = true;
     ++revision.current;
     setAuthBusy(true);
-    setError("");
+    setAuthError("");
     try {
       const result = await api<LoginStatus>(`/computer/coding/${operation}`, {});
       if (active.current) setLogin(result);
     } catch (e) {
-      if (active.current) setError(`Sign-in could not be confirmed: ${(e as Error).message}`);
+      if (active.current) setAuthError(`Sign-in could not be confirmed: ${(e as Error).message}`);
     } finally {
       writing.current = false;
       if (active.current) setAuthBusy(false);
@@ -165,12 +179,14 @@ export default function Coding({ agentKey, conversation, onQueued, onClose }: Pr
       <h2 id="coding-title">Coding</h2>
       {!status ? <p role="status">{loading ? "Checking computer and Codex…" : "Coding status unavailable"}</p> : <>
         <p role="status">{error ? "Last checked: " : ""}{status.setup.message}</p>
+        {authError && <p className="error" role="alert">{authError}</p>}
         {login && <div className="coding-setup">
           <p role="status">{login.message}</p>
           {login.state === "signed_out" && <button disabled={authBusy} onClick={() => void authenticate("login")}>Sign in with ChatGPT</button>}
           {login.state === "signing_in" && login.login && <p>Open <a href={login.login.url} target="_blank" rel="noreferrer">the sign-in page</a> and enter <strong>{login.login.code}</strong>.</p>}
-          {login.state === "signed_in" && <button disabled={authBusy} onClick={() => void authenticate("logout")}>Sign out</button>}
+          {["signed_in", "signing_in"].includes(login.state) && <button disabled={authBusy} onClick={() => void authenticate("logout")}>{login.state === "signing_in" ? "Cancel sign-in" : "Sign out"}</button>}
         </div>}
+        <p className="field-hint">Sign-in does not confirm access to GPT-6.1 Sol or remaining usage. Keep passwords, codes and API keys out of chat.</p>
         {status.jobs.length === 0 ? <div className="coding-setup">
           <p>No coding jobs yet.</p>
           {status.setup.state === "ready" ? <p>Choose an existing project folder on the computer. For a first try, ask in Messages: “Ask Codex to look through my project in [folder] and explain it without changing any files.” Replace [folder] with its path.</p>

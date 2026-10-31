@@ -30,8 +30,15 @@ const apiUrl = `data:text/javascript,${encodeURIComponent(`
   export class ApiError extends Error { constructor(message, status) { super(message); this.status = status; } }
   export const calls = [];
   export const replies = [];
+  export const authReplies = [];
   export const agentPath = key => '/agents/' + encodeURIComponent(key);
-  export const api = (...args) => { calls.push(args); return replies.shift()(); };
+  export const api = (...args) => {
+    calls.push(args);
+    if (['/computer/coding/login/status', '/computer/coding/login', '/computer/coding/logout'].includes(args[0])) {
+      return authReplies.length ? authReplies.shift()() : Promise.resolve({ state: 'signed_out', message: 'Sign in with ChatGPT.' });
+    }
+    return replies.shift()();
+  };
 `)}`;
 const componentUrl = new URL("./Coding.tsx", import.meta.url).href;
 const loader = registerHooks({
@@ -51,7 +58,7 @@ const loader = registerHooks({
   },
 });
 const hooks = await import(hooksUrl);
-const { calls, replies, ApiError } = await import(apiUrl);
+const { calls, replies, authReplies, ApiError } = await import(apiUrl);
 const { default: Coding } = await import(componentUrl);
 loader.deregister();
 
@@ -82,7 +89,7 @@ const first = { id: "job-a", status: "running", cwd: "/home/gem/project", sessio
 function status(jobs = [first], setup = { state: "ready", message: "Credentials present; execution unverified." }) { return { setup, jobs }; }
 async function open(result = status()) { replies.push(() => Promise.resolve(result)); render(); await settle(); }
 beforeEach(() => {
-  hooks.reset(); calls.length = replies.length = 0; closed = 0; queued = []; storage.clear();
+  hooks.reset(); calls.length = replies.length = authReplies.length = 0; closed = 0; queued = []; storage.clear();
   currentConversation = conversation;
   globalThis.sessionStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) };
   globalThis.setInterval = fn => { interval = fn; return 1; };
@@ -104,7 +111,7 @@ test("setup failure is not an empty job history and refresh can recover", async 
   replies.push(() => Promise.resolve(status([], { state: "auth_required", message: "Sign in inside the computer." })));
   button("Refresh coding jobs").props.onClick();
   await settle();
-  assert.match(text(render()), /codex login --device-auth/);
+  assert.ok(button("Sign in with ChatGPT"));
   assert.match(text(render()), /No coding jobs/);
   assert.doesNotMatch(text(render()), /Could not refresh/);
 });
@@ -129,7 +136,7 @@ test("stopping remains pending until a later cleanup confirmation", async () => 
   replies.push(() => Promise.resolve({ ...first, status: "stopping", message: "Cleaning up." }));
   button("Stop coding").props.onClick();
   await settle();
-  assert.deepEqual(calls[1], ["/computer/coding/job-a/cancel", {}]);
+  assert.deepEqual(calls.find(([path]) => path.endsWith("/cancel")), ["/computer/coding/job-a/cancel", {}]);
   assert.match(text(render()), /Stopping and cleaning up/);
   assert.equal(button("Waiting for cleanup…").props.disabled, true);
   replies.push(() => Promise.resolve(status([{ ...first, status: "cancelled", message: "Cancelled; changes remain." }])));
@@ -199,23 +206,19 @@ test("ready first use suggests an existing project and a read-only task without 
 });
 
 
-test("sign-in guidance locates the terminal and does not treat ChatGPT browser login as Codex access", async () => {
+test("device sign-in is available without implying model access", async () => {
   await open(status([], { state: "auth_required", message: "Sign in on this computer." }));
-  assert.match(text(render()), /open your agent’s card, open its computer, and choose Take control/);
-  assert.match(text(render()), /CODEX_HOME=\/home\/gem\/\.codex codex login --device-auth/);
+  assert.ok(button("Sign in with ChatGPT"));
   assert.match(text(render()), /Keep passwords, codes and API keys out of chat/);
   assert.match(text(render()), /Finish the setup above/);
   assert.doesNotMatch(text(render()), /For a first try/);
-  const help = nodes(render(), "a").find(link => link.props.href === "https://developers.openai.com/codex/auth");
-  assert.equal(help.props.target, "_blank");
-  assert.match(text(help), /opens in a new tab/);
   assert.match(text(render()), /Sign-in does not confirm access to GPT-6.1 Sol or remaining usage/);
-  assert.match(text(render()), /API-key use can incur charges/);
   assert.ok(calls.every(call => call[1] === undefined));
 });
 
 
 test("update setup does not offer sign-in as a fix for a missing or incompatible package", async () => {
+  authReplies.push(() => Promise.resolve({ state: "missing", message: "Update the computer." }));
   await open(status([], { state: "unavailable", message: "Ask the person who runs Kadan to update its computer." }));
   assert.match(text(render()), /update its computer/);
   assert.doesNotMatch(text(render()), /codex login --device-auth/);
@@ -245,7 +248,7 @@ test("explicit continuation queues a scoped durable request and shows its allowa
   replies.push(() => Promise.resolve(conversation), () => Promise.resolve({ conversation: { ...conversation, version: 2 } }));
   submit(); submit();
   await settle();
-  assert.equal(calls[1][0], "/agents/agent-a/resources/conversation-a");
+  assert.ok(calls.some(([path]) => path === "/agents/agent-a/resources/conversation-a"));
   const posts = calls.filter(call => call[1]);
   assert.equal(posts.length, 1);
   assert.equal(posts[0][0], "/agents/agent-a/conversations/conversation-a/runs");
@@ -308,7 +311,7 @@ test("unrelated pending chat is preserved and blocks a continuation", async () =
   const pending = { id: "ordinary-chat", content: "Existing work", generate: true, persona: "" };
   storage.set(pendingKey, JSON.stringify(pending));
   await open(status([completed])); followup("Check only"); submit(); await settle();
-  assert.equal(calls.length, 1);
+  assert.deepEqual(calls.map(([path]) => path), ["/computer/coding", "/computer/coding/login/status"]);
   assert.deepEqual(JSON.parse(storage.get(pendingKey)), pending);
   assert.equal(queued.length, 0);
 });
@@ -353,4 +356,31 @@ test("switching jobs preserves separate drafts and queuing moves only the select
   submit(); await settle();
   assert.equal(JSON.parse(storage.get(pendingKey)).content, "First draft");
   assert.deepEqual(JSON.parse(storage.get(`${pendingKey}.coding-drafts`)), { "job-b": "Second draft" });
+});
+
+
+test("unavailable login helper preserves job refresh and stop controls", async () => {
+  authReplies.push(() => Promise.reject(new Error("Missing helper")));
+  await open();
+  assert.match(text(render()), /Sign-in status unavailable/);
+  assert.match(text(render()), /Working/);
+  assert.equal(button("Stop coding").props.disabled, false);
+  replies.push(() => Promise.resolve(status([{ ...first, status: "completed", message: "Done." }])));
+  authReplies.push(() => Promise.reject(new Error("Missing helper")));
+  interval();
+  await settle();
+  assert.match(text(render()), /Done/);
+  assert.doesNotMatch(text(render()), /Last known state/);
+});
+
+test("pending sign-in can be cancelled without cancelling a coding job", async () => {
+  authReplies.push(() => Promise.resolve({ state: "signing_in", message: "Enter code", login: {url: "https://example.com", code: "ABCD-EFGH"} }));
+  await open();
+  authReplies.push(() => Promise.resolve({ state: "signed_out", message: "Signed out" }));
+  replies.push(() => Promise.resolve(status()));
+  button("Cancel sign-in").props.onClick();
+  await settle();
+  assert.ok(calls.some(([path, body]) => path === "/computer/coding/logout" && body));
+  assert.ok(!calls.some(([path]) => path.endsWith("/cancel")));
+  assert.ok(button("Sign in with ChatGPT"));
 });

@@ -234,3 +234,21 @@ def test_wrong_job_result_is_rejected(operation):
         )
     assert error.value.code == "coding_invalid_response"
     assert "Another conversation" not in str(error.value)
+
+
+@pytest.mark.parametrize("operation", ["setup", "login", "logout"])
+def test_login_controls_use_separate_helper_and_close_transport_session(operation):
+    api, calls = client({"state": "signed_out", "message": "Sign in."})
+    assert asyncio.run(api.login_control(operation)).state == "signed_out"
+    command = json.loads(calls[0].content)["command"].split()
+    assert command[:2] == ["python3", "/opt/kadan/codex_login.py"]
+    assert json.loads(base64.urlsafe_b64decode(command[2])) == {"operation": operation}
+    assert len(calls) == 2
+    assert calls[1].url.path.endswith("/close")
+
+
+def test_invalid_login_status_is_rejected_without_exposing_output():
+    api, _ = client({"state": "secret"})
+    with pytest.raises(ServiceError, match="invalid sign-in status") as error:
+        asyncio.run(api.login_control("setup"))
+    assert "secret" not in str(error.value)

@@ -8,7 +8,12 @@ existing behavior and do not offer coding tools.
 
 Open **Coding** in the sidebar and choose **Sign in with ChatGPT**. Kadan shows a
 sign-in link and a one-time code. Open the link, sign in, and enter the code. The
-computer shares this sign-in with the agent. **Sign out** removes it. A signed-in
+computer shares this sign-in with the agent. **Cancel sign-in** stops a pending
+attempt; closing the panel leaves it available when reopened. If an attempt ends
+without signing in, start sign-in again for a new code. **Sign out** removes the
+computer's saved sign-in; it does not stop an already accepted coding job.
+Kadan's API keeps job status and stop controls available if sign-in status cannot
+be read, including when the computer needs an update. A signed-in
 status does not confirm model access or available usage. If Codex is unavailable,
 ask the person running Kadan to update or reconnect the computer.
 

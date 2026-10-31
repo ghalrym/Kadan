@@ -1,4 +1,4 @@
-"""Codex sign-in, background runs and thread history on the shared Kadan computer."""
+"""Manage Codex device sign-in on the shared Kadan computer."""
 
 from __future__ import annotations
 
@@ -12,17 +12,12 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
-from uuid import UUID
 
 CODEX_HOME = Path("/home/gem/.codex")
 STATE = Path("/home/gem/.local/state/kadan/codex")
-VERSION = "0.162.1"
 ENV = {**os.environ, "CODEX_HOME": str(CODEX_HOME)}
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-MAX_THREADS = 50
-MAX_ITEMS = 200
 
 
 def process_start(pid: int) -> str | None:
@@ -33,9 +28,24 @@ def process_start(pid: int) -> str | None:
         return None
 
 
+def incarnation() -> str:
+    return (
+        Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        + ":"
+        + str(process_start(1))
+    )
+
+
 def alive(record: dict) -> bool:
     pid = record.get("pid")
-    return isinstance(pid, int) and process_start(pid) == record.get("start")
+    start = record.get("start")
+    return (
+        isinstance(pid, int)
+        and pid > 1
+        and isinstance(start, str)
+        and record.get("incarnation") == incarnation()
+        and process_start(pid) == start
+    )
 
 
 def read_json(path: Path) -> dict:
@@ -66,7 +76,11 @@ def launch(command: list[str], output: Path, cwd: str, stdin=None) -> dict:
             close_fds=True,
             env=ENV,
         )
-    return {"pid": process.pid, "start": process_start(process.pid)}
+    return {
+        "pid": process.pid,
+        "start": process_start(process.pid),
+        "incarnation": incarnation(),
+    }
 
 
 def terminate(record: dict) -> None:
@@ -82,6 +96,10 @@ def terminate(record: dict) -> None:
             time.sleep(0.1)
         if not alive(record):
             return
+
+    raise ValueError(
+        "Sign-in cleanup could not be confirmed. Restart the computer before trying again."
+    )
 
 
 def login_record() -> dict:
@@ -152,25 +170,12 @@ def login() -> dict:
         )
     elif current["state"] != "signing_in" or "login" in current:
         return current
-    return wait_for_login()
-
-
-def wait_for_login() -> dict:
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        current = setup()
-        if current["state"] == "signed_out":
-            raise ValueError("Codex sign-in stopped before it gave a code. Try again.")
-        if current["state"] != "signing_in" or "login" in current:
-            return current
-        time.sleep(0.25)
-    terminate(login_record())
-    raise ValueError("Codex didn't provide a sign-in code. Try signing in again.")
+    return {"state": "signing_in", "message": "Starting sign-in…"}
 
 
 def logout() -> dict:
     terminate(login_record())
-    subprocess.run(
+    result = subprocess.run(
         ["codex", "logout"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -178,6 +183,10 @@ def logout() -> dict:
         check=False,
         env=ENV,
     )
+    if result.returncode != 0:
+        raise ValueError(
+            "Sign-out failed. Refresh to check sign-in before trying again."
+        )
     return setup()
 
 

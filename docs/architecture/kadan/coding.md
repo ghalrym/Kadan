@@ -20,7 +20,12 @@ of `codex login status`, discarding authentication diagnostics. It makes no mode
 request. The Coding panel starts `codex login --device-auth` in a detached
 computer process, displays its device link and code, and polls local login status.
 The login control stores the process identity on the computer so later requests can
-check or stop the same login. Sign-out invokes `codex logout` on that computer.
+check or stop the same login. A file lock serializes login control; starting
+sign-in returns immediately and subsequent polls read the prompt. Process identity
+includes the computer incarnation and a non-null process start time so stale
+records cannot signal a reused PID after restart. Login reads fail independently
+of job reads in the panel, preserving existing job controls on older computers.
+Sign-out invokes `codex logout` on that computer.
 Kadan does not copy credentials from its API host, browser or this development environment.
 
 The API's `CodingClient` and the runner's three tools invoke the same supervisor
