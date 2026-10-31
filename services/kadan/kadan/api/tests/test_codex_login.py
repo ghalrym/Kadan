@@ -2,13 +2,19 @@ import importlib.util
 from pathlib import Path
 from unittest.mock import patch
 
-path = Path(__file__).parents[3] / "sandbox" / "codex_login.py"
-spec = importlib.util.spec_from_file_location("codex_login", path)
-login = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(login)
+import pytest
 
 
-def test_login_returns_existing_device_prompt():
+@pytest.fixture(params=["codex_login", "codex_threads"])
+def login(request):
+    path = Path(__file__).parents[3] / "sandbox" / f"{request.param}.py"
+    spec = importlib.util.spec_from_file_location(request.param, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_login_returns_existing_device_prompt(login):
     prompt = {
         "state": "signing_in",
         "message": "Enter the code",
@@ -22,7 +28,7 @@ def test_login_returns_existing_device_prompt():
         launch.assert_not_called()
 
 
-def test_login_starts_device_authorization():
+def test_login_starts_device_authorization(login):
     with (
         patch.object(login, "setup", return_value={"state": "signed_out"}),
         patch.object(login, "launch", return_value={"pid": 3}),
@@ -32,7 +38,7 @@ def test_login_starts_device_authorization():
         assert write.call_args.args[1] == {"pid": 3}
 
 
-def test_prompt_extracts_link_and_code(tmp_path):
+def test_prompt_extracts_link_and_code(login, tmp_path):
     (tmp_path / "login.log").write_text(
         "Open https://example.com/device and enter ABCD-EFGH"
     )
@@ -43,7 +49,7 @@ def test_prompt_extracts_link_and_code(tmp_path):
         }
 
 
-def test_dead_or_unidentified_process_is_never_alive():
+def test_dead_or_unidentified_process_is_never_alive(login):
     with (
         patch.object(login, "process_start", return_value=None),
         patch.object(login, "incarnation", return_value="boot"),
@@ -52,7 +58,7 @@ def test_dead_or_unidentified_process_is_never_alive():
         assert not login.alive({"pid": 123, "start": "10", "incarnation": "boot"})
 
 
-def test_process_from_previous_computer_is_not_terminated():
+def test_process_from_previous_computer_is_not_terminated(login):
     with (
         patch.object(login, "process_start", return_value="10"),
         patch.object(login, "incarnation", return_value="new"),
@@ -62,7 +68,7 @@ def test_process_from_previous_computer_is_not_terminated():
         kill.assert_not_called()
 
 
-def test_logout_stops_pending_login_before_removing_credentials():
+def test_logout_stops_pending_login_before_removing_credentials(login):
     from types import SimpleNamespace
 
     calls = []
@@ -84,7 +90,7 @@ def test_logout_stops_pending_login_before_removing_credentials():
         assert calls == ["stop", "logout"]
 
 
-def test_failed_logout_does_not_report_success():
+def test_failed_logout_does_not_report_success(login):
     import pytest
     from types import SimpleNamespace
 
@@ -98,7 +104,7 @@ def test_failed_logout_does_not_report_success():
             login.logout()
 
 
-def test_signed_in_status_cleans_pending_login():
+def test_signed_in_status_cleans_pending_login(login):
     from types import SimpleNamespace
 
     with (
@@ -113,7 +119,7 @@ def test_signed_in_status_cleans_pending_login():
         terminate.assert_called_once_with({"pid": 123})
 
 
-def test_pending_login_status_reuses_saved_prompt():
+def test_pending_login_status_reuses_saved_prompt(login):
     from types import SimpleNamespace
 
     prompt = {"url": "https://example.com", "code": "ABCD-EFGH"}
@@ -128,7 +134,7 @@ def test_pending_login_status_reuses_saved_prompt():
         assert login.setup()["login"] == prompt
 
 
-def test_failed_or_expired_login_returns_to_signed_out():
+def test_failed_or_expired_login_returns_to_signed_out(login):
     from types import SimpleNamespace
 
     with (

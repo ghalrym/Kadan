@@ -57,6 +57,11 @@ class AgentRunState(BaseModel):
         return self
 
 
+class RunEvent(BaseModel):
+    kind: Literal["codex"]
+    content: str = Field(min_length=1, max_length=20000)
+
+
 class AgentRun(AgentRunState):
     trace_parent: str | None = Field(
         default=None, pattern=r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
@@ -66,18 +71,13 @@ class AgentRun(AgentRunState):
     conversation_id: UUID
     trigger_message_id: UUID | None = None
     trigger_job_id: UUID | None = None
+    trigger_event: RunEvent | None = None
     persona_id: UUID | None = None
     references: list[ReferenceSnapshot] = Field(default_factory=list, max_length=3)
     delivered_message_ids: list[UUID] = Field(default_factory=list)
     version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
-
-    @property
-    def initial_command(self) -> RunMessage | None:
-        if self.transcript and self.transcript[0].role == "assistant":
-            return self.transcript[0]
-        return None
 
 
 class ImageJobState(BaseModel):

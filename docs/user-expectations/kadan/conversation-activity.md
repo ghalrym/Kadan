@@ -8,6 +8,6 @@ Response completion and message delivery are separate. A finished response can s
 
 Updates arrive periodically and can lag saved changes. Loading and failed reads must remain distinct from no activity. After a refresh failure, previously loaded activity remains visible with an error; it is the last received state. Switching conversations resets Activity to that conversation's evidence.
 
-Activity counts cover response and image records, not Codex jobs. The separate [Codex status](coding.md) in Messages comes from the shared computer. Response work can fail or stop after Codex completes, and stopping a response can leave Codex running.
+Activity counts cover response and image records, not Codex work. [Codex threads](coding.md) are tracked in the Coding tab, and stopping a response leaves Codex running.
 
 Activity is a summary of retained work, not the agent's hidden reasoning, command transcript or a complete audit of external effects. Failures and stops remain available for review without being retried automatically. Use [Stop and Stop image](stopping-chat-work.md) for active work; viewing Activity does not cancel, resume or replay it.

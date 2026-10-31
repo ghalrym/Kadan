@@ -1,28 +1,23 @@
-export interface CodingJob {
-  id: string;
-  status: "starting" | "running" | "stopping" | "completed" | "failed" | "cancelled" | "timed_out" | "interrupted" | "cleanup_required";
-  cwd: string;
-  session_id: string | null;
-  created_at: string;
+export interface CodexSetup {
+  state: "signed_in" | "signing_in" | "signed_out" | "missing" | "unavailable";
   message: string;
-  events: { sequence: number; kind: string; message: string }[];
-  events_truncated?: boolean;
+  login?: { url: string; code: string } | null;
 }
 
-export interface CodingStatus {
-  setup: { state: string; message: string; version?: string | null };
-  jobs: CodingJob[];
+export interface CodexThreadSummary {
+  id: string;
+  title: string;
+  cwd: string;
+  created_at: string | null;
+  updated_at: string;
+  running: boolean;
 }
 
-export const codingLabels: Record<CodingJob["status"], string> = {
-  starting: "Starting", running: "Working", stopping: "Stopping and cleaning up…",
-  completed: "Completed", failed: "Failed", cancelled: "Cancelled", timed_out: "Timed out",
-  interrupted: "Interrupted", cleanup_required: "Cleanup needs attention",
-};
+export interface CodexThread extends CodexThreadSummary {
+  items: { kind: "user" | "assistant" | "command"; text: string }[];
+  items_truncated: boolean;
+}
 
-export const codingBusy = (job: CodingJob) =>
-  ["starting", "running", "stopping", "cleanup_required"].includes(job.status);
-
-export function currentCodingJob(jobs: CodingJob[]): CodingJob | undefined {
-  return jobs.find(codingBusy) ?? jobs[0];
+export interface CodexStatus {
+  threads: CodexThreadSummary[];
 }

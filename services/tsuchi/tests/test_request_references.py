@@ -170,14 +170,9 @@ def test_save_failure_rolls_back_message_and_run_with_references(setup, monkeypa
     assert repo.conversation_runs("alpha", chat.id) == []
 
 
-def test_reference_validation_and_retry_coexist_with_attachments_and_seeded_coding(
-    setup, tmp_path
-):
-    from tsuchi.models import RunMessage
-
+def test_reference_validation_and_retry_coexist_with_attachments(setup, tmp_path):
     repo, chat = setup
     source = reference(repo)
-    seed = RunMessage(role="assistant", content='{"tool":"codex_start","arguments":{}}')
     msg = Message(
         id=uuid4(),
         created_at=utc_now(),
@@ -191,7 +186,6 @@ def test_reference_validation_and_retry_coexist_with_attachments_and_seeded_codi
             chat.id,
             msg,
             chat.version,
-            initial_command=seed,
             references=[
                 RequestReference(resource_id=source.id, expected_version=source.version)
             ],
@@ -220,7 +214,6 @@ def test_reference_validation_and_retry_coexist_with_attachments_and_seeded_codi
         chat.id,
         msg,
         chat.version,
-        initial_command=seed,
         references=[
             RequestReference(resource_id=source.id, expected_version=source.version)
         ],
@@ -234,7 +227,6 @@ def test_reference_validation_and_retry_coexist_with_attachments_and_seeded_codi
             chat.id,
             msg,
             chat.version,
-            initial_command=seed,
             references=[
                 RequestReference(resource_id=source.id, expected_version=source.version)
             ],

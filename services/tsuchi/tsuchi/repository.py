@@ -34,12 +34,12 @@ from .models import (
     PetState,
     ReferenceSnapshot,
     RequestReference,
+    RunEvent,
     Resource,
     ResourceInput,
     ResourceKind,
     ResourceRecord,
     ResourceVersion,
-    RunMessage,
     Runner,
     Stats,
     resource_adapter,
@@ -359,7 +359,15 @@ class Repository:
                 run.status,
                 run.updated_at.isoformat(),
                 run.model_dump_json(
-                    exclude={"references"} if not run.references else None
+                    exclude={
+                        name
+                        for name, empty in (
+                            ("references", not run.references),
+                            ("trigger_event", run.trigger_event is None),
+                        )
+                        if empty
+                    }
+                    or None
                 ),
             ),
         )
@@ -429,7 +437,6 @@ class Repository:
         message: Message,
         expected_version: int,
         persona_id: UUID | None = None,
-        initial_command: RunMessage | None = None,
         references: list[RequestReference] | None = None,
     ) -> AgentRun:
         references = references or []
@@ -439,10 +446,6 @@ class Repository:
             raise StorageError("Select up to three distinct references", 422)
         if message.role != "user":
             raise StorageError("An agent run must start with a user message", 409)
-        if initial_command is not None and initial_command.role != "assistant":
-            raise StorageError(
-                "An initial command must be an assistant checkpoint", 409
-            )
         with self.connect(write=True) as db:
             conversation = self._conversation(db, key, conversation_id)
             row = db.execute(
@@ -455,7 +458,6 @@ class Repository:
                     and existing.conversation_id == conversation_id
                     and existing.trigger_message_id == message.id
                     and existing.persona_id == persona_id
-                    and existing.initial_command == initial_command
                     and [
                         (item.resource_id, item.version) for item in existing.references
                     ]
@@ -511,8 +513,50 @@ class Repository:
                 conversation_id=conversation_id,
                 trigger_message_id=message.id,
                 persona_id=persona_id,
-                transcript=[initial_command] if initial_command is not None else [],
                 references=snapshots,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            self._save_run(db, run)
+            return run
+
+    @traced("kadan.storage.create_event_run")
+    def create_event_run(
+        self,
+        key: str,
+        conversation_id: UUID,
+        run_id: UUID,
+        origin_run_id: UUID,
+        event: RunEvent,
+    ) -> AgentRun:
+        """Queue a run woken by an external event, idempotent by its run ID."""
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT data FROM agent_runs WHERE id = ?", (str(run_id),)
+            ).fetchone()
+            if row is not None:
+                existing = AgentRun.model_validate_json(row[0])
+                if (
+                    existing.agent_key == key
+                    and existing.conversation_id == conversation_id
+                    and existing.trigger_event == event
+                ):
+                    return existing
+                raise StorageError("This agent run ID is already in use", 409)
+            self._conversation(db, key, conversation_id)
+            origin = self._run(db, key, origin_run_id)
+            if origin.conversation_id != conversation_id:
+                raise StorageError("The event belongs to another conversation", 409)
+            now = utc_now()
+            run = AgentRun(
+                id=run_id,
+                trace_parent=carrier().get("traceparent"),
+                agent_key=key,
+                conversation_id=conversation_id,
+                trigger_event=event,
+                persona_id=origin.persona_id,
+                references=origin.references,
                 version=1,
                 created_at=now,
                 updated_at=now,
