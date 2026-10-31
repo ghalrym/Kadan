@@ -4,7 +4,7 @@ Hikari runs the fixed LFM3 1.7B language checkpoint in a separate worker. It loa
 
 Status reads do not load the model. They distinguish an idle, unloaded worker from active language work and report unavailable workers, incomplete downloads and unconfirmed cleanup as errors. A completed download establishes file readiness, not successful inference or physical fit.
 
-While a language request queues, waits for resources or loads its model, Hikari reports loading. During generation it reports ready, allowing Kadan to show the agent's active response. After completion and cleanup, it returns to unloaded.
+When language work is pending and no language request is generating, Hikari reports loading, including executor startup and model loading. During generation it reports ready even if other language requests are queued or loading, allowing Kadan to show the agent's active response. After all language work completes and cleanup finishes, it returns to unloaded.
 
 The model's 262,144-token context includes the complete prompt and reply. Generation can use the remaining context until completion or cancellation. Requests leaving no reply space or exceeding available memory fail without truncating history or substituting another model.
 

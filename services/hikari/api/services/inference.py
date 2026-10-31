@@ -159,18 +159,13 @@ class InferenceService:
             for job in self.worker.jobs.values()
             if job.worker == "lfm3_llm" and not job.result.done()
         ]
-        # The model loads per request: only the load phase is "loading", and a
-        # job that is generating has its model resident.
-        loading = any(
-            job.state in ("queued", "preparing", "waiting_for_resources", "loading")
-            for job in active
-        )
+        running = any(job.state == "running" for job in active)
         state = (
             "error"
             if error
-            else "loading"
-            if loading
             else "ready"
+            if running
+            else "loading"
             if active
             else "unloaded"
         )

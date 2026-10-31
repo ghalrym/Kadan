@@ -62,6 +62,28 @@ class LanguageLifecycleTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(state=state):
                 self.assertEqual(service.language_status()["state"], expected)
 
+    async def test_generation_stays_ready_with_other_pending_language_work(self):
+        service = self.service()
+        running = InferenceJob(InferenceTask(input={"feature": "llm"}), False)
+        running.worker = "lfm3_llm"
+        running.state = JobState.RUNNING
+        pending = InferenceJob(InferenceTask(input={"feature": "llm"}), False)
+        pending.worker = "lfm3_llm"
+        service.worker.jobs = {running.request.id: running, pending.request.id: pending}
+        for state in (
+            JobState.QUEUED,
+            JobState.PREPARING,
+            JobState.WAITING,
+            JobState.LOADING,
+        ):
+            pending.state = state
+            with self.subTest(state=state):
+                self.assertEqual(service.language_status()["state"], "ready")
+        running.result.set_result({})
+        self.assertEqual(service.language_status()["state"], "loading")
+        pending.result.set_result({})
+        self.assertEqual(service.language_status()["state"], "unloaded")
+
     def test_missing_checkpoint_or_worker_and_unconfirmed_cleanup_are_errors(self):
         for missing in ("worker", "checkpoint", "cleanup"):
             service = self.service()

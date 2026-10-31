@@ -245,7 +245,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         def observe(message):
-            if message["state"] == "running":
+            if message["state"] in ("loading", "running"):
                 runtime.cancelled.add("a" * 32)
             if message["state"] in ("worker", "cancelled"):
                 self.assertTrue(process.joined)
@@ -258,6 +258,46 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             "cancelled", [message["state"] for message in runtime.socket.messages]
         )
+
+    async def test_text_startup_waits_for_executor_running_event(self):
+        runtime = self.runtime
+        runtime.budget = list(runtime.backend.REQUIREMENT)
+        runtime.store.complete = lambda: True
+        messages = iter(
+            [
+                {"state": "loading"},
+                {"state": "running"},
+                {"state": "result", "result": {"text": "answer"}},
+            ]
+        )
+        pending = 3
+
+        def receive():
+            nonlocal pending
+            pending -= 1
+            return next(messages)
+
+        pipe = SimpleNamespace(
+            poll=lambda: pending > 0, recv=receive, close=lambda: None
+        )
+        process = SimpleNamespace(
+            start=lambda: None, is_alive=lambda: False, join=lambda: None
+        )
+        context = SimpleNamespace(
+            Pipe=lambda **kwargs: (pipe, pipe), Process=lambda **kwargs: process
+        )
+
+        def observe(message):
+            if message["state"] == "running":
+                self.assertEqual(pending, 1)
+
+        runtime.socket.on_send = observe
+        with patch("multiprocessing.get_context", return_value=context):
+            await runtime.run_job(self.request())
+        states = [message["state"] for message in runtime.socket.messages]
+        self.assertEqual(states[:4], ["preparing", "loading", "loading", "running"])
+        self.assertEqual(states.count("running"), 1)
+        self.assertIn("succeeded", states)
 
     async def test_requirement_keeps_whole_model_on_one_gpu(self):
         await self.runtime.handle({"id": "req", "command": "requirement"})
@@ -301,7 +341,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         def observe(message):
-            if message["state"] == "running":
+            if message["state"] in ("loading", "running"):
                 runtime.cancelled.add("a" * 32)
             if message["state"] == "cancelled":
                 self.assertTrue(process.joined)
@@ -342,7 +382,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             await exited.wait()
 
         def cancel_request(message):
-            if message["state"] == "running":
+            if message["state"] in ("loading", "running"):
                 runtime.cancelled.add("a" * 32)
 
         runtime.socket.on_send = cancel_request

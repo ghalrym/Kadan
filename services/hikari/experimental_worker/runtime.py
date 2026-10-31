@@ -372,7 +372,10 @@ class Runtime:
                 started = True
                 executor_started = time.monotonic()
                 writer.close()
-                await event("running", model=self.backend.MODEL["id"])
+                await event(
+                    "loading" if self.backend_name == "text" else "running",
+                    model=self.backend.MODEL["id"],
+                )
                 received_result = False
                 while process.is_alive() or reader.poll():
                     if request_id in self.cancelled:
