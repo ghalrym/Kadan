@@ -3,9 +3,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from api.pydantic_models.inference_task import InferenceTask
-from api.pydantic_models.model_store import ModelStoreStatus
-from api.services.inference_errors import InferenceFailure
+from api.pydantic_models.model_store import ModelAssignments, ModelStoreStatus
 from api.services.inference import InferenceService
+from api.services.inference_errors import InferenceFailure
 from api.services.inference_worker import WorkerEvent
 from api.services.worker_hub import WorkerHub, target_worker
 
@@ -65,3 +65,30 @@ class ExperimentalRoutingTests(unittest.TestCase):
         self.assertFalse(hub.models.whisper_formatting)
         self.assertEqual(hub.models.selected_model_id, "lfm3-1.7b-bf16")
         self.assertIsNot(hub.models, native)
+
+    def test_default_audio_call_routes_without_opt_in_and_keeps_standalone_speech(self):
+        with patch.dict("os.environ", {}, clear=True):
+            for request, worker in (
+                (
+                    {"feature": "audio_call", "mode": "transcribe", "audio": "wav"},
+                    "lfm3_audio",
+                ),
+                ({"feature": "stt", "audio": "wav", "model": "medium"}, "speech"),
+                ({"feature": "stt_formatting", "text": "Hello"}, "formatting"),
+                (
+                    {
+                        "feature": "tts",
+                        "script": "Hello",
+                        "voice": {"mode": "custom", "speaker": "Ryan"},
+                    },
+                    "tts",
+                ),
+            ):
+                with self.subTest(feature=request["feature"]):
+                    self.assertEqual(
+                        target_worker(InferenceTask(input=request)), worker
+                    )
+        defaults = ModelAssignments()
+        self.assertEqual(defaults.audio_call, "lfm3-audio-2b-bf16")
+        self.assertEqual(defaults.transcription, "whisper-medium")
+        self.assertEqual(defaults.speech, "qwen-tts-1.7b-custom")

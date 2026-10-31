@@ -128,6 +128,15 @@ services:
     volumes:
       - lfm3_vision_models:/var/lib/kadan/models
 
+  # Calls use the same pinned audio checkpoint and volume as the former overlay.
+  hikari-worker-lfm3-audio:
+    <<: *lfm3_worker
+    environment:
+      <<: *lfm3_environment
+      HIKARI_EXPERIMENTAL_BACKEND: experimental_worker.audio
+    volumes:
+      - lfm3_audio_model_data:/var/lib/kadan/models
+
   # Language worker: the tier's mixture-of-experts model for chat.
   hikari-worker-llm:
     build:
@@ -511,6 +520,7 @@ services:
 volumes:
   lfm3_text_models:
   lfm3_vision_models:
+  lfm3_audio_model_data:
   sandbox_home:
   model_data:
     name: ${HIKARI_MODEL_VOLUME:-${COMPOSE_PROJECT_NAME}_model_data}

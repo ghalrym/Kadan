@@ -80,7 +80,7 @@ def call(stream):
             open_audio_turn=AsyncMock(return_value=stream),
             submit=AsyncMock(),
         ),
-        CallModels.selected(audio_snapshot(), "lfm3"),
+        CallModels.selected(audio_snapshot()),
         "Saved persona",
         AsyncMock(),
     )

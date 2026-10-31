@@ -1471,6 +1471,12 @@
       "ModelAssignments": {
         "description": "Fixed capability assignments, independent of machine resources.",
         "properties": {
+          "audio_call": {
+            "const": "lfm3-audio-2b-bf16",
+            "default": "lfm3-audio-2b-bf16",
+            "title": "Audio Call",
+            "type": "string"
+          },
           "decisions": {
             "const": "laya",
             "default": "laya",

@@ -1,4 +1,4 @@
-"""Protocol-v4 FIFO worker with kill-and-join cancellation of its executor."""
+"""Protocol-v5 FIFO worker with kill-and-join cancellation of its executor."""
 
 import asyncio
 import csv
@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 BACKENDS = {
     "text": ("lfm3_llm", "HIKARI_ENABLE_LFM3_TEXT"),
     "vision": ("lfm3_vision", "HIKARI_ENABLE_LFM3_VISION"),
-    "audio": ("lfm3_audio", "HIKARI_ENABLE_LFM3_AUDIO"),
+    "audio": ("lfm3_audio", None),
 }
 
 
@@ -147,7 +147,7 @@ class Runtime:
     def __init__(self, backend_name: str, info: dict | None = None):
         backend_name = backend_name.removeprefix("experimental_worker.")
         self.kind, flag = BACKENDS[backend_name]
-        if not enabled(flag):
+        if flag is not None and not enabled(flag):
             raise ValueError(f"Experimental worker requires {flag}=true")
         self.backend_name = backend_name
         self.backend = importlib.import_module("experimental_worker." + backend_name)

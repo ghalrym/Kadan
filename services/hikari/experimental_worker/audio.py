@@ -20,7 +20,7 @@ MODEL = {
     "revision": "9d49701c372d6011d900f6abb40c6b296fb706dd",
     "license": "lfm1.0",
     "license_url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/blob/9d49701c372d6011d900f6abb40c6b296fb706dd/LICENSE",
-    "display_name": "LFM3 Audio 2B BF16 (experimental)",
+    "display_name": "LFM3 Audio 2B BF16",
     "short_name": "LFM3 Audio",
     "estimated_bytes": 4_170_027_447,
     "kind": "audio",

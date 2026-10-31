@@ -50,6 +50,7 @@ class ModelAssignments(BaseModel):
     """Fixed capability assignments, independent of machine resources."""
 
     llm: Literal["lfm3-1.7b-bf16"] = "lfm3-1.7b-bf16"
+    audio_call: Literal["lfm3-audio-2b-bf16"] = "lfm3-audio-2b-bf16"
     vision: Literal["lfm3-vl-2b-bf16"] = "lfm3-vl-2b-bf16"
     image: Literal["qwen-image-2.1-turbo"] = "qwen-image-2.1-turbo"
     video: Literal["h3-fl2va-int8-turbo"] = "h3-fl2va-int8-turbo"

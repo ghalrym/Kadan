@@ -40,11 +40,11 @@ test('every capability reads its fixed checkpoint from the model snapshot', asyn
   ] })
   const result = await api.fetchModels(new AbortController().signal)
   assert.deepEqual(result.map(row => row.capability.label),
-    ['Language', 'Vision', 'Image', 'Video', 'Text to speech', 'Speech to text', 'Speech formatter', 'Decisions'])
+    ['Language', 'Voice calls', 'Vision', 'Image', 'Video', 'Text to speech', 'Speech to text', 'Speech formatter', 'Decisions'])
   assert.equal(result[0].model.id, 'lfm3-1.7b-bf16')
-  assert.equal(result[1].model.id, 'lfm3-vl-2b-bf16')
-  assert.equal(result[2].model, null)
-  assert.equal(capabilities.length, 8)
+  assert.equal(result[2].model.id, 'lfm3-vl-2b-bf16')
+  assert.equal(result[3].model, null)
+  assert.equal(capabilities.length, 9)
   assert.deepEqual(calls.map(call => call.name), ['listModelsV1ModelsGet'])
 })
 
@@ -63,7 +63,7 @@ test('overall progress weights each checkpoint by size', async () => {
   const { api, rows } = await settingsApi()
   const language = checkpoint('lfm3-1.7b-bf16', { status: 'downloading', downloaded_bytes: 150, total_bytes: 300 })
   const active = rows({ 'lfm3-1.7b-bf16': language, 'lfm3-vl-2b-bf16': null })
-  assert.equal(api.modelsProgress(active), 83)
+  assert.equal(api.modelsProgress(active), 85)
   assert.equal(api.modelsDownloading(active), true)
   assert.equal(api.modelsComplete(active), false)
   assert.equal(api.modelsComplete(rows({})), true)
@@ -127,13 +127,13 @@ test('API details and missing responses become actionable errors', async () => {
 })
 
 
-test('an enabled audio trial is visible and requires acknowledged download without replacing defaults', async () => {
+test('voice calls are a fixed capability and require acknowledged download without replacing standalone speech', async () => {
   const audio = checkpoint('lfm3-audio-2b-bf16', { license_notice: 'Review audio license' })
   const { api, calls, capabilities } = await settingsApi({ ok: true }, { models: [audio] })
   const rows = api.capabilityModels([audio])
-  assert.equal(rows.length, capabilities.length + 1)
+  assert.equal(rows.length, capabilities.length)
   assert.equal(rows[0].capability.id, 'lfm3-1.7b-bf16')
-  assert.equal(rows.at(-1).capability.label, 'Audio call trial')
+  assert.equal(rows.find(row => row.capability.id === audio.id).capability.label, 'Voice calls')
   assert.deepEqual(api.licenseNotices(rows).map(model => model.id), [audio.id])
   const signal = new AbortController().signal
   await assert.rejects(api.downloadModels(rows, false, signal), /acknowledge/)
@@ -141,5 +141,5 @@ test('an enabled audio trial is visible and requires acknowledged download witho
   await api.downloadModels(rows, true, signal)
   assert.deepEqual(calls.map(call => call.args.path.model_id), [audio.id])
   assert.equal(calls[0].args.body.license_acknowledged, true)
-  assert.equal(api.capabilityModels([]).some(row => row.capability.id === audio.id), false)
+  assert.equal(api.capabilityModels([]).find(row => row.capability.id === audio.id).model, null)
 })

@@ -3,7 +3,7 @@ import {
   listModelsV1ModelsGet,
 } from './generated/sdk.gen'
 import type { CheckpointStatus } from './generated/types.gen'
-import { audioTrialCapability, capabilities, type Capability } from '../data/models'
+import { capabilities, type Capability } from '../data/models'
 
 export type { CheckpointStatus }
 export type DownloadState =
@@ -36,9 +36,7 @@ function settingsError(response: Response | undefined, error: unknown): Error {
 
 /** Pair each capability with its checkpoint from a model snapshot. */
 export function capabilityModels(models: CheckpointStatus[]): CapabilityModel[] {
-  const visible: Capability[] = [...capabilities]
-  if (models.some(model => model.id === audioTrialCapability.id)) visible.push(audioTrialCapability)
-  return visible.map((capability) => ({
+  return capabilities.map((capability) => ({
     capability,
     model: models.find((model) => model.id === capability.id) ?? null,
   }))

@@ -5,25 +5,23 @@ import { callUnavailable, VoiceCallSession, type CallState } from "./voiceCall";
 export type VoiceCall = ReturnType<typeof useVoiceCall>;
 
 /** Owns the call session so it outlives the agent card that starts it. */
-export function useVoiceCall(agentKey: string, personaId: string | null, disabled: boolean, nativeUnavailable = false) {
+export function useVoiceCall(agentKey: string, personaId: string | null, disabled: boolean) {
   const session = useRef<VoiceCallSession | null>(null);
-  const sessionBackend = useRef<"native" | "lfm3">("native");
   const [call, setCall] = useState<CallState | null>(null);
   const [active, setActive] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => () => session.current?.end(), []);
-  useEffect(() => { if (disabled || (nativeUnavailable && sessionBackend.current === "native")) session.current?.end(); }, [disabled, nativeUnavailable]);
+  useEffect(() => { if (disabled) session.current?.end(); }, [disabled]);
 
-  function start(backend: "native" | "lfm3" = "native") {
-    if (disabled || (backend === "native" && nativeUnavailable) || session.current) return;
+  function start() {
+    if (disabled || session.current) return;
     setError("");
     const next = new VoiceCallSession(setCall, (message) => {
       session.current = null; setCall(null); setActive(false); setError(message ?? "");
     });
-    sessionBackend.current = backend;
     session.current = next;
     setActive(true);
-    void next.start(agentKey, personaId, backend);
+    void next.start(agentKey, personaId);
   }
 
   return {

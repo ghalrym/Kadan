@@ -1,12 +1,11 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 from pydantic import ValidationError
 
 from api.pydantic_models.inference_task import AudioCallTask
-from api.routes.v1.audio.calls import voice_call
 from api.services.inference_errors import InferenceFailure
 from api.services.voice_call import CallModels, VoiceCall
 from api.tests.services.test_voice_call import snapshot
@@ -22,18 +21,14 @@ def audio_snapshot():
 
 
 class AudioModelsTests(unittest.TestCase):
-    def test_explicit_audio_selection_requires_only_its_approved_download(self):
+    def test_default_audio_selection_requires_only_its_approved_download(self):
         status = audio_snapshot()
-        models = CallModels.selected(status, "lfm3")
-        self.assertEqual(models.participants(), frozenset(("lfm3-audio-2b-bf16",)))
-        self.assertEqual(models.backend, "lfm3")
+        models = CallModels.selected(status)
+        self.assertEqual(models.audio, "lfm3-audio-2b-bf16")
+        self.assertEqual(models.audio, "lfm3-audio-2b-bf16")
         status.models[0].status = "not_downloaded"
         with self.assertRaisesRegex(InferenceFailure, "license"):
-            CallModels.selected(status, "lfm3")
-
-    def test_native_selection_does_not_fall_back_to_audio(self):
-        with self.assertRaises(InferenceFailure):
-            CallModels.selected(audio_snapshot())
+            CallModels.selected(status)
 
     def test_audio_task_requires_the_matching_input_and_disallows_tool_history(self):
         for value in (
@@ -49,7 +44,7 @@ class AudioCallTests(unittest.IsolatedAsyncioTestCase):
     def call(self, submit):
         return VoiceCall(
             SimpleNamespace(models_status=audio_snapshot, submit=submit),
-            CallModels.selected(audio_snapshot(), "lfm3"),
+            CallModels.selected(audio_snapshot()),
             "Saved persona. No tools.",
             AsyncMock(),
         )
@@ -109,14 +104,42 @@ class AudioCallTests(unittest.IsolatedAsyncioTestCase):
             ["interrupted"],
         )
 
-    async def test_audio_trial_disabled_fails_before_readiness_or_residency(self):
-        socket = AsyncMock()
-        socket.receive_json.return_value = {"type": "start", "backend": "lfm3"}
-        with (
-            patch.dict("os.environ", {"HIKARI_ENABLE_LFM3_AUDIO": "false"}),
-            patch("api.routes.v1.audio.calls.inference") as inference,
-        ):
-            await voice_call(socket)
-        inference.models_status.assert_not_called()
-        inference.worker.full_duplex.assert_not_called()
-        self.assertIn("disabled", socket.send_json.call_args.args[0]["message"])
+    async def test_default_reply_interruption_preserves_transcript_and_joins_cleanup(
+        self,
+    ):
+        replying, cleaned = asyncio.Event(), asyncio.Event()
+
+        async def submit(task, **kwargs):
+            if task.mode == "transcribe":
+                return {"text": "Recognized utterance"}
+            replying.set()
+            try:
+                await asyncio.Future()
+            finally:
+                cleaned.set()
+
+        call = self.call(submit)
+        call.turn = 1
+        call.response = asyncio.create_task(call.respond("wav", 1))
+        await replying.wait()
+        await call.interrupt(2)
+        self.assertTrue(cleaned.is_set())
+        self.assertEqual(
+            [message.text for message in call.history], ["Recognized utterance"]
+        )
+        self.assertEqual(
+            [entry.args[0]["type"] for entry in call.send.call_args_list],
+            ["transcript", "interrupted"],
+        )
+
+    async def test_default_reply_admission_failure_is_actionable_without_fallback(self):
+        submit = AsyncMock(
+            side_effect=[{"text": "Hi"}, InferenceFailure("Needs 16 GiB VRAM", 507)]
+        )
+        call = self.call(submit)
+        call.turn = 1
+        with self.assertRaisesRegex(InferenceFailure, "Needs 16 GiB"):
+            await call.respond("wav", 1)
+        self.assertEqual(submit.await_count, 2)
+        self.assertEqual([message.text for message in call.history], ["Hi"])
+        self.assertEqual(call.segments, [])

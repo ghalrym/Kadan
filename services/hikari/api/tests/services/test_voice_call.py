@@ -7,15 +7,11 @@ from api.pydantic_models.chat import ChatMessage
 from api.pydantic_models.model_store import ModelStoreStatus
 from api.routes.v1.audio.calls import call_event
 from api.services.inference_errors import InferenceFailure
-from api.services.voice_call import CallModels, VoiceCall, speech_segment
+from api.services.voice_call import CallModels, VoiceCall
 
 
 def snapshot():
-    kinds = {
-        "llm": "lfm3-1.7b-bf16",
-        "transcription": "whisper-medium",
-        "speech": "qwen-tts-1.7b-custom",
-    }
+    kinds = {"audio": "lfm3-audio-2b-bf16"}
     return ModelStoreStatus.model_validate(
         {
             "models": [
@@ -43,42 +39,24 @@ def snapshot():
     )
 
 
-class Stream:
-    def __init__(self, events):
-        self.events = events
-        self.closed = False
-
-    async def __aiter__(self):
-        for event in self.events:
-            yield event
-
-    async def aclose(self):
-        self.closed = True
-
-
 class CallModelTests(unittest.TestCase):
-    def test_uses_fixed_call_participants(self):
-        status = snapshot()
-        self.assertEqual(CallModels.selected(status).transcription, "whisper-medium")
-        self.assertEqual(len(CallModels.selected(status).participants()), 3)
+    def test_uses_only_fixed_audio_call_participant(self):
+        models = CallModels.selected(snapshot())
+        self.assertEqual(models.audio, "lfm3-audio-2b-bf16")
 
-    def test_incomplete_checkpoint_is_actionable_without_downloading(self):
-        status = snapshot()
-        for kind in ("llm", "transcription", "speech"):
-            with self.subTest(kind=kind):
-                value = status.model_copy(deep=True)
-                next(
-                    model for model in value.models if model.kind == kind
-                ).status = "not_downloaded"
-                with self.assertRaises(InferenceFailure):
-                    CallModels.selected(value)
+    def test_unavailable_checkpoint_is_actionable_without_downloading(self):
+        for state, available in (("not_downloaded", True), ("complete", False)):
+            with self.subTest(state=state, available=available):
+                status = snapshot()
+                status.models[0].status = state
+                status.models[0].inference_available = available
+                message = "license.*download" if available else "worker is unavailable"
+                with self.assertRaisesRegex(InferenceFailure, message):
+                    CallModels.selected(status)
 
-    def test_synthesis_segments_are_bounded_and_keep_remaining_text(self):
-        self.assertEqual(speech_segment("Hello. More"), ("Hello.", "More"))
-        self.assertEqual(speech_segment("unfinished"), ("", "unfinished"))
-        self.assertEqual(speech_segment("unfinished", final=True), ("unfinished", ""))
-        segment, rest = speech_segment("x" * 300)
-        self.assertEqual((len(segment), len(rest)), (240, 60))
+    def test_missing_audio_worker_is_actionable(self):
+        with self.assertRaisesRegex(InferenceFailure, "worker is unavailable"):
+            CallModels.selected(ModelStoreStatus(models=[]))
 
 
 class VoiceCallTests(unittest.IsolatedAsyncioTestCase):
@@ -91,51 +69,6 @@ class VoiceCallTests(unittest.IsolatedAsyncioTestCase):
             "Short spoken replies. No tools.",
             AsyncMock(),
         )
-
-    async def test_streams_text_and_synthesized_sentences_through_existing_service(
-        self,
-    ):
-        stream = Stream(
-            [
-                {"content": "Hello. "},
-                {"content": "How are you?"},
-                {"finish_reason": "stop"},
-            ]
-        )
-        submitted = []
-
-        async def submit(body, *, feature):
-            submitted.append(body)
-            return {"text": "Hi"} if feature == "stt" else {"audio_base64": "AAAA"}
-
-        service = SimpleNamespace(
-            models_status=snapshot,
-            submit=submit,
-            open_chat_stream=AsyncMock(return_value=(stream, "lfm3-1.7b-bf16")),
-        )
-        call = self.call(service)
-        call.turn = 1
-        await call.respond("data:audio/wav;base64,AAAA", 1)
-        self.assertEqual(submitted[0].model, "medium")
-        self.assertFalse(submitted[0].formatting)
-        self.assertEqual(
-            [body.script for body in submitted[1:]], ["Hello.", "How are you?"]
-        )
-        self.assertTrue(
-            all(body.model_id == "qwen-tts-1.7b-custom" for body in submitted[1:])
-        )
-        chat = service.open_chat_stream.call_args.args[0]
-        self.assertEqual(chat.model, "lfm3-1.7b-bf16")
-        self.assertIsNone(chat.tools)
-        # The experimental task schema has an optional tools field, but native
-        # calls never set it and queue serialization must still omit it.
-        self.assertNotIn("tools", chat.model_dump(exclude_unset=True))
-        events = [entry.args[0] for entry in call.send.call_args_list]
-        self.assertEqual(
-            [event["segment"] for event in events if event["type"] == "audio"], [0, 1]
-        )
-        self.assertEqual(events[-1]["type"], "done")
-        self.assertTrue(stream.closed)
 
     async def test_interrupt_joins_old_inference_and_does_not_send_stale_audio(self):
         started, cleaned = asyncio.Event(), asyncio.Event()
@@ -160,36 +93,6 @@ class VoiceCallTests(unittest.IsolatedAsyncioTestCase):
             ["interrupted"],
         )
 
-    async def test_interrupt_cancels_synthesis_and_closes_chat_stream(self):
-        speaking, cleaned = asyncio.Event(), asyncio.Event()
-        stream = Stream([{"content": "Hello."}, {"finish_reason": "stop"}])
-
-        async def submit(body, *, feature):
-            if feature == "stt":
-                return {"text": "Hi"}
-            speaking.set()
-            try:
-                await asyncio.Future()
-            finally:
-                cleaned.set()
-
-        call = self.call(
-            SimpleNamespace(
-                models_status=snapshot,
-                submit=submit,
-                open_chat_stream=AsyncMock(return_value=(stream, "lfm3-1.7b-bf16")),
-            )
-        )
-        call.turn = 1
-        call.response = asyncio.create_task(call.respond("wav", 1))
-        await speaking.wait()
-        await call.interrupt(2)
-        self.assertTrue(cleaned.is_set())
-        self.assertTrue(stream.closed)
-        self.assertFalse(
-            any(entry.args[0]["type"] == "audio" for entry in call.send.call_args_list)
-        )
-
     async def test_only_acknowledged_playback_enters_interrupted_history(self):
         call = self.call()
         call.turn = 1
@@ -199,7 +102,8 @@ class VoiceCallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call.history, [ChatMessage(role="assistant", text="Heard.")])
         for _ in range(30):
             call.remember("user", "x" * 4000)
-        self.assertLessEqual(sum(len(message.text) for message in call.history), 12000)
+        self.assertEqual(len(call.history), 12)
+        self.assertTrue(all(message.text == "x" * 4000 for message in call.history))
 
     async def test_lost_checkpoint_ends_session(self):
         status = snapshot()
@@ -253,53 +157,32 @@ class VoiceCallTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(call.played, 0)
 
-    async def test_synthesis_admission_failure_keeps_actionable_error_and_closes_stream(
-        self,
-    ):
-        stream = Stream([{"content": "Hi."}, {"finish_reason": "stop"}])
+    async def test_end_joins_current_response_before_returning(self):
+        call = self.call()
+        cleaned = asyncio.Event()
 
-        async def submit(body, *, feature):
-            if feature == "stt":
-                return {"text": "Hello"}
-            raise InferenceFailure("Needs 4 GiB VRAM", 507)
+        async def response():
+            try:
+                await asyncio.Future()
+            finally:
+                cleaned.set()
 
-        call = self.call(
-            SimpleNamespace(
-                models_status=snapshot,
-                submit=submit,
-                open_chat_stream=AsyncMock(return_value=(stream, "lfm3-1.7b-bf16")),
+        call.response = asyncio.create_task(response())
+        await asyncio.sleep(0)
+        receive = AsyncMock(return_value=call_event.validate_python({"type": "end"}))
+        await call.run(receive)
+        self.assertTrue(cleaned.is_set())
+        self.assertIsNone(call.response)
+
+    async def test_out_of_order_playback_acknowledgement_is_rejected(self):
+        call = self.call()
+        call.turn = 1
+        call.segments = ["First", "Second"]
+        receive = AsyncMock(
+            return_value=call_event.validate_python(
+                {"type": "played", "turn": 1, "segment": 1}
             )
         )
-        with self.assertRaisesRegex(InferenceFailure, "Needs 4 GiB"):
-            await call.respond("wav", 0)
-        self.assertTrue(stream.closed)
-
-    async def test_chat_can_finish_when_synthesis_waits_for_the_same_memory(self):
-        chat_finished = asyncio.Event()
-
-        class ManySentences(Stream):
-            async def __aiter__(self):
-                for _ in range(12):
-                    yield {"content": "A short sentence. "}
-                chat_finished.set()
-                yield {"finish_reason": "stop"}
-
-        stream = ManySentences([])
-
-        async def submit(body, *, feature):
-            if feature == "stt":
-                return {"text": "Hello"}
-            # Physical admission can wait for the language worker to finish.
-            await chat_finished.wait()
-            return {"audio_base64": "AAAA"}
-
-        call = self.call(
-            SimpleNamespace(
-                models_status=snapshot,
-                submit=submit,
-                open_chat_stream=AsyncMock(return_value=(stream, "lfm3-1.7b-bf16")),
-            )
-        )
-        await asyncio.wait_for(call.respond("wav", 0), 1)
-        self.assertTrue(stream.closed)
-        self.assertEqual(len(call.segments), 12)
+        with self.assertRaisesRegex(InferenceFailure, "playback acknowledgement"):
+            await call.run(receive)
+        self.assertEqual(call.played, 0)

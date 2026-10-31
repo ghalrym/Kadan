@@ -20,8 +20,9 @@ const run = (id, status, error = null) => ({
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
 // Exercise Chat's poll, send and Stop handlers with in-memory hooks and API boundaries.
-async function chat(initialRuns, initialConversation = chain, storedPending = null) {
-  const slots = [], effects = [], timers = [], requests = [];
+async function chat(initialRuns, initialConversation = chain, storedPending = null, callOptions = {}) {
+  const slots = [], effects = [], timers = [], requests = [], callStarts = [];
+  let callDisabled;
   const storage = new Map();
   if (storedPending) storage.set(outbox.chatStorageKeys("guide", initialConversation.id).pending, JSON.stringify(storedPending));
   const attachments = { ready: true, entries: [], start() {}, stop() {},
@@ -63,13 +64,16 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "lucide-react": {},
     "./Markdown": { default: "Markdown" },
-    "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true }) },
+    "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true, ...callOptions.ready }) },
     "./Pet": { default: "Pet", useMood: () => ["idle", () => {}] },
     "./AgentCard": { default: "AgentCard" },
     "./ComputerViewer": { default: "ComputerViewer" },
     "./Activity": { default: "Activity" },
     "./CodingIndicator": { default: "CodingIndicator" },
-    "./VoiceCallControl": { useVoiceCall: () => ({ active: false }) },
+    "./VoiceCallControl": { useVoiceCall: (_agent, _persona, disabled) => {
+      callDisabled = disabled;
+      return { active: false, unavailable: null, ...callOptions.voiceCall, start: (...args) => callStarts.push(args) };
+    } },
     "./PetContext": { useAgentPet: () => null },
     "./presence": { activeLabel: () => "Not active yet" },
     "./agentRuns": agentRuns,
@@ -125,7 +129,13 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
   await settle();
   render();
   return {
-    render, requests, storage, attachments,
+    render, requests, storage, attachments, callStarts,
+    callDisabled: () => callDisabled,
+    card() {
+      elements().find(node => node.props?.["aria-label"] === "Open Guide’s card").props.onClick();
+      render();
+      return elements().find(node => node.type === "AgentCard").props;
+    },
     attachmentIds: () => elements().filter(node => typeof node.type === "function" && node.type.name === "Attachment").map(node => node.props.id),
     savedResults: () => elements().filter(node => node.type === "SaveChatResult").map(node => node.props),
     retry: () => elements().find(node => node.type === "button" && node.props.children === "Retry").props.onClick(),
@@ -432,4 +442,30 @@ test("only saved assistant replies with text offer saving in the current agent a
   assert.equal(controls[0].agentKey, "guide");
   assert.equal(controls[0].conversationId, chain.id);
   assert.equal(controls[0].message, reply);
+});
+
+
+test("normal Call remains available when text language is unavailable", async () => {
+  const view = await chat([], chain, null, { ready: { storage: true, chat: false } });
+  const card = view.card();
+  assert.equal(card.callDisabled, false);
+  assert.equal(view.callDisabled(), false);
+  assert.equal(card.callTitle, "Start a voice call");
+  card.onCall();
+  assert.deepEqual(view.callStarts, [[]]);
+});
+
+test("Call needs Tsuchi for persona instructions", async () => {
+  const view = await chat([], chain, null, { ready: { storage: false, chat: false } });
+  const card = view.card();
+  assert.equal(card.callDisabled, true);
+  assert.equal(view.callDisabled(), true);
+  assert.match(card.callTitle, /storage.*persona/);
+});
+
+test("Call reports missing browser support before starting", async () => {
+  const view = await chat([], chain, null, { voiceCall: { unavailable: "Calls require HTTPS or localhost." } });
+  const card = view.card();
+  assert.equal(card.callDisabled, true);
+  assert.equal(card.callTitle, "Calls require HTTPS or localhost.");
 });
