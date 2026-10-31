@@ -60,7 +60,8 @@ export function validateDecisionRequest(state: string, questions: Question[]): D
       if (duplicate !== undefined) add(`Option key “${duplicate}” is used more than once.`)
     }
     if (question.type === 'Score') {
-      if (!question.levels.length) add('Add at least one rubric level.')
+      if (question.levels.length < 2 || question.levels.length > 10)
+        add('Score requires between 2 and 10 rubric levels.')
       if (question.levels.some((level) => !level.trim())) add('Every rubric level needs a description.')
     }
   })

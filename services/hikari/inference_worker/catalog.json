@@ -813,34 +813,6 @@
       "asset_url": null,
       "asset_name": null,
       "manifest": []
-    },
-    {
-      "id": "laya",
-      "repo_id": "convaiinnovations/laya",
-      "revision": "7b928d828b7b0e022f929d9bd2e44165aa270148",
-      "license": "unknown",
-      "estimated_bytes": 0,
-      "kind": "decision",
-      "display_name": "Laya",
-      "short_name": "Laya",
-      "layout": "components",
-      "subfolder": "",
-      "component_paths": [],
-      "required_files": [
-        "rl_agent_config.json",
-        "model.safetensors",
-        "tokenizer/tokenizer.json",
-        "encoder/config.json"
-      ],
-      "weight_paths": [
-        ""
-      ],
-      "license_url": null,
-      "license_notice": null,
-      "inference_available": true,
-      "asset_url": null,
-      "asset_name": null,
-      "manifest": []
     }
   ],
   "assets": [

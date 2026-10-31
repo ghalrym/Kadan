@@ -96,7 +96,7 @@ class ImageTask(TaskInput):
 
 class DecisionTask(TaskInput):
     feature: Literal["decisions"] = "decisions"
-    model_id: Literal["d1-2b-cpu-f32"] | None = None
+    model_id: Literal["d1-2b-cpu-f32"] = "d1-2b-cpu-f32"
     state: str
     questions: list[DecisionQuestion]
 
@@ -229,6 +229,7 @@ class InferenceTask(BaseModel):
         return {
             **value.model_dump(mode="json", exclude_unset=True),
             "feature": value.feature,
+            **({"model_id": value.model_id} if isinstance(value, DecisionTask) else {}),
         }
 
     @property

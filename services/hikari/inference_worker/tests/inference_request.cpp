@@ -68,5 +68,16 @@ int main() {
     assert(
         std::get<ChatRequest>(parse_request(chat).input).conversation_id == unicode_id
     );
+    auto decisions = envelope;
+    decisions["input"] = {
+        {"feature", "decisions"}, {"state", "text"}, {"questions", Json::array()}
+    };
+    bool retired_decisions_rejected = false;
+    try {
+        (void)parse_request(decisions);
+    } catch (const RequestError& error) {
+        retired_decisions_rejected = error.status == 422;
+    }
+    assert(retired_decisions_rejected);
     std::cout << "Inference request parser units passed\n";
 }

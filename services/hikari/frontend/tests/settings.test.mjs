@@ -37,6 +37,7 @@ async function settingsApi(response = { ok: true }, data = { models: [] }, error
 test('every capability reads its fixed checkpoint from the model snapshot', async () => {
   const { api, calls, capabilities } = await settingsApi({ ok: true }, { models: [
     checkpoint('qwen3.6-35b-a3b-q4-k-m'), checkpoint('lfm3-vl-2b-bf16'), checkpoint('lfm3-1.7b-bf16'),
+    checkpoint('laya'), checkpoint('d1-2b-cpu-f32'),
   ] })
   const result = await api.fetchModels(new AbortController().signal)
   assert.deepEqual(result.map(row => row.capability.label),
@@ -45,6 +46,8 @@ test('every capability reads its fixed checkpoint from the model snapshot', asyn
   assert.equal(result[2].model.id, 'lfm3-vl-2b-bf16')
   assert.equal(result[3].model, null)
   assert.equal(capabilities.length, 9)
+  assert.equal(result.at(-1).model.id, 'd1-2b-cpu-f32')
+  assert.equal(result.some(row => row.model?.id === 'laya'), false)
   assert.deepEqual(calls.map(call => call.name), ['listModelsV1ModelsGet'])
 })
 
@@ -109,11 +112,11 @@ test('downloading requires acknowledgement and queues only idle incomplete check
 
 test('the fixed Decisions checkpoint can be explicitly downloaded after acknowledgement', async () => {
   const { api, calls, rows } = await settingsApi()
-  const models = rows({ laya: checkpoint('laya') })
+  const models = rows({ 'd1-2b-cpu-f32': checkpoint('d1-2b-cpu-f32') })
   await assert.rejects(api.downloadModels(models, false, new AbortController().signal), /acknowledge/)
   assert.equal(calls.length, 0)
   await api.downloadModels(models, true, new AbortController().signal)
-  assert.deepEqual(calls.map(call => call.args.path.model_id), ['laya'])
+  assert.deepEqual(calls.map(call => call.args.path.model_id), ['d1-2b-cpu-f32'])
   assert.equal(calls[0].args.body.license_acknowledged, true)
 })
 

@@ -51,7 +51,6 @@ private:
     Handle handle_;
 };
 
-std::unique_ptr<InferenceEngine> decision_engine(std::shared_ptr<Resources>, Progress);
 std::unique_ptr<InferenceEngine> image_engine(
     std::shared_ptr<Resources>, Progress, RequestProgress, InferenceOwner::Probe
 );

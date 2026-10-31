@@ -56,7 +56,6 @@ def build(
             "-DBUILD_TESTING=OFF",
             "-DKADAN_BUILD_TOOLS=ON",
             "-DKADAN_ENABLE_CUDA=OFF",
-            "-DKADAN_ENABLE_DECISIONS=OFF",
             "-DKADAN_ENABLE_H3_GENERATION=OFF",
             "-DKADAN_ENABLE_TTS_WORKER=OFF",
             "-DKADAN_ENABLE_WHISPER_BLAS=OFF",

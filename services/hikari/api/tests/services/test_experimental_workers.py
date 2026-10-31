@@ -11,31 +11,20 @@ from api.services.worker_hub import WorkerHub, target_worker
 
 
 class ExperimentalRoutingTests(unittest.TestCase):
-    def test_d1_is_explicit_and_opt_in_without_changing_decision_defaults(self):
-        ordinary = InferenceTask(
+    def test_decisions_always_use_fixed_d1_without_a_flag(self):
+        task = InferenceTask(
             input={"feature": "decisions", "state": "text", "questions": []}
         )
-        trial = InferenceTask(
-            input={
-                "feature": "decisions",
-                "model_id": "d1-2b-cpu-f32",
-                "state": "text",
-                "questions": [],
-            }
+        for env in ({}, {"HIKARI_ENABLE_D1_DECISIONS": "false"}):
+            with patch.dict("os.environ", env, clear=True):
+                self.assertEqual(target_worker(task), "lfm3_decision")
+        self.assertEqual(ModelAssignments().decisions, "d1-2b-cpu-f32")
+        self.assertEqual(task.model_dump()["input"]["model_id"], "d1-2b-cpu-f32")
+        self.assertEqual(
+            InferenceTask.model_validate_json(task.model_dump_json()), task
         )
-        for enabled in ("true", "false"):
-            with patch.dict("os.environ", {"HIKARI_ENABLE_D1_DECISIONS": enabled}):
-                self.assertEqual(target_worker(ordinary), "decision")
-                if enabled == "true":
-                    self.assertEqual(target_worker(trial), "lfm3_decision")
-                else:
-                    with self.assertRaisesRegex(
-                        InferenceFailure, "HIKARI_ENABLE_D1_DECISIONS"
-                    ):
-                        target_worker(trial)
-        self.assertEqual(ModelAssignments().decisions, "laya")
 
-    def test_d1_download_routes_only_to_its_owner(self):
+    def test_d1_download_routes_only_to_its_owner_without_a_flag(self):
         hub = WorkerHub()
         cpu = SimpleNamespace(
             kind="lfm3_decision",
@@ -43,7 +32,7 @@ class ExperimentalRoutingTests(unittest.TestCase):
             computer=SimpleNamespace(id="cpu"),
         )
         native = SimpleNamespace(
-            kind="decision",
+            kind="speech",
             ready=SimpleNamespace(is_set=lambda: True),
             computer=SimpleNamespace(id="native"),
         )
@@ -56,13 +45,8 @@ class ExperimentalRoutingTests(unittest.TestCase):
                 "license_acknowledged": True,
             },
         )
-        with patch.dict("os.environ", {"HIKARI_ENABLE_D1_DECISIONS": "true"}):
+        with patch.dict("os.environ", {}, clear=True):
             self.assertEqual(hub._store_targets(request), [cpu])
-        with (
-            patch.dict("os.environ", {"HIKARI_ENABLE_D1_DECISIONS": "false"}),
-            self.assertRaisesRegex(InferenceFailure, "HIKARI_ENABLE_D1_DECISIONS"),
-        ):
-            hub._store_targets(request)
 
     def test_experimental_events_do_not_replace_native_language_status(self):
         service = InferenceService()
@@ -95,9 +79,11 @@ class ExperimentalRoutingTests(unittest.TestCase):
 
     def test_explicit_model_requires_server_flag(self):
         request = InferenceTask(input={"feature": "llm", "model": "lfm3-1.7b-bf16"})
-        with patch.dict("os.environ", {"HIKARI_ENABLE_LFM3_TEXT": "false"}):
-            with self.assertRaisesRegex(InferenceFailure, "HIKARI_ENABLE_LFM3_TEXT"):
-                target_worker(request)
+        with (
+            patch.dict("os.environ", {"HIKARI_ENABLE_LFM3_TEXT": "false"}),
+            self.assertRaisesRegex(InferenceFailure, "HIKARI_ENABLE_LFM3_TEXT"),
+        ):
+            target_worker(request)
         with patch.dict("os.environ", {"HIKARI_ENABLE_LFM3_TEXT": "true"}):
             self.assertEqual(target_worker(request), "lfm3_llm")
 
@@ -105,9 +91,11 @@ class ExperimentalRoutingTests(unittest.TestCase):
         request = InferenceTask(
             operation="load", input={"feature": "llm", "model": "lfm3-1.7b-bf16"}
         )
-        with patch.dict("os.environ", {"HIKARI_ENABLE_LFM3_TEXT": "true"}):
-            with self.assertRaisesRegex(InferenceFailure, "per request"):
-                target_worker(request)
+        with (
+            patch.dict("os.environ", {"HIKARI_ENABLE_LFM3_TEXT": "true"}),
+            self.assertRaisesRegex(InferenceFailure, "per request"),
+        ):
+            target_worker(request)
 
     def test_native_primary_settings_survive_catalog_refresh(self):
         hub = WorkerHub()

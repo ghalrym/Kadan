@@ -23,7 +23,7 @@ BACKENDS = {
     "text": ("lfm3_llm", "HIKARI_ENABLE_LFM3_TEXT"),
     "vision": ("lfm3_vision", "HIKARI_ENABLE_LFM3_VISION"),
     "audio": ("lfm3_audio", None),
-    "d1": ("lfm3_decision", "HIKARI_ENABLE_D1_DECISIONS"),
+    "d1": ("lfm3_decision", None),
 }
 
 

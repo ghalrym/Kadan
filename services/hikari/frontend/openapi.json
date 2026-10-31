@@ -696,18 +696,6 @@
       "DecisionRequest": {
         "additionalProperties": false,
         "properties": {
-          "model_id": {
-            "anyOf": [
-              {
-                "const": "d1-2b-cpu-f32",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model Id"
-          },
           "questions": {
             "items": {
               "discriminator": {
@@ -1490,8 +1478,8 @@
             "type": "string"
           },
           "decisions": {
-            "const": "laya",
-            "default": "laya",
+            "const": "d1-2b-cpu-f32",
+            "default": "d1-2b-cpu-f32",
             "title": "Decisions",
             "type": "string"
           },
@@ -2156,10 +2144,12 @@
             "type": "string"
           },
           "levels": {
+            "description": "Ordered rubric with 2 to 10 levels.",
             "items": {
               "type": "string"
             },
-            "minItems": 1,
+            "maxItems": 10,
+            "minItems": 2,
             "title": "Levels",
             "type": "array"
           },

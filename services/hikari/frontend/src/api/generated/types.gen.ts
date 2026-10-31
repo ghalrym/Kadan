@@ -393,10 +393,6 @@ export type DecisionPlaygroundResponse = {
  */
 export type DecisionRequest = {
   /**
-   * Model Id
-   */
-  model_id?: 'd1-2b-cpu-f32' | null
-  /**
    * Questions
    */
   questions: Array<ChoiceQuestion | ScoreQuestion | NoulQuestion>
@@ -842,7 +838,7 @@ export type ModelAssignments = {
   /**
    * Decisions
    */
-  decisions?: 'laya'
+  decisions?: 'd1-2b-cpu-f32'
   /**
    * Formatting
    */
@@ -1208,6 +1204,8 @@ export type ScoreQuestion = {
   key: string
   /**
    * Levels
+   *
+   * Ordered rubric with 2 to 10 levels.
    */
   levels: Array<string>
   /**

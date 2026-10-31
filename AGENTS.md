@@ -81,6 +81,7 @@ Hikari has no hardware tiers. It runs one fixed model per capability, and users 
 | Vision | LFM3-VL 2B BF16 (`lfm3-vl-2b-bf16`) |
 | Image | Qwen-Image 2.1 Turbo (`qwen-image-2.1-turbo`) |
 | Video | MiniMax H3 Turbo (`h3-fl2va-int8-turbo`) |
+| Decisions | d1 2B CPU F32 (`d1-2b-cpu-f32`) |
 | Text to speech | Qwen3-TTS 1.7B CustomVoice (`qwen-tts-1.7b-custom`) |
 | Speech to text | Whisper medium (`whisper-medium`) |
 | Speech formatter | S1-mini by Superwhisper (`superwhisper-s1-mini`) |

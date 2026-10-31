@@ -59,58 +59,6 @@ struct ImageRequest {
     std::optional<unsigned> batch_collection_target;
 };
 
-struct ChoiceOption {
-    std::string key, description;
-};
-
-struct ChoiceQuestion {
-    std::vector<ChoiceOption> options;
-};
-
-struct ScoreQuestion {
-    std::vector<std::string> levels;
-};
-
-struct NoulQuestion {
-    std::string true_when, false_when;
-};
-
-struct DecisionQuestion {
-    std::string key, instructions;
-    std::variant<ChoiceQuestion, ScoreQuestion, NoulQuestion> criteria;
-
-    std::string type() const {
-        return std::holds_alternative<ChoiceQuestion>(criteria)  ? "Choice"
-               : std::holds_alternative<ScoreQuestion>(criteria) ? "Score"
-                                                                 : "Noul";
-    }
-};
-
-struct DecisionRequest {
-    std::string state;
-    std::vector<DecisionQuestion> questions;
-};
-
-struct ChoiceResult {
-    std::string value;
-    std::map<std::string, double> probabilities;
-};
-
-struct ScoreResult {
-    double value;
-    std::map<std::string, double> probabilities;
-};
-
-struct NoulResult {
-    double value;
-};
-
-struct DecisionAnswer {
-    std::string key;
-    double confidence;
-    std::variant<ChoiceResult, ScoreResult, NoulResult> result;
-};
-
 struct SpeechRequest {
     std::string script, model = "qwen-tts-1.7b-custom", language = "Auto";
     std::string speaker, instruction;
@@ -154,7 +102,6 @@ struct WhisperFormattingRequest {
 using TaskInput = std::variant<
     ChatRequest,
     ImageRequest,
-    DecisionRequest,
     SpeechRequest,
     TranscriptionRequest,
     TranscriptionFormattingRequest,

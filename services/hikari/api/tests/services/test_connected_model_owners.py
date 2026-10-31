@@ -9,12 +9,12 @@ from api.services.inference_errors import InferenceFailure
 from api.services.worker_hub import WorkerHub
 from api.tests.services.test_worker_hub import checkpoint
 
-NATIVE_KINDS = ("llm", "decision", "tts", "speech", "formatting", "image", "video")
+NATIVE_KINDS = ("llm", "tts", "speech", "formatting", "image", "video")
 CATALOG = (
     ("lfm3-1.7b-bf16", "llm"),
     ("lfm3-vl-2b-bf16", "vision"),
     ("lfm3-audio-2b-bf16", "audio"),
-    ("laya", "decision"),
+    ("d1-2b-cpu-f32", "decision"),
     ("qwen-tts-1.7b-custom", "speech"),
     ("whisper-medium", "transcription"),
     ("superwhisper-s1-mini", "formatting"),
@@ -47,12 +47,11 @@ def connected_worker(kind, *, catalog=CATALOG, formatting=True, ready=True):
 class ConnectedModelOwnersTests(unittest.TestCase):
     def test_decision_worker_full_catalog_only_advertises_its_decision_model(self):
         hub = WorkerHub()
-        hub.primary = "decision"
-        hub.workers = {"decision": connected_worker("decision")}
+        hub.workers = {"lfm3_decision": connected_worker("lfm3_decision")}
         with patch.dict("os.environ", {}, clear=True):
             hub._refresh_models()
-        self.assertEqual([model.id for model in hub.models.models], ["laya"])
-        self.assertEqual(len(hub.workers["decision"].models.models), len(CATALOG))
+        self.assertEqual([model.id for model in hub.models.models], ["d1-2b-cpu-f32"])
+        self.assertEqual(len(hub.workers["lfm3_decision"].models.models), len(CATALOG))
 
     def test_native_workers_advertise_only_their_fixed_owned_models(self):
         hub = WorkerHub()
@@ -63,7 +62,6 @@ class ConnectedModelOwnersTests(unittest.TestCase):
         self.assertEqual(
             {model.id for model in hub.models.models},
             {
-                "laya",
                 "qwen-tts-1.7b-custom",
                 "whisper-medium",
                 "superwhisper-s1-mini",
@@ -76,9 +74,8 @@ class ConnectedModelOwnersTests(unittest.TestCase):
         hub = WorkerHub()
         hub.workers = {
             kind: connected_worker(kind)
-            for kind in ("decision", "lfm3_llm", "lfm3_vision", "lfm3_audio")
+            for kind in ("lfm3_decision", "lfm3_llm", "lfm3_vision", "lfm3_audio")
         }
-        hub.primary = "decision"
         for text_enabled, vision_enabled in (
             (False, False),
             (True, False),
@@ -97,7 +94,7 @@ class ConnectedModelOwnersTests(unittest.TestCase):
                 ),
             ):
                 hub._refresh_models()
-                expected = {"laya", "lfm3-audio-2b-bf16"}
+                expected = {"d1-2b-cpu-f32", "lfm3-audio-2b-bf16"}
                 if text_enabled:
                     expected.add("lfm3-1.7b-bf16")
                 if vision_enabled:
@@ -117,14 +114,14 @@ class ConnectedModelOwnersTests(unittest.TestCase):
     def test_primary_saved_formatting_is_preserved_when_other_workers_disagree(self):
         hub = WorkerHub()
         hub.workers = {
-            "decision": connected_worker("decision", formatting=False),
+            "tts": connected_worker("tts", formatting=False),
             "speech": connected_worker("speech", formatting=True),
             "lfm3_audio": connected_worker("lfm3_audio", formatting=True),
         }
-        hub.primary = "decision"
+        hub.primary = "tts"
         hub._refresh_models()
         self.assertFalse(hub.models.whisper_formatting)
-        self.assertFalse(hub.workers["decision"].models.whisper_formatting)
+        self.assertFalse(hub.workers["tts"].models.whisper_formatting)
         self.assertTrue(hub.workers["speech"].models.whisper_formatting)
 
     def test_snapshot_rows_are_deep_copied_and_duplicate_owners_are_deduplicated(self):
@@ -154,26 +151,31 @@ class ConnectedModelOwnersTests(unittest.TestCase):
 class ConnectedStoreSettingsTests(unittest.IsolatedAsyncioTestCase):
     async def test_disconnected_owner_is_not_replaced_by_another_native_catalog(self):
         hub = WorkerHub()
-        decision, speech = connected_worker("decision"), connected_worker("speech")
+        decision, speech = connected_worker("lfm3_decision"), connected_worker("speech")
         computer = SimpleNamespace(
             id="computer", ledger=SimpleNamespace(workers={"speech": speech})
         )
         speech.computer = computer
         speech.controls = {}
-        hub.primary = "decision"
-        hub.workers = {"decision": decision, "speech": speech}
+        hub.workers = {"lfm3_decision": decision, "speech": speech}
         hub.computers = {computer.id: computer}
         hub._refresh_models()
         self.assertIn("whisper-medium", {model.id for model in hub.models.models})
         await hub._disconnected(speech)
-        self.assertEqual([model.id for model in hub.models.models], ["laya"])
+        self.assertEqual([model.id for model in hub.models.models], ["d1-2b-cpu-f32"])
         self.assertNotIn(computer.id, hub.computers)
 
     async def test_whisper_configuration_targets_all_ready_native_stores_only(self):
         hub = WorkerHub()
         hub.workers = {
             kind: connected_worker(kind)
-            for kind in (*NATIVE_KINDS, "lfm3_llm", "lfm3_vision", "lfm3_audio")
+            for kind in (
+                *NATIVE_KINDS,
+                "lfm3_decision",
+                "lfm3_llm",
+                "lfm3_vision",
+                "lfm3_audio",
+            )
         }
         hub.workers["not-ready"] = connected_worker("speech", ready=False)
         request = InferenceTask(
@@ -189,7 +191,7 @@ class ConnectedStoreSettingsTests(unittest.IsolatedAsyncioTestCase):
         hub = WorkerHub()
         hub.workers = {
             kind: connected_worker(kind)
-            for kind in ("lfm3_llm", "lfm3_vision", "lfm3_audio")
+            for kind in ("lfm3_decision", "lfm3_llm", "lfm3_vision", "lfm3_audio")
         }
         request = InferenceTask(
             operation="configure",
@@ -205,7 +207,7 @@ class ConnectedStoreSettingsTests(unittest.IsolatedAsyncioTestCase):
         primary.models.models[0].context_limit = 8192
         hub.primary = "llm"
         hub.workers = {"llm": primary}
-        for kind in ("lfm3_llm", "lfm3_vision", "lfm3_audio"):
+        for kind in ("lfm3_decision", "lfm3_llm", "lfm3_vision", "lfm3_audio"):
             with self.subTest(kind=kind):
                 worker = connected_worker(kind)
                 await hub._synchronize(worker)

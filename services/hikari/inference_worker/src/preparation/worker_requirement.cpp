@@ -16,7 +16,6 @@ constexpr Bytes text_host_headroom = 4 * gib;
 // Engine admission floors, from each engine's load().
 constexpr Bytes image_host_floor = 16 * gib;
 constexpr Bytes video_device_floor = 3 * gib;
-constexpr Bytes decision_envelope = 3 * gib;
 // Video prompts beyond this length no longer grow the text stage.
 constexpr std::size_t max_prompt_bytes = 32000;
 
@@ -28,8 +27,6 @@ std::string default_model(Workload workload, const ModelStore& store) {
             "explicit checkpoint.",
             422
         );
-    case Workload::decision:
-        return "laya";
     case Workload::formatting:
         return "superwhisper-s1-mini";
     case Workload::speech:
@@ -81,9 +78,6 @@ Json worker_requirement(
     // never leaves an engine waiting on memory it was promised. Preferred
     // amounts let an engine keep its whole checkpoint resident.
     switch (workload) {
-    case Workload::decision:
-        // Laya runs on the host only, inside a fixed envelope.
-        return footprint(model, decision_envelope, decision_envelope, 0, 0, 0);
     case Workload::formatting:
         // S1-mini runs on the host with its weights resident as floats.
         return footprint(model, 2 * weights + gib, 2 * weights + gib, 0, 0, 0);

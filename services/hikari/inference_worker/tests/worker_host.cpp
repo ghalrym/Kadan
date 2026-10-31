@@ -141,7 +141,7 @@ void downloads_and_settings_run_on_the_store_worker() {
         {{"id", id('c')},
          {"command", "submit"},
          {"operation", "download"},
-         {"input", {{"feature", "models"}, {"model_id", "laya"}}}}
+         {"input", {{"feature", "models"}, {"model_id", "whisper-medium"}}}}
     );
     harness.command(
         {{"id", id('d')},

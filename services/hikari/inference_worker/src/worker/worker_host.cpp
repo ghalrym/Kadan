@@ -38,8 +38,6 @@ const char* worker_name(Workload workload) {
     switch (workload) {
     case Workload::llm:
         return "llm";
-    case Workload::decision:
-        return "decision";
     case Workload::tts:
         return "tts";
     case Workload::speech:
