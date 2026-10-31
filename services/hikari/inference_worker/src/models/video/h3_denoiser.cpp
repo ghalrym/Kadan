@@ -780,7 +780,6 @@ std::optional<MediaPlanError> prepare(
     Shard* turbo,
     const StageManifest& manifest,
     const MediaShape& stage,
-    Resources& resources,
     const std::atomic_bool& cancel
 ) {
     if (auto error = session.admit(manifest, stage))
@@ -796,8 +795,8 @@ std::optional<MediaPlanError> prepare(
                                       : t.dtype == Dtype::bf16 ? 2
                                                                : 4;
             const auto columns = t.rank == 1 ? 1 : std::size_t(t.shape[1]);
-            Admission staging(resources, slice.stored_bytes);
-            std::vector<std::uint8_t> raw(slice.stored_bytes);
+            auto staging = session.allocate_upload(slice.stored_bytes);
+            const auto raw = staging->bytes();
             const auto offset = slice.first_row * columns * width;
             for (std::size_t at = 0; at < raw.size();) {
                 stop(cancel);
@@ -824,7 +823,7 @@ std::optional<MediaPlanError> prepare(
                     );
                 }
             auto destination = session.weight(slice);
-            session.upload_weight(destination, std::as_bytes(std::span(raw)));
+            session.upload_weight(destination, std::move(staging));
         }
     } catch (...) {
         session.abort(std::current_exception());
@@ -1296,7 +1295,6 @@ void H3Denoiser::execute(
                 turbo_.get(),
                 detail::h3_block_manifest(layout, n, groups, retained),
                 detail::h3_block_shape(layout, n),
-                *resources_,
                 cancel
             );
         }
@@ -1335,7 +1333,6 @@ void H3Denoiser::execute(
                     turbo_.get(),
                     detail::h3_refiner_manifest(layout, n, nt, time_count, block != 0),
                     detail::h3_refiner_shape(layout, n),
-                    *resources_,
                     cancel
                 );
             }
@@ -1372,7 +1369,6 @@ void H3Denoiser::execute(
                 nullptr,
                 detail::h3_final_manifest(layout, n, nv, na, time_count),
                 detail::h3_final_shape(layout, n),
-                *resources_,
                 cancel
             );
         }
@@ -1417,7 +1413,6 @@ void H3Denoiser::execute(
                     turbo_.get(),
                     detail::h3_feed_forward_manifest(layout, n, groups),
                     detail::h3_feed_forward_shape(layout, n),
-                    *resources_,
                     cancel
                 );
             }

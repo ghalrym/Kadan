@@ -12,8 +12,44 @@ void check(bool b) {
         throw std::runtime_error("h3_profile_test_failed");
 }
 
+void owned_input_fits_existing_execution_allowance() {
+    // Count the actual denoiser arrays independently of the estimator:
+    // current/normalized/projected, QKV/Q/K/V/attended, two FF planes,
+    // F64 rotary coordinates, time IDs and resident modality groups.
+    constexpr kadan::Bytes hidden = 5376, inner = 7168, ff = 14336;
+    constexpr kadan::Bytes scratch_per_token =
+        (3 * hidden + 7 * inner + 2 * ff) * 4 + 96 * 8 + 8 + 4;
+    constexpr kadan::Bytes input_per_token = hidden * 4;
+    for (auto edge : {480u, 768u})
+        for (auto aspect : {"16:9", "9:16", "1:1"})
+            for (std::size_t seconds = 1; seconds <= 15; ++seconds)
+                for (std::size_t prompt_bytes : {0u, 128u, 32000u}) {
+                    const auto profile = h3_api_profile(edge, aspect, seconds);
+                    const auto text = std::min<std::size_t>(128000, 4 * prompt_bytes);
+                    const auto tokens =
+                        text + profile.video_tokens + profile.audio_tokens;
+                    const auto upload_bytes = tokens * input_per_token;
+                    // Even the smallest accepted clip's hidden upload dominates
+                    // the fixed maximum 3 timesteps * 3 modalities * 6 AdaLN rows.
+                    check(upload_bytes >= 3 * 3 * 6 * hidden * 4);
+                    const auto execution = h3_denoiser_host_bytes_per_token * tokens;
+                    kadan::Resources host({execution});
+                    const auto scratch = host.reserve(
+                        kadan::Workload::video, {scratch_per_token * tokens}
+                    );
+                    const auto input =
+                        host.reserve(kadan::Workload::video, {upload_bytes});
+                    check(host.snapshot().used[0] <= execution);
+                    check(h3_request_memory(profile, prompt_bytes) >= execution);
+                    host.released(input);
+                    host.released(scratch);
+                    check(host.snapshot().used == kadan::Footprint({0}));
+                }
+}
+
 int main() {
     try {
+        owned_input_fits_existing_execution_allowance();
         // Independent expected values from the installed H3 shape resolver, for
         // every advertised duration and each API resolution/aspect combination.
         constexpr std::array<std::size_t, 15> frames{
