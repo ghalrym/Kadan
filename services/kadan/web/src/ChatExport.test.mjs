@@ -110,7 +110,7 @@ test("Chat passes saved history to export while its draft and optimistic outgoin
     react: {
       Fragment: "Fragment", useEffect() {}, useLayoutEffect() {}, useCallback: callback => callback,
       useRef: current => ({ current }),
-      useState: initial => [slot++ === 12 ? outgoing : typeof initial === "function" ? initial() : initial, () => {}],
+      useState: initial => [slot++ === 13 ? outgoing : typeof initial === "function" ? initial() : initial, () => {}],
     },
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "lucide-react": {},
