@@ -63,11 +63,13 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     react,
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "lucide-react": {},
+    "./RequestReferences": { default: "RequestReferences" },
     "./Markdown": { default: "Markdown" },
     "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true, ...callOptions.ready }) },
     "./Pet": { default: "Pet", useMood: () => ["idle", () => {}] },
     "./AgentCard": { default: "AgentCard" },
     "./ComputerViewer": { default: "ComputerViewer" },
+    "./ChatExport": { default: "ChatExport" },
     "./Activity": { default: "Activity" },
     "./CodingIndicator": { default: "CodingIndicator" },
     "./VoiceCallControl": { useVoiceCall: (_agent, _persona, disabled) => {
@@ -142,6 +144,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     notices: () => elements().filter(node => node.props?.className === "notice").map(node => node.props.children),
     alerts: () => elements().filter(node => node.props?.role === "alert").map(node => node.props.children[0]),
     receipts: () => elements().filter(node => node.props?.className === "receipt").map(node => node.props.children),
+    references: () => elements().find(node => node.type === "RequestReferences").props,
     composer: () => elements().find(node => node.type === "Composer").props,
     activity: () => elements().find(node => node.type === "Activity").props,
     async poll(runs, conversation = selectedChain) {
@@ -375,8 +378,10 @@ test("note submission snapshots ordered attachments separately from upload confi
   assert.equal(view.storage.has(key), false);
 });
 
-test("failed run retry keeps original attachments while newer uploads remain unresolved", async () => {
+test("failed run retry keeps original references and attachments while newer uploads remain unresolved", async () => {
   const view = await chat([]);
+  view.references().onChange([{ resource_id: "original-space", expected_version: 4, title: "Plan" }]);
+  view.render();
   view.attachments.entries = [{ id: "file-b" }, { id: "file-a" }];
   const fail = view.holdSend();
   view.composer().onChange("Read these files");
@@ -384,17 +389,19 @@ test("failed run retry keeps original attachments while newer uploads remain unr
   view.composer().onSend(true);
   const original = view.requests.find(request => request.body).body;
   assert.deepEqual(Array.from(original.attachment_ids), ["file-b", "file-a"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(original.references)), [{ resource_id: "original-space", expected_version: 4 }]);
   fail.reject(new Error("Lost send response"));
   await settle();
   view.attachments.entries = [{ id: "new-file" }];
   view.attachments.ready = false;
   view.render();
+  view.references().onChange([{ resource_id: "new-memory", expected_version: 6, title: "New" }]);
   view.composer().onChange("New draft");
   view.render();
   const finish = view.holdSend();
   view.retry();
   const retry = view.requests.filter(request => request.body).at(-1).body;
-  assert.deepEqual(retry, original);
+  assert.deepEqual(JSON.parse(JSON.stringify(retry)), JSON.parse(JSON.stringify(original)));
   assert.deepEqual(view.attachments.entries, [{ id: "new-file" }]);
   view.render();
   assert.equal(view.composer().value, "New draft");
@@ -468,4 +475,38 @@ test("Call reports missing browser support before starting", async () => {
   const card = view.card();
   assert.equal(card.callDisabled, true);
   assert.equal(card.callTitle, "Calls require HTTPS or localhost.");
+});
+
+
+test("selected reference versions travel separately and clear on confirmed send", async () => {
+  const view = await chat([]);
+  view.references().onChange([{ resource_id: "space", expected_version: 4, title: "Plan" }]);
+  view.composer().onChange("Use the plan");
+  view.render();
+  const resolve = view.holdSend();
+  view.composer().onSend(true);
+  view.render();
+  assert.equal(view.references().selected.length, 1);
+  const body = view.requests.find(item => item.body?.content === "Use the plan").body;
+  assert.deepEqual(JSON.parse(JSON.stringify(body.references)), [{ resource_id: "space", expected_version: 4 }]);
+  assert.equal(body.content, "Use the plan");
+  resolve({ run: run("new", "queued"), conversation: { ...chain, version: 2,
+    messages: [message("sent-message", "user", "Use the plan")] } });
+  await settle();
+  view.render();
+  assert.equal(view.references().selected.length, 0);
+});
+
+test("saving a note retains selections and sends no references", async () => {
+  const view = await chat([]);
+  view.references().onChange([{ resource_id: "memory", expected_version: 2, title: "Fact" }]);
+  view.composer().onChange("A note");
+  view.render();
+  const resolve = view.holdSend();
+  view.composer().onSend(false);
+  resolve({ ...chain, version: 2, messages: [message("sent-message", "user", "A note")] });
+  await settle();
+  view.render();
+  assert.equal(view.references().selected.length, 1);
+  assert.equal(view.requests.find(item => item.body?.content === "A note").body.references, undefined);
 });

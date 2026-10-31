@@ -30,6 +30,7 @@ from .models import (
     PetManifest,
     PetReferenceMode,
     PetState,
+    RequestReference,
     Resource,
     ResourceInput,
     ResourceKind,
@@ -99,6 +100,7 @@ class RunCreate(Model):
     message: Message
     persona_id: UUID | None = None
     initial_command: RunMessage | None = None
+    references: list[RequestReference] = Field(default_factory=list, max_length=3)
 
 
 class RunUpdate(AgentRunState):
@@ -218,6 +220,7 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
             value.expected_version,
             value.persona_id,
             value.initial_command,
+            value.references,
         )
 
     @router.get("/agents/{key}/runs/{run_id}", response_model=AgentRun)
@@ -430,9 +433,14 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
 
     @router.get("/agents/{key}/assets", response_model=list[Asset])
     def list_assets(
-        key: AgentKey, images: bool = False, trash: bool = False, q: str = ""
+        key: AgentKey,
+        images: bool = False,
+        trash: bool = False,
+        q: str = "",
+        limit: Annotated[int | None, Query(ge=1, le=200)] = None,
+        offset: Annotated[int, Query(ge=0)] = 0,
     ):
-        return repository.list_assets(key, images, trash, q)
+        return repository.list_assets(key, images, trash, q, limit, offset)
 
     @router.post("/agents/{key}/assets", response_model=Asset, status_code=201)
     def upload_asset(

@@ -1,7 +1,9 @@
 #include "kadan/media_session.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <map>
+#include <mutex>
 #include <set>
 
 #include "kadan/cleanup_error.hpp"
@@ -41,6 +43,19 @@ Bytes aligned(Bytes bytes, std::size_t alignment) {
     return mul(add(bytes, alignment - 1) / alignment, alignment);
 }
 
+// A failed device drain cannot authorize destruction, including during static
+// teardown. This process-lifetime root is initialized before a session can enqueue
+// work; linking a quarantined owner requires no allocation on the failure path.
+struct QuarantinedSessions {
+    std::mutex mutex;
+    std::shared_ptr<MediaSessionState> head;
+};
+
+QuarantinedSessions& quarantined_sessions() {
+    static auto* owners = new QuarantinedSessions;
+    return *owners;
+}
+
 std::atomic_uint64_t next_owner{1};
 
 std::uint64_t owner_generation() {
@@ -53,7 +68,7 @@ std::uint64_t owner_generation() {
 }
 }  // namespace
 
-class MediaSessionState {
+class MediaSessionState : public std::enable_shared_from_this<MediaSessionState> {
 public:
     enum class Lifecycle {
         active,
@@ -144,6 +159,19 @@ public:
     bool admitted = false;
     Lifecycle lifecycle = Lifecycle::active;
     bool activity_owned = true;
+    std::unique_ptr<const MediaHostBuffer> upload_source;
+    std::shared_ptr<MediaSessionState> next_quarantined;
+
+    void quarantine() {
+        if (lifecycle != Lifecycle::quarantined) {
+            auto owner = shared_from_this();
+            auto& retained = quarantined_sessions();
+            std::lock_guard lock(retained.mutex);
+            next_quarantined = std::move(retained.head);
+            retained.head = std::move(owner);
+            lifecycle = Lifecycle::quarantined;
+        }
+    }
 
     MediaSessionState(
         std::shared_ptr<Resources> r,
@@ -201,11 +229,12 @@ public:
             }
         }
         if (first) {
-            lifecycle = Lifecycle::quarantined;
+            quarantine();
             std::rethrow_exception(first);
         }
         for (auto& slot : slots)
             slot.consumers.clear();
+        upload_source.reset();
     }
 
     void cleanup() {
@@ -239,7 +268,7 @@ public:
             }
         }
         if (first) {
-            lifecycle = Lifecycle::quarantined;
+            quarantine();
             std::rethrow_exception(first);
         }
         if (reservation) {
@@ -345,6 +374,38 @@ MediaEvent DeviceTensorView::readiness() const {
     return state_->slots[slot_].ready;
 }
 
+MediaHostBuffer::MediaHostBuffer(
+    std::shared_ptr<Resources> resources, Workload workload, Bytes bytes
+)
+    : resources_(std::move(resources)), workload_(workload) {
+    if (!resources_ || !bytes || bytes > std::numeric_limits<std::size_t>::max())
+        throw std::invalid_argument("media_host_buffer_size");
+    auto footprint = resources_->snapshot().capacity;
+    std::fill(footprint.begin(), footprint.end(), 0);
+    footprint[0] = bytes;
+    reservation_ = resources_->reserve(workload_, std::move(footprint));
+    try {
+        size_ = static_cast<std::size_t>(bytes);
+        storage_ = std::make_unique_for_overwrite<std::uint8_t[]>(size_);
+    } catch (...) {
+        resources_->released(reservation_);
+        throw;
+    }
+}
+
+MediaHostBuffer::~MediaHostBuffer() {
+    storage_.reset();
+    resources_->released(reservation_);
+}
+
+std::span<std::uint8_t> MediaHostBuffer::bytes() & {
+    return {storage_.get(), size_};
+}
+
+std::span<const std::uint8_t> MediaHostBuffer::bytes() const& {
+    return {storage_.get(), size_};
+}
+
 MediaSession::MediaSession(
     std::shared_ptr<Resources> r,
     std::shared_ptr<MediaSessionActivity> a,
@@ -358,6 +419,7 @@ MediaSession::MediaSession(
               std::move(r), std::move(a), std::move(o), w, std::move(limits), cancel
           )
       ) {
+    (void)quarantined_sessions();
 }
 
 MediaSession::~MediaSession() {
@@ -591,7 +653,7 @@ MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
             try {
                 s.operations->free(slot.owned.device, slot.pointer);
             } catch (...) {
-                s.lifecycle = MediaSessionState::Lifecycle::quarantined;
+                s.quarantine();
                 throw;
             }
             slot.pointer = nullptr;
@@ -728,7 +790,7 @@ MediaSession::admit(const StageManifest& m, const MediaShape& shape) {
             try {
                 s.operations->free(slot.owned.device, slot.pointer);
             } catch (...) {
-                s.lifecycle = MediaSessionState::Lifecycle::quarantined;
+                s.quarantine();
                 throw;
             }
             slot.pointer = nullptr;
@@ -1007,39 +1069,67 @@ void MediaSession::require_ready(std::span<DeviceTensorView* const> views) {
     }
 }
 
-void MediaSession::upload(
-    DeviceTensorView& v, std::span<const std::byte> bytes, bool weight
+void MediaSession::validate_upload(
+    DeviceTensorView& v, std::size_t bytes, bool weight
 ) {
     auto& s = *state_;
     s.healthy();
-    auto& slot = s.view(v);
+    const auto& slot = s.view(v);
     if (s.phase != MediaPhase::prepare || v.layout_.offset
         || (slot.owned.allocation.kind == AllocationKind::weight) != weight
         || (!weight && slot.owned.allocation.kind != AllocationKind::activation)
-        || bytes.size() != v.layout_.bytes)
+        || bytes != v.layout_.bytes)
         throw std::invalid_argument("media_session_upload_boundary");
+}
+
+std::unique_ptr<MediaHostBuffer> MediaSession::allocate_upload(Bytes bytes) {
+    state_->healthy();
+    return std::unique_ptr<MediaHostBuffer>(
+        new MediaHostBuffer(state_->resources, state_->workload, bytes)
+    );
+}
+
+void MediaSession::upload(
+    DeviceTensorView& v, std::unique_ptr<MediaHostBuffer> source, bool weight
+) {
+    auto& s = *state_;
+    if (!source || source->resources_ != s.resources || source->workload_ != s.workload)
+        throw std::invalid_argument("media_session_upload_owner");
+    validate_upload(v, source->bytes().size(), weight);
+    auto& slot = s.view(v);
+    s.upload_source = std::move(source);
     try {
         s.dependencies(v.layout_.device, slot);
         slot.gather.reset();
+        const auto bytes = std::as_bytes(s.upload_source->bytes());
         s.operations->upload(v.layout_.device, slot.pointer, bytes);
         slot.ready = s.operations->record(v.layout_.device);
         s.operations->synchronize(v.layout_.device);
+        s.upload_source.reset();
         slot.certify(v.layout_.offset, v.layout_.bytes);
         auto& counter = weight ? s.transfers.weight_upload : s.transfers.input_upload;
-        counter = add(counter, bytes.size());
+        counter = add(counter, v.layout_.bytes);
     } catch (...) {
         abort(std::current_exception());
     }
 }
 
 void MediaSession::upload_input(DeviceTensorView& v, std::span<const std::byte> bytes) {
-    upload(v, bytes, false);
+    validate_upload(v, bytes.size(), false);
+    auto source = allocate_upload(bytes.size());
+    for (std::size_t offset = 0; offset < bytes.size();) {
+        state_->healthy();
+        const auto count = std::min<std::size_t>(1024 * 1024, bytes.size() - offset);
+        std::memcpy(source->bytes().data() + offset, bytes.data() + offset, count);
+        offset += count;
+    }
+    upload(v, std::move(source), false);
 }
 
 void MediaSession::upload_weight(
-    DeviceTensorView& v, std::span<const std::byte> bytes
+    DeviceTensorView& v, std::unique_ptr<MediaHostBuffer> source
 ) {
-    upload(v, bytes, true);
+    upload(v, std::move(source), true);
 }
 
 void MediaSession::download_output(DeviceTensorView& v, std::span<std::byte> bytes) {

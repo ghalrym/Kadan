@@ -72,6 +72,7 @@ class RunClient:
         body = {
             "message": message.model_dump(mode="json"),
             "expected_version": value.expected_version,
+            "references": [item.model_dump(mode="json") for item in value.references],
             "persona_id": str(value.persona_id) if value.persona_id else None,
         }
         if initial_command is not None:

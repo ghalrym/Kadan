@@ -37,7 +37,12 @@ struct Trace {
     std::size_t make_device0_free_at_probe = 0;
     bool peer01 = true, peer10 = true;
     int fail_allocate = -1, fail_drain = -1, fail_free = -1;
-    bool fail_record = false;
+    bool fail_record = false, defer_upload = false, fail_upload_after_enqueue = false;
+    std::span<const std::byte> pending_upload;
+    void* pending_destination = nullptr;
+    int pending_device = -1;
+    std::size_t uploads = 0, operations_destroyed = 0;
+    std::function<void()> on_upload;
     std::function<void(int)> on_probe;
     std::function<void()> on_peer;
     std::uint32_t status = 0;
@@ -51,6 +56,10 @@ struct Fake final : MediaDeviceOperations {
 
     explicit Fake(std::shared_ptr<Trace> t, std::shared_ptr<Resources> r)
         : trace(std::move(t)), resources(std::move(r)) {
+    }
+
+    ~Fake() override {
+        ++trace->operations_destroyed;
     }
 
     std::size_t allocation_alignment() const override {
@@ -113,6 +122,15 @@ struct Fake final : MediaDeviceOperations {
         trace->drains.push_back(d);
         if (d == trace->fail_drain)
             throw std::runtime_error("drain");
+        if (trace->pending_destination && trace->pending_device == d) {
+            std::memcpy(
+                trace->pending_destination,
+                trace->pending_upload.data(),
+                trace->pending_upload.size()
+            );
+            trace->pending_upload = {};
+            trace->pending_destination = nullptr;
+        }
     }
 
     void release_events(int d) override {
@@ -124,8 +142,18 @@ struct Fake final : MediaDeviceOperations {
         }
     }
 
-    void upload(int, void* p, std::span<const std::byte> source) override {
-        std::memcpy(p, source.data(), source.size());
+    void upload(int d, void* p, std::span<const std::byte> source) override {
+        ++trace->uploads;
+        if (trace->defer_upload) {
+            trace->pending_upload = source;
+            trace->pending_destination = p;
+            trace->pending_device = d;
+        } else
+            std::memcpy(p, source.data(), source.size());
+        if (trace->on_upload)
+            trace->on_upload();
+        if (trace->fail_upload_after_enqueue)
+            throw std::runtime_error("upload");
     }
 
     void download(int, std::span<std::byte> dest, const void* p) override {
@@ -517,10 +545,12 @@ void error_and_cancel_drains() {
         f.trace->drains.clear();
         if (cancel) {
             f.cancel = true;
+            const auto uploads = f.trace->uploads;
             check(
                 fails([&] { f.session.upload_input(v, input); })
                 == "media_session_cancelled"
             );
+            check(f.trace->uploads == uploads && f.resources->snapshot().used[0] == 0);
         } else {
             f.session.advance(MediaPhase::kv);
             auto status = flag(f.session, d);
@@ -667,6 +697,142 @@ void record_and_free_errors() {
     g.trace->allocations.clear();
 }
 
+StageManifest upload_manifest(bool weight) {
+    auto manifest = decoder();
+    if (weight)
+        manifest.weights = {
+            {"w",
+             {1, 2, 3, 0, 0, 0, 0, 0, 32},
+             TensorStorage::bf16_exact,
+             4,
+             4,
+             WeightPartition::replicated}
+        };
+    return manifest;
+}
+
+DeviceTensorView upload_view(MediaSession& session, bool weight) {
+    if (weight)
+        return session.weight(session.plan().weights.front());
+    return tensor(session, session.plan().devices.front().device, "boundary");
+}
+
+void upload_source_success_releases_host_admission() {
+    for (bool weight : {false, true}) {
+        Fixture f;
+        check(!f.session.admit(upload_manifest(weight), shape()));
+        auto view = upload_view(f.session, weight);
+        const auto bytes = view.layout().bytes;
+        std::vector<std::byte> caller(bytes, std::byte{0x45});
+        f.trace->defer_upload = true;
+        f.trace->on_upload = [&] {
+            check(f.resources->snapshot().used[0] == bytes);
+            check(f.trace->pending_upload.size() == bytes);
+            check(f.trace->pending_upload.data() != caller.data());
+        };
+        if (weight) {
+            auto source = f.session.allocate_upload(bytes);
+            std::memcpy(source->bytes().data(), caller.data(), bytes);
+            f.session.upload_weight(view, std::move(source));
+            check(!source);
+        } else
+            f.session.upload_input(view, caller);
+        check(f.trace->pending_upload.empty());
+        check(std::memcmp(view.layout().data, caller.data(), bytes) == 0);
+        check(f.session.ready(view) && f.resources->snapshot().used[0] == 0);
+        view = {};
+        f.session.finish();
+        check(f.resources->snapshot().residents == 0 && f.activity->owners == 0);
+    }
+}
+
+void unconfirmed_upload_retains_bytes_charge_and_backing() {
+    enum class Failure {
+        upload,
+        record,
+        synchronize
+    };
+    for (bool weight : {false, true})
+        for (auto failure : {Failure::upload, Failure::record, Failure::synchronize}) {
+            Fixture f;
+            std::optional<MediaSession> session(std::move(f.session));
+            check(!session->admit(upload_manifest(weight), shape()));
+            auto view = upload_view(*session, weight);
+            const auto bytes = view.layout().bytes;
+            f.trace->defer_upload = true;
+            f.trace->fail_drain = view.layout().device;
+            f.trace->fail_record = failure == Failure::record;
+            f.trace->fail_upload_after_enqueue = failure == Failure::upload;
+            std::vector<std::byte> caller(bytes, std::byte{0x67});
+            std::unique_ptr<MediaHostBuffer> source;
+            if (weight) {
+                source = session->allocate_upload(bytes);
+                std::memcpy(source->bytes().data(), caller.data(), bytes);
+            }
+            try {
+                if (weight)
+                    session->upload_weight(view, std::move(source));
+                else
+                    session->upload_input(view, caller);
+                check(false);
+            } catch (const OperationCleanupError& error) {
+                const auto expected = failure == Failure::upload   ? "upload"
+                                      : failure == Failure::record ? "record"
+                                                                   : "drain";
+                check(exception_message(error.operation) == expected);
+                check(exception_message(error.cleanup) == "drain");
+            }
+            check(!source && f.trace->uploads == 1);
+            caller.clear();
+            caller.shrink_to_fit();
+            view = {};
+            session.reset();
+            check(f.trace->operations_destroyed == 0);
+            check(f.trace->pending_upload.size() == bytes);
+            for (const auto byte : f.trace->pending_upload)
+                check(byte == std::byte{0x67});
+            check(f.resources->snapshot().used[0] == bytes);
+            check(f.resources->snapshot().used[1] > 0 && f.activity->owners == 1);
+            const std::weak_ptr<Resources> resources = f.resources;
+            const std::weak_ptr<MediaSessionActivity> activity = f.activity;
+            const std::weak_ptr<Trace> context = f.trace;
+            f.resources.reset();
+            f.activity.reset();
+            f.trace.reset();
+            check(!resources.expired() && !activity.expired() && !context.expired());
+            // Fake uncertain operations deliberately remain owned, just as live
+            // backing must remain until process exit after an unconfirmed drain.
+        }
+}
+
+void upload_admission_failure_never_enqueues() {
+    Fixture f;
+    check(!f.session.admit(decoder(), shape()));
+    auto view = upload_view(f.session, false);
+    const auto charge = f.resources->reserve(Workload::video, {1000000, 0, 0});
+    std::array<std::byte, 64> bytes{};
+    check(fails([&] { f.session.upload_input(view, bytes); }) == "exhausted");
+    check(f.trace->uploads == 0 && f.resources->snapshot().used[0] == 1000000);
+    f.resources->released(charge);
+    view = {};
+    f.session.finish();
+    check(f.resources->snapshot().residents == 0);
+}
+
+void upload_source_cannot_use_another_resource_ledger() {
+    Fixture source, target;
+    check(!target.session.admit(upload_manifest(true), shape()));
+    auto view = upload_view(target.session, true);
+    auto bytes = source.session.allocate_upload(view.layout().bytes);
+    check(
+        fails([&] { target.session.upload_weight(view, std::move(bytes)); })
+        == "media_session_upload_owner"
+    );
+    check(source.resources->snapshot().used[0] == 0 && target.trace->uploads == 0);
+    view = {};
+    target.session.finish();
+}
+
 void owner_reuse_retirement() {
     Fixture f;
     auto m = decoder();
@@ -687,7 +853,9 @@ void owner_reuse_retirement() {
     );
     std::array<std::byte, 32> bytes{};
     check(!f.session.ready(v));
-    f.session.upload_weight(v, bytes);
+    auto source = f.session.allocate_upload(bytes.size());
+    std::memcpy(source->bytes().data(), bytes.data(), bytes.size());
+    f.session.upload_weight(v, std::move(source));
     check(f.session.ready(v));
     const auto pointer = v.layout().data;
     const auto generation = v.layout().generation;
@@ -1464,6 +1632,10 @@ int main() {
     status_and_move_lifecycle();
     explicit_output_and_outliving_views();
     record_and_free_errors();
+    upload_source_success_releases_host_admission();
+    unconfirmed_upload_retains_bytes_charge_and_backing();
+    upload_admission_failure_never_enqueues();
+    upload_source_cannot_use_another_resource_ledger();
     owner_reuse_retirement();
     complete_partition_gather();
     repeated_admission_invalidates_kv();
