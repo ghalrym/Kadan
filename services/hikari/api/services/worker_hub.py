@@ -13,12 +13,12 @@ import json
 import logging
 import os
 import time
-from contextlib import contextmanager, suppress
+from contextlib import suppress
 from datetime import UTC, datetime
 from uuid import uuid4
 
 from api.pydantic_models.inference_task import InferenceTask
-from api.pydantic_models.model_store import ModelStoreStatus
+from api.pydantic_models.model_store import ModelAssignments, ModelStoreStatus
 from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
 from api.services.inference_worker import (
@@ -49,7 +49,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 log = logging.getLogger(__name__)
 
-PROTOCOL = 4
+PROTOCOL = 5
 
 # Features served by an inference worker; settings go to every worker and a
 # download goes to a worker of its checkpoint's type.
@@ -79,9 +79,10 @@ CHECKPOINT_WORKERS = {
 EXPERIMENTAL_MODELS = {
     "lfm3-1.7b-bf16": ("lfm3_llm", "HIKARI_ENABLE_LFM3_TEXT"),
     "lfm3-vl-2b-bf16": ("lfm3_vision", "HIKARI_ENABLE_LFM3_VISION"),
-    "lfm3-audio-2b-bf16": ("lfm3_audio", "HIKARI_ENABLE_LFM3_AUDIO"),
+    "lfm3-audio-2b-bf16": ("lfm3_audio", None),
 }
 EXPERIMENTAL_FEATURES = {
+    "llm": "lfm3-1.7b-bf16",
     "vision": "lfm3-vl-2b-bf16",
     "audio_call": "lfm3-audio-2b-bf16",
 }
@@ -91,7 +92,7 @@ def experimental_worker(model: str | None) -> str | None:
     if model not in EXPERIMENTAL_MODELS:
         return None
     kind, flag = EXPERIMENTAL_MODELS[model]
-    if os.getenv(flag, "").lower() not in ("1", "true", "yes"):
+    if flag is not None and os.getenv(flag, "").lower() not in ("1", "true", "yes"):
         raise InferenceFailure(f"Experimental model requires {flag}=true.", 409)
     return kind
 
@@ -126,8 +127,6 @@ def gib(budget: list[int]) -> str:
 def settings(models: ModelStoreStatus) -> tuple:
     """What a model store snapshot says that can change a memory requirement."""
     return (
-        models.selected_tier,
-        models.selected_whisper,
         models.whisper_formatting,
         tuple(
             sorted(
@@ -297,10 +296,9 @@ class WorkerHub:
         self.joined = asyncio.Condition()
         self.scheduler: asyncio.Task | None = None
         self.closing = False
-        self.calls: dict[str, frozenset[str]] = {}
 
     def _refresh_models(self):
-        """Append opt-in checkpoints without replacing the native tier or defaults."""
+        """Combine fixed checkpoints from their connected workers."""
         primary = self.workers.get(self.primary or "")
         base = primary.models if primary is not None else None
         snapshot = (
@@ -320,39 +318,9 @@ class WorkerHub:
                 if kind == worker.kind and model.id not in known:
                     snapshot.models.append(model.model_copy(deep=True))
                     known.add(model.id)
+        visible = set(ModelAssignments().model_dump().values())
+        snapshot.models = [model for model in snapshot.models if model.id in visible]
         self.models = snapshot if base is not None or snapshot.models else None
-
-    @contextmanager
-    def full_duplex(self, models: frozenset[str]):
-        """Keep call participants at equal priority until their last call ends.
-
-        This changes retention, not grants: normal physical admission and release
-        acknowledgement still apply when the three models cannot fit together.
-        """
-        call_id = uuid4().hex
-        self.calls[call_id] = models
-        self._refresh_full_duplex()
-        self.wake.set()
-        try:
-            yield
-        finally:
-            self.calls.pop(call_id, None)
-            self._refresh_full_duplex()
-            self.wake.set()
-
-    def _refresh_full_duplex(self):
-        active = set().union(*self.calls.values())
-        for computer in self.computers.values():
-            for slot in computer.ledger.workers.values():
-                participating = (
-                    slot.kind in ("llm", "tts", "speech")
-                    and slot.requirement is not None
-                    and slot.requirement.model in active
-                )
-                if slot.full_duplex and not participating:
-                    # Give a released participant its normal idle period.
-                    slot.last_used = time.monotonic()
-                slot.full_duplex = participating
 
     async def start(self):
         self.scheduler = asyncio.create_task(self._schedule_loop())
@@ -776,6 +744,44 @@ class WorkerHub:
             worker.residency_known = False
             worker.resident_model = None
             worker.resident_context = {}
+        if event.state in ("audio_answer", "audio_segment"):
+            if (
+                job.request.feature != "audio_call"
+                or job.request.input.mode != "turn"
+                or not job.request.input.sentence_tts
+                or job.events is None
+            ):
+                job.stream_error = "Unexpected sentence TTS event."
+                asyncio.create_task(self.cancel(event.id))
+            elif job.stream_error is None:
+                try:
+                    payload = (
+                        {"type": "answer", "text": event.answer}
+                        if event.state == "audio_answer"
+                        else {"type": "segment", **event.audio_segment.model_dump()}
+                    )
+                    job.events.put_nowait(payload)
+                except asyncio.QueueFull:
+                    job.stream_error = "Audio turn consumer is too slow."
+                    asyncio.create_task(self.cancel(event.id))
+            return
+        if event.state == "audio_transcript":
+            if (
+                job.request.feature != "audio_call"
+                or job.request.input.mode != "turn"
+                or job.events is None
+            ):
+                job.stream_error = "Unexpected audio transcript event."
+                asyncio.create_task(self.cancel(event.id))
+            elif job.stream_error is None:
+                try:
+                    job.events.put_nowait(
+                        {"type": "transcript", "text": event.transcript}
+                    )
+                except asyncio.QueueFull:
+                    job.stream_error = "Audio turn consumer is too slow."
+                    asyncio.create_task(self.cancel(event.id))
+            return
         if event.state == "content":
             if job.events is not None and job.stream_error is None:
                 try:
@@ -839,15 +845,6 @@ class WorkerHub:
         if source is None or target is None:
             return
         tasks = []
-        if source.selected_tier and source.selected_tier != target.selected_tier:
-            tasks.append({"feature": "tier_selection", "tier": source.selected_tier})
-        if (
-            source.selected_whisper
-            and source.selected_whisper != target.selected_whisper
-        ):
-            tasks.append(
-                {"feature": "whisper_selection", "model": source.selected_whisper}
-            )
         if source.whisper_formatting != target.whisper_formatting:
             tasks.append(
                 {"feature": "whisper_formatting", "enabled": source.whisper_formatting}
@@ -929,7 +926,7 @@ class WorkerHub:
             requirement.key = requirement_key(fields)
             return requirement
         except InferenceFailure as error:
-            # Preparation reports the real problem (no tier, no download) once
+            # Preparation reports the real problem (no download) once
             # the worker runs; a host-only budget lets it get that far.
             log.info("No memory requirement for %s: %s", worker.name, error)
             return Requirement(
@@ -1056,13 +1053,12 @@ class WorkerHub:
         for slot in slots:
             if slot.requirement is None and (slot.loaded or slot.pending):
                 slot.requirement = await self._requirement(workers[slot.name])
-        self._refresh_full_duplex()
         waiting = sorted(
             (slot for slot in slots if needs_grant(ledger, slot)),
             key=lambda slot: (slot.priority, slot.last_used),
         )
         for slot in waiting:
-            # The unloaded language tier keeps room for its minimum.
+            # The unloaded language model keeps room for its minimum.
             for other in slots:
                 if (
                     other.requirement is None
@@ -1094,7 +1090,6 @@ class WorkerHub:
                     slot.loaded
                     and not slot.busy
                     and not slot.releasing
-                    and not slot.full_duplex
                     and now - slot.last_used >= self.model_idle_seconds
                 ):
                     await self._apply(computer, [Action("offload", slot.name)])

@@ -10,10 +10,10 @@ from .pet_client import PetClient
 from .pydantic_models.inference import (
     HikariModelLifecycle,
     HikariModels,
-    HikariSettings,
 )
-from .pydantic_models.resources import Message, Resource, ResourceKind
+from .pydantic_models.resources import Memory, Message, Resource, ResourceKind
 from .routes.agents.conversations.notes import NoteInput
+from .routes.agents.memories import MemoryUpdate
 from .routes.agents.resources import PersonaUpdate
 from .routes.status import InferenceState, ServiceState, Status
 from .run_client import RunClient
@@ -205,101 +205,37 @@ class LocalServices:
     async def inference_status(self) -> InferenceState:
         settings_url = self.settings.hikari_browser_url + "/settings"
         try:
-            if self.settings.experimental_lfm3_text:
-                catalog = HikariModels.model_validate(
-                    await self.json_request("Hikari", "GET", "/v1/models")
-                )
-                model = next(
-                    (item for item in catalog.models if item.id == "lfm3-1.7b-bf16"),
-                    None,
-                )
-                if model is None or not model.inference_available:
-                    return InferenceState(
-                        state="unavailable",
-                        model_id="lfm3-1.7b-bf16",
-                        settings_url=settings_url,
-                        message="The experimental LFM3 conversation worker is unavailable. Check the enabled Hikari worker.",
-                    )
-                return InferenceState(
-                    state="ready" if model.status == "complete" else "model_required",
-                    model_id=model.id,
-                    download_state=model.status,
-                    context_limit=model.context_limit,
-                    settings_url=settings_url,
-                    message=(
-                        "Experimental LFM3 BF16 is downloaded; each request loads its own model."
-                        if model.status == "complete"
-                        else "Experimental LFM3 requires a user-approved download before chat."
-                    ),
-                )
-            value = HikariSettings.model_validate(
-                await self.json_request("Hikari", "GET", "/v1/settings")
+            catalog = HikariModels.model_validate(
+                await self.json_request("Hikari", "GET", "/v1/models")
             )
-            tier = value.tier
-            if tier is None:
-                return InferenceState(
-                    state="tier_required",
-                    message="Choose a tier in Hikari Settings to enable chat. You can save notes now.",
-                    settings_url=settings_url,
-                )
-            selected = next((item for item in value.tiers if item.id == tier), None)
-            model = (
-                next(
-                    (item.model for item in selected.models if item.modality == "llm"),
-                    None,
-                )
-                if selected
-                else None
+            model = next(
+                (item for item in catalog.models if item.id == "lfm3-1.7b-bf16"),
+                None,
             )
-            if model is None:
+            if model is None or not model.inference_available:
                 return InferenceState(
                     state="unavailable",
-                    tier=tier,
+                    model_id="lfm3-1.7b-bf16",
                     settings_url=settings_url,
-                    message="Hikari has no language model for the selected tier. Check Hikari Settings.",
-                )
-            status = model.status
-            if status != "complete":
-                progress = (
-                    "is downloading" if status == "downloading" else "is not downloaded"
-                )
-                if status == "failed":
-                    progress = "could not be downloaded"
-                return InferenceState(
-                    state="model_required",
-                    tier=tier,
-                    model_id=model.id,
-                    download_state=status,
-                    context_limit=model.context_limit
-                    or model.architecture_context_limit,
-                    settings_url=settings_url,
-                    message=f"The selected language model {progress}. Check Hikari Settings. You can save notes now.",
-                )
-            if not model.inference_available:
-                return InferenceState(
-                    state="unavailable",
-                    tier=tier,
-                    model_id=model.id,
-                    download_state=status,
-                    context_limit=model.context_limit
-                    or model.architecture_context_limit,
-                    settings_url=settings_url,
-                    message="The selected language model does not support inference. Check Hikari Settings.",
+                    message="The LFM3 conversation worker is unavailable. Check Hikari Settings.",
                 )
             return InferenceState(
-                state="ready",
-                tier=tier,
+                state="ready" if model.status == "complete" else "model_required",
                 model_id=model.id,
-                download_state=status,
+                download_state=model.status,
                 context_limit=model.context_limit or model.architecture_context_limit,
                 settings_url=settings_url,
-                message="The selected language model is downloaded. Hikari loads it when chat starts.",
+                message=(
+                    "LFM3 is downloaded. Hikari loads it when chat starts."
+                    if model.status == "complete"
+                    else "LFM3 requires a user-approved download in Hikari Settings before chat."
+                ),
             )
         except (ServiceError, ValidationError) as error:
             message = (
                 str(error)
                 if isinstance(error, ServiceError)
-                else "Hikari returned invalid settings."
+                else "Hikari returned invalid model status."
             )
             return InferenceState(
                 state="unavailable", message=message, settings_url=settings_url
@@ -362,6 +298,47 @@ class LocalServices:
         )
         return parse_resource(result)
 
+    async def update_memory(
+        self, key: str, resource_id: UUID, value: MemoryUpdate
+    ) -> Memory:
+        current = await self.resource_of_kinds(key, resource_id, (ResourceKind.MEMORY,))
+        require_active(current, ResourceKind.MEMORY, value.expected_version)
+        content = current.model_dump(
+            mode="json",
+            exclude={
+                "id",
+                "agent_key",
+                "version",
+                "created_at",
+                "updated_at",
+                "deleted_at",
+            },
+        )
+        content.update(value.model_dump(mode="json"))
+        result = parse_resource(
+            await self.json_request(
+                "Tsuchi",
+                "PUT",
+                f"/api/agents/{key}/resources/{resource_id}",
+                json=content,
+            )
+        )
+        if (
+            result.agent_key != key
+            or result.id != resource_id
+            or result.kind != ResourceKind.MEMORY
+            or result.deleted_at is not None
+            or result.version != value.expected_version + 1
+            or result.title != value.title
+            or result.markdown != value.markdown
+        ):
+            raise ServiceError(
+                "Tsuchi did not confirm this memory correction. Check the saved memory before retrying.",
+                502,
+                "invalid_response",
+            )
+        return Memory.model_validate(result.model_dump())
+
     async def append(
         self, key: str, conversation_id: UUID, version: int, message: Message
     ) -> Resource:
@@ -387,7 +364,12 @@ class LocalServices:
                 409,
                 "duplicate_message",
             )
-        message = Message(id=value.message_id, role="user", content=value.content)
+        message = Message(
+            id=value.message_id,
+            role="user",
+            content=value.content,
+            attachment_ids=value.attachment_ids,
+        )
         return await self.append(key, conversation_id, value.expected_version, message)
 
 

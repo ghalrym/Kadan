@@ -2,11 +2,11 @@
 
 Kadan lets users hatch an agent and return to one continuous chat with it. Creating an agent saves its records in Tsuchi without downloading or running a model. Users can [rename agents](renaming-agents.md); deleting agents is not available.
 
-Hatching requires a name and a unique permanent key. Invalid or duplicate keys produce an error without replacing an existing agent. After an uncertain creation, refresh the agent list before trying again. Agents created in Tsuchi appear in Kadan after refreshing; both applications use the same [namespaces](../tsuchi/namespaces.md).
+Hatching requires a name and a unique permanent key. Invalid or duplicate keys produce an error without replacing an existing agent. After an uncertain creation, refresh the agent list before trying again. Kadan opens the first agent returned by Tsuchi after refreshing; other existing agents are not selectable in Kadan. Both applications use the same [namespaces](../tsuchi/namespaces.md).
 
-Each agent has its own saved conversation. Drafts are kept separately in the current browser tab and can be lost when the tab closes; they are not saved messages.
+Each agent has its own saved conversation. Drafts are kept separately in the current browser tab and can be lost when the tab closes; they are not saved messages. When refresh opens a different agent, Kadan waits for that agent’s conversation and personas rather than showing the previous agent’s. If loading fails, it reports the error; retry refreshes the records. A failed refresh for the same agent leaves its last loaded conversation visible.
 
-Sending saves the message and queues work. Users can keep typing and send more messages while earlier work waits. Replies can be delayed by other work or model loading. The agent can finish work without sending a visible reply; errors and stopped work must remain visible.
+Users can [upload files and attach them](chat-attachments.md) to a message or note. Upload confirmation is separate from message delivery. Sending saves the message and queues work. Users can keep typing and send more messages while earlier work waits. Replies can be delayed by other work or model loading. The agent can finish work without sending a visible reply; errors and stopped work must remain visible.
 
 The standard deployment uses released BF16 LFM3-1.7B for text conversations. Its checkpoint must be downloaded through Hikari Settings first; an unavailable worker or incomplete download produces an error without switching models. A completed plain answer becomes an agent reply when the agent is permitted to reply. Empty output can still finish silently. Malformed tool output must fail visibly instead of appearing as a reply.
 
@@ -20,7 +20,7 @@ Each response has a limit of 24 commands and a bounded context for instructions,
 
 If Hikari reaches the model's output limit before completing an agent response, Kadan reports that limit and does not execute a command from the incomplete response. Actions completed earlier in the run remain completed.
 
-After a send error, **Reload** checks what was saved. **Retry** under **Unsent message** keeps the original submission and persona. Resolve or discard it before sending another message. Closing the tab does not cancel saved work; use [Stopping chat work](stopping-chat-work.md).
+After a send error, **Reload** checks what was saved. **Retry** under **Unsent message** keeps the original submission, attachment list and persona. Resolve or discard it before sending another message. Closing the tab does not cancel saved work; use [Stopping chat work](stopping-chat-work.md).
 
 Trashing or restoring conversations in Tsuchi can change which chat opens after refreshing Kadan. Unsent submissions remain with their original conversation in the current browser tab and reappear if that conversation is reopened. The agent's ordinary draft remains available across this change.
 

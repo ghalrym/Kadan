@@ -1,6 +1,6 @@
 # Video generation
 
-Hikari generates video clips with audio. The Video page uses the selected hardware tier's duration and resolution defaults. Users can choose clips from one to fifteen seconds, 480p or 768p resolution, and wide, portrait or square aspect. Settings that cannot run must fail rather than be silently reduced.
+Hikari generates video clips with audio. The Video page starts with a five-second, 480p clip. Users can choose clips from one to fifteen seconds, 480p or 768p resolution, and wide, portrait or square aspect. Settings that cannot run must fail rather than be silently reduced.
 
 **Queue video** accepts a job; it does not return a finished video. The queue shows waiting, rendering, completed, failed or cancelled work. Only a completed job with available output supplies playable media. **Refresh queue** checks the current list.
 

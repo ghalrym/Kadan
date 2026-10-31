@@ -34,7 +34,7 @@ Generates and edits images with Qwen Image 2.1 Turbo.
 
 ## Scheduling
 
-- Priority 4. It leaves the language tier's minimum free while that tier is not
+- Priority 4. It leaves the language worker's minimum free while that worker is not
   loaded.
 - When idle, it shrinks to its minimum so the language model can grow. Any
   budget change closes the engine and drops its learned batch sizes.

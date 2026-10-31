@@ -1,7 +1,9 @@
 """Sandbox client tests against an in-memory HTTP transport, never a real computer."""
 
 import asyncio
+import hashlib
 import json
+from io import BytesIO
 from types import SimpleNamespace
 
 import httpx
@@ -251,3 +253,257 @@ def test_only_jammed_browser_calls_trigger_a_restart(method, path):
     assert len(seen) == 1
     assert result["status"] == 504
     assert "recovered" not in result
+
+
+class DownloadStream(httpx.AsyncByteStream):
+    def __init__(self, chunks=(), error=None, *, wait=False):
+        self.chunks = chunks
+        self.error = error
+        self.wait = wait
+        self.closed = False
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            yield chunk
+        if self.error:
+            raise self.error
+        if self.wait:
+            await asyncio.Event().wait()
+
+    async def aclose(self):
+        self.closed = True
+
+
+@pytest.mark.parametrize("length_header", [True, False])
+def test_download_preserves_binary_bytes_and_checksums_beyond_transcript_limit(
+    length_header,
+):
+    content = bytes(range(256)) * 5000
+    stream = DownloadStream([content[:70000], content[70000:]])
+    headers = {"content-length": str(len(content))} if length_header else {}
+    handler, seen = serving(httpx.Response(200, stream=stream, headers=headers))
+    output = BytesIO()
+
+    result = asyncio.run(
+        sandbox(handler).download_file("/tmp/report & draft.bin", output)
+    )
+
+    assert result.size_bytes == len(content)
+    assert result.sha256 == hashlib.sha256(content).hexdigest()
+    assert output.tell() == 0
+    assert output.read() == content
+    assert not output.closed
+    assert stream.closed
+    assert len(seen) == 1
+    assert seen[0].method == "GET"
+    assert seen[0].url.path == "/v1/file/download"
+    assert dict(seen[0].url.params) == {
+        "path": "/tmp/report & draft.bin",
+        "change_policy": "abort",
+    }
+    assert seen[0].headers["authorization"] == "Bearer secret"
+    assert seen[0].headers["accept-encoding"] == "identity"
+
+
+def test_download_accepts_an_empty_file():
+    handler, _ = serving(httpx.Response(200, content=b""))
+    output = BytesIO()
+    result = asyncio.run(sandbox(handler).download_file("/tmp/empty", output))
+    assert result.size_bytes == 0
+    assert result.sha256 == hashlib.sha256(b"").hexdigest()
+    assert output.getvalue() == b""
+
+
+@pytest.mark.parametrize("status", [206, 302, 404, 409, 500])
+def test_download_http_errors_never_copy_error_or_partial_response_bodies(status):
+    stream = DownloadStream([b"not a complete file"])
+    handler, seen = serving(httpx.Response(status, stream=stream))
+    output = BytesIO()
+    with pytest.raises(ServiceError) as raised:
+        asyncio.run(sandbox(handler).download_file("/tmp/report", output))
+    assert raised.value.code == {404: "file_not_found", 409: "file_changed"}.get(
+        status, "computer_error"
+    )
+    assert output.getvalue() == b""
+    assert stream.closed
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize("length", ["-1", "unknown", "1, 1", "9" * 5000])
+def test_download_rejects_invalid_size_headers(length):
+    stream = DownloadStream([b"data"])
+    handler, _ = serving(
+        httpx.Response(200, stream=stream, headers={"content-length": length})
+    )
+    output = BytesIO()
+    with pytest.raises(ServiceError) as raised:
+        asyncio.run(sandbox(handler).download_file("/tmp/report", output))
+    assert raised.value.code == "invalid_file_download"
+    assert output.getvalue() == b""
+    assert stream.closed
+
+
+@pytest.mark.parametrize("declared_length", [2, 8])
+def test_download_rejects_mismatched_size_including_early_eof(declared_length):
+    stream = DownloadStream([b"data"])
+    handler, _ = serving(
+        httpx.Response(
+            200, stream=stream, headers={"content-length": str(declared_length)}
+        )
+    )
+    output = BytesIO()
+    with pytest.raises(ServiceError) as raised:
+        asyncio.run(sandbox(handler).download_file("/tmp/report", output))
+    assert raised.value.code == "invalid_file_download"
+    assert stream.closed
+    assert output.tell() == len(output.getvalue())
+
+
+def test_download_rejects_oversized_header_before_reading():
+    from kadan.api.sandbox_client import MAX_FILE_BYTES
+
+    stream = DownloadStream(error=AssertionError("must not read oversized response"))
+    handler, _ = serving(
+        httpx.Response(
+            200, stream=stream, headers={"content-length": str(MAX_FILE_BYTES + 1)}
+        )
+    )
+    with pytest.raises(ServiceError) as raised:
+        asyncio.run(sandbox(handler).download_file("/tmp/large", BytesIO()))
+    assert raised.value.status == 413
+    assert stream.closed
+
+
+def test_download_enforces_stream_limit_without_a_size_header(monkeypatch):
+    monkeypatch.setattr("kadan.api.sandbox_client.MAX_FILE_BYTES", 65536)
+    stream = DownloadStream([b"a" * 65536, b"extra"])
+    handler, _ = serving(httpx.Response(200, stream=stream))
+    output = BytesIO()
+    with pytest.raises(ServiceError) as raised:
+        asyncio.run(sandbox(handler).download_file("/tmp/large", output))
+    assert raised.value.status == 413
+    assert output.getvalue() == b"a" * 65536
+    assert output.tell() == 65536
+    assert stream.closed
+
+
+def test_download_rejects_unrequested_encoding_before_copying():
+    stream = DownloadStream([b"encoded content"])
+    handler, _ = serving(
+        httpx.Response(200, stream=stream, headers={"content-encoding": "gzip"})
+    )
+    output = BytesIO()
+    with pytest.raises(ServiceError) as raised:
+        asyncio.run(sandbox(handler).download_file("/tmp/report", output))
+    assert raised.value.code == "invalid_file_download"
+    assert output.getvalue() == b""
+    assert stream.closed
+
+
+@pytest.mark.parametrize(
+    "error",
+    [httpx.ReadError("connection lost"), httpx.RemoteProtocolError("incomplete body")],
+)
+def test_download_stream_failure_closes_upstream_without_rewinding_partial_output(
+    error,
+):
+    stream = DownloadStream([b"a" * 65536], error=error)
+    handler, _ = serving(httpx.Response(200, stream=stream))
+    output = BytesIO()
+    with pytest.raises(ServiceError) as raised:
+        asyncio.run(sandbox(handler).download_file("/tmp/report", output))
+    assert raised.value.code == "computer_unavailable"
+    assert output.tell() == 65536
+    assert stream.closed
+    assert not output.closed
+
+
+def test_download_total_deadline_closes_stalled_stream(monkeypatch):
+    monkeypatch.setattr("kadan.api.sandbox_client.OPERATION_SECONDS", 0.01)
+    stream = DownloadStream(wait=True)
+    handler, _ = serving(httpx.Response(200, stream=stream))
+    with pytest.raises(ServiceError) as raised:
+        asyncio.run(sandbox(handler).download_file("/tmp/report", BytesIO()))
+    assert raised.value.code == "computer_unavailable"
+    assert stream.closed
+
+
+def test_download_cancellation_propagates_and_closes_upstream():
+    stream = DownloadStream([b"a" * 65536], error=asyncio.CancelledError())
+    handler, _ = serving(httpx.Response(200, stream=stream))
+    output = BytesIO()
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(sandbox(handler).download_file("/tmp/report", output))
+    assert output.tell() == 65536
+    assert stream.closed
+    assert not output.closed
+
+
+def upload_receipt(path="/tmp/destination", size=4):
+    return {
+        "success": True,
+        "data": {"success": True, "file_path": path, "file_size": size},
+    }
+
+
+def test_file_upload_sends_seekable_binary_file_and_requires_full_receipt():
+    handler, seen = serving(httpx.Response(200, json=upload_receipt()))
+    source = BytesIO(b"\x00\xffab")
+    source.seek(3)
+    asyncio.run(sandbox(handler).upload_file("/tmp/destination", source))
+    assert seen[0].method == "POST"
+    assert seen[0].url.path == "/v1/file/upload"
+    assert seen[0].headers["authorization"] == "Bearer secret"
+    assert b'name="path"' in seen[0].content
+    assert b"/tmp/destination" in seen[0].content
+    assert b"\x00\xffab" in seen[0].content
+    assert not source.closed
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        {"success": False, "data": {"error_type": "permission_denied"}},
+        {**upload_receipt(), "success": False},
+        {"success": True, "data": {**upload_receipt()["data"], "success": False}},
+        upload_receipt(path="/tmp/other"),
+        upload_receipt(size=3),
+        upload_receipt(size=True),
+        {"success": True},
+        {"data": upload_receipt()["data"]},
+    ],
+)
+def test_file_upload_rejects_failed_or_mismatched_receipt(receipt):
+    handler, seen = serving(httpx.Response(200, json=receipt))
+    with pytest.raises(ServiceError) as raised:
+        asyncio.run(sandbox(handler).upload_file("/tmp/destination", BytesIO(b"data")))
+    assert raised.value.code == "invalid_file_upload"
+    assert len(seen) == 1
+
+
+def test_file_upload_rejects_non_json_receipt():
+    handler, _ = serving(httpx.Response(200, text="not JSON"))
+    with pytest.raises(ServiceError, match="invalid file upload receipt"):
+        asyncio.run(sandbox(handler).upload_file("/tmp/destination", BytesIO(b"data")))
+
+
+def test_file_upload_rejects_oversized_staging_before_sending(monkeypatch):
+    monkeypatch.setattr("kadan.api.sandbox_client.MAX_FILE_BYTES", 3)
+    handler, seen = serving()
+    with pytest.raises(ServiceError) as raised:
+        asyncio.run(sandbox(handler).upload_file("/tmp/destination", BytesIO(b"data")))
+    assert raised.value.status == 413
+    assert seen == []
+
+
+def test_file_upload_deadline_never_retries(monkeypatch):
+    monkeypatch.setattr("kadan.api.sandbox_client.OPERATION_SECONDS", 0.01)
+    seen = []
+
+    async def stalled(request):
+        seen.append(request)
+        await asyncio.Event().wait()
+
+    with pytest.raises(ServiceError, match="did not confirm"):
+        asyncio.run(sandbox(stalled).upload_file("/tmp/destination", BytesIO(b"data")))
+    assert len(seen) == 1

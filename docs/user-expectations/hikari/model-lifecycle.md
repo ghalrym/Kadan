@@ -1,23 +1,11 @@
 # Language-model loading and context
 
-Hikari manages language-model loading automatically. Users can also load a model before starting a conversation or unload it to free memory.
+Hikari runs the fixed LFM3 1.7B language checkpoint in a separate worker. It loads for each request and releases the model after completion. Users cannot select another checkpoint, preload it manually, or save a different context limit. Download the verified checkpoint after reviewing its licenses before submitting inference.
 
-## Loading and status
+Status reads do not load the model. They distinguish an idle, unloaded worker from active language work and report unavailable workers, incomplete downloads and unconfirmed cleanup as errors. A completed download establishes file readiness, not successful inference or physical fit.
 
-Hikari uses the selected language model and must not silently substitute another model to make a request fit. Loading can take time, require a download, or fail if the model cannot run on the available hardware.
+The model's 262,144-token context includes the complete prompt and reply. Generation can use the remaining context until completion or cancellation. Requests leaving no reply space or exceeding available memory fail without truncating history or substituting another model.
 
-Users should be able to check whether the model is loading, ready, unloaded, or has failed. Checking status does not load a model. Selecting a model does not mean it is ready to use.
+Explicit unloading cancels pending language work and waits for cleanup before releasing its resources. It does not cancel other inference types or delete downloaded models. Later inference loads the model again.
 
-## Context limits
-
-The context limit controls how much text a model can work with at once, measured in tokens. It is separate from the maximum reply length.
-
-Users can save a context limit for each model or choose to use the model's maximum supported context. A temporary choice for one load does not replace the saved setting. Changing the saved setting does not immediately resize a model that is already loaded.
-
-Larger contexts need more memory. A model's supported maximum may exceed what the user's machine can handle. Hikari must reject unsupported limits and report requests that do not fit, rather than silently removing conversation history.
-
-## Unloading
-
-Unloading a language model cancels pending language work and waits for cleanup before releasing its resources. It does not cancel other inference types or delete downloaded models. Later inference can load the model again.
-
-See [Inference operations](inference.md) for automatic unloading and conversation prefix reuse.
+See [Inference operations](inference.md) for scheduling and the retained native engine's separate prefix behavior.

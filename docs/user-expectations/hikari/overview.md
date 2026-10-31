@@ -1,13 +1,13 @@
 # Hikari user expectations
 
-Hikari supplies chat, decisions, images, video, speech and transcription for Kadan and direct clients. Its management interface lets users choose models, try inference and inspect recent requests.
+Hikari supplies chat, decisions, images, video, speech and transcription for Kadan and direct clients. Its management interface lets users download its fixed models, try inference and inspect recent requests.
 
-Model selection, downloading, loading and successful generation are separate states. Requests can wait for hardware or fail when their requirements cannot be met. Playground results generally belong to the open page; each feature describes what survives navigation or a service restart.
+Downloading, loading and successful generation are separate states. Requests can wait for hardware or fail when their requirements cannot be met. Playground results generally belong to the open page; each feature describes what survives navigation or a service restart.
 
 | Feature | What to expect |
 | --- | --- |
 | [Inference operations](inference.md) | Automatic model loading, memory sharing, priorities and conversation prefix reuse. |
-| [Model settings and downloads](model-settings.md) | Select a hardware tier, review licenses and track or resume downloads. |
+| [Model settings and downloads](model-settings.md) | Review fixed assignments and licenses and track or resume downloads. |
 | [Model loading and context](model-lifecycle.md) | Check readiness, manage context limits and explicitly load or unload language models. |
 | [Chat playground](chat-playground.md) | Try streaming text conversations with cancellation and retry controls. |
 | [Decisions](decisions.md) | Evaluate choices, scores and criteria using specialist model judgments. |

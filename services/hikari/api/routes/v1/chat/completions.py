@@ -12,7 +12,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    ValidationError,
     model_validator,
 )
 from api.pydantic_models.chat import (
@@ -38,7 +37,7 @@ class CompletionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     messages: list[CompletionMessage | Lfm3Message] = Field(min_length=1)
     tools: list[Lfm3Tool] | None = Field(default=None, max_length=256)
-    model: str | None = None
+    model: Literal["lfm3-1.7b-bf16"] = "lfm3-1.7b-bf16"
     stream: bool = False
     conversation_id: str | None = Field(
         default=None,
@@ -53,27 +52,6 @@ class CompletionRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def experimental_messages(cls, values):
-        if isinstance(values, dict) and values.get("model") != "lfm3-1.7b-bf16":
-            errors = []
-            if "tools" in values:
-                errors.append(
-                    {
-                        "type": "extra_forbidden",
-                        "loc": ("tools",),
-                        "input": values["tools"],
-                    }
-                )
-            rows = values.get("messages")
-            for index, row in enumerate(rows if isinstance(rows, list) else []):
-                try:
-                    CompletionMessage.model_validate(row)
-                except ValidationError as error:
-                    errors.extend(
-                        {**item, "loc": ("messages", index, *item["loc"])}
-                        for item in error.errors(include_url=False)
-                    )
-            if errors:
-                raise ValidationError.from_exception_data(cls.__name__, errors)
         return lfm3_messages(values)
 
     @model_validator(mode="after")

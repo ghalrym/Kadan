@@ -90,6 +90,13 @@ def test_unavailable_hikari_closes_call_with_actionable_error(monkeypatch, send_
             "type": "websocket.receive",
             "text": json.dumps({"type": "start", "persona_id": "invalid"}),
         },
+        *[
+            {
+                "type": "websocket.receive",
+                "text": json.dumps({"type": "start", "backend": backend}),
+            }
+            for backend in ("native", "lfm3")
+        ],
         {
             "type": "websocket.receive",
             "text": json.dumps(

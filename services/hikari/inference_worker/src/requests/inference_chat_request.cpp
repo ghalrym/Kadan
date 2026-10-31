@@ -7,13 +7,18 @@ void prepare_input(
     ModelStore& store,
     const std::atomic_bool& cancel
 ) {
-    request.model = input.model ? *input.model : store.selected();
+    preparation_check(
+        input.model.has_value(),
+        "Native language requests require an explicit checkpoint.",
+        422
+    );
+    request.model = *input.model;
     preparation_check(
         store.entry(request.model).inference_available,
         "This checkpoint has no supported inference engine.",
         422
     );
-    request.configuration.checkpoint = store.acquire(request.model, cancel);
+    request.configuration.checkpoint = store.require_local(request.model, cancel);
     const auto config = read_document(request.configuration.checkpoint / "config.json");
     const auto text = config.value("text_config", config);
     const auto supported = text.at("max_position_embeddings").get<std::size_t>();

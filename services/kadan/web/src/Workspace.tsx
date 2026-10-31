@@ -15,6 +15,7 @@ import { agentPath, allResources, api, ApiError } from "./api";
 import type { Asset, Resource } from "./types";
 import Markdown from "./Markdown";
 import { documentOutline, documentTrail, workspaceDocuments } from "./workspaceDocuments";
+import MemoryEditor from "./MemoryEditor";
 
 export default function Workspace({ agentKey, browserUrl }: { agentKey: string; browserUrl: string | null }) {
   const [tab, setTab] = useState<"memory" | "space" | "files">("space");
@@ -98,7 +99,9 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
             || (selectedKind === "file" ? !("filename" in saved) : !("kind" in saved) || saved.kind !== selectedKind)) saved = undefined;
         }
         setMissingId(saved ? null : selectedId);
-        if (saved) setSelected(saved);
+        if (saved) setSelected(latest => latest && latest.id === saved.id
+          && "version" in latest && "version" in saved && latest.version > saved.version
+          ? latest : saved);
       } catch (e) {
         if (!current) return;
         if (e instanceof ApiError && e.status === 404) setMissingId(selectedId);
@@ -324,9 +327,13 @@ export default function Workspace({ agentKey, browserUrl }: { agentKey: string; 
                 </>
               ) : (
                 <>
-                  <Markdown>
+                  {selected.kind === "memory" ? <MemoryEditor key={`${agentKey}:${selected.id}`} agentKey={agentKey} memory={selected}
+                    onSaved={value => {
+                      setSelected(value);
+                      setResources(rows => rows.map(row => row.id === value.id ? value : row));
+                    }} /> : <Markdown>
                     {selected.markdown || "No text in this record."}
-                  </Markdown>
+                  </Markdown>}
                   {(selected.kind === "space" || selected.kind === "deck") && (
                     <div className="space-children">
                       {detailLoading || detailError ? null : children.length ? (
