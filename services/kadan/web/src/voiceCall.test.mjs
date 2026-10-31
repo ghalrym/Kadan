@@ -260,6 +260,15 @@ test("starting without an additional persona sends an explicit null selection", 
 });
 
 
+test("LFM3 call selection is explicit and uses the same session transport", async () => {
+  const call = session();
+  await call.start("test", null, "lfm3");
+  socket.readyState = WebSocket.OPEN;
+  socket.onopen();
+  assert.deepEqual(socket.sent[0], { type: "start", persona_id: null, backend: "lfm3" });
+  call.end();
+});
+
 function deferred() {
   let resolve, reject;
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });

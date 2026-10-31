@@ -35,6 +35,7 @@ class CheckpointStatus(BaseModel):
         "image",
         "decision",
         "vision",
+        "audio",
     ]
     display_name: str | None
     short_name: str | None = None

@@ -131,6 +131,40 @@ class TranscriptionTask(TaskInput):
     formatting: bool | None = None
 
 
+class AudioCallTask(TaskInput):
+    """Bounded buffered turn on the explicitly selected experimental audio worker."""
+
+    feature: Literal["audio_call"] = "audio_call"
+    model_id: Literal["lfm3-audio-2b-bf16"] = "lfm3-audio-2b-bf16"
+    mode: Literal["transcribe", "reply", "turn"]
+    codec_streaming_probe: bool = Field(default=False, strict=True)
+    sentence_tts: bool = Field(default=False, strict=True)
+    audio: str | None = Field(default=None, max_length=900_000)
+    messages: list[ChatMessage] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_turn(self):
+        if self.sentence_tts and (self.mode != "turn" or self.codec_streaming_probe):
+            raise ValueError(
+                "Sentence TTS requires a complete turn without the private codec probe"
+            )
+        if self.codec_streaming_probe and self.mode != "turn":
+            raise ValueError("The private codec probe requires a complete audio turn")
+        if self.mode == "transcribe":
+            if self.audio is None or self.messages:
+                raise ValueError(
+                    "Audio transcription needs one utterance and no history"
+                )
+        elif self.mode == "reply":
+            if self.audio is not None or not self.messages:
+                raise ValueError("Audio replies need text history and no utterance")
+        elif self.audio is None or not self.messages:
+            raise ValueError(
+                "A complete audio turn needs an utterance and text history"
+            )
+        return self
+
+
 class TranscriptionFormattingTask(TaskInput):
     feature: Literal["stt_formatting"] = "stt_formatting"
     text: str = Field(min_length=1, max_length=32000)
@@ -173,6 +207,7 @@ InferenceInput = Annotated[
     | SpeechTask
     | TranscriptionTask
     | TranscriptionFormattingTask
+    | AudioCallTask
     | VideoTask
     | DownloadTask
     | ModelContextTask

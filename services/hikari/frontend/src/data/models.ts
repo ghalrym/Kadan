@@ -10,7 +10,11 @@ export const capabilities = [
   { id: 'laya', label: 'Decisions', short: 'Decisions', tone: 'decision' },
 ] as const
 
-export type Capability = (typeof capabilities)[number]
+export const audioTrialCapability = {
+  id: 'lfm3-audio-2b-bf16', label: 'Audio call trial', short: 'Audio trial', tone: 'tts',
+} as const
+
+export type Capability = (typeof capabilities)[number] | typeof audioTrialCapability
 
 /** Clip settings the video form starts from. */
 export const videoDefaults = { duration: 5, resolution: '480p' } as const

@@ -134,6 +134,7 @@ export type CheckpointStatus = {
     | 'image'
     | 'decision'
     | 'vision'
+    | 'audio'
   /**
    * License
    */

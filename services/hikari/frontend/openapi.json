@@ -194,7 +194,8 @@
               "formatting",
               "image",
               "decision",
-              "vision"
+              "vision",
+              "audio"
             ],
             "title": "Kind",
             "type": "string"

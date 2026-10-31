@@ -59,3 +59,9 @@ test("a disabled call does not start a session or report an availability error",
   useVoiceCall("test", null, true).start();
   assert.deepEqual(state, [null, false, ""]);
 });
+
+
+test("native readiness still blocks the ordinary call but does not select LFM3 implicitly", () => {
+  useVoiceCall("test", null, false, true).start();
+  assert.deepEqual(state, [null, false, ""]);
+});

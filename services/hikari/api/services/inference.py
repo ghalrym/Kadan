@@ -14,6 +14,7 @@ from api.pydantic_models.inference import (
     Operation,
 )
 from api.pydantic_models.inference_task import (
+    AudioCallTask,
     DownloadTask,
     InferenceTask,
     VideoTask,
@@ -45,11 +46,14 @@ class InferenceStream:
         result = await self.completion
         if self.job.stream_error:
             raise InferenceFailure(self.job.stream_error, 502)
-        yield {
-            key: result[key]
-            for key in ("finish_reason", "timing", "cache")
-            if key in result
-        }
+        if self.job.request.feature == "audio_call":
+            yield {"type": "reply", **result}
+        else:
+            yield {
+                key: result[key]
+                for key in ("finish_reason", "timing", "cache")
+                if key in result
+            }
 
     async def aclose(self):
         await await_cleanup(
@@ -402,6 +406,14 @@ class InferenceService:
     def _background_finished(task):
         if not task.cancelled() and task.exception() is not None:
             log.warning("Background request failed: %s", task.exception())
+
+    async def open_audio_turn(self, body: AudioCallTask):
+        if body.mode != "turn":
+            raise InferenceFailure("Audio streaming requires a complete turn.", 422)
+        job, completion = await self._submit(
+            body, "audio_call", "generate", streaming=True
+        )
+        return InferenceStream(self, job, completion)
 
     async def open_chat_stream(self, body: BaseModel):
         job, completion = await self._submit(body, "llm", "completion", streaming=True)

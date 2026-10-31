@@ -125,3 +125,21 @@ test('API details and missing responses become actionable errors', async () => {
   const offline = await settingsApi(null, null)
   await assert.rejects(offline.api.fetchModels(new AbortController().signal), /Cannot reach the settings API/)
 })
+
+
+test('an enabled audio trial is visible and requires acknowledged download without replacing defaults', async () => {
+  const audio = checkpoint('lfm3-audio-2b-bf16', { license_notice: 'Review audio license' })
+  const { api, calls, capabilities } = await settingsApi({ ok: true }, { models: [audio] })
+  const rows = api.capabilityModels([audio])
+  assert.equal(rows.length, capabilities.length + 1)
+  assert.equal(rows[0].capability.id, 'lfm3-1.7b-bf16')
+  assert.equal(rows.at(-1).capability.label, 'Audio call trial')
+  assert.deepEqual(api.licenseNotices(rows).map(model => model.id), [audio.id])
+  const signal = new AbortController().signal
+  await assert.rejects(api.downloadModels(rows, false, signal), /acknowledge/)
+  assert.equal(calls.length, 0)
+  await api.downloadModels(rows, true, signal)
+  assert.deepEqual(calls.map(call => call.args.path.model_id), [audio.id])
+  assert.equal(calls[0].args.body.license_acknowledged, true)
+  assert.equal(api.capabilityModels([]).some(row => row.capability.id === audio.id), false)
+})

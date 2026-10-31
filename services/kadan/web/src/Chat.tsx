@@ -151,7 +151,7 @@ export default function Chat({
   const [dictating, setDictating] = useState(false);
   const voiceCall = useVoiceCall(
     agentKey, persona || null,
-    !ready.chat || sending || blocked || dictating,
+    sending || blocked || dictating, !ready.chat,
   );
   // Hikari loads the model on demand; the first reply waits for it without a deadline.
   const modelLoading = generating && status?.hikari.state === "ready" && status.hikari.model_state === "loading";
@@ -427,10 +427,11 @@ export default function Chat({
       presence={working ? perchStatus : activeLabel(saved)}
       onClose={closeCard}
       callDisabled={!ready.chat || sending || blocked || dictating || voiceCall.active}
+      experimentalCallDisabled={sending || blocked || dictating || voiceCall.active}
       callTitle={voiceCall.active ? "Already in a call" : voiceCall.unavailable ?? (!ready.chat ? "Calls need a chat model" : "Start a voice call")}
-      onCall={() => {
+      onCall={(backend) => {
         setCard(false);
-        voiceCall.start();
+        voiceCall.start(backend);
       }}
       onOpenComputer={() => {
         setCard(false);

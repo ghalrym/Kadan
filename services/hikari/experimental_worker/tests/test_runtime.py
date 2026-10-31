@@ -2,6 +2,7 @@ import asyncio
 import json
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -134,6 +135,55 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime.handle({"id": "req", "command": "requirement"})
         reply = self.runtime.socket.messages[-1]
         self.assertEqual(reply["device_floor"], reply["minimum"][1])
+
+    async def test_cancelled_executor_scratch_is_removed_after_join(self):
+        runtime = self.runtime
+        runtime.budget = list(runtime.backend.REQUIREMENT)
+        runtime.store.complete = lambda: True
+        process = SimpleNamespace(pid=0, live=False, joined=False)
+        pipe = SimpleNamespace(poll=lambda: False, close=lambda: None)
+        scratch = None
+
+        def create_process(**kwargs):
+            nonlocal scratch
+            scratch = Path(kwargs["args"][-1])
+
+            def start():
+                process.live = True
+                directory = scratch / "lfm3-audio-interrupted"
+                directory.mkdir()
+                (directory / "utterance.wav").write_bytes(b"utterance")
+
+            def join():
+                self.assertFalse(process.live)
+                self.assertTrue(
+                    (scratch / "lfm3-audio-interrupted/utterance.wav").exists()
+                )
+                process.joined = True
+
+            process.start = start
+            process.join = join
+            return process
+
+        process.is_alive = lambda: process.live
+        process.terminate = lambda: setattr(process, "live", False)
+        process.kill = process.terminate
+        context = SimpleNamespace(
+            Pipe=lambda **kwargs: (pipe, pipe), Process=create_process
+        )
+
+        def observe(message):
+            if message["state"] == "running":
+                runtime.cancelled.add("a" * 32)
+            if message["state"] == "cancelled":
+                self.assertTrue(process.joined)
+                self.assertFalse(scratch.exists())
+
+        runtime.socket.on_send = observe
+        with patch("multiprocessing.get_context", return_value=context):
+            await runtime.run_job(self.request())
+        self.assertFalse(scratch.exists())
+        self.assertTrue(process.joined)
 
     async def test_disconnect_waits_for_cleanup_despite_repeated_cancellation(self):
         runtime = self.runtime
