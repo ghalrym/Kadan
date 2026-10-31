@@ -17,10 +17,10 @@ The sandbox image installs official npm package `@openai/codex@0.162.1` and copi
 call. Both setup probes and execution use `/home/gem/.codex` as `CODEX_HOME`, on
 the existing home volume. Setup checks the exact CLI version and the exit status
 of `codex login status`, discarding authentication diagnostics. It makes no model
-request. The owner signs in from the computer's terminal, for example with
-`CODEX_HOME=/home/gem/.codex codex login --device-auth`, subject to their account's
-device-login permissions. [API-key login](https://developers.openai.com/codex/auth)
-is also user provisioned through Codex.
+request. The Coding panel starts `codex login --device-auth` in a detached
+computer process, displays its device link and code, and polls local login status.
+The login control stores the process identity on the computer so later requests can
+check or stop the same login. Sign-out invokes `codex logout` on that computer.
 Kadan does not copy credentials from its API host, browser or this development environment.
 
 The API's `CodingClient` and the runner's three tools invoke the same supervisor

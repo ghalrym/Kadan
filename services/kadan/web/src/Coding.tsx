@@ -6,6 +6,12 @@ import { randomUuid } from "./uuid.ts";
 
 import { codingBusy, codingLabels as labels, type CodingJob, type CodingStatus } from "./coding.ts";
 
+interface LoginStatus {
+  state: "signed_in" | "signed_out" | "signing_in" | "missing" | "unavailable";
+  message: string;
+  login?: { url: string; code: string } | null;
+}
+
 interface Props {
   agentKey: string;
   conversation: Resource | null;
@@ -32,6 +38,8 @@ export default function Coding({ agentKey, conversation, onQueued, onClose }: Pr
   const writing = useRef(false);
   const revision = useRef(0);
   const [status, setStatus] = useState<CodingStatus | null>(null);
+  const [login, setLogin] = useState<LoginStatus | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [stopping, setStopping] = useState("");
   const [error, setError] = useState("");
@@ -57,13 +65,31 @@ export default function Coding({ agentKey, conversation, onQueued, onClose }: Pr
     reading.current = true;
     const read = revision.current;
     try {
-      const result = await api<CodingStatus>("/computer/coding");
-      if (active.current && read === revision.current) { setStatus(result); setError(""); }
+      const [result, auth] = await Promise.all([api<CodingStatus>("/computer/coding"), api<LoginStatus>("/computer/coding/login/status")]);
+      if (active.current && read === revision.current) { setStatus(result); setLogin(auth); setError(""); }
     } catch (e) {
       if (active.current && read === revision.current) setError(`Could not refresh coding jobs: ${(e as Error).message}`);
     } finally {
       reading.current = false;
       if (active.current) setLoading(false);
+    }
+  }
+
+  async function authenticate(operation: "login" | "logout") {
+    if (writing.current) return;
+    writing.current = true;
+    ++revision.current;
+    setAuthBusy(true);
+    setError("");
+    try {
+      const result = await api<LoginStatus>(`/computer/coding/${operation}`, {});
+      if (active.current) setLogin(result);
+    } catch (e) {
+      if (active.current) setError(`Sign-in could not be confirmed: ${(e as Error).message}`);
+    } finally {
+      writing.current = false;
+      if (active.current) setAuthBusy(false);
+      void refresh();
     }
   }
 
@@ -139,17 +165,12 @@ export default function Coding({ agentKey, conversation, onQueued, onClose }: Pr
       <h2 id="coding-title">Coding</h2>
       {!status ? <p role="status">{loading ? "Checking computer and Codex…" : "Coding status unavailable"}</p> : <>
         <p role="status">{error ? "Last checked: " : ""}{status.setup.message}</p>
-        {status.setup.state === "auth_required" && <div className="coding-setup">
-          <p>In Messages, open your agent’s card, open its computer, and choose Take control. Open a terminal there and run:</p>
-          <pre className="coding-command"><code>CODEX_HOME=/home/gem/.codex codex login --device-auth</code></pre>
-          <p>Follow the sign-in link and code shown in the terminal, then return here and refresh. Device login must be enabled for your account. Keep passwords, codes and API keys out of chat.</p>
+        {login && <div className="coding-setup">
+          <p role="status">{login.message}</p>
+          {login.state === "signed_out" && <button disabled={authBusy} onClick={() => void authenticate("login")}>Sign in with ChatGPT</button>}
+          {login.state === "signing_in" && login.login && <p>Open <a href={login.login.url} target="_blank" rel="noreferrer">the sign-in page</a> and enter <strong>{login.login.code}</strong>.</p>}
+          {login.state === "signed_in" && <button disabled={authBusy} onClick={() => void authenticate("logout")}>Sign out</button>}
         </div>}
-        {status.setup.version && <p className="field-hint">Codex {status.setup.version} · GPT-6.1 Sol · High effort</p>}
-        <details><summary>Codex access and usage</summary>
-          <p>A ChatGPT browser session does not sign this computer in. Use your own Codex account or set up API-key sign-in in its terminal. Never paste credentials into Messages.</p>
-          <p>Sign-in does not confirm access to GPT-6.1 Sol or remaining usage. If a task fails, check your account’s model access and usage limits before trying again. API-key use can incur charges.</p>
-          <a href="https://developers.openai.com/codex/auth" target="_blank" rel="noreferrer">Codex sign-in help<span className="sr-only"> (opens in a new tab)</span></a>
-        </details>
         {status.jobs.length === 0 ? <div className="coding-setup">
           <p>No coding jobs yet.</p>
           {status.setup.state === "ready" ? <p>Choose an existing project folder on the computer. For a first try, ask in Messages: “Ask Codex to look through my project in [folder] and explain it without changing any files.” Replace [folder] with its path.</p>
