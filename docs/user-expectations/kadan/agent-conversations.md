@@ -28,6 +28,6 @@ Trashing or restoring conversations in Tsuchi can change which chat opens after 
 
 An **Earlier unsent message** has no recorded conversation and cannot be retried safely. Its text remains available to copy into the current draft or discard. Copying preserves existing draft text and does not send anything. Check saved history before submitting it again to avoid a duplicate.
 
-The [Activity](conversation-activity.md) panel distinguishes pending work, failures, stops and recorded message delivery. Finishing a response does not establish that an external action succeeded.
+[Activity](conversation-activity.md) on the agent's card distinguishes pending work, failures, stops and recorded message delivery. Finishing a response does not establish that an external action succeeded.
 
 See [Conversation architecture](../../architecture/kadan/agent-conversations.md) for ownership, context and recovery.

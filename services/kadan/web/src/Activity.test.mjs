@@ -15,6 +15,7 @@ runInNewContext(source, {
   exports,
   require: name => {
     if (name === "./activity") return { conversationActivity };
+    if (name === "lucide-react") return new Proxy({}, { get: (_, icon) => icon });
     assert.equal(name, "react/jsx-runtime");
     return { jsx, jsxs: jsx };
   },
@@ -38,17 +39,14 @@ const view = extra => exports.default({ conversation, runs: [], images: [], load
 test("a new conversation shows loading rather than an empty or old activity history", () => {
   const tree = view({ loading: true, runs: [run("old", "failed")] });
   assert.match(text(tree), /Loading activity/);
-  assert.doesNotMatch(text(tree), /Response failed|No response or image/);
-  assert.equal(tree.type, "details");
-  assert.equal(tree.props.open, undefined);
+  assert.doesNotMatch(text(tree), /Response failed|Nothing yet/);
 });
 
 test("an initial failure is unavailable while a refresh failure labels the retained snapshot", () => {
   const unavailable = view({ loading: true, error: "Storage offline" });
-  assert.match(text(unavailable), /Unavailable/);
-  assert.match(text(unavailable), /Activity has not loaded/);
+  assert.match(text(unavailable), /Couldn’t load activity/);
   const stale = view({ error: "Storage offline", runs: [run("done", "completed")] });
-  assert.match(text(stale), /Showing the last received activity/);
+  assert.match(text(stale), /Showing the last update/);
   assert.match(text(stale), /Response finished/);
 });
 
@@ -57,16 +55,15 @@ test("long groups show an explicit bound and total without hiding other groups",
     ...Array.from({ length: 12 }, (_, i) => run(`finished-${i}`, "completed")), run("active", "queued"),
   ] });
   assert.equal(elements(tree).filter(node => node.type === "li").length, 11);
-  assert.match(text(tree), /Showing the 10 most recently updated of 12/);
+  assert.match(text(tree), /Showing 10 of 12/);
   assert.match(text(tree), /Response queued/);
 });
 
 test("routine polls do not open the panel or introduce live announcements and retry actions", () => {
   const tree = view({ runs: [run("failed", "failed"), run("stopped", "cancelled")] });
-  assert.equal(tree.props.open, undefined);
+  assert.ok(elements(tree).filter(node => node.type === "details").every(node => node.props.open === undefined));
   assert.equal(elements(tree).some(node => node.props?.["aria-live"]), false);
   assert.equal(elements(tree).some(node => node.type === "button"), false);
   assert.match(text(tree), /Response failed/);
   assert.match(text(tree), /Response stopped/);
-  assert.match(text(tree), /not retried automatically/);
 });

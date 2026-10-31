@@ -1,9 +1,12 @@
 import type { AgentRun, ImageJob, Resource } from "./types.ts";
 import { currentResponseOutcome } from "./agentRuns.ts";
 
+export type ActivityTone = "failed" | "stopped" | "active" | "done";
+
 export interface ActivityItem {
   id: string;
   kind: "response" | "image";
+  tone: ActivityTone;
   title: string;
   state: string;
   detail: string;
@@ -24,7 +27,7 @@ export function conversationActivity(conversation: Resource, runs: AgentRun[], i
     { title: "Needs review", items: [] },
     { title: "In progress", items: [] },
     { title: "Finished", items: [] },
-    { title: "Earlier failures and stops", items: [], historical: true },
+    { title: "Earlier", items: [], historical: true },
   ];
   const currentOutcome = currentResponseOutcome(conversation, runs);
   const messages = new Map(conversation.messages.map(message => [message.id, message]));
@@ -35,31 +38,32 @@ export function conversationActivity(conversation: Resource, runs: AgentRun[], i
       id: run.id,
       kind: "response",
       title: request ? excerpt(request.content) || "Response" : run.trigger_job_id ? "Image follow-up response" : "Response",
+      tone: "done",
       state: "",
       detail: "",
       updatedAt: run.updated_at,
     };
     switch (run.status) {
       case "failed":
+        item.tone = "failed";
         item.state = "Response failed";
-        item.detail = run.error || "No failure details were recorded.";
+        item.detail = run.error || "";
         groups[run.id === currentOutcome?.id ? 0 : 3].items.push(item);
         break;
       case "cancelled":
+        item.tone = "stopped";
         item.state = "Response stopped";
-        item.detail = "Already delivered messages remain. Stopping does not undo actions.";
         groups[run.id === currentOutcome?.id ? 0 : 3].items.push(item);
         break;
       case "queued":
       case "running":
-        item.state = run.status === "queued" ? "Response queued" : "Waiting for response";
+        item.tone = "active";
+        item.state = run.status === "queued" ? "Response queued" : "Responding";
         groups[1].items.push(item);
         break;
       case "completed":
         item.state = "Response finished";
-        item.detail = run.delivered_message_ids.length
-          ? `${run.delivered_message_ids.length} message ${run.delivered_message_ids.length === 1 ? "delivery" : "deliveries"} recorded.`
-          : "No message delivery was recorded for this response.";
+        if (!run.delivered_message_ids.length) item.detail = "No message sent";
         groups[2].items.push(item);
         break;
     }
@@ -70,30 +74,33 @@ export function conversationActivity(conversation: Resource, runs: AgentRun[], i
       id: image.id,
       kind: "image",
       title: excerpt(image.prompt) || "Image",
+      tone: "done",
       state: "",
       detail: "",
       updatedAt: image.updated_at,
     };
     switch (image.status) {
       case "failed":
+        item.tone = "failed";
         item.state = "Image failed";
-        item.detail = image.error || "No failure details were recorded.";
+        item.detail = image.error || "";
         groups[0].items.push(item);
         break;
       case "cancelled":
+        item.tone = "stopped";
         item.state = "Image cancelled";
-        item.detail = "Cancelled separately from chat responses.";
         groups[0].items.push(item);
         break;
       case "queued":
       case "running":
       case "cancelling":
+        item.tone = "active";
         item.state = image.status === "queued" ? "Image queued" : image.status === "running" ? "Generating image" : "Stopping image";
         groups[1].items.push(item);
         break;
       case "completed":
-        item.state = image.delivered_message_id ? "Image delivered" : "Image ready · awaiting delivery";
-        item.detail = image.delivered_message_id ? "Image delivery to this conversation was recorded." : "Generation finished; delivery is still pending.";
+        if (!image.delivered_message_id) item.tone = "active";
+        item.state = image.delivered_message_id ? "Image sent" : "Image ready, not sent yet";
         groups[image.delivered_message_id ? 2 : 1].items.push(item);
         break;
     }

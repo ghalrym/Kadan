@@ -146,7 +146,13 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     receipts: () => elements().filter(node => node.props?.className === "receipt").map(node => node.props.children),
     references: () => elements().find(node => node.type === "RequestReferences").props,
     composer: () => elements().find(node => node.type === "Composer").props,
-    activity: () => elements().find(node => node.type === "Activity").props,
+    activity() {
+      if (!elements().some(node => node.type === "AgentCard")) {
+        elements().find(node => node.props?.["aria-label"] === "Open Guide’s card").props.onClick();
+        render();
+      }
+      return elements().find(node => node.type === "AgentCard").props.activity.props;
+    },
     async poll(runs, conversation = selectedChain) {
       snapshotRuns = runs;
       selectedChain = conversation;

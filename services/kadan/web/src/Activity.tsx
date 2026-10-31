@@ -1,4 +1,5 @@
-import { conversationActivity, type ActivityItem } from "./activity";
+import { ChevronRight, CircleAlert, CircleCheck, CircleStop, LoaderCircle } from "lucide-react";
+import { conversationActivity, type ActivityItem, type ActivityTone } from "./activity";
 import type { AgentRun, ImageJob, Resource } from "./types";
 
 interface Props {
@@ -11,46 +12,70 @@ interface Props {
 
 const GROUP_LIMIT = 10;
 
+const ICONS: Record<ActivityTone, typeof CircleCheck> = {
+  failed: CircleAlert,
+  stopped: CircleStop,
+  active: LoaderCircle,
+  done: CircleCheck,
+};
+
 export default function Activity({ conversation, runs, images, loading, error }: Props) {
-  const groups = conversationActivity(conversation, runs, images);
-  const review = groups[0].items.length;
-  const progressing = groups[1].items.length;
-  const total = groups.reduce((count, group) => count + group.items.length, 0);
+  const [review, progressing, finished, earlier] = conversationActivity(conversation, runs, images);
+  const current = [...review.items, ...progressing.items];
+  const empty = current.length + finished.items.length + earlier.items.length === 0;
   return (
-    <details className="chat-activity" key={conversation.id}>
-      <summary>
-        Activity
-        <span>{loading ? error ? "Unavailable" : "Loading…" : `${progressing} in progress · ${review} to review · ${groups[3].items.length} earlier failures/stops`}{!loading && error ? " · Last received" : ""}</span>
-      </summary>
-      <div className="activity-content" role="region" aria-label="Conversation activity" tabIndex={0}>
-        <p className="quiet">Response and image work in this conversation. Codex job status is shown separately for the shared computer.</p>
-        {error && <p className="error">Updates unavailable. {loading ? "Activity has not loaded." : "Showing the last received activity."}</p>}
-        {loading ? (!error && <p className="quiet">Loading activity…</p>) : total === 0 ? <p className="quiet">No response or image activity yet.</p> : [groups[0], groups[1], groups[3], groups[2]].map(group => group.items.length > 0 && (
-          <section key={group.title} aria-label={group.title}>
-            {group.historical ? <details>
-              <summary>{group.title} · {group.items.length}</summary>
-              <p className="quiet">Earlier does not mean resolved. These records are kept without retrying them.</p>
+    <section className="agent-card-activity" key={conversation.id} aria-labelledby="agent-card-activity">
+      <header>
+        <h3 id="agent-card-activity">Activity</h3>
+        {!loading && progressing.items.length > 0 && <span className="activity-pill active">{progressing.items.length} in progress</span>}
+        {!loading && review.items.length > 0 && <span className="activity-pill review">{review.items.length} to review</span>}
+      </header>
+      {error && <p className="activity-error">{loading ? "Couldn’t load activity." : "Couldn’t refresh. Showing the last update."}</p>}
+      {loading ? !error && <p className="activity-empty">Loading activity…</p> : empty ? <p className="activity-empty">Nothing yet.</p> : (
+        <div className="activity-content" role="region" aria-label="Conversation activity" tabIndex={0}>
+          {current.length > 0 && renderItems(current)}
+          {[finished, earlier].map(group => group.items.length > 0 && (
+            <details key={group.title} className="activity-group">
+              <summary>
+                <ChevronRight size={14} aria-hidden="true" />
+                {group.title}
+                <span>{group.items.length}</span>
+              </summary>
               {renderItems(group.items)}
-            </details> : <>
-            <h3>{group.title} <span className="quiet">{group.items.length}</span></h3>
-            {renderItems(group.items)}
-            </>}
-          </section>
-        ))}
-        <p className="quiet">Failures and stops are kept for review; they are not retried automatically. Use the conversation’s Stop controls for active work.</p>
-      </div>
-    </details>
+            </details>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
 function renderItems(items: ActivityItem[]) {
   return <>
-    <ul>{items.slice(0, GROUP_LIMIT).map(item => <li key={`${item.kind}-${item.id}`}>
-      <strong>{item.title}</strong>
-      <span className={`activity-state ${/failed|stopped|cancelled/.test(item.state) ? "review" : ""}`}>{item.state}</span>
-      {item.detail && <p className="quiet">{item.detail}</p>}
-      <time className="quiet" dateTime={item.updatedAt}>Updated {new Date(item.updatedAt).toLocaleString()}</time>
-    </li>)}</ul>
-    {items.length > GROUP_LIMIT && <p className="quiet">Showing the {GROUP_LIMIT} most recently updated of {items.length}.</p>}
+    <ul className="activity-list">{items.slice(0, GROUP_LIMIT).map(item => {
+      const Icon = ICONS[item.tone];
+      return <li key={`${item.kind}-${item.id}`} className={`activity-item ${item.tone}`}>
+        <Icon size={16} className={item.tone === "active" ? "spin" : ""} aria-hidden="true" />
+        <div>
+          <div className="activity-line">
+            <strong>{item.title}</strong>
+            <time dateTime={item.updatedAt} title={new Date(item.updatedAt).toLocaleString()}>{ago(item.updatedAt)}</time>
+          </div>
+          <span className="activity-state">{item.state}</span>
+          {item.detail && <p className="activity-detail">{item.detail}</p>}
+        </div>
+      </li>;
+    })}</ul>
+    {items.length > GROUP_LIMIT && <p className="activity-more">Showing {GROUP_LIMIT} of {items.length}.</p>}
   </>;
+}
+
+/** Compact age for a row: "now", "5m", "3h", "2d", then the date. */
+function ago(iso: string, now = Date.now()) {
+  const minutes = Math.max(0, (now - new Date(iso).getTime()) / 60000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${Math.floor(minutes)}m`;
+  if (minutes < 60 * 24) return `${Math.floor(minutes / 60)}h`;
+  if (minutes < 60 * 24 * 7) return `${Math.floor(minutes / 60 / 24)}d`;
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }

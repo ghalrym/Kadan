@@ -12,7 +12,7 @@ const source = ts.transpileModule(
 test("the agent card exposes one ordinary Call action without a trial flag or backend choice", () => {
   const jsx = (type, props) => ({ type, props });
   const modules = {
-    react: { useEffect() {}, useRef: current => ({ current }), useState: initial => [initial, () => {}] },
+    react: { useEffect() {}, useLayoutEffect() {}, useRef: current => ({ current }), useState: initial => [initial, () => {}] },
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "lucide-react": {},
     "./Pet": { default: "Pet" },
@@ -23,7 +23,7 @@ test("the agent card exposes one ordinary Call action without a trial flag or ba
   const calls = [];
   const tree = exports.default({
     agentName: "Guide", sheet: null, mood: "idle", presence: "Ready", onClose() {},
-    callDisabled: false, callTitle: "Start a voice call", onCall: (...args) => calls.push(args), onOpenComputer() {},
+    callDisabled: false, callTitle: "Start a voice call", onCall: (...args) => calls.push(args), onOpenComputer() {}, activity: null,
   });
   const actions = tree.props.children.find(child => child.props?.className === "agent-card-actions");
   const buttons = [actions.props.children].flat();

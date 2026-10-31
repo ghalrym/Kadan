@@ -444,6 +444,13 @@ export default function Chat({
         setCard(false);
         setComputer(true);
       }}
+      activity={<Activity
+        conversation={chain}
+        runs={runs}
+        images={images}
+        loading={activityConversation !== chain.id}
+        error={pollError}
+      />}
     />
   );
   function toggleCard() {
@@ -630,13 +637,6 @@ export default function Chat({
         </div>
       </div>
       <CodingIndicator onOpen={onOpenCoding} />
-      <Activity
-        conversation={chain}
-        runs={runs}
-        images={images}
-        loading={activityConversation !== chain.id}
-        error={pollError}
-      />
       {(away || query) && <button type="button" className="jump-latest" onClick={jumpToLatest}>
         <ArrowDown size={14} />{find.open ? "Close find and jump to latest" : "Jump to latest"}
       </button>}
