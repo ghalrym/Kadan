@@ -66,18 +66,45 @@ def template_inputs(tokenizer, task: dict):
         messages(task),
         tools=task.get("tools"),
         add_generation_prompt=True,
-        enable_thinking=False,
+        enable_thinking=True,
         tokenize=True,
         return_dict=True,
         return_tensors="pt",
     )
 
 
-def generate_text(model, inputs, output_tokens: int):
+class ReasoningBudget:
+    """Force the reasoning block closed once it reaches its token budget.
+
+    The template opens `<think>` in the prompt, so every generated token counts
+    toward reasoning until the model emits `</think>`. Forcing the close leaves the
+    rest of the output budget for the reply.
+    """
+
+    def __init__(self, prompt_tokens: int, budget: int, end_id: int):
+        self.prompt_tokens = prompt_tokens
+        self.budget = budget
+        self.end_id = end_id
+        self.closed = False
+
+    def __call__(self, input_ids, scores):
+        if self.closed:
+            return scores
+        generated = input_ids.shape[-1] - self.prompt_tokens
+        if generated and int(input_ids[0, -1]) == self.end_id:
+            self.closed = True
+        elif generated >= self.budget:
+            scores[:, :] = float("-inf")
+            scores[:, self.end_id] = 0
+        return scores
+
+
+def generate_text(model, inputs, output_tokens: int, logits_processor=None):
     """Use Transformers 5.21's hybrid-cache-aware prefill, without slicing history."""
     return model.generate(
         **inputs,
         max_new_tokens=output_tokens,
+        **({"logits_processor": logits_processor} if logits_processor else {}),
         prefill_chunk_size=PREFILL_CHUNK_TOKENS,
         cache_implementation="dynamic",
         disable_compile=True,
@@ -91,9 +118,10 @@ def generate_text(model, inputs, output_tokens: int):
 
 
 def reply_text(text: str) -> str:
-    """Reasoning is private even if the checkpoint ignores enable_thinking=False."""
-    if "</think>" in text:
-        text = text.rsplit("</think>", 1)[1]
+    """The prompt opens reasoning; only text after its close is a reply."""
+    if "</think>" not in text:
+        raise ValueError("LFM3 ended inside an unfinished reasoning block.")
+    text = text.rsplit("</think>", 1)[1]
     if "<think>" in text:
         raise ValueError("LFM3 ended inside an unfinished reasoning block.")
     text = text.strip()
@@ -105,7 +133,9 @@ def reply_text(text: str) -> str:
     return text.strip()
 
 
-def output_budget(prompt_tokens: int, context: int = CONTEXT_LIMIT) -> int:
+def output_budget(
+    prompt_tokens: int, context: int = CONTEXT_LIMIT, max_tokens: int | None = None
+) -> int:
     if type(context) is not int or not 1 <= context <= CONTEXT_LIMIT:
         raise ValueError("LFM3 context must be between 1 and 262144 tokens.")
     if type(prompt_tokens) is not int or prompt_tokens < 0:
@@ -114,7 +144,8 @@ def output_budget(prompt_tokens: int, context: int = CONTEXT_LIMIT) -> int:
         raise ValueError(
             "LFM3 prompt leaves no reply space in the supported context; history was not truncated."
         )
-    return context - prompt_tokens
+    remaining = context - prompt_tokens
+    return remaining if max_tokens is None else min(remaining, max_tokens)
 
 
 def finish_reason(generated, eos_token_id: int | list[int] | None) -> str:
@@ -133,6 +164,11 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
     messages(task)
     context = task.get("context_limit")
     context = CONTEXT_LIMIT if context is None else context
+    max_tokens = task.get("max_tokens")
+    reasoning_tokens = task.get("reasoning_tokens")
+    for value in (max_tokens, reasoning_tokens):
+        if value is not None and (type(value) is not int or value < 1):
+            raise ValueError("LFM3 token limits must be positive integers.")
     output_budget(0, context)
 
     # Inference dependencies and checkpoint code belong exclusively to the spawned
@@ -148,7 +184,7 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
     )
     inputs = template_inputs(tokenizer, task)
     prompt_tokens = inputs["input_ids"].shape[-1]
-    output_tokens = output_budget(prompt_tokens, context)
+    output_tokens = output_budget(prompt_tokens, context, max_tokens)
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         local_files_only=True,
@@ -172,7 +208,20 @@ def execute(task: dict, operation: str, model_path: str, emit: Callable) -> dict
             ]
         ),
     ):
-        output = generate_text(model, inputs, output_tokens)
+        processors = None
+        if reasoning_tokens is not None:
+            from transformers import LogitsProcessorList
+
+            processors = LogitsProcessorList(
+                [
+                    ReasoningBudget(
+                        prompt_tokens,
+                        reasoning_tokens,
+                        tokenizer.convert_tokens_to_ids("</think>"),
+                    )
+                ]
+            )
+        output = generate_text(model, inputs, output_tokens, processors)
     torch.cuda.synchronize()
     generation_seconds = time.perf_counter() - generation_started
     generated = output[0, prompt_tokens:]

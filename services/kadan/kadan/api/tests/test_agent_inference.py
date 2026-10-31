@@ -10,6 +10,8 @@ from pydantic import ValidationError
 from kadan.api.config import ServiceError
 from kadan.runner.agent_inference import (
     MAX_COMMAND_CHARACTERS,
+    REASONING_TOKENS,
+    REPLY_TOKENS,
     TOOLS_FOOTER,
     TOOLS_HEADER,
     AgentInference,
@@ -105,6 +107,14 @@ def test_lfm3_plain_answer_after_tool_uses_existing_reply_action():
         tool="send_message",
         arguments={"content": answer, "end_run": True},
     )
+
+
+def test_lfm3_requests_cap_reasoning_and_reply_tokens():
+    seen = []
+    invoke(completed("Hello"), model_id="lfm3-1.7b-bf16", seen=seen)
+    assert seen[0]["max_tokens"] == REASONING_TOKENS + REPLY_TOKENS
+    assert seen[0]["reasoning_tokens"] == REASONING_TOKENS
+    assert REPLY_TOKENS * 3 >= MAX_COMMAND_CHARACTERS
 
 
 def test_native_plain_answer_still_finishes_without_delivery():

@@ -48,6 +48,18 @@ class CompletionRequest(BaseModel):
     reuse_prefix: bool = Field(
         default=True, description="Disable to compare against full prefill."
     )
+    max_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        strict=True,
+        description="Cap on generated tokens, including reasoning. Omit to allow the remaining context.",
+    )
+    reasoning_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        strict=True,
+        description="Reasoning is closed after this many tokens so the reply keeps its share of max_tokens.",
+    )
 
     @model_validator(mode="before")
     @classmethod

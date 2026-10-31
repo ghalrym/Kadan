@@ -1,12 +1,14 @@
 """Pure formatting and validation tests; never load or run a model."""
 
 import unittest
+
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 from experimental_worker.text import (
     CONTEXT_LIMIT,
     MODEL_ID,
+    ReasoningBudget,
     execute,
     finish_reason,
     generate_text,
@@ -61,6 +63,7 @@ class TextTests(unittest.TestCase):
 
     def test_unfinished_reasoning_is_an_error(self):
         for text in (
+            "not finished, with the opening marker in the prompt",
             "<think>not finished",
             "<think>closed</think>answer<think>unfinished",
         ):
@@ -72,7 +75,7 @@ class TextTests(unittest.TestCase):
 
     def test_terminal_markers_do_not_change_tool_xml(self):
         self.assertEqual(
-            reply_text("<function=finish></function><|im_end|>\n"),
+            reply_text("private</think><function=finish></function><|im_end|>\n"),
             "<function=finish></function>",
         )
 
@@ -116,6 +119,61 @@ class TextTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "not truncated"),
             ):
                 output_budget(tokens)
+
+    def test_output_is_capped_by_the_requested_limit(self):
+        self.assertEqual(output_budget(10, 32768, 1000), 1000)
+        self.assertEqual(output_budget(32000, 32768, 1000), 768)
+
+    def test_reasoning_is_closed_at_its_budget_then_left_alone(self):
+        end = 7
+        budget = ReasoningBudget(prompt_tokens=3, budget=2, end_id=end)
+        scores = unittest.mock.MagicMock()
+        budget(self.token_ids([1, 2, 3, 4]), scores)
+        scores.__setitem__.assert_not_called()
+        budget(self.token_ids([1, 2, 3, 4, 5]), scores)
+        self.assertEqual(
+            scores.__setitem__.call_args_list,
+            [
+                unittest.mock.call((slice(None), slice(None)), float("-inf")),
+                unittest.mock.call((slice(None), end), 0),
+            ],
+        )
+        scores.reset_mock()
+        budget(self.token_ids([1, 2, 3, 4, 5, end]), scores)
+        budget(self.token_ids([1, 2, 3, 4, 5, end, 8, 9]), scores)
+        scores.__setitem__.assert_not_called()
+
+    def test_reasoning_closed_early_is_never_forced(self):
+        budget = ReasoningBudget(prompt_tokens=3, budget=2, end_id=7)
+        scores = unittest.mock.MagicMock()
+        budget(self.token_ids([1, 2, 3, 7]), scores)
+        budget(self.token_ids([1, 2, 3, 7, 4, 5]), scores)
+        scores.__setitem__.assert_not_called()
+
+    @staticmethod
+    def token_ids(tokens):
+        tensor = unittest.mock.MagicMock()
+        tensor.shape = (1, len(tokens))
+        tensor.__getitem__.return_value = tokens[-1]
+        return tensor
+
+    def test_invalid_token_limits_are_rejected_before_dependencies(self):
+        for field in ("max_tokens", "reasoning_tokens"):
+            for value in (0, True, "10"):
+                with (
+                    self.subTest(field=field, value=value),
+                    self.assertRaisesRegex(ValueError, "token limits"),
+                ):
+                    execute(
+                        {
+                            "model": MODEL_ID,
+                            "messages": [{"role": "user", "text": "Hello"}],
+                            field: value,
+                        },
+                        "completion",
+                        "/unused",
+                        lambda _: None,
+                    )
 
     def test_eos_at_the_output_boundary_is_complete(self):
         self.assertEqual(finish_reason([4, 124900], 124900), "stop")

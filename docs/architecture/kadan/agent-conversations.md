@@ -17,6 +17,8 @@ Kadan proxies `GET /api/agents/{key}` and `PUT /api/agents/{key}` to Tsuchi for 
 
 The runner includes at most 97 recent user and assistant messages, subject to the selected model's context budget and bound tool definitions. Older history remains in Tsuchi. This separates durable records from the bounded input to one run.
 
+Before converting the reported context window into a character budget, the runner reserves `REASONING_TOKENS + REPLY_TOKENS + 1024` tokens for generation and template overhead. Input sizing uses a three-characters-per-token estimate, not exact tokenization; Hikari remains responsible for the actual token limit.
+
 Bound tool definitions consume the same model context budget as instructions and history. Additional tool definitions can make a small configured window too narrow even for a short task; context preparation then fails visibly before inference rather than silently omitting tools or instructions. Larger windows still trim older delivered turns first.
 
 The runner can search literal text and read older delivered user/assistant messages
