@@ -37,3 +37,9 @@ reservation. Generation timing excludes model loading but includes prefill.
 They do not include prompt or reply content. Workers reconnect with capped
 backoff after transport loss, refresh resource identity and do not replay
 unconfirmed work. Workers restart unless explicitly stopped.
+
+Executor teardown runs in a separate task that is shielded from consumer
+cancellation. The consumer keeps awaiting it after further cancellation requests,
+then clears its child and budget only after physical exit and join. Cancellation
+propagates afterward, so a disconnect cannot interrupt an existing termination
+wait and let the reconnect loop admit work beside a surviving executor.
