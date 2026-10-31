@@ -4,13 +4,9 @@ Users expect Hikari to run chat, decisions, speech synthesis, transcription and 
 
 ## Language models and hardware
 
-Hikari can run the selected language checkpoint even when the complete model is larger than GPU memory, provided the computer has enough memory for the required model weights and the request. It must not silently substitute a smaller or dense language model to make a request fit.
-
-Using system memory or disk can make responses slower. Available memory, CPU speed, storage speed and GPU transfer speed all affect performance. A hardware tier is a starting configuration, not a guarantee of response speed or of fitting every context length.
-
 ### Default LFM3 conversation model
 
-The standard deployment uses a separate released BF16 LFM3-1.7B worker for Hikari Chat and Kadan text conversations. Unavailable workers and incomplete user-approved downloads produce an error, with no substitution. Hardware tiers still configure remaining features during the migration.
+The standard deployment uses a separate released BF16 LFM3-1.7B worker for Hikari Chat and Kadan text conversations. Unavailable workers and incomplete user-approved downloads produce an error, with no substitution. Every other capability also uses its fixed assignment, independent of the computer serving it. The retained native MoE engine is not a selectable conversation model.
 
 This worker loads the model for each request and returns the completed reply through the existing chat interface. Its 262,144-token context is shared by input and output. A reply can use all space remaining after the complete prompt, until the model finishes or the request is cancelled. Prompts leaving no reply space fail without truncating history. Long replies can take much longer and can still fail if memory is insufficient. It does not retain a conversation prefix or support manual preloading. A worker reconnects after losing the service connection, but interrupted work is not automatically replayed. Model quality, latency and physical fit require owner validation on the target computer; a connected worker or downloaded checkpoint does not prove successful inference.
 
@@ -34,7 +30,7 @@ Hikari tries to keep room for chat while other work runs, but chat has no uncond
 
 ## Loading, waiting and completion
 
-Models load on demand. A first request, a change of hardware tier, or returning to a previously unloaded inference type can incur model-loading time. Switching workloads under memory pressure can also require a model to reload. Hikari handles this automatically.
+Models load on demand. A first request or returning to a previously unloaded inference type can incur model-loading time. Switching workloads under memory pressure can also require a model to reload. Hikari handles this automatically.
 
 Models retained between requests unload after one hour without work, measured from the last request's completion. LFM conversation and screenshot executors instead release their models after each request. Operators can configure the retained-model idle period; see [inference architecture](../../architecture/hikari/inference.md). Idle expiry never interrupts active or queued requests. Explicit unloading and requests that need memory can release a model sooner. A later request reloads it; downloaded checkpoints and conversation history are unchanged.
 

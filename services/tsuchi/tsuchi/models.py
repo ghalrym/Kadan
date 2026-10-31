@@ -195,6 +195,17 @@ class VersionInput(Model):
     expected_version: int = Field(ge=1)
 
 
+class ChatResultInput(Model):
+    title: Title
+
+    @field_validator("title")
+    @classmethod
+    def nonblank_title(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Title cannot be blank")
+        return value.strip()
+
+
 class MarkdownUpdate(MarkdownContent, VersionInput):
     pass
 
@@ -635,6 +646,12 @@ class AgentRun(AgentRunState):
     version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
+
+    @property
+    def initial_command(self) -> RunMessage | None:
+        if self.transcript and self.transcript[0].role == "assistant":
+            return self.transcript[0]
+        return None
 
 
 class ImageJobState(Model):

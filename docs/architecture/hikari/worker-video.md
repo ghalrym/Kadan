@@ -17,7 +17,7 @@ Generates video with audio using H3 FL2VA INT8 + Turbo: 480p or 768p, 16:9,
 
 ## Serves
 
-- `/v1/videos/generations`. Omitted clip settings use the tier's defaults.
+- `/v1/videos/generations`. Omitted clip settings use fixed five-second, 480p defaults.
 
 ## Engine
 
@@ -43,7 +43,7 @@ An unconfirmed drain retains the complete session, including device operations/c
 ## Scheduling
 
 - Priority 5: the lowest. It is the first to be offloaded when it is idle.
-- It leaves the language tier's minimum free while that tier is not loaded.
+- It leaves the language worker's minimum free while that worker is not loaded.
 
 ## Constraints
 

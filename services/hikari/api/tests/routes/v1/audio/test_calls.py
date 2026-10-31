@@ -1,5 +1,4 @@
 import unittest
-from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
 from fastapi import WebSocketDisconnect
@@ -26,22 +25,14 @@ class CallMessageTests(unittest.TestCase):
                 self.assertRaises(ValidationError),
             ):
                 call_event.validate_python(value)
-        with self.assertRaises(ValidationError):
-            CallStart(type="start", tools=[])
+        for extra in ({"tools": []}, {"backend": "native"}, {"backend": "lfm3"}):
+            with self.subTest(extra=extra), self.assertRaises(ValidationError):
+                CallStart(type="start", **extra)
 
 
 class CallRouteTests(unittest.IsolatedAsyncioTestCase):
-    async def test_disconnect_releases_residency_after_call_cleanup(self):
+    async def test_default_call_needs_no_flag_and_closes_socket_after_cleanup(self):
         events = []
-
-        @contextmanager
-        def residency(models):
-            self.assertEqual(len(models), 3)
-            events.append("start")
-            try:
-                yield
-            finally:
-                events.append("released")
 
         async def run(receive):
             events.append("cleaned")
@@ -49,25 +40,30 @@ class CallRouteTests(unittest.IsolatedAsyncioTestCase):
 
         socket = AsyncMock()
         socket.receive_json.return_value = {"type": "start"}
+        socket.close.side_effect = lambda: events.append("closed")
         with (
+            patch.dict("os.environ", {}, clear=True),
             patch("api.routes.v1.audio.calls.inference") as service,
             patch("api.routes.v1.audio.calls.VoiceCall") as call,
         ):
             service.models_status.return_value = snapshot()
-            service.worker.full_duplex.side_effect = residency
             call.return_value.run.side_effect = run
             await voice_call(socket)
-        self.assertEqual(events, ["start", "cleaned", "released"])
+        self.assertEqual(call.call_args.args[1].audio, "lfm3-audio-2b-bf16")
+        self.assertEqual(events, ["cleaned", "closed"])
         socket.close.assert_awaited_once()
 
-    async def test_missing_models_report_error_without_acquiring_residency(self):
+    async def test_missing_models_report_error_without_starting_call(self):
         socket = AsyncMock()
         socket.receive_json.return_value = {"type": "start"}
         status = snapshot()
         status.models[0].status = "not_downloaded"
-        with patch("api.routes.v1.audio.calls.inference") as service:
+        with (
+            patch("api.routes.v1.audio.calls.inference") as service,
+            patch("api.routes.v1.audio.calls.VoiceCall") as call,
+        ):
             service.models_status.return_value = status
             await voice_call(socket)
-        service.worker.full_duplex.assert_not_called()
+        call.assert_not_called()
         self.assertEqual(socket.send_json.call_args.args[0]["type"], "error")
         socket.close.assert_awaited_once()

@@ -1,0 +1,151 @@
+{
+  "artifacts": [
+    {
+      "name": "LICENSE",
+      "size": 10574,
+      "digest": "25e731c697c4fe4c52ee654cedf7106a827748d2",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/LICENSE"
+    },
+    {
+      "name": "audio_tokenizer/config.json",
+      "size": 801,
+      "digest": "691025073d47c8e5de98b690c4c60e812eda14d0",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/audio_tokenizer/config.json"
+    },
+    {
+      "name": "audio_tokenizer/model.safetensors",
+      "size": 147143540,
+      "digest": "45984a872fdcf0b94cd0ec68822bbf26f0c6fcb580cfaba0f7fa3ee60355137f",
+      "algorithm": "sha256",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/audio_tokenizer/model.safetensors"
+    },
+    {
+      "name": "chat_template.jinja",
+      "size": 9328,
+      "digest": "79806ec0046e91f9f2a7b6757d0c926bbc5c6dd0",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/chat_template.jinja"
+    },
+    {
+      "name": "config.json",
+      "size": 6243,
+      "digest": "22b9c3aaff94eed8b487495fe0b8bb92945f8ffd",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/config.json"
+    },
+    {
+      "name": "configuration_lfm3.py",
+      "size": 6113,
+      "digest": "a3cc0e726e8f4656f8468df5c8445f26e6dc8464",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/configuration_lfm3.py"
+    },
+    {
+      "name": "configuration_lfm3_audio.py",
+      "size": 12973,
+      "digest": "2fae5add80420eb6bc84ec1d3f2f032668920ad7",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/configuration_lfm3_audio.py"
+    },
+    {
+      "name": "configuration_liquid_codec.py",
+      "size": 5401,
+      "digest": "30409c65b5713d70745a9dd8062bb8ca6bd0fde1",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/configuration_liquid_codec.py"
+    },
+    {
+      "name": "feature_extraction_lfm3_audio.py",
+      "size": 13394,
+      "digest": "9073a5327a2d70767fa2778267e7092c1eaa4969",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/feature_extraction_lfm3_audio.py"
+    },
+    {
+      "name": "generation_config.json",
+      "size": 382,
+      "digest": "74d095d2e6f1914d54ab47fbd152124a1f54fd35",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/generation_config.json"
+    },
+    {
+      "name": "lfm3_conv.py",
+      "size": 8532,
+      "digest": "a1b67afdb605452f5a99751862863d5460a1fa69",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/lfm3_conv.py"
+    },
+    {
+      "name": "model.safetensors",
+      "size": 4004729320,
+      "digest": "9abe5e402f163296e0988f94ad67f65dab61c723e260fea9374109b3775e28f7",
+      "algorithm": "sha256",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/model.safetensors"
+    },
+    {
+      "name": "modeling_lfm3.py",
+      "size": 42359,
+      "digest": "0ccffc7ed179c2e3aaa19ab93bba735abb1d124d",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/modeling_lfm3.py"
+    },
+    {
+      "name": "modeling_lfm3_audio.py",
+      "size": 91241,
+      "digest": "3d6e3410726ae2a26b519c94bffb695f28404dcc",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/modeling_lfm3_audio.py"
+    },
+    {
+      "name": "modeling_liquid_codec.py",
+      "size": 17884,
+      "digest": "2c77c3b953faae96073176fa0243dc17d7ac644d",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/modeling_liquid_codec.py"
+    },
+    {
+      "name": "preprocessor_config.json",
+      "size": 466,
+      "digest": "50b5a88b34970aa94c75628bc0079103ada9c90b",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/preprocessor_config.json"
+    },
+    {
+      "name": "processing_lfm3_audio.py",
+      "size": 18723,
+      "digest": "138d1b2573ab90dd29879156701cdde9e4f52ab5",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/processing_lfm3_audio.py"
+    },
+    {
+      "name": "processor_config.json",
+      "size": 773,
+      "digest": "5478f2b1bb2283f348b555ab0483e414af6ffa87",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/processor_config.json"
+    },
+    {
+      "name": "special_tokens_map.json",
+      "size": 92,
+      "digest": "5d871daaacbf26aaa9cb47c2935f30e797ee35a7",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/special_tokens_map.json"
+    },
+    {
+      "name": "tokenizer.json",
+      "size": 17908634,
+      "digest": "41927bd314d17d7d7fadb44e10cd0919f7b71528d7741596d8cbd15c6945ec44",
+      "algorithm": "sha256",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/tokenizer.json"
+    },
+    {
+      "name": "tokenizer_config.json",
+      "size": 674,
+      "digest": "a44ee8c5a658a4f7d04bc5605a52840a5e471acb",
+      "algorithm": "git-sha1",
+      "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/tokenizer_config.json"
+    }
+  ]
+}

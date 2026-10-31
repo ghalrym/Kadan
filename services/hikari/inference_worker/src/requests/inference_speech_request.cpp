@@ -11,7 +11,7 @@ void prepare_input(
     const std::atomic_bool& cancel
 ) {
     request.model = input.model;
-    request.configuration.checkpoint = store.acquire(request.model, cancel);
+    request.configuration.checkpoint = store.require_local(request.model, cancel);
     input.tokenizer =
         configured_path("KADAN_TTS_TOKENIZER", store.root() / "tts/tokenizer.json");
     if (!fs::is_regular_file(input.tokenizer))

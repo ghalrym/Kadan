@@ -78,7 +78,7 @@ export default function AgentCard({ agentName, sheet, mood, presence, onClose, c
         </div>
       </header>
       <div className="agent-card-actions">
-        <button disabled={callDisabled} title={callTitle} onClick={onCall}>
+        <button disabled={callDisabled} title={callTitle} onClick={() => onCall()}>
           <Phone size={18} />
           Call
         </button>

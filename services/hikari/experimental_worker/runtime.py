@@ -1,4 +1,4 @@
-"""Protocol-v4 FIFO worker with kill-and-join cancellation of its executor."""
+"""Protocol-v5 FIFO worker with kill-and-join cancellation of its executor."""
 
 import asyncio
 import csv
@@ -10,6 +10,7 @@ import os
 import resource
 import socket
 import subprocess
+import tempfile
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -21,7 +22,7 @@ log = logging.getLogger(__name__)
 BACKENDS = {
     "text": ("lfm3_llm", "HIKARI_ENABLE_LFM3_TEXT"),
     "vision": ("lfm3_vision", "HIKARI_ENABLE_LFM3_VISION"),
-    "audio": ("lfm3_audio", "HIKARI_ENABLE_LFM3_AUDIO"),
+    "audio": ("lfm3_audio", None),
 }
 
 
@@ -81,7 +82,7 @@ def machine() -> dict:
 
 
 def execute_child(
-    connection, backend_name, metadata, manifest, root, request, device, budget
+    connection, backend_name, metadata, manifest, root, request, device, budget, scratch
 ):
     """The subprocess is the allocation boundary; exit releases its CUDA context."""
 
@@ -89,6 +90,7 @@ def execute_child(
         connection.send(message)
 
     try:
+        tempfile.tempdir = scratch
         started = time.perf_counter()
         store = ModelStore(Path(root), metadata, manifest)
         if request["operation"] == "download":
@@ -145,7 +147,7 @@ class Runtime:
     def __init__(self, backend_name: str, info: dict | None = None):
         backend_name = backend_name.removeprefix("experimental_worker.")
         self.kind, flag = BACKENDS[backend_name]
-        if not enabled(flag):
+        if flag is not None and not enabled(flag):
             raise ValueError(f"Experimental worker requires {flag}=true")
         self.backend_name = backend_name
         self.backend = importlib.import_module("experimental_worker." + backend_name)
@@ -287,7 +289,7 @@ class Runtime:
             await event("cancelled")
             return
         if request["operation"] == "configure":
-            # Native tier/Whisper settings are broadcast to all workers. They
+            # Native formatting/context settings are broadcast to all workers. They
             # never select or alter this explicit experimental checkpoint.
             if (
                 request["input"].get("feature") == "model_context"
@@ -324,87 +326,101 @@ class Runtime:
         if request_id in self.cancelled:
             await event("cancelled")
             return
-        context = multiprocessing.get_context("spawn")
-        reader, writer = context.Pipe(duplex=False)
-        process = context.Process(
-            target=execute_child,
-            args=(
-                writer,
-                self.backend_name,
-                self.backend.MODEL,
-                self.manifest,
-                str(self.root),
-                request,
-                self.info["devices"][0],
-                self.budget,
-            ),
-        )
-        self.child = process
-        result, error = None, None
-        started = False
-        try:
-            await event("preparing", model=self.backend.MODEL["id"])
-            process.start()
-            started = True
-            writer.close()
-            await event("running", model=self.backend.MODEL["id"])
-            received_result = False
-            while process.is_alive() or reader.poll():
-                if request_id in self.cancelled:
-                    break
-                if request["operation"] != "download" and process.is_alive():
-                    try:
-                        resident = next(
-                            line
-                            for line in Path(f"/proc/{process.pid}/status")
-                            .read_text()
-                            .splitlines()
-                            if line.startswith("VmRSS:")
-                        )
-                        if int(resident.split()[1]) * 1024 > self.budget[0]:
-                            error = (
-                                "Experimental executor exceeded its granted RAM budget."
-                            )
-                            break
-                    except (OSError, StopIteration):
-                        pass
-                if reader.poll():
-                    try:
-                        message = reader.recv()
-                    except EOFError:
+        with tempfile.TemporaryDirectory(prefix="lfm3-executor-") as scratch:
+            context = multiprocessing.get_context("spawn")
+            reader, writer = context.Pipe(duplex=False)
+            process = context.Process(
+                target=execute_child,
+                args=(
+                    writer,
+                    self.backend_name,
+                    self.backend.MODEL,
+                    self.manifest,
+                    str(self.root),
+                    request,
+                    self.info["devices"][0],
+                    self.budget,
+                    scratch,
+                ),
+            )
+            self.child = process
+            result, error = None, None
+            started = False
+            try:
+                await event("preparing", model=self.backend.MODEL["id"])
+                process.start()
+                started = True
+                writer.close()
+                await event("running", model=self.backend.MODEL["id"])
+                received_result = False
+                while process.is_alive() or reader.poll():
+                    if request_id in self.cancelled:
                         break
-                    state = message.pop("state")
-                    if state == "result":
-                        result, received_result = message["result"], True
-                    elif state == "error":
-                        error = message["error"]
+                    if request["operation"] != "download" and process.is_alive():
+                        try:
+                            resident = next(
+                                line
+                                for line in Path(f"/proc/{process.pid}/status")
+                                .read_text()
+                                .splitlines()
+                                if line.startswith("VmRSS:")
+                            )
+                            if int(resident.split()[1]) * 1024 > self.budget[0]:
+                                error = "Experimental executor exceeded its granted RAM budget."
+                                break
+                        except (OSError, StopIteration):
+                            pass
+                    if reader.poll():
+                        try:
+                            message = reader.recv()
+                        except EOFError:
+                            break
+                        state = message.pop("state")
+                        if state == "result":
+                            result, received_result = message["result"], True
+                        elif state == "error":
+                            error = message["error"]
+                        else:
+                            await event(state, **message)
                     else:
-                        await event(state, **message)
-                else:
-                    await asyncio.sleep(0.02)
-            if not received_result and error is None:
-                error = "Experimental executor exited without a result."
-        finally:
-            # No terminal event or release may precede physical process exit.
-            if started and process.is_alive():
-                process.terminate()
-            deadline = asyncio.get_running_loop().time() + 10
-            while (
-                started
-                and process.is_alive()
-                and asyncio.get_running_loop().time() < deadline
-            ):
-                await asyncio.sleep(0.02)
-            if started and process.is_alive():
-                process.kill()
-                while process.is_alive():
-                    await asyncio.sleep(0.02)
-            if started:
-                process.join()
-            self.child = None
-            reader.close()
-            if request["operation"] != "download":
-                self.budget = [0, 0]
+                        await asyncio.sleep(0.02)
+                if not received_result and error is None:
+                    error = "Experimental executor exited without a result."
+            finally:
+                # No terminal event or release may precede physical process exit.
+                async def join_executor():
+                    if started and process.is_alive():
+                        process.terminate()
+                    deadline = asyncio.get_running_loop().time() + 10
+                    while (
+                        started
+                        and process.is_alive()
+                        and asyncio.get_running_loop().time() < deadline
+                    ):
+                        await asyncio.sleep(0.02)
+                    if started and process.is_alive():
+                        process.kill()
+                        while process.is_alive():
+                            await asyncio.sleep(0.02)
+                    if started:
+                        process.join()
+
+                cleanup = asyncio.create_task(join_executor())
+                interrupted = False
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        # Disconnect or shutdown can cancel an already stopping job.
+                        # Keep its grant until the shielded cleanup actually finishes.
+                        interrupted = True
+                cleanup.result()
+                self.child = None
+                reader.close()
+                if request["operation"] != "download":
+                    self.budget = [0, 0]
+                if interrupted:
+                    raise asyncio.CancelledError()
         if request_id in self.cancelled:
             await event("cancelled")
         elif error is not None:
@@ -478,14 +494,14 @@ class Runtime:
             await self.send(
                 {
                     "state": "hello",
-                    "protocol": 4,
+                    "protocol": 5,
                     "worker": self.kind,
                     "instance": socket.gethostname(),
                     "machine": self.info,
                 }
             )
             await self.models()
-            await self.send({"state": "ready", "protocol": 4})
+            await self.send({"state": "ready", "protocol": 5})
             consumer = asyncio.create_task(self.consume())
             try:
                 async for message in connection:
