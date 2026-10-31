@@ -2,7 +2,7 @@ import asyncio
 from uuid import UUID
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from ....config import ServiceError
 from ....pydantic_models.agent_runs import AgentRun, ImageJob, RequestReference
@@ -16,13 +16,6 @@ router = APIRouter()
 class RunInput(NoteInput):
     references: list[RequestReference] = Field(default_factory=list, max_length=3)
     persona_id: UUID | None
-    resume_coding_job_id: UUID | None = None
-
-    @model_validator(mode="after")
-    def continuation_length(self) -> "RunInput":
-        if self.resume_coding_job_id is not None and len(self.content) > 16000:
-            raise ValueError("A Codex follow-up cannot exceed 16000 characters")
-        return self
 
 
 class RunCreated(BaseModel):

@@ -8,7 +8,6 @@ import AgentCard from "./AgentCard";
 import ComputerViewer from "./ComputerViewer";
 import ChatExport from "./ChatExport";
 import Activity from "./Activity";
-import CodingIndicator from "./CodingIndicator";
 import { useVoiceCall } from "./VoiceCallControl";
 import { activeLabel } from "./presence";
 import { useAgentPet } from "./PetContext";
@@ -31,7 +30,6 @@ interface Props {
   onChange: (value: Resource) => void;
   onBusy: (value: boolean) => void;
   onEditPet: () => void;
-  onOpenCoding: () => void;
   blocked: boolean;
   refreshStatus: () => Promise<void>;
 }
@@ -96,7 +94,6 @@ export default function Chat({
   onChange,
   onBusy,
   onEditPet,
-  onOpenCoding,
   blocked,
   refreshStatus,
 }: Props) {
@@ -277,10 +274,9 @@ export default function Chat({
   }, [chain.messages]);
 
   function syncPending(messages: Resource["messages"]) {
-    // Coding shares this outbox while Messages stays mounted behind its dialog.
     const stored = readPending(sessionStorage.getItem(pendingKey));
     const confirmed = confirmSend(stored, messages);
-    if (stored?.generate && !confirmed && !stored.resume_coding_job_id) setReferences([]);
+    if (stored?.generate && !confirmed) setReferences([]);
     savePending(confirmed);
   }
   function savePending(value: PendingMessage | null) {
@@ -359,7 +355,6 @@ export default function Chat({
           references: (message.references ?? []).map(({ resource_id, expected_version }) => ({ resource_id, expected_version })),
           message_id: messageId,
           attachment_ids: message.attachment_ids ?? [],
-          ...(message.resume_coding_job_id ? { resume_coding_job_id: message.resume_coding_job_id } : {}),
         });
         accept(result.conversation);
         setRuns((previous) => [...previous.filter((run) => run.id !== result.run.id), result.run]);
@@ -636,7 +631,6 @@ export default function Chat({
           ))}
         </div>
       </div>
-      <CodingIndicator onOpen={onOpenCoding} />
       {(away || query) && <button type="button" className="jump-latest" onClick={jumpToLatest}>
         <ArrowDown size={14} />{find.open ? "Close find and jump to latest" : "Jump to latest"}
       </button>}
@@ -652,11 +646,11 @@ export default function Chat({
       {recovery && !sending && (
         <div className="banner inline" role="status">
           <div>
-            <strong>{recovery.resume_coding_job_id ? "Unconfirmed Codex continuation" : "Unsent message"}</strong>
+            <strong>Unsent message</strong>
             <p>{recovery.content}</p>
             {recovery.attachment_ids?.map(id => <Attachment key={id} agentKey={agentKey} id={id} />)}
           </div>
-          <button disabled={blocked || !ready.storage || (recovery.generate && !recovery.resume_coding_job_id && !ready.chat)}
+          <button disabled={blocked || !ready.storage || (recovery.generate && !ready.chat)}
             onClick={() => void send(recovery.generate, recovery)}>Retry</button>
           <button disabled={blocked} onClick={() => savePending(null)}>Discard</button>
         </div>

@@ -4,75 +4,78 @@ from uuid import UUID
 from pydantic import Field
 
 from ...api.coding_client import CodingClient
-from ...api.pydantic_models.coding import CodingTask
+from ...api.pydantic_models.coding import CodexTask
 from ...api.sandbox_client import SandboxClient
 from .base import Arguments, computer_tool, conversation_tool
 
 
-class CodingStatusArguments(Arguments):
-    job_id: UUID | None = Field(
-        default=None, description="Omit to inspect setup and recent jobs."
+class CodexStartArguments(CodexTask):
+    message: str = Field(
+        min_length=1,
+        max_length=2000,
+        pattern=r"\S",
+        description="Short message telling the user what Codex is doing for them. "
+        "It is delivered once Codex has started.",
     )
-    after: int = Field(default=0, ge=0, description="Last event cursor already read.")
 
 
-@computer_tool("GET")
-async def codex_status(args: CodingStatusArguments, computer: SandboxClient) -> dict:
-    """Read Codex setup or saved job progress. A reconnect never starts work.
-
-    Use the recorded job ID. Keep next_cursor for later reads.
-    """
-    client = CodingClient(computer)
-    if args.job_id is None:
-        status = await client.status()
-        return {
-            "setup": status.setup.model_dump(),
-            "jobs": [
-                {
-                    "id": str(job.id),
-                    "status": job.status,
-                    "cwd": job.cwd[:200],
-                    "session_id": job.session_id,
-                }
-                for job in status.jobs[:5]
-            ],
-            "recent_jobs": len(status.jobs),
-            "jobs_truncated": len(status.jobs) > 5,
-        }
-    result = await client.job(args.job_id, args.after)
-    return result.model_dump(mode="json")
-
-
-class CodingConversation(Protocol):
-    async def delegate_coding(self, args: CodingTask) -> dict: ...
+class CodexConversation(Protocol):
+    async def start_codex(self, args: CodexStartArguments) -> dict: ...
 
 
 @conversation_tool
-async def codex_start(args: CodingTask, conversation: CodingConversation) -> dict:
-    """Delegate coding and receive its final result in this conversation run.
+async def codex_start(
+    args: CodexStartArguments, conversation: CodexConversation
+) -> dict:
+    """Start Codex in the background, tell the user, and end this response.
 
-    Inspect codex_status first. Supply the user's scoped task and absolute project
-    directory. Kadan waits without inference and reattaches after a runner restart.
-    The runner owns the durable job ID. One job runs at a time. To continue a saved
-    Codex session, supply its prior resume_job_id and a scoped follow-up prompt.
-    After the result, finish the requested work and report the outcome with
-    send_message. Do not resubmit failed or uncertain work automatically.
+    Give a new task with an absolute project folder (created if missing), or
+    continue an existing thread with thread_id. When Codex finishes, you are
+    woken in this conversation with its result.
     """
-    return await conversation.delegate_coding(args)
+    return await conversation.start_codex(args)
 
 
-class CodingCancelArguments(Arguments):
-    job_id: UUID
+class CodexThreadsArguments(Arguments):
+    thread_id: UUID | None = Field(
+        default=None, description="Omit to list recent threads."
+    )
+    last: int = Field(
+        default=10, ge=1, le=50, description="How many recent thread items to read."
+    )
+
+
+@computer_tool("GET")
+async def codex_threads(args: CodexThreadsArguments, computer: SandboxClient) -> dict:
+    """List Codex threads on your computer, or read one thread's latest messages.
+
+    A thread is still working while running is true.
+    """
+    client = CodingClient(computer)
+    if args.thread_id is None:
+        status = await client.status()
+        return {
+            "setup": status.setup.state,
+            "threads": [
+                thread.model_dump(mode="json") for thread in status.threads[:10]
+            ],
+        }
+    thread = await client.thread(args.thread_id)
+    return {
+        **thread.model_dump(mode="json", exclude={"items", "items_truncated"}),
+        "items": [item.model_dump() for item in thread.items[-args.last :]],
+    }
+
+
+class CodexStopArguments(Arguments):
+    thread_id: UUID
 
 
 @computer_tool("POST")
-async def codex_cancel(args: CodingCancelArguments, computer: SandboxClient) -> dict:
-    """Stop a coding job and its owned processes. Read status until cleanup is confirmed.
-
-    Chat Stop is separate. Cancellation keeps file changes already made.
-    """
-    return (await CodingClient(computer).cancel(args.job_id)).model_dump(mode="json")
+async def codex_stop(args: CodexStopArguments, computer: SandboxClient) -> dict:
+    """Stop a running Codex thread. File changes it already made stay."""
+    return (await CodingClient(computer).stop(args.thread_id)).model_dump(mode="json")
 
 
-TOOLS = [codex_status, codex_cancel]
-DELEGATION_TOOLS = [codex_start]
+TOOLS = [codex_threads, codex_stop]
+START_TOOLS = [codex_start]

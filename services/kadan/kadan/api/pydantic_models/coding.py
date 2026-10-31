@@ -1,91 +1,88 @@
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class CodingSetup(BaseModel):
-    state: Literal["ready", "missing", "auth_required", "unavailable"]
-    message: str
-    version: str | None = None
-
-
-class CodingEvent(BaseModel):
-    sequence: int
-    kind: str
-    message: str
-
-
-class CodingJob(BaseModel):
-    id: UUID
-    request_id: UUID
-    status: Literal[
-        "starting",
-        "running",
-        "stopping",
-        "completed",
-        "failed",
-        "cancelled",
-        "timed_out",
-        "interrupted",
-        "cleanup_required",
-    ]
-    cwd: str
-    session_id: str | None = None
-    resume_job_id: UUID | None = None
-    created_at: str
-    finished_at: str | None = None
-    message: str
-    events: list[CodingEvent] = Field(default_factory=list)
-    next_cursor: int = 0
-    events_truncated: bool = False
-
-
-class CodingStatus(BaseModel):
-    setup: CodingSetup
-    jobs: list[CodingJob]
-
-
-class CodingTask(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    prompt: str = Field(min_length=1, max_length=16000)
-    cwd: str = Field(pattern=r"^/", max_length=4096)
-    timeout_seconds: int = Field(default=1800, ge=60, le=3600, strict=True)
-    resume_job_id: UUID | None = None
-
-
-class CodingStart(CodingTask):
-    request_id: UUID
-
-
-class CodingContinuation(CodingTask):
-    resume_job_id: UUID
-
-
-class CodingOutcome(BaseModel):
-    job_id: UUID
-    status: Literal[
-        "completed",
-        "failed",
-        "cancelled",
-        "timed_out",
-        "interrupted",
-        "cleanup_required",
-        "unconfirmed",
-        "rejected",
-    ] = "rejected"
-    session_id: str | None = None
-    message: str = ""
-    error: str | None = None
-
-
-class CodexLoginPrompt(BaseModel):
+class CodexLogin(BaseModel):
     url: str
     code: str
 
 
-class CodexLoginStatus(BaseModel):
-    state: Literal["signed_in", "signed_out", "signing_in", "missing", "unavailable"]
+class CodexSetup(BaseModel):
+    state: Literal["signed_in", "signing_in", "signed_out", "missing", "unavailable"]
     message: str
-    login: CodexLoginPrompt | None = None
+    login: CodexLogin | None = None
+
+
+class CodexThreadSummary(BaseModel):
+    id: UUID
+    title: str
+    cwd: str
+    created_at: datetime | None = None
+    updated_at: datetime
+    running: bool
+
+
+class CodexThreadItem(BaseModel):
+    kind: Literal["user", "assistant", "command"]
+    text: str
+
+
+class CodexThread(CodexThreadSummary):
+    items: list[CodexThreadItem]
+    items_truncated: bool = False
+
+
+class CodexStatus(BaseModel):
+    setup: CodexSetup
+    threads: list[CodexThreadSummary]
+
+
+class CodexTask(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str = Field(min_length=1, max_length=16000)
+    cwd: str | None = Field(
+        default=None,
+        pattern=r"^/",
+        max_length=4096,
+        description="Absolute project folder for a new thread.",
+    )
+    thread_id: UUID | None = Field(
+        default=None,
+        description="Continue this existing thread in its own folder instead of starting a new one.",
+    )
+
+
+class CodexStarted(BaseModel):
+    thread_id: UUID
+    cwd: str
+    running: bool
+
+
+class CodexOrigin(BaseModel):
+    """The conversation run that started a Codex run and receives its result."""
+
+    agent_key: str
+    conversation_id: UUID
+    run_id: UUID
+
+
+class CodexFinished(BaseModel):
+    request_id: UUID
+    thread_id: UUID
+    cwd: str
+    origin: CodexOrigin | None
+    status: Literal["completed", "failed", "stopped"]
+    message: str
+
+
+class CodexFinishedRuns(BaseModel):
+    runs: list[CodexFinished]
+
+
+class CodexStopped(BaseModel):
+    thread_id: UUID
+    running: bool

@@ -8,8 +8,7 @@ FROM ghcr.io/agent-infra/sandbox:1.11.0@sha256:6328d7fd2f0ff0b4c147c3d05b3df1ce3
 COPY --from=node22 /usr/local/bin/node /opt/nodejs/22/bin/node
 COPY --from=node22 /usr/local/lib/node_modules/@openai/codex /opt/kadan/codex
 RUN ln -sfn /opt/kadan/codex/bin/codex.js /opt/nodejs/22/bin/codex
-COPY coding_jobs.py /opt/kadan/coding_jobs.py
-COPY codex_login.py /opt/kadan/codex_login.py
+COPY codex_threads.py /opt/kadan/codex_threads.py
 COPY --from=node22 /usr/local/bin/node /usr/local/code-server-4.104.0/lib/node
 COPY --from=node24 /usr/local/bin/node /opt/nodejs/24/bin/node
 COPY --from=uv /uv /usr/local/bin/uv

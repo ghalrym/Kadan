@@ -1,4 +1,4 @@
-"""Coding control with mocked sandbox HTTP and process output, never Codex."""
+"""Codex control with mocked sandbox HTTP, never Codex."""
 
 import asyncio
 import base64
@@ -12,26 +12,20 @@ from pydantic import SecretStr, ValidationError
 
 from kadan.api.coding_client import CodingClient
 from kadan.api.config import ServiceError
-from kadan.api.pydantic_models.coding import CodingStart
+from kadan.api.pydantic_models.coding import CodexOrigin, CodexTask
 from kadan.api.routes.computer import coding
 from kadan.api.sandbox_client import SandboxClient
-from kadan.runner.tools.coding import codex_cancel, codex_start, codex_status
+from kadan.runner.tools.coding import codex_start, codex_stop, codex_threads
 
 
-def job(**changes):
-    job_id = str(uuid4())
+def summary(**changes):
     return {
-        "id": job_id,
-        "request_id": job_id,
-        "status": "running",
+        "id": str(uuid4()),
+        "title": "Fix the parser",
         "cwd": "/home/gem/project",
-        "session_id": None,
-        "resume_job_id": None,
         "created_at": "2026-10-30T12:00:00+00:00",
-        "finished_at": None,
-        "message": "Codex is working.",
-        "events": [],
-        "next_cursor": 0,
+        "updated_at": "2026-10-30T12:05:00+00:00",
+        "running": True,
         **changes,
     }
 
@@ -68,102 +62,72 @@ def client(result, *, envelope=None):
 def sent(calls):
     request = json.loads(calls[0].content)
     argv = request["command"].split()
-    assert argv[:2] == ["python3", "/opt/kadan/coding_jobs.py"]
+    assert argv[:2] == ["python3", "/opt/kadan/codex_threads.py"]
     assert len(argv) == 3
     return json.loads(base64.urlsafe_b64decode(argv[2]))
 
 
-def test_start_encodes_prompt_without_shell_evaluation_and_preserves_retry_id():
-    result = job()
-    api, calls = client(result)
-    args = CodingStart(
-        request_id=result["id"],
-        cwd=result["cwd"],
-        prompt="`touch /bad` $(whoami) ' \n 🐈",
-    )
-    saved = asyncio.run(api.start(args))
-    assert str(saved.id) == str(args.request_id)
-    assert sent(calls) == {"operation": "start", **args.model_dump(mode="json")}
-    assert "private-key" not in json.loads(calls[0].content)["command"]
-    assert "touch" not in json.loads(calls[0].content)["command"]
-    assert calls[0].headers["authorization"] == "Bearer private-key"
-
-
-def test_unicode_maximum_fits_shell_argument_and_supervisor_bound():
-    result = job()
-    api, calls = client(result)
-    asyncio.run(
-        api.start(
-            CodingStart(request_id=result["id"], cwd="/home/gem", prompt="🐈" * 16000)
+def route_request(computer):
+    return SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(services=SimpleNamespace(sandbox=computer))
         )
     )
-    assert len(json.loads(calls[0].content)["command"].split()[-1]) < 100000
 
 
-def test_status_and_job_cursor_only_read_saved_state():
+def test_start_encodes_prompt_without_shell_evaluation():
+    thread_id = str(uuid4())
     api, calls = client(
-        {
-            "setup": {
-                "state": "auth_required",
-                "message": "Sign in inside the computer.",
-            },
-            "jobs": [],
-        }
+        {"thread_id": thread_id, "cwd": "/home/gem/project", "running": True}
     )
-    assert asyncio.run(api.status()).setup.state == "auth_required"
-    assert sent(calls) == {"operation": "status"}
-    result = job()
-    api, calls = client(result)
-    asyncio.run(api.job(UUID(result["id"]), after=17))
-    assert sent(calls)["after"] == 17
-
-
-def test_cancel_returns_stopping_until_cleanup_finishes():
-    saved = job(status="stopping")
-    api, calls = client(saved)
-    result = asyncio.run(api.cancel(UUID(saved["id"])))
-    assert result.status == "stopping"
-    assert sent(calls)["operation"] == "cancel"
+    prompt = "Fix it'; rm -rf / #\n$(whoami)"
+    request_id = uuid4()
+    origin = CodexOrigin(agent_key="guide", conversation_id=uuid4(), run_id=uuid4())
+    started = asyncio.run(
+        api.start(CodexTask(prompt=prompt, cwd="/home/gem/project"), request_id, origin)
+    )
+    assert str(started.thread_id) == thread_id
+    assert sent(calls) == {
+        "operation": "start",
+        "prompt": prompt,
+        "cwd": "/home/gem/project",
+        "thread_id": None,
+        "request_id": str(request_id),
+        "origin": origin.model_dump(mode="json"),
+    }
+    assert calls[1].url.path.endswith("/close")
 
 
 @pytest.mark.parametrize(
     "envelope",
     [
-        {},
-        {"data": None},
-        {"data": {"status": "running", "exit_code": None, "stderr": "secret"}},
-        {"data": {"status": "completed", "exit_code": 1, "stderr": "secret"}},
+        {"data": {"status": "completed", "exit_code": 1, "stdout": "secret"}},
         {"data": {"status": "completed", "exit_code": 0, "stdout": "secret"}},
         {"data": {"status": "completed", "exit_code": 0, "stdout": "[]"}},
     ],
 )
-def test_ambiguous_control_results_do_not_retry_or_expose_stderr(envelope):
+def test_unreadable_results_are_unavailable_without_output(envelope):
     api, calls = client(None, envelope=envelope)
-    with pytest.raises(ServiceError, match="Refresh Coding") as error:
-        asyncio.run(
-            api.start(CodingStart(request_id=uuid4(), cwd="/home/gem", prompt="task"))
-        )
-    assert "secret" not in str(error.value)
-    assert len(calls) == 2
-    assert calls[1].url.path.endswith("/close")
-
-
-def test_invalid_job_schema_has_safe_error():
-    api, _ = client({"id": "secret"})
-    with pytest.raises(ServiceError, match="invalid coding status") as error:
-        asyncio.run(api.job(uuid4()))
-    assert "secret" not in str(error.value)
-
-
-def test_supervisor_rejection_is_distinct_from_unconfirmed_submission():
-    api, calls = client(
-        {"error": "The shared computer already has an active coding job."}
-    )
     with pytest.raises(ServiceError) as error:
-        asyncio.run(api.cancel(uuid4()))
-    assert error.value.code == "coding_rejected"
-    assert error.value.status == 409
+        asyncio.run(api.status())
+    assert error.value.code == "codex_unavailable"
+    assert "secret" not in str(error.value)
     assert len(calls) == 2
+
+
+def test_script_rejection_is_reported_as_conflict():
+    api, _ = client({"error": "That thread is already running."})
+    with pytest.raises(ServiceError) as error:
+        asyncio.run(api.stop(uuid4()))
+    assert error.value.code == "codex_rejected"
+    assert error.value.status == 409
+
+
+def test_invalid_schema_has_safe_error():
+    api, _ = client({"id": "secret"})
+    with pytest.raises(ServiceError, match="invalid Codex response") as error:
+        asyncio.run(api.thread(uuid4()))
+    assert "secret" not in str(error.value)
 
 
 def test_unconfigured_computer_reports_unavailable_without_command():
@@ -174,63 +138,78 @@ def test_unconfigured_computer_reports_unavailable_without_command():
 
 
 @pytest.mark.parametrize(
-    "change",
-    [
-        {"cwd": "relative"},
-        {"prompt": ""},
-        {"timeout_seconds": True},
-        {"timeout_seconds": 3601},
-        {"request_id": "wrong"},
-        {"unexpected": "x"},
-    ],
+    "change", [{"cwd": "relative"}, {"prompt": ""}, {"thread_id": "x"}, {"other": 1}]
 )
-def test_start_rejects_invalid_or_unscoped_inputs(change):
+def test_task_rejects_invalid_inputs(change):
     with pytest.raises(ValidationError):
-        CodingStart.model_validate(
-            {"request_id": str(uuid4()), "cwd": "/home/gem", "prompt": "task", **change}
-        )
+        CodexTask.model_validate({"cwd": "/home/gem", "prompt": "task", **change})
 
 
-def test_only_status_is_replayable_and_tools_use_typed_control():
-    assert codex_status.metadata["method"] == "GET"
+def test_login_route_returns_device_code():
+    api, calls = client(
+        {
+            "state": "signing_in",
+            "message": "Open the sign-in page and enter the code.",
+            "login": {"url": "https://auth.example/device", "code": "ABCD-1234"},
+        }
+    )
+    setup = asyncio.run(coding.codex_login(route_request(api.computer)))
+    assert setup.login.code == "ABCD-1234"
+    assert sent(calls) == {"operation": "login"}
+
+
+def test_stop_route_sends_thread_id():
+    thread_id = uuid4()
+    api, calls = client({"thread_id": str(thread_id), "running": False})
+    stopped = asyncio.run(
+        coding.stop_codex_thread(route_request(api.computer), thread_id)
+    )
+    assert stopped.running is False
+    assert sent(calls) == {"operation": "stop", "thread_id": str(thread_id)}
+
+
+def test_only_thread_reads_are_replayable():
+    assert codex_threads.metadata["method"] == "GET"
+    assert codex_stop.metadata["method"] == "POST"
+    # Start replays safely because the computer keys it by the action ID.
     assert "method" not in codex_start.metadata
-    assert codex_cancel.metadata["method"] == "POST"
-    result = job()
-    api, calls = client(result)
-    saved = asyncio.run(
-        codex_status.ainvoke(
-            {"job_id": result["id"], "after": 3},
+
+
+def test_finished_runs_and_acknowledgement_use_the_script():
+    finished = {
+        "request_id": str(uuid4()),
+        "thread_id": str(uuid4()),
+        "cwd": "/home/gem/project",
+        "origin": None,
+        "status": "completed",
+        "message": "Done.",
+    }
+    api, calls = client({"runs": [finished]})
+    runs = asyncio.run(api.finished())
+    assert runs[0].message == "Done."
+    assert sent(calls) == {"operation": "finished"}
+    api, calls = client({"request_id": finished["request_id"]})
+    asyncio.run(api.acknowledge(UUID(finished["request_id"])))
+    assert sent(calls) == {
+        "operation": "acknowledge",
+        "request_id": finished["request_id"],
+    }
+
+
+def test_threads_tool_reads_latest_items():
+    thread = {
+        **summary(),
+        "items": [{"kind": "user", "text": f"step {index}"} for index in range(5)],
+        "items_truncated": False,
+    }
+    api, calls = client(thread)
+    result = asyncio.run(
+        codex_threads.ainvoke(
+            {"thread_id": thread["id"], "last": 2},
             config={"configurable": {"computer": api.computer}},
         )
     )
-    assert saved["id"] == result["id"]
-    assert sent(calls) == {"operation": "status", "job_id": result["id"], "after": 3}
-
-
-def test_api_cancel_uses_same_owned_job_protocol():
-    result = job(status="stopping")
-    api, calls = client(result)
-    request = SimpleNamespace(
-        app=SimpleNamespace(
-            state=SimpleNamespace(services=SimpleNamespace(sandbox=api.computer))
-        )
-    )
-    saved = asyncio.run(coding.cancel_coding(request, UUID(result["id"])))
-    assert saved.status == "stopping"
-    assert sent(calls)["operation"] == "cancel"
-
-
-@pytest.mark.parametrize("operation", ["start", "job", "cancel"])
-def test_wrong_job_result_is_rejected(operation):
-    api, _ = client(job(message="Another conversation's output"))
-    requested = uuid4()
-    with pytest.raises(ServiceError) as error:
-        asyncio.run(
-            getattr(api, operation)(
-                CodingStart(request_id=requested, prompt="task", cwd="/home/gem")
-                if operation == "start"
-                else requested
-            )
-        )
-    assert error.value.code == "coding_invalid_response"
-    assert "Another conversation" not in str(error.value)
+    assert [item["text"] for item in result["items"]] == ["step 3", "step 4"]
+    assert result["running"] is True
+    assert sent(calls) == {"operation": "thread", "thread_id": thread["id"]}
+    assert UUID(result["id"])
