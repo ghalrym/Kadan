@@ -1,10 +1,20 @@
-# d1 decision adapter preparation
+# Opt-in d1 CPU decision worker
 
-Hikari still serves Laya through its normal decision worker. The d1 adapter is
-an explicitly invoked preparation component, without a catalog entry, worker
-registration, deployment setting or change to the public API. It accepts an
-already loaded model; importing or testing the adapter loads no model or inference
-library. Current behavior remains documented in [Decisions](../../user-expectations/hikari/decisions.md).
+Hikari still serves Laya through its normal decision worker. The d1 trial is a
+separate CPU worker, enabled only with `HIKARI_ENABLE_D1_DECISIONS=true` on the
+API and worker. Launch the existing Python worker image with
+`HIKARI_EXPERIMENTAL_BACKEND=d1`; no Compose service or default assignment changes.
+The decision request must explicitly include `model_id: "d1-2b-cpu-f32"`.
+Omitting it continues to route to Laya, even while the trial is enabled. The
+regular Decisions UI does not select d1. See [Decisions](../../user-expectations/hikari/decisions.md).
+
+The worker advertises its pinned catalog only while enabled. Acquisition uses
+the existing explicit, license-acknowledged download action and verified model
+store; evaluation never acquires artifacts. Importing the adapter or transport
+loads no inference library. The admitted disposable child loads only local files,
+disables external hub kernels and uses CPU F32 with two Torch threads. The pinned
+engine's exact text sequences are encoded before inference, rejecting more than
+1,024 total tokens rather than relying on its batching budget or truncating.
 
 The candidate is the original `LiquidAI/d1-2B` checkpoint at revision
 `10e7671d44e4b37700020b1eed3f594c5f2af0b4`, under the
@@ -20,10 +30,14 @@ fractional expected-score contract. The trial rejects a one-level Score rubric,
 which the current HTTP schema accepts but d1 does not support. No request is
 truncated, answered synthetically or redirected to another model.
 
-Cancellation checks fence entry and publication. They cannot interrupt a blocking
-model call or establish memory cleanup. Production integration must retain
-Hikari's admitted executor ownership, termination and confirmed cleanup; this
-adapter supplies none of those lifecycle guarantees by itself.
+The hub reserves 16 GiB host RAM and no VRAM before spawning the executor. This
+conservative envelope covers the measured F32 initialization peak below; it is
+not evidence that all admitted inputs fit. The runtime monitors executor RSS and
+enforces a 180-second deadline including model loading. Cancellation, disconnect,
+RAM overrun and deadline failure terminate and join the process before publishing
+a terminal result or releasing the grant. Repeated cancellation cannot skip
+cleanup. The pure adapter's entry/publication fences are not the interrupt
+mechanism: process ownership supplies it. Existing GPU worker behavior is retained.
 
 Automated validation uses fake model responses only. A separate authorized manual
 CPU experiment used the pinned original artifacts and existing dependencies:
@@ -44,6 +58,9 @@ measurements, not a quality comparison or evidence of a speedup over Laya.
 Both test containers and their processes exited. Downloaded artifacts and evidence
 remain in a separate experiment cache; running services and their saved model
 stores were untouched. The measured F32 process does not fit the current decision
-worker's 3 GiB envelope. Production admission, worker routing and interruptible
-executor ownership remain unwired; eight-question, long-input and real worker
-cancellation acceptance remain unverified. Laya remains the default.
+worker's 3 GiB envelope. The separate 16 GiB CPU trial now has model-free tests of
+routing, RAM admission, token bounds, deadline and confirmed cancellation cleanup.
+Those tests do not establish real worker acceptance: eight-question, long-input,
+and real worker cancellation remain unverified. The supported official recipe
+uses F32 on CPU and BF16 on CUDA/MPS; GPU resource use and performance are
+unmeasured. Laya remains the default.

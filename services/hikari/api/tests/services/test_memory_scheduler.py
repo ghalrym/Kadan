@@ -5,6 +5,7 @@ from api.services.memory_scheduler import (
     Action,
     MachineLedger,
     Requirement,
+    WorkerSlot,
     plan_growth,
     plan_load,
 )
@@ -42,6 +43,22 @@ def load(machine, name, budget, *, pending=0, busy=False, used=0.0, need=None):
 
 
 class CapacityTests(unittest.TestCase):
+    def test_d1_reserves_ram_only_and_obeys_container_limit(self):
+        machine = ledger(ram=64, vram=(24,))
+        slot = WorkerSlot(
+            name="trial",
+            kind="lfm3_decision",
+            devices=[],
+            budget=[0, 0],
+            requirement=requirement(16, 0),
+        )
+        machine.workers["trial"] = slot
+        self.assertEqual(
+            plan_load(machine, "trial"), [Action("load", "trial", [16 * GIB, 0])]
+        )
+        slot.host_limit = 15 * GIB
+        self.assertIsNone(plan_load(machine, "trial"))
+
     def test_container_cap_limits_initial_grant_and_idle_growth(self):
         machine = ledger(ram=400)
         slot = machine.workers["llm"]

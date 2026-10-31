@@ -1,6 +1,9 @@
+from typing import Literal
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
+
 from api.pydantic_models.decisions import (
     ChoiceQuestion,
     DecisionAnswer,
@@ -15,6 +18,7 @@ router = APIRouter(prefix="/v1/decisions", tags=["Decisions"])
 
 class DecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    model_id: Literal["d1-2b-cpu-f32"] | None = None
     state: str = Field(min_length=1, max_length=8000)
     questions: list[DecisionQuestion] = Field(min_length=1, max_length=8)
 
@@ -102,5 +106,5 @@ async def evaluate_decisions(
         )
     except (ValueError, TypeError, KeyError) as exc:
         raise HTTPException(
-            502, "Laya returned an invalid typed decision response."
+            502, "The decision model returned an invalid typed response."
         ) from exc

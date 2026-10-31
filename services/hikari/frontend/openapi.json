@@ -696,6 +696,18 @@
       "DecisionRequest": {
         "additionalProperties": false,
         "properties": {
+          "model_id": {
+            "anyOf": [
+              {
+                "const": "d1-2b-cpu-f32",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
           "questions": {
             "items": {
               "discriminator": {

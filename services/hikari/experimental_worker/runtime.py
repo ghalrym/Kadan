@@ -23,6 +23,7 @@ BACKENDS = {
     "text": ("lfm3_llm", "HIKARI_ENABLE_LFM3_TEXT"),
     "vision": ("lfm3_vision", "HIKARI_ENABLE_LFM3_VISION"),
     "audio": ("lfm3_audio", None),
+    "d1": ("lfm3_decision", "HIKARI_ENABLE_D1_DECISIONS"),
 }
 
 
@@ -30,7 +31,7 @@ def enabled(name: str) -> bool:
     return os.getenv(name, "").lower() in ("1", "true", "yes")
 
 
-def machine() -> dict:
+def machine(cpu_only: bool = False) -> dict:
     """Match native worker boot/GPU identities and reserve its existing margins."""
     mem = {}
     for line in Path("/proc/meminfo").read_text().splitlines():
@@ -46,20 +47,30 @@ def machine() -> dict:
         ram_limit = max(0, maximum - GIB)
         total = min(total, maximum)
         free = min(free, max(0, maximum - int(current.read_text())))
-    rows = list(
-        csv.reader(
-            subprocess.check_output(
-                [
-                    "nvidia-smi",
-                    "--query-gpu=uuid,memory.total,memory.free",
-                    "--format=csv,noheader,nounits",
-                ],
-                text=True,
-            ).splitlines()
+    devices = []
+    if not cpu_only:
+        rows = list(
+            csv.reader(
+                subprocess.check_output(
+                    [
+                        "nvidia-smi",
+                        "--query-gpu=uuid,memory.total,memory.free",
+                        "--format=csv,noheader,nounits",
+                    ],
+                    text=True,
+                ).splitlines()
+            )
         )
-    )
-    index = int(os.getenv("HIKARI_EXPERIMENTAL_GPU", "0"))
-    uuid, gpu_total, gpu_free = rows[index]
+        index = int(os.getenv("HIKARI_EXPERIMENTAL_GPU", "0"))
+        uuid, gpu_total, gpu_free = rows[index]
+        devices = [
+            {
+                "index": 0,
+                "uuid": uuid.strip(),
+                "vram_total": int(gpu_total) * 1024**2,
+                "vram_free": max(0, int(gpu_free) * 1024**2 - GIB // 2),
+            }
+        ]
     boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
     return {
         "id": boot,
@@ -70,21 +81,14 @@ def machine() -> dict:
         "physical_ram_total": physical_total,
         "physical_ram_free": max(0, physical_free - GIB),
         # This trial uses one whole GPU; the hub must not pool several GPUs.
-        "devices": [
-            {
-                "index": 0,
-                "uuid": uuid.strip(),
-                "vram_total": int(gpu_total) * 1024**2,
-                "vram_free": max(0, int(gpu_free) * 1024**2 - GIB // 2),
-            }
-        ],
+        "devices": devices,
     }
 
 
 def execute_child(
     connection, backend_name, metadata, manifest, root, request, device, budget, scratch
 ):
-    """The subprocess is the allocation boundary; exit releases its CUDA context."""
+    """The subprocess is the allocation boundary; exit releases its resources."""
 
     def emit(message):
         connection.send(message)
@@ -98,30 +102,39 @@ def execute_child(
                 request["input"].get("license_acknowledged", False), emit
             )
         else:
-            os.environ["CUDA_VISIBLE_DEVICES"] = device["uuid"]
+            os.environ["CUDA_VISIBLE_DEVICES"] = device["uuid"] if device else ""
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ["TRANSFORMERS_OFFLINE"] = "1"
-            # Inference libraries must exist only in the disposable executor.
-            import torch
+            if device is not None:
+                # Inference libraries must exist only in the disposable executor.
+                import torch
 
-            fraction = max(0, budget[1] - GIB) / device["vram_total"]
-            if fraction <= 0:
-                raise ValueError("Insufficient CUDA allocation after runtime headroom")
-            torch.cuda.set_per_process_memory_fraction(min(1.0, fraction), device=0)
-            torch.cuda.reset_peak_memory_stats(0)
+                fraction = max(0, budget[1] - GIB) / device["vram_total"]
+                if fraction <= 0:
+                    raise ValueError(
+                        "Insufficient CUDA allocation after runtime headroom"
+                    )
+                torch.cuda.set_per_process_memory_fraction(min(1.0, fraction), device=0)
+                torch.cuda.reset_peak_memory_stats(0)
             backend = importlib.import_module("experimental_worker." + backend_name)
             result = backend.execute(
                 request["input"], request["operation"], str(store.root), emit
             )
-            torch.cuda.synchronize()
-            timing = result.setdefault("timing", {})
+            if device is not None:
+                torch.cuda.synchronize()
+            # Decision answers are a bare list in the API contract. Report their
+            # measurements separately without altering the typed answer payload.
+            timing = result.setdefault("timing", {}) if isinstance(result, dict) else {}
             timing.update(
                 executor_seconds=time.perf_counter() - started,
                 peak_rss_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
                 * 1024,
-                peak_cuda_allocated_bytes=torch.cuda.max_memory_allocated(0),
-                peak_cuda_reserved_bytes=torch.cuda.max_memory_reserved(0),
             )
+            if device is not None:
+                timing.update(
+                    peak_cuda_allocated_bytes=torch.cuda.max_memory_allocated(0),
+                    peak_cuda_reserved_bytes=torch.cuda.max_memory_reserved(0),
+                )
             # Operator measurements contain counts/times only, never prompts,
             # generated text, screenshots or audio. CUDA allocator peaks exclude
             # driver/context memory; the server trial also samples nvidia-smi.
@@ -150,13 +163,14 @@ class Runtime:
         if flag is not None and not enabled(flag):
             raise ValueError(f"Experimental worker requires {flag}=true")
         self.backend_name = backend_name
+        self.cpu_only = backend_name == "d1"
         self.backend = importlib.import_module("experimental_worker." + backend_name)
         self.manifest = json.loads(
             (Path(__file__).parent / f"catalog_{backend_name}.json").read_text()
         )
         self.root = Path(os.getenv("KADAN_MODEL_DIR", "/var/lib/kadan/models"))
         self.store = ModelStore(self.root, self.backend.MODEL, self.manifest)
-        self.info = info if info is not None else machine()
+        self.info = info if info is not None else machine(cpu_only=self.cpu_only)
         self.probe_machine = info is None
         self.budget = [0, 0]
         self.queue = asyncio.Queue(maxsize=16)
@@ -180,7 +194,7 @@ class Runtime:
                 "state": "worker",
                 "worker": self.kind,
                 "event": event,
-                "loaded": bool(self.budget[1]),
+                "loaded": any(self.budget),
                 "budget": self.budget,
                 "model": None,
             }
@@ -248,8 +262,14 @@ class Runtime:
                 reply["ok"] = False
             else:
                 budget = list(message["budget"]) if command == "load" else [0, 0]
-                if len(budget) != 2 or any(
-                    type(value) is not int or value < 0 for value in budget
+                # The hub serializes only devices visible to this worker. A CPU
+                # grant has one host component; executors use [host, device].
+                if self.cpu_only and len(budget) == 1:
+                    budget.append(0)
+                if (
+                    len(budget) != 2
+                    or any(type(value) is not int or value < 0 for value in budget)
+                    or (self.cpu_only and budget[1] != 0)
                 ):
                     reply.update(
                         state="rejected", error="Invalid memory grant", status_code=422
@@ -264,7 +284,7 @@ class Runtime:
                 workers=[
                     {
                         "worker": self.kind,
-                        "loaded": bool(self.budget[1]),
+                        "loaded": any(self.budget),
                         "budget": self.budget,
                         "used": self.budget if self.child is not None else [0, 0],
                         "model": None,
@@ -338,7 +358,7 @@ class Runtime:
                     self.manifest,
                     str(self.root),
                     request,
-                    self.info["devices"][0],
+                    None if self.cpu_only else self.info["devices"][0],
                     self.budget,
                     scratch,
                 ),
@@ -350,6 +370,7 @@ class Runtime:
                 await event("preparing", model=self.backend.MODEL["id"])
                 process.start()
                 started = True
+                executor_started = time.monotonic()
                 writer.close()
                 await event("running", model=self.backend.MODEL["id"])
                 received_result = False
@@ -357,6 +378,13 @@ class Runtime:
                     if request_id in self.cancelled:
                         break
                     if request["operation"] != "download" and process.is_alive():
+                        limit = getattr(self.backend, "MAX_EXECUTOR_SECONDS", None)
+                        if (
+                            limit is not None
+                            and time.monotonic() - executor_started >= limit
+                        ):
+                            error = "Experimental executor exceeded its time limit."
+                            break
                         try:
                             resident = next(
                                 line
@@ -481,7 +509,7 @@ class Runtime:
         from websockets.asyncio.client import connect
 
         if self.probe_machine:
-            self.info = machine()
+            self.info = machine(cpu_only=self.cpu_only)
         token = os.getenv("HIKARI_WORKER_TOKEN", "insecure-api-key")
         async with connect(
             os.getenv("HIKARI_API_URL", "ws://hikari-api:8000/v1/workers"),

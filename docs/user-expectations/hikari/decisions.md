@@ -13,3 +13,12 @@ Answers stay paired with the inputs that produced them. Editing inputs marks old
 **Cancel evaluation** preserves previous answers and ignores late results. Cleanup may take longer, and leaving the page also stops its request. The waiting timer includes time spent in the queue.
 
 See [Decision architecture](../../architecture/hikari/worker-decision.md) for validation and typed results.
+
+An operator-enabled d1 CPU trial is separate from ordinary evaluation, which
+continues to use Laya. The trial requires an explicitly selected checkpoint and
+an acknowledged, verified download; it never downloads during evaluation or
+falls back to Laya. It supports text only, a smaller encoded-input limit and
+Score rubrics with two to ten levels. Inputs that exceed its limit fail without
+truncation. It waits for sufficient RAM, and cancellation or a time-limit failure
+keeps its resources reserved until its executor has stopped. The regular
+Decisions page does not select this trial.
