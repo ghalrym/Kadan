@@ -13,6 +13,9 @@ function picker(resources, initial = []) {
   let cursor = 0, tree, selected = initial, agentKey = "alpha", disabled = false;
   const effects = [], cleanups = [], dependencies = [];
   const slots = [];
+  const timers = new Map(), listeners = new Map();
+  let timerId = 0;
+  const container = { contains: node => node?.inside === true };
   const jsx = (type, props) => ({ type, props });
   const modules = {
     react: { useEffect(effect, deps) {
@@ -30,15 +33,25 @@ function picker(resources, initial = []) {
       return [slots[index], value => { slots[index] = value; }];
     } },
     "react/jsx-runtime": { jsx, jsxs: jsx },
+    "lucide-react": new Proxy({}, { get: (_, name) => name }),
     "./api": { agentPath: key => `/agents/${key}`, api: async path => typeof resources === "function" ?
       resources(path) : resources.filter(item => path.includes("/memories?") ? item.kind === "memory" : item.kind !== "memory") },
   };
   const exports = {};
-  runInNewContext(source, { exports, require: name => modules[name] });
+  runInNewContext(source, {
+    exports, require: name => modules[name],
+    document: {
+      addEventListener: (type, listener) => listeners.set(type, listener),
+      removeEventListener: (type, listener) => { if (listeners.get(type) === listener) listeners.delete(type); },
+    },
+    setTimeout: callback => { timers.set(++timerId, callback); return timerId; },
+    clearTimeout: id => timers.delete(id),
+  });
   function render() {
     cursor = 0;
     tree = exports.default({ agentKey, selected, disabled,
       onChange: value => { selected = value; } });
+    if (tree.props.ref) tree.props.ref.current = container;
     if (effects.length) { effects.splice(0).forEach(effect => effect()); render(); }
   }
   function elements(node = tree) {
@@ -47,6 +60,20 @@ function picker(resources, initial = []) {
   }
   render();
   return { render, elements, selected: () => selected,
+    query(value) {
+      elements().find(item => item.props?.["aria-label"] === "Search references").props.onChange({ target: { value } });
+      render();
+    },
+    start() {
+      const callbacks = [...timers.values()];
+      timers.clear();
+      callbacks.forEach(callback => callback());
+      render();
+    },
+    pointer(inside) { listeners.get("pointerdown")?.({ target: { inside } }); render(); },
+    blur(relatedTarget) { tree.props.onBlur({ currentTarget: container, relatedTarget }); render(); },
+    escape() { tree.props.onKeyDown({ key: "Escape", stopPropagation() {} }); render(); },
+    listening: () => listeners.size,
     switchAgent(key) { agentKey = key; selected = []; render(); },
     disable() { disabled = true; render(); },
     unmount() { cleanups.forEach(cleanup => cleanup?.()); },
@@ -64,7 +91,96 @@ test("picker lists only active same-agent Markdown resources and selects explici
   assert.equal(choices.length, 2);
   choices[0].props.onChange();
   assert.deepEqual(JSON.parse(JSON.stringify(view.selected())),
-    [{ resource_id: "plan", expected_version: 5, title: "Title plan" }]);
+    [{ resource_id: "plan", expected_version: 5, title: "Title plan", characters: 10 }]);
+});
+
+test("internal pointer blur preserves results for label activation", async () => {
+  const view = picker([saved("plan")]);
+  await view.open();
+  view.pointer(true);
+  view.blur(null);
+  assert.equal(choices(view).length, 1);
+  choices(view)[0].props.onChange();
+  view.render();
+  assert.equal(view.selected()[0].resource_id, "plan");
+  assert.equal(choices(view)[0].props.checked, true);
+});
+
+test("internal focus stays open and outside pointer, keyboard focus and Escape close without clearing selection", async () => {
+  const initial = [{ resource_id: "plan", expected_version: 5, title: "Title plan" }];
+  for (const leave of [view => view.pointer(false), view => view.blur({ inside: false }), view => view.escape()]) {
+    const view = picker([saved("plan")], initial);
+    await view.open();
+    view.blur({ inside: true });
+    assert.equal(choices(view).length, 1);
+    leave(view);
+    assert.equal(choices(view).length, 0);
+    assert.deepEqual(view.selected(), initial);
+    assert.equal(view.listening(), 0);
+  }
+  const view = picker([]);
+  await view.open();
+  assert.equal(view.listening(), 1);
+  view.unmount();
+  assert.equal(view.listening(), 0);
+});
+
+test("query changes discard pending results and failures before dispatching the debounced search", async () => {
+  for (const fail of [false, true]) {
+    const pending = [];
+    const view = picker(path => { const value = deferred(); pending.push({ ...value, path }); return value.promise; });
+    await view.open();
+    view.query("invoice");
+    assert.equal(pending.length, 2);
+    assert.equal(choices(view).length, 0);
+    if (fail) pending[0].reject(new Error("Old search failure"));
+    else pending[0].resolve([saved("old-plan")]);
+    pending[1].resolve([]);
+    await new Promise(resolve => setImmediate(resolve)); view.render();
+    assert.equal(choices(view).length, 0);
+    assert.ok(text(view).includes("Loading references"));
+    assert.ok(!text(view).includes("Old search failure"));
+    view.start();
+    assert.equal(pending.length, 4);
+    assert.ok(pending.slice(2).every(item => item.path.endsWith("q=invoice")));
+    pending[2].resolve([saved("invoice")]); pending[3].resolve([]);
+    await new Promise(resolve => setImmediate(resolve)); view.render();
+    choices(view)[0].props.onChange();
+    assert.equal(view.selected()[0].resource_id, "invoice");
+  }
+});
+
+test("query changes clear loaded rows and still search when reverting to the last query", async () => {
+  const paths = [];
+  const view = picker(path => {
+    paths.push(path);
+    return path.includes("/workspace/documents?") && path.endsWith("q=") ? [saved("plan")] : [];
+  });
+  await view.open();
+  assert.equal(choices(view).length, 1);
+  view.query("invoice");
+  assert.equal(choices(view).length, 0);
+  view.query("");
+  view.start();
+  await new Promise(resolve => setImmediate(resolve)); view.render();
+  assert.equal(paths.length, 4);
+  assert.ok(paths.every(path => path.endsWith("q=")));
+  assert.equal(choices(view).length, 1);
+});
+
+test("submitting before the debounce dispatches once and closing cancels queued searches", async () => {
+  const paths = [];
+  const view = picker(path => { paths.push(path); return []; });
+  await view.open();
+  view.query("invoice");
+  view.search();
+  view.start();
+  assert.equal(paths.length, 4);
+  view.query("cancelled");
+  view.escape();
+  view.start();
+  assert.equal(paths.length, 4);
+  view.unmount();
 });
 
 test("picker disables a fourth selection and permits removing selected items", async () => {
