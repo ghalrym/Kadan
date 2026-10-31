@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from .config import ServiceError
 from .coding_client import CodingClient
+from .config import ServiceError
 from .pydantic_models.agent_runs import AgentRun, RunMessage, ToolCommand
 from .pydantic_models.coding import CodingContinuation
 from .pydantic_models.resources import Message
@@ -66,6 +66,7 @@ class RunClient:
                 if coding_task
                 else value.content
             ),
+            attachment_ids=value.attachment_ids,
             resource_ids=[value.persona_id] if value.persona_id else [],
         )
         body = {

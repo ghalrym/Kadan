@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowUp, ArrowUpRight, ChevronDown, Mic, NotebookPen, Square, UserRound, X } from "lucide-react";
+import { ArrowUp, ArrowUpRight, ChevronDown, Mic, NotebookPen, Paperclip, Square, UserRound, X } from "lucide-react";
+import type { ChatAttachments } from "./attachments";
+import AttachmentPicker from "./AttachmentPicker";
 import type { Resource, Status } from "./types";
 import VoiceCallControl, { type VoiceCall } from "./VoiceCallControl";
 import { microphoneUnavailable, VoiceInput, type VoiceState } from "./voiceInput";
@@ -29,6 +31,7 @@ function attention(status: Status | null) {
 
 interface Props {
   agentName: string;
+  attachments: ChatAttachments;
   value: string;
   onChange: (value: string) => void;
   onSend: (generate: boolean) => void;
@@ -48,6 +51,7 @@ interface Props {
 
 export default function Composer({
   agentName,
+  attachments,
   value,
   onChange,
   onSend,
@@ -64,6 +68,8 @@ export default function Composer({
   voiceCall,
   onDictating,
 }: Props) {
+  const filePicker = useRef<HTMLInputElement>(null);
+  const [attachmentError, setAttachmentError] = useState("");
   const field = useRef<HTMLTextAreaElement>(null);
   const microphone = useRef<VoiceInput | null>(null);
   const [voice, setVoice] = useState<VoiceState | null>(null);
@@ -75,6 +81,7 @@ export default function Composer({
   const empty = !value.trim();
   const callActive = voiceCall.active;
   const locked = sending || blocked || voice !== null || callActive;
+  const sendLocked = locked || !attachments.ready;
   useEffect(() => () => microphone.current?.cancel(), []);
   useEffect(() => onDictating(voice !== null), [voice, onDictating]);
   useEffect(() => {
@@ -131,7 +138,7 @@ export default function Composer({
         className={`composer ${sending ? "is-sending" : ""}`}
         onSubmit={(event) => {
           event.preventDefault();
-          if (!voice && !callActive) onSend(ready.chat);
+          if (!sendLocked && ready.storage) onSend(ready.chat);
         }}
       >
         <span className="perch">{pet}</span>
@@ -152,10 +159,17 @@ export default function Composer({
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
-              if (!voice && !callActive) onSend(ready.chat);
+              if (!sendLocked && ready.storage) onSend(ready.chat);
             }
           }}
         />
+        <AttachmentPicker attachments={attachments} disabled={blocked || callActive} />
+        {attachmentError && <p role="alert">{attachmentError}</p>}
+        <input ref={filePicker} type="file" multiple hidden aria-label="Choose attachments" onChange={event => {
+          try { attachments.add(Array.from(event.target.files ?? [])); setAttachmentError(""); }
+          catch (error) { setAttachmentError((error as Error).message); }
+          event.target.value = "";
+        }} />
         <div className="composer-bar">
           {ready.chat && personas.length > 0 ? (
             <label className={`chip persona ${persona ? "active" : ""}`}>
@@ -179,6 +193,10 @@ export default function Composer({
             <span />
           )}
           <div className="send-actions">
+            <button className="icon" type="button" aria-label="Attach files" title="Attach files · up to 10 files, 100 MiB total"
+              disabled={blocked || callActive || !ready.storage} onClick={() => filePicker.current?.click()}>
+              <Paperclip size={16} />
+            </button>
             {ready.chat && (
               <button
                 className="icon"
@@ -203,7 +221,7 @@ export default function Composer({
                 aria-label="Save as note without a reply"
                 title="Save as note · no reply"
                 onClick={() => onSend(false)}
-                disabled={locked || empty}
+                disabled={sendLocked || empty}
               >
                 <NotebookPen size={16} />
               </button>
@@ -227,7 +245,7 @@ export default function Composer({
             </span>}
             <button
               className="send"
-              disabled={locked || empty || !ready.storage}
+              disabled={sendLocked || empty || !ready.storage}
               aria-label={ready.chat ? "Send message" : "Save note"}
               title={ready.chat ? "Send · Enter" : "Save note · Enter"}
             >

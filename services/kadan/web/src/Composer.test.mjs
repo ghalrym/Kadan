@@ -10,6 +10,7 @@ const modules = {
     export const useLayoutEffect = () => {};
     export const useRef = current => ({ current });
     export const useState = value => [value, () => {}];`,
+  "./AttachmentPicker": "export default function AttachmentPicker() {}",
   "./VoiceCallControl": "export default function VoiceCallControl() {}",
   "./voiceInput": "export const microphoneUnavailable = () => null; export class VoiceInput {}",
 };
@@ -41,6 +42,7 @@ const status = {
 };
 function compose(overrides = {}) {
   return Composer({
+    attachments: { ready: true, entries: [] },
     agentName: "Haru", value: "My pending question", onChange() {}, onSend() {},
     sending: false, blocked: false, status, personas: [{ id: "persona", title: "Me" }],
     persona: "persona", onPersona() {}, pet: null, voiceCall: { active: false },
@@ -128,4 +130,38 @@ test("response cancellation has a visible label and explains independent coding 
   const pending = elements(compose({ onStop() {}, stopping: true })).find(node => node.props?.["aria-label"] === "Stop response");
   assert.equal(pending.props.disabled, true);
   assert.ok(pending.props.children.includes("Stopping…"));
+});
+
+
+test("file selection in notes-only mode resets the picker without sending", () => {
+  const added = [], sends = [];
+  const tree = compose({
+    attachments: { ready: true, entries: [], add: files => added.push(files) },
+    onSend: value => sends.push(value),
+  });
+  const attach = elements(tree).find(node => node.props?.["aria-label"] === "Attach files");
+  assert.equal(attach.props.disabled, false);
+  const selected = new File(["test"], "notes.txt");
+  const target = { files: [selected], value: "notes.txt" };
+  find(tree, "input").props.onChange({ target });
+  assert.deepEqual(added, [[selected]]);
+  assert.equal(target.value, "");
+  assert.deepEqual(sends, []);
+  find(tree, "form").props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(sends, [false]);
+});
+
+test("unresolved uploads block both sending choices and Enter", () => {
+  const sends = [];
+  const tree = compose({
+    attachments: { ready: false, entries: [] },
+    status: { ...status, hikari: { state: "ready" } },
+    onSend: value => sends.push(value),
+  });
+  for (const label of ["Send message", "Save as note without a reply"]) {
+    assert.equal(elements(tree).find(node => node.props?.["aria-label"] === label).props.disabled, true);
+  }
+  find(tree, "form").props.onSubmit({ preventDefault() {} });
+  find(tree, "textarea").props.onKeyDown({ key: "Enter", shiftKey: false, nativeEvent: {}, preventDefault() {} });
+  assert.deepEqual(sends, []);
 });
