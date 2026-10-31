@@ -5,7 +5,8 @@ Sending a chat message saves it and queues the agent's response. Closing the bro
 The chat's **Stop response** control cancels the queued and running response work currently shown for that conversation. The interface reports "Response stopped" after cancellation. Messages already delivered remain in the conversation; stopping is not an undo operation.
 
 Chat Stop does not stop [Codex threads](coding.md) already running on the
-computer. Stop them from the Coding tab.
+computer. Stop them from the Coding tab. It also does not stop a task already
+handed to the computer assistant; stop that from the [computer view](computer.md).
 
 Once cancellation is recorded, the cancelled run must not deliver another message or execute a saved command. Inference may take until the runner's next ownership check to stop, so the interface must not imply that GPU work ends instantly.
 

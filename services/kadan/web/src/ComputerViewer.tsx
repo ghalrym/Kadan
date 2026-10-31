@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { MousePointer2, RotateCw, X } from "lucide-react";
+import { ArrowUp, MousePointer2, RotateCw, Square, X } from "lucide-react";
+import { agentPath, api } from "./api";
 import { ComputerControl } from "./computerControl";
+import { workLabel, type ComputerWork } from "./computerWork";
 import { vncUrl } from "./presence";
+import { randomUuid } from "./uuid";
 
 type Connection = "connecting" | "connected" | "disconnected";
 const LABELS: Record<Connection, string> = {
@@ -13,6 +16,7 @@ const WIDTH_KEY = "kadan.computer.width";
 /** The chat keeps at least this much room beside the computer. */
 const MIN_CHAT = 360;
 const MIN_PANEL = 320;
+const WORK_POLL_MS = 3000;
 
 function savedWidth() {
   const value = Number(localStorage.getItem(WIDTH_KEY));
@@ -20,12 +24,13 @@ function savedWidth() {
 }
 
 interface Props {
+  agentKey: string;
   agentName: string;
   onClose: () => void;
 }
 
 /** A live VNC view of the agent's computer beside the chat, relayed through Kadan's API. */
-export default function ComputerViewer({ agentName, onClose }: Props) {
+export default function ComputerViewer({ agentKey, agentName, onClose }: Props) {
   const panel = useRef<HTMLElement>(null);
   const screen = useRef<HTMLDivElement>(null);
   const viewer = useRef<ComputerControl | null>(null);
@@ -33,6 +38,50 @@ export default function ComputerViewer({ agentName, onClose }: Props) {
   const [control, setControl] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [width, setWidth] = useState<number | null>(savedWidth);
+  const [work, setWork] = useState<ComputerWork | null>(null);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const workPath = `${agentPath(agentKey)}/computer`;
+  const status = workLabel(work);
+
+  async function refreshWork() {
+    try {
+      setWork(await api<ComputerWork>(workPath));
+    } catch {
+      setWork(null);
+    }
+  }
+  useEffect(() => {
+    void refreshWork();
+    const timer = setInterval(() => void refreshWork(), WORK_POLL_MS);
+    return () => clearInterval(timer);
+  }, [workPath]);
+
+  async function sendRequest(event: React.FormEvent) {
+    event.preventDefault();
+    const content = draft.trim();
+    if (!content || sending) return;
+    setSending(true);
+    try {
+      await api(`${workPath}/requests`, { id: randomUuid(), content });
+      setDraft("");
+      void refreshWork();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "The request could not be sent.");
+    } finally {
+      setSending(false);
+    }
+  }
+  async function stopTask() {
+    if (!work?.task) return;
+    try {
+      await api(`${workPath}/tasks/${encodeURIComponent(work.task.id)}/cancel`);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "The task could not be stopped.");
+    }
+    void refreshWork();
+  }
 
   useEffect(() => {
     const target = screen.current;
@@ -117,6 +166,12 @@ export default function ComputerViewer({ agentName, onClose }: Props) {
           </p>
         </div>
         <div className="computer-panel-actions">
+          <span className={`computer-work${work?.task ? " busy" : status.startsWith("Failed") ? " failed" : ""}`}
+            role="status" title={status}>{status}</span>
+          {work?.task && (
+            <button className="icon" aria-label="Stop the current task" title="Stop the current task"
+              onClick={() => void stopTask()}><Square size={14} /></button>
+          )}
           {connection === "disconnected" ? (
             <button onClick={() => setAttempt((count) => count + 1)}>
               <RotateCw size={16} />
@@ -134,6 +189,16 @@ export default function ComputerViewer({ agentName, onClose }: Props) {
         </div>
       </header>
       <div className="computer-screen" ref={screen} />
+      <form className="computer-request" onSubmit={sendRequest}>
+        <input value={draft} onChange={(event) => { setDraft(event.target.value); setError(""); }}
+          placeholder={work?.task ? "Steer the current task" : `Ask ${agentName}’s computer to do something`}
+          aria-label="Request for the computer" maxLength={10000}
+          onKeyDown={(event) => event.stopPropagation()} />
+        <button className="icon" type="submit" aria-label="Send request" disabled={!draft.trim() || sending}>
+          <ArrowUp size={16} />
+        </button>
+        {error && <p className="computer-request-error" role="alert">{error}</p>}
+      </form>
     </aside>
   );
 }

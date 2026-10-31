@@ -1,5 +1,5 @@
 import json
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, File, Form, Query, UploadFile
@@ -18,6 +18,9 @@ from .models import (
     Asset,
     AssetUpdate,
     ChatResultInput,
+    ComputerTask,
+    ComputerThread,
+    ComputerThreadState,
     ImageJob,
     ImageJobState,
     MarkdownResource,
@@ -31,12 +34,12 @@ from .models import (
     PetReferenceMode,
     PetState,
     RequestReference,
-    RunEvent,
     Resource,
     ResourceInput,
     ResourceKind,
     ResourceUpdate,
     ResourceVersion,
+    RunEvent,
     Runner,
     Stats,
     VersionInput,
@@ -111,6 +114,36 @@ class EventRunCreate(Model):
 class RunUpdate(AgentRunState):
     expected_version: int = Field(ge=1)
     worker_id: UUID
+
+
+class ComputerTaskCreate(Model):
+    id: UUID
+    instructions: str = Field(min_length=1, max_length=10000)
+    origin_run_id: UUID
+    worker_id: UUID
+
+
+class ComputerRequestCreate(Model):
+    id: UUID
+    content: str = Field(min_length=1, max_length=10000)
+
+
+class ComputerRequest(Model):
+    kind: Literal["steering", "task"]
+    task: ComputerTask
+
+
+class ComputerTaskUpdate(Model):
+    id: UUID
+    status: Literal["running", "completed", "failed"]
+    summary: str | None = Field(default=None, max_length=10000)
+
+
+class ComputerThreadUpdate(ComputerThreadState):
+    expected_version: int = Field(ge=1)
+    worker_id: UUID
+    consumed_steering_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    task: ComputerTaskUpdate | None = None
 
 
 class RunDelivery(Model):
@@ -303,6 +336,67 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     )
     def resolve_image_upload(key: AgentKey, job_id: UUID):
         return files.resolve_image_upload(key, job_id)
+
+    @router.post(
+        "/agents/{key}/computer-tasks", response_model=ComputerTask, status_code=201
+    )
+    def create_computer_task(key: AgentKey, value: ComputerTaskCreate):
+        return repository.create_computer_task(
+            key, value.id, value.instructions, value.origin_run_id, value.worker_id
+        )
+
+    @router.get("/computer-tasks", response_model=list[ComputerTask])
+    def active_computer_tasks():
+        return repository.active_computer_tasks()
+
+    @router.get("/agents/{key}/computer-tasks", response_model=list[ComputerTask])
+    def agent_computer_tasks(key: AgentKey):
+        return repository.active_computer_tasks(key)
+
+    @router.get(
+        "/agents/{key}/computer-tasks/latest", response_model=ComputerTask | None
+    )
+    def latest_computer_task(key: AgentKey):
+        return repository.latest_computer_task(key)
+
+    @router.get("/agents/{key}/computer-tasks/{task_id}", response_model=ComputerTask)
+    def get_computer_task(key: AgentKey, task_id: UUID):
+        return repository.get_computer_task(key, task_id)
+
+    @router.post(
+        "/agents/{key}/computer-tasks/{task_id}/cancel", response_model=ComputerTask
+    )
+    def cancel_computer_task(key: AgentKey, task_id: UUID):
+        return repository.cancel_computer_task(key, task_id)
+
+    @router.post(
+        "/agents/{key}/computer-requests",
+        response_model=ComputerRequest,
+        status_code=201,
+    )
+    def create_computer_request(key: AgentKey, value: ComputerRequestCreate):
+        kind, task = repository.computer_request(key, value.id, value.content)
+        return ComputerRequest(kind=kind, task=task)
+
+    @router.get("/agents/{key}/computer-thread", response_model=ComputerThread)
+    def get_computer_thread(key: AgentKey):
+        return repository.get_computer_thread(key)
+
+    @router.put("/agents/{key}/computer-thread", response_model=ComputerThread)
+    def update_computer_thread(key: AgentKey, value: ComputerThreadUpdate):
+        state = ComputerThreadState.model_validate(
+            value.model_dump(include=set(ComputerThreadState.model_fields))
+        )
+        return repository.update_computer_thread(
+            key,
+            state,
+            value.expected_version,
+            value.worker_id,
+            value.consumed_steering_ids,
+            value.task.id if value.task else None,
+            value.task.status if value.task else None,
+            value.task.summary if value.task else None,
+        )
 
     @router.get("/pet-jobs", response_model=list[PetJob])
     def active_pet_jobs():

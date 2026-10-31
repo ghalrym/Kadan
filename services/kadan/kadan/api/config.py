@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     sandbox_api_key: SecretStr = SecretStr("insecure-api-key")
     frontend_directory: str = "web/dist"
     agent_instruction_file: str = str(Path(__file__).resolve().parents[2] / "AGENT.md")
+    computer_instruction_file: str = str(
+        Path(__file__).resolve().parents[2] / "COMPUTER_AGENT.md"
+    )
 
     @field_validator(
         "tsuchi_url",

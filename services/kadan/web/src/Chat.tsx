@@ -694,7 +694,7 @@ export default function Chat({
         onDictating={setDictating}
       />
     </section>
-    {computer && <ComputerViewer agentName={agentName} onClose={() => setComputer(false)} />}
+    {computer && <ComputerViewer agentKey={agentKey} agentName={agentName} onClose={() => setComputer(false)} />}
     </div>
   );
 }

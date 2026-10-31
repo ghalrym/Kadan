@@ -11,8 +11,9 @@ shared Compose network, and lets the owner watch or take over that computer from
 - `kadan/api/sandbox_client.py`: the only client of the sandbox's HTTP API.
 - `kadan/runner/tools/`: one hand-written LangChain tool per sandbox route, with
   a Pydantic argument model. Each module's `TOOLS` list selects the enabled tools.
-  `kadan-runner` binds those tools to the model when a computer is configured and
-  executes the calls.
+  `kadan-runner` binds those tools to the [computer agent](computer-tasks.md)
+  when a computer is configured and executes the calls. The conversation agent
+  hands work over with `use_computer` instead of binding them.
 - `kadan-api` reports status and relays the screenshot and VNC stream for the
   agent card and computer viewer in the web app.
 

@@ -21,7 +21,7 @@ Saved work can continue after the browser closes. A queued message does not prom
 | [Shared agent instructions](agent-instructions.md) | Change operator-maintained instructions for subsequent agent work. |
 | [Agent actions](agent-actions.md) | Ask agents to browse, change files and run commands, with explicit limits on recovery. |
 | [Coding with Codex](coding.md) | Sign in with ChatGPT once, let the agent run Codex on its computer and track its threads. |
-| [Computer](computer.md) | Watch or control the shared computer without pausing the agent. |
+| [Computer](computer.md) | Watch or control the shared computer, and request or steer its assistant's work. |
 | [Images in conversations](image-generation.md) | Continue chatting while images generate and receive saved results later. |
 | [Pets](pets.md) | Create, import, preview, repair and explicitly select animated pets. |
 | [Voice input](voice-input.md) | Transcribe an utterance into an editable message draft. |
