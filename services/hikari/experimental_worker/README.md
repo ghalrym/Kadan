@@ -5,25 +5,18 @@ queue, worker token and memory scheduler. They start without profiles in the nor
 Compose project, keeping Hikari and Kadan's usual URLs and saved conversations.
 Workers on one computer share that API's memory scheduler.
 
-These workers follow Andrew's later direction to make LFM the default. They do
-not select a hardware tier, remove native workers or accept a
-model license. No model weights ship in the image. Each request loads the pinned
+These workers provide the fixed language and vision capabilities. They do not
+remove the retained native workers or accept a model license. No model weights ship in the image. Each request loads the pinned
 checkpoint into a separate executor; cancellation joins that process before
 releasing memory. Replies are buffered, with no persistent model or prefix cache.
 
 ## Update the existing stack
 
 Run from the normal checkout with its existing Compose project and environment.
-The following updates both workers and their callers. `compose.yaml` defaults
-all four text/vision selection flags below to true; remove older false overrides
-when adopting the defaults. Service and model-volume names stay the same.
+The following updates both workers and their callers. Service and model-volume
+names stay the same; text and vision have no model-selection flags.
 
 ```sh
-export HIKARI_ENABLE_LFM3_TEXT=true
-export HIKARI_ENABLE_LFM3_VISION=true
-export KADAN_EXPERIMENTAL_LFM3_TEXT=true
-export KADAN_EXPERIMENTAL_LFM3_VISION=true
-
 docker compose up -d --build --no-deps \
   hikari-api hikari-frontend kadan-api kadan-runner kadan-frontend \
   hikari-worker-lfm3-text hikari-worker-lfm3-vision
@@ -31,10 +24,9 @@ docker compose up -d --build --no-deps \
 
 This recreates the named services, so apply it between manual trials with the
 existing Tsuchi and other dependencies available. Keep the existing volumes,
-worker token and native workers. The API and worker flags gate admission and
-execution separately; Kadan's flags enable its corresponding agent paths.
+worker token and native workers. Missing workers make the corresponding capability unavailable.
 
-In Hikari Settings, find **Experimental models**, review the linked LFM Open
+In Hikari Settings, find the Language and Vision models, review the LFM Open
 License and custom-code notice, and explicitly accept each intended download.
 Wait for **Complete**. Enabling a worker never acknowledges the license or
 downloads its checkpoint automatically. Upstream account or license prompts
@@ -44,7 +36,7 @@ still require the user's approval.
 
 - Hikari Chat shows **LFM3 1.7B BF16** and explicitly requests that checkpoint.
   Retry and **New chat** keep it. Missing workers or downloads fail instead of
-  using the native model selected by a tier.
+  selecting another model.
 - In the usual Kadan conversation, try a short reply and a harmless read-only
   action. Saved sessions, personas, tool permissions and durable action recovery
   remain authoritative. Compare a screenshot answer with **Watching** without
@@ -64,7 +56,7 @@ contracts and measured evidence.
 
 ## Disable
 
-Disable the corresponding Kadan and Hikari flags and reapply the affected API
-and runner configuration. Stop only the selected `hikari-worker-lfm3-*` services
+Stop only the selected `hikari-worker-lfm3-*` services
 using the same Compose project. Keep downloaded checkpoints and native workers.
-Workers reconnect after transport loss, but unconfirmed work is not replayed.
+That capability remains unavailable until its worker returns. Workers reconnect
+after transport loss, but unconfirmed work is not replayed.
