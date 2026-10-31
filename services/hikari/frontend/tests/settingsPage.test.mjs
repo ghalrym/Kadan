@@ -83,7 +83,8 @@ async function page(componentName = 'default') {
       changes.at(-1).acknowledged = acknowledged
       return pending
     },
-    downloadState: model => !model ? 'unavailable' : model.status === 'downloading' && !model.total_bytes ? 'queued' : model.status,
+    downloadState: model => !model ? 'unavailable' : model.status === 'cancelled' ? 'failed'
+      : model.status === 'downloading' && !model.total_bytes ? 'queued' : model.status,
     licenseNotices: models => models.map(({ model }) => model).filter(model => model?.license_notice && model.status !== 'complete'),
     modelsDownloading: models => models.some(({ model }) => model?.status === 'downloading'),
     modelsComplete: models => models.every(({ model }) => model?.status === 'complete'),
@@ -140,14 +141,15 @@ async function loaded(status = 'not_downloaded', overrides) {
   return view
 }
 
-async function select(view, ids = capabilities.map(item => item.id)) {
-  for (const id of ids) {
-    const row = elements(view.tree).find(node => node.type?.name === 'ModelRow' && node.props.capability.id === id)
-    const checkbox = elements(row.type(row.props)).find(node => node.type === 'input')
-    assert.equal(checkbox.props.disabled, false)
-    checkbox.props.onChange({ target: { checked: true } })
-    await view.flush()
-  }
+const modelRow = (tree, id) => elements(tree).find(node => node.type?.name === 'ModelRow' && node.props.capability.id === id)
+const rowButton = (tree, id) => { const row = modelRow(tree, id); return elements(row.type(row.props)).find(node => node.type === 'button') }
+
+async function downloadRow(view, id) {
+  const target = rowButton(view.tree, id)
+  assert.ok(target, `Missing row button: ${id}`)
+  assert.equal(target.props.disabled, false)
+  target.props.onClick()
+  await view.flush()
 }
 
 async function acknowledge(view) {
@@ -159,8 +161,7 @@ async function acknowledge(view) {
 
 async function failedDownload() {
   const view = await loaded()
-  await select(view)
-  await view.click('Download selected')
+  await view.click('Download models')
   await acknowledge(view)
   await view.click('Accept and download', modal(view.tree))
   view.changes[0].reject(new Error('Queue unavailable'))
@@ -174,20 +175,16 @@ test('the page lists each capability without any tier choice', async () => {
   assert.doesNotMatch(content(view.tree), /tier/i)
   const names = elements(view.tree).filter(node => node.type?.name === 'ModelRow').map(row => row.props.capability.short)
   assert.deepEqual(names, ['Language', 'STT'])
-  assert.equal(button(view.tree, 'Download selected').props.disabled, true)
-  for (const row of elements(view.tree).filter(node => node.type?.name === 'ModelRow')) {
-    const checkbox = elements(row.type(row.props)).find(node => node.type === 'input')
-    assert.equal(checkbox.props.checked, false)
-    assert.equal(checkbox.props.disabled, false)
-  }
+  assert.equal(button(view.tree, 'Download models').props.disabled, false)
+  for (const { id } of capabilities) assert.equal(content(rowButton(view.tree, id)), 'Download')
   view.unmount()
 })
 
-test('only selected models contribute to confirmation, licenses and download requests', async () => {
+test('a row download confirms and requests only that model', async () => {
   const view = await loaded()
-  await select(view, [capabilities[1].id])
-  await view.click('Download selected (1)')
+  await downloadRow(view, capabilities[1].id)
   assert.match(content(modal(view.tree)), /This downloads\s+1\s+model\s*, about\s+1.0 GB/)
+  assert.equal(modal(view.tree).props.title, 'Download Speech to text?')
   assert.doesNotMatch(content(modal(view.tree)), /Review this license/)
   await view.click('Download', modal(view.tree))
   assert.deepEqual(view.changes[0].models.map(row => row.capability.id), [capabilities[1].id])
@@ -196,48 +193,41 @@ test('only selected models contribute to confirmation, licenses and download req
   view.changes[0].resolve(next)
   await view.flush()
   assert.match(content(view.tree), /1 of 2 downloaded/)
-  assert.equal(button(view.tree, 'Download selected').props.disabled, true)
-  assert.equal(elements(view.tree).find(node => node.type?.name === 'ModelRow').props.selected, false)
+  assert.equal(rowButton(view.tree, capabilities[1].id), undefined)
+  assert.equal(button(view.tree, 'Download models').props.disabled, false)
   view.unmount()
 })
 
-test('deselecting a model removes it from the download', async () => {
+test('a row download shows only that model\'s license', async () => {
   const view = await loaded()
-  await select(view)
-  const row = elements(view.tree).find(node => node.type?.name === 'ModelRow')
-  const checkbox = elements(row.type(row.props)).find(node => node.type === 'input')
-  checkbox.props.onChange({ target: { checked: false } })
-  await view.flush()
-  await view.click('Download selected (1)')
-  await view.click('Download', modal(view.tree))
-  assert.deepEqual(view.changes[0].models.map(row => row.capability.id), [capabilities[1].id])
+  await downloadRow(view, capabilities[0].id)
+  assert.match(content(modal(view.tree)), /Review this license/)
+  await acknowledge(view)
+  await view.click('Accept and download', modal(view.tree))
+  assert.deepEqual(view.changes[0].models.map(row => row.capability.id), [capabilities[0].id])
   view.unmount()
 })
 
 for (const status of ['complete', 'downloading', 'cancelling', 'unavailable']) {
-  test(`${status} models cannot be selected while other models remain available`, async () => {
+  test(`${status} models offer no row download`, async () => {
     const view = await page()
     const models = rows()
     models[0].model = status === 'unavailable' ? null : { ...models[0].model, status }
     view.reads[0].resolve(models)
     await view.flush()
-    const row = elements(view.tree).find(node => node.type?.name === 'ModelRow')
-    const checkbox = elements(row.type(row.props)).find(node => node.type === 'input')
-    assert.equal(checkbox.props.disabled, true)
-    await select(view, [capabilities[1].id])
-    assert.equal(button(view.tree, 'Download selected (1)').props.disabled, false)
+    assert.equal(rowButton(view.tree, capabilities[0].id), undefined)
+    assert.equal(content(rowButton(view.tree, capabilities[1].id)), 'Download')
     view.unmount()
   })
 }
 
-test('an unselected model can start while another download is active', async () => {
+test('the remaining models can start while another download is active', async () => {
   const view = await page()
   const models = rows()
   models[0].model.status = 'downloading'
   view.reads[0].resolve(models)
   await view.flush()
-  await select(view, [capabilities[1].id])
-  await view.click('Download selected')
+  await view.click('Download models')
   await view.click('Download', modal(view.tree))
   assert.deepEqual(view.changes[0].models.map(row => row.capability.id), [capabilities[1].id])
   view.unmount()
@@ -245,14 +235,12 @@ test('an unselected model can start while another download is active', async () 
 
 test('opening the license dialog never starts or accepts downloads', async () => {
   const view = await loaded()
-  await select(view)
-  await view.click('Download selected')
+  await view.click('Download models')
   assert.match(content(modal(view.tree)), /Review this license/)
   assert.equal(button(modal(view.tree), 'Accept and download').props.disabled, true)
   await view.click('Cancel', modal(view.tree))
   assert.equal(modal(view.tree), undefined)
-  await select(view)
-  await view.click('Download selected')
+  await view.click('Download models')
   assert.equal(button(modal(view.tree), 'Accept and download').props.disabled, true)
   assert.equal(view.changes.length, 0)
   view.unmount()
@@ -260,8 +248,7 @@ test('opening the license dialog never starts or accepts downloads', async () =>
 
 test('explicit acknowledgement downloads the listed models and follows progress to completion', async () => {
   const view = await loaded()
-  await select(view)
-  await view.click('Download selected')
+  await view.click('Download models')
   await acknowledge(view)
   await view.click('Accept and download', modal(view.tree))
   assert.equal(view.changes.length, 1)
@@ -271,11 +258,11 @@ test('explicit acknowledgement downloads the listed models and follows progress 
   await view.flush()
   assert.equal(modal(view.tree), undefined)
   assert.match(content(view.tree), /Downloading…\s+40\s*%/)
-  assert.equal(button(view.tree, 'Download selected').props.disabled, true)
+  assert.equal(button(view.tree, 'Downloading…').props.disabled, true)
   view.reads.at(-1).resolve(rows('complete'))
   await view.flush()
   assert.match(content(view.tree), /All models downloaded/)
-  assert.equal(button(view.tree, 'Download selected'), undefined)
+  assert.equal(button(view.tree, 'Download models'), undefined)
   view.unmount()
 })
 
@@ -293,19 +280,21 @@ test('an uncertain download requires a refresh without replaying acceptance', as
   view.unmount()
 })
 
-test('failed downloads can be selected for retry', async () => {
-  const view = await loaded('failed')
-  await select(view, [capabilities[1].id])
-  await view.click('Download selected')
-  await view.click('Download', modal(view.tree))
-  assert.deepEqual(view.changes[0].models.map(row => row.capability.id), [capabilities[1].id])
-  view.unmount()
-})
+for (const status of ['failed', 'cancelled']) {
+  test(`${status} downloads offer a resume and a row retry`, async () => {
+    const view = await loaded(status)
+    assert.ok(button(view.tree, 'Resume downloads'))
+    assert.equal(content(rowButton(view.tree, capabilities[1].id)), 'Retry')
+    await downloadRow(view, capabilities[1].id)
+    await view.click('Download', modal(view.tree))
+    assert.deepEqual(view.changes[0].models.map(row => row.capability.id), [capabilities[1].id])
+    view.unmount()
+  })
+}
 
 test('a timed-out download keeps the failure visible until refreshed', async () => {
   const view = await loaded()
-  await select(view)
-  await view.click('Download selected')
+  await view.click('Download models')
   await acknowledge(view)
   await view.click('Accept and download', modal(view.tree))
   view.timeouts[0].abort(new Error('Settings timed out'))
@@ -313,7 +302,8 @@ test('a timed-out download keeps the failure visible until refreshed', async () 
   await view.flush()
   await view.click('Cancel', modal(view.tree))
   assert.match(alert(view.tree), /Settings timed out/)
-  assert.equal(button(view.tree, 'Download selected').props.disabled, true)
+  assert.equal(button(view.tree, 'Download models').props.disabled, true)
+  assert.equal(rowButton(view.tree, capabilities[0].id).props.disabled, true)
   view.unmount()
 })
 
@@ -332,8 +322,7 @@ for (const pending of ['poll', 'download']) {
   test(`unmount aborts a pending ${pending} and ignores its late result`, async () => {
     const view = await loaded(pending === 'poll' ? 'downloading' : 'not_downloaded', pending === 'poll' ? { total_bytes: 1e9 } : {})
     if (pending !== 'poll') {
-      await select(view)
-      await view.click('Download selected')
+      await view.click('Download models')
       await acknowledge(view)
       await view.click('Accept and download', modal(view.tree))
     }
