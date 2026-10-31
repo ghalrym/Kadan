@@ -497,6 +497,19 @@
             "description": "Client-owned opaque conversation ID; omitted IDs never retain prefix state.",
             "title": "Conversation Id"
           },
+          "max_tokens": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Cap on generated tokens, including reasoning. Omit to allow the remaining context.",
+            "title": "Max Tokens"
+          },
           "messages": {
             "items": {
               "anyOf": [
@@ -517,6 +530,19 @@
             "default": "lfm3-1.7b-bf16",
             "title": "Model",
             "type": "string"
+          },
+          "reasoning_tokens": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Reasoning is closed after this many tokens so the reply keeps its share of max_tokens.",
+            "title": "Reasoning Tokens"
           },
           "reuse_prefix": {
             "default": true,

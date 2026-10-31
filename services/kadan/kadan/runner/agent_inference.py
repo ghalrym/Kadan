@@ -38,6 +38,10 @@ from ..api.config import ServiceError
 from ..api.pydantic_models.agent_runs import ToolCommand
 
 MAX_COMMAND_CHARACTERS = 48000
+# Output caps sent to Hikari: reasoning is closed after its budget, and the reply
+# budget covers the largest command the runner accepts (three characters per token).
+REASONING_TOKENS = 16384
+REPLY_TOKENS = MAX_COMMAND_CHARACTERS // 3
 MAX_EVENT_CHARACTERS = 300000
 INFERENCE_TIMEOUT = httpx.Timeout(None, connect=3)
 logger = logging.getLogger(__name__)
@@ -337,6 +341,14 @@ class HikariChatModel(BaseChatModel):
                     if experimental
                     else self._wire_messages(messages, tools),
                     **({"tools": list(tools)} if experimental else {}),
+                    **(
+                        {
+                            "max_tokens": REASONING_TOKENS + REPLY_TOKENS,
+                            "reasoning_tokens": REASONING_TOKENS,
+                        }
+                        if experimental
+                        else {}
+                    ),
                     "model": self.model_id,
                     "stream": True,
                     "conversation_id": self.conversation_key,

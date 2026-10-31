@@ -64,7 +64,9 @@ class Lfm3ToolPromptTests(unittest.TestCase):
             CompletionRequest.model_validate(body)
 
     def test_typed_request_and_worker_queue_preserve_native_template_fields(self):
-        body = CompletionRequest.model_validate(self.body())
+        body = CompletionRequest.model_validate(
+            {**self.body(), "max_tokens": 32768, "reasoning_tokens": 16384}
+        )
         request = InferenceTask(
             operation="completion",
             input={
@@ -73,6 +75,7 @@ class Lfm3ToolPromptTests(unittest.TestCase):
             },
         )
         task = request.model_dump(mode="json")["input"]
+        self.assertEqual((task["max_tokens"], task["reasoning_tokens"]), (32768, 16384))
         tokenizer = SimpleNamespace(apply_chat_template=Mock(return_value="formatted"))
         self.assertEqual(template_inputs(tokenizer, task), "formatted")
         conversation = tokenizer.apply_chat_template.call_args.args[0]
@@ -89,7 +92,7 @@ class Lfm3ToolPromptTests(unittest.TestCase):
             {"path": "/tmp/a", "lines": 3},
         )
         self.assertEqual(options["tools"][0]["function"]["name"], "read_file")
-        self.assertFalse(options["enable_thinking"])
+        self.assertTrue(options["enable_thinking"])
 
     def test_rich_tool_history_is_rejected_for_native_model(self):
         body = self.body()

@@ -1,12 +1,15 @@
 """Pure formatting and validation tests; never load or run a model."""
 
 import unittest
+
+import numpy
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 from experimental_worker.text import (
     CONTEXT_LIMIT,
     MODEL_ID,
+    ReasoningBudget,
     execute,
     finish_reason,
     generate_text,
@@ -116,6 +119,49 @@ class TextTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "not truncated"),
             ):
                 output_budget(tokens)
+
+    def test_output_is_capped_by_the_requested_limit(self):
+        self.assertEqual(output_budget(10, 32768, 1000), 1000)
+        self.assertEqual(output_budget(32000, 32768, 1000), 768)
+
+    def test_reasoning_is_closed_at_its_budget_then_left_alone(self):
+        end = 7
+        budget = ReasoningBudget(prompt_tokens=3, budget=2, end_id=end)
+        scores = numpy.zeros((1, 10))
+        budget(numpy.array([[1, 2, 3, 4]]), scores)
+        self.assertTrue((scores == 0).all())
+        budget(numpy.array([[1, 2, 3, 4, 5]]), scores)
+        self.assertEqual(scores[0, end], 0)
+        self.assertTrue(numpy.isneginf(numpy.delete(scores[0], end)).all())
+        scores = numpy.zeros((1, 10))
+        budget(numpy.array([[1, 2, 3, 4, 5, end]]), scores)
+        budget(numpy.array([[1, 2, 3, 4, 5, end, 8, 9]]), scores)
+        self.assertTrue((scores == 0).all())
+
+    def test_reasoning_closed_early_is_never_forced(self):
+        budget = ReasoningBudget(prompt_tokens=3, budget=2, end_id=7)
+        budget(numpy.array([[1, 2, 3, 7]]), numpy.zeros((1, 10)))
+        scores = numpy.zeros((1, 10))
+        budget(numpy.array([[1, 2, 3, 7, 4, 5]]), scores)
+        self.assertTrue((scores == 0).all())
+
+    def test_invalid_token_limits_are_rejected_before_dependencies(self):
+        for field in ("max_tokens", "reasoning_tokens"):
+            for value in (0, True, "10"):
+                with (
+                    self.subTest(field=field, value=value),
+                    self.assertRaisesRegex(ValueError, "token limits"),
+                ):
+                    execute(
+                        {
+                            "model": MODEL_ID,
+                            "messages": [{"role": "user", "text": "Hello"}],
+                            field: value,
+                        },
+                        "completion",
+                        "/unused",
+                        lambda _: None,
+                    )
 
     def test_eos_at_the_output_boundary_is_complete(self):
         self.assertEqual(finish_reason([4, 124900], 124900), "stop")
