@@ -3,6 +3,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from datetime import timedelta
+from itertools import islice
 from pathlib import Path
 from uuid import UUID, uuid4, uuid5
 
@@ -1818,7 +1819,13 @@ class Repository:
             return self._asset(db, key, asset_id)
 
     def list_assets(
-        self, key: str, images: bool = False, trash: bool = False, query: str = ""
+        self,
+        key: str,
+        images: bool = False,
+        trash: bool = False,
+        query: str = "",
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[Asset]:
         with self.connect() as db:
             self._agent(db, key)
@@ -1826,9 +1833,9 @@ class Repository:
                 "SELECT data FROM assets WHERE agent_key = ? AND deleted = ? AND (? = 0 OR is_image = 1) ORDER BY updated_at DESC, id",
                 (key, int(trash), int(images)),
             )
-            assets = [Asset.model_validate_json(row[0]) for row in rows]
+            assets = (Asset.model_validate_json(row[0]) for row in rows)
             tokens = query.casefold().split()
-            return [
+            matches = (
                 asset
                 for asset in assets
                 if all(
@@ -1846,7 +1853,10 @@ class Repository:
                     ).casefold()
                     for token in tokens
                 )
-            ]
+            )
+            return list(
+                islice(matches, offset, None if limit is None else offset + limit)
+            )
 
     @staticmethod
     def _save_asset(db: sqlite3.Connection, asset: Asset) -> None:
