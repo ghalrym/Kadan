@@ -96,6 +96,7 @@ class ImageTask(TaskInput):
 
 class DecisionTask(TaskInput):
     feature: Literal["decisions"] = "decisions"
+    model_id: Literal["d1-2b-cpu-f32"] | None = None
     state: str
     questions: list[DecisionQuestion]
 

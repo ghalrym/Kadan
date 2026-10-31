@@ -11,6 +11,59 @@ from api.services.worker_hub import WorkerHub, target_worker
 
 
 class ExperimentalRoutingTests(unittest.TestCase):
+    def test_d1_is_explicit_and_opt_in_without_changing_decision_defaults(self):
+        ordinary = InferenceTask(
+            input={"feature": "decisions", "state": "text", "questions": []}
+        )
+        trial = InferenceTask(
+            input={
+                "feature": "decisions",
+                "model_id": "d1-2b-cpu-f32",
+                "state": "text",
+                "questions": [],
+            }
+        )
+        for enabled in ("true", "false"):
+            with patch.dict("os.environ", {"HIKARI_ENABLE_D1_DECISIONS": enabled}):
+                self.assertEqual(target_worker(ordinary), "decision")
+                if enabled == "true":
+                    self.assertEqual(target_worker(trial), "lfm3_decision")
+                else:
+                    with self.assertRaisesRegex(
+                        InferenceFailure, "HIKARI_ENABLE_D1_DECISIONS"
+                    ):
+                        target_worker(trial)
+        self.assertEqual(ModelAssignments().decisions, "laya")
+
+    def test_d1_download_routes_only_to_its_owner(self):
+        hub = WorkerHub()
+        cpu = SimpleNamespace(
+            kind="lfm3_decision",
+            ready=SimpleNamespace(is_set=lambda: True),
+            computer=SimpleNamespace(id="cpu"),
+        )
+        native = SimpleNamespace(
+            kind="decision",
+            ready=SimpleNamespace(is_set=lambda: True),
+            computer=SimpleNamespace(id="native"),
+        )
+        hub.workers = {"cpu": cpu, "native": native}
+        request = InferenceTask(
+            operation="download",
+            input={
+                "feature": "models",
+                "model_id": "d1-2b-cpu-f32",
+                "license_acknowledged": True,
+            },
+        )
+        with patch.dict("os.environ", {"HIKARI_ENABLE_D1_DECISIONS": "true"}):
+            self.assertEqual(hub._store_targets(request), [cpu])
+        with (
+            patch.dict("os.environ", {"HIKARI_ENABLE_D1_DECISIONS": "false"}),
+            self.assertRaisesRegex(InferenceFailure, "HIKARI_ENABLE_D1_DECISIONS"),
+        ):
+            hub._store_targets(request)
+
     def test_experimental_events_do_not_replace_native_language_status(self):
         service = InferenceService()
         service.state, service.model_id, service.context = (

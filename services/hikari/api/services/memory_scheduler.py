@@ -18,6 +18,7 @@ GIB = 1024**3
 PRIORITY = {
     "llm": 1,
     "decision": 1,
+    "lfm3_decision": 1,
     "tts": 2,
     "speech": 3,
     "formatting": 3,

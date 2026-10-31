@@ -393,6 +393,10 @@ export type DecisionPlaygroundResponse = {
  */
 export type DecisionRequest = {
   /**
+   * Model Id
+   */
+  model_id?: 'd1-2b-cpu-f32' | null
+  /**
    * Questions
    */
   questions: Array<ChoiceQuestion | ScoreQuestion | NoulQuestion>

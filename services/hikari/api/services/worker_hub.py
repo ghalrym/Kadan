@@ -79,6 +79,7 @@ CHECKPOINT_WORKERS = {
 }
 
 EXPERIMENTAL_MODELS = {
+    "d1-2b-cpu-f32": ("lfm3_decision", "HIKARI_ENABLE_D1_DECISIONS"),
     "lfm3-1.7b-bf16": ("lfm3_llm", "HIKARI_ENABLE_LFM3_TEXT"),
     "lfm3-vl-2b-bf16": ("lfm3_vision", "HIKARI_ENABLE_LFM3_VISION"),
     "lfm3-audio-2b-bf16": ("lfm3_audio", None),
@@ -309,6 +310,8 @@ class WorkerHub:
             else ModelStoreStatus(models=[])
         )
         visible = set(ModelAssignments().model_dump().values())
+        if os.getenv("HIKARI_ENABLE_D1_DECISIONS", "").lower() in ("1", "true", "yes"):
+            visible.add("d1-2b-cpu-f32")
         snapshot.models = []
         known = set()
         for worker in self.workers.values():
