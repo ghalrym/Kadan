@@ -6,10 +6,12 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <optional>
 #include <vector>
 
 #include "kadan/checkpoint.hpp"
 #include "kadan/float_weights.hpp"
+#include "kadan/whisper_cross_attention.hpp"
 #ifdef KADAN_WHISPER_BLAS
 #include <cblas.h>
 #endif
@@ -278,20 +280,34 @@ struct Whisper::Impl {
         std::size_t n,
         std::size_t heads,
         bool causal,
-        const std::atomic_bool& cancel
+        const std::atomic_bool& cancel,
+        WhisperCrossAttentionCache* cache = nullptr,
+        std::size_t layer = 0
     ) {
         const auto rows = x.size() / n, keys = source.size() / n, width = n / heads;
-        Buffer q(r, x.size()), k(r, source.size()), v(r, source.size()),
-            mixed(r, x.size()), scores(r, keys);
+        Buffer q(r, x.size()), mixed(r, x.size()), scores(r, keys);
         linear(p + ".query", x, q.span(), n, n, cancel);
-        linear(p + ".key", source, k.span(), n, n, cancel, false);
-        linear(p + ".value", source, v.span(), n, n, cancel);
+        std::optional<Buffer> owned_keys, owned_values;
+        WhisperCrossAttention projected;
+        auto project = [&](std::span<float> k, std::span<float> v) {
+            linear(p + ".key", source, k, n, n, cancel, false);
+            linear(p + ".value", source, v, n, n, cancel);
+        };
+        if (cache) {
+            shard->check_unchanged();
+            projected = cache->get(layer, cancel, project);
+        } else {
+            owned_keys.emplace(r, source.size());
+            owned_values.emplace(r, source.size());
+            project(owned_keys->span(), owned_values->span());
+            projected = {owned_keys->span(), owned_values->span()};
+        }
         const float scale = 1 / std::sqrt(float(width));
         if (!(compute
               && compute->attend(
                   q.span(),
-                  k.span(),
-                  v.span(),
+                  projected.keys,
+                  projected.values,
                   rows,
                   keys,
                   heads,
@@ -312,7 +328,7 @@ struct Whisper::Impl {
                         float score = 0;
                         for (std::size_t c = 0; c < width; ++c)
                             score += q.data[row * n + h * width + c]
-                                     * k.data[j * n + h * width + c];
+                                     * projected.keys[j * n + h * width + c];
                         score *= scale;
                         scores.data[j] = score;
                         maximum = std::max(maximum, score);
@@ -327,7 +343,7 @@ struct Whisper::Impl {
                         float value = 0;
                         for (std::size_t j = 0; j < limit; ++j)
                             value += float(scores.data[j] / total)
-                                     * v.data[j * n + h * width + c];
+                                     * projected.values[j * n + h * width + c];
                         mixed.data[row * n + h * width + c] = value;
                     }
                 }
@@ -341,7 +357,9 @@ struct Whisper::Impl {
         std::span<const float> audio,
         std::size_t n,
         std::size_t heads,
-        const std::atomic_bool& cancel
+        const std::atomic_bool& cancel,
+        WhisperCrossAttentionCache* cache = nullptr,
+        std::size_t layer = 0
     ) {
         Buffer normalized(r, x.size()), delta(r, x.size());
         norm(p + ".attn_ln", x, normalized.span(), n, cancel);
@@ -369,7 +387,9 @@ struct Whisper::Impl {
                 n,
                 heads,
                 false,
-                cancel
+                cancel,
+                cache,
+                layer
             );
             for (std::size_t i = 0; i < x.size(); ++i)
                 x[i] += delta.data[i];
@@ -391,7 +411,8 @@ struct Whisper::Impl {
         std::span<const float> audio,
         std::span<float> output,
         const std::atomic_bool& cancel,
-        const Hook& hook
+        const Hook& hook,
+        WhisperCrossAttentionCache* cache = nullptr
     ) {
         require(
             !tokens.empty() && tokens.size() <= d.text_context
@@ -426,7 +447,9 @@ struct Whisper::Impl {
                 audio,
                 d.text_state,
                 d.text_heads,
-                cancel
+                cancel,
+                cache,
+                i
             );
         }
         norm("decoder.ln", x.span(), normalized.span(), d.text_state, cancel);
@@ -648,6 +671,8 @@ std::size_t Whisper::greedy(
     stop(cancel);
     require(bool(model_), "whisper_not_loaded");
     const auto d = model_->d;
+    require(encoded.size() == d.audio_context * d.audio_state, "whisper_input_shape");
+    finite(encoded);
     require(
         !prompt.empty() && !output.empty() && prompt.size() <= d.text_context
             && output.size() <= d.text_context - prompt.size() + 1
@@ -672,8 +697,13 @@ std::size_t Whisper::greedy(
     tokens.reserve(d.text_context);
     tokens.assign(prompt.begin(), prompt.end());
     Buffer logits(*resources_, d.vocabulary);
+    WhisperCrossAttentionCache cross_attention(
+        *resources_, d.text_layers, d.audio_context, d.text_state
+    );
     for (std::size_t i = 0; i < output.size(); ++i) {
-        model_->logits(*resources_, tokens, encoded, logits.span(), cancel, hook);
+        model_->logits(
+            *resources_, tokens, encoded, logits.span(), cancel, hook, &cross_attention
+        );
         for (auto id : suppressed)
             logits.data[id] = -std::numeric_limits<float>::infinity();
         if (i == 0)

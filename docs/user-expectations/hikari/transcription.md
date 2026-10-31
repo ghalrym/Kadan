@@ -10,6 +10,8 @@ Hikari uses Whisper medium and the saved formatting preference. This standalone 
 
 **Cancel** ignores late results while cleanup finishes. Leaving the page also aborts pending work and releases microphone access.
 
+Whisper can reuse intermediate audio data within one transcription. That state is released when the request completes, fails or is cancelled; it is not reused for a later clip. Transcription still needs enough temporary memory, and reuse does not guarantee a fixed response time.
+
 When memory is available, Hikari requests additional GPU space to retain Whisper’s working weights. Smaller granted budgets can still run transcription by streaming weights. Available memory and transfers affect speed; Hikari does not promise a fixed response time or substitute another model to make it fit.
 
 See [Transcription architecture](../../architecture/hikari/worker-speech.md) for audio conversion, model selection and formatting fallback.
