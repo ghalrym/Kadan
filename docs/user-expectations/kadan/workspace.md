@@ -1,6 +1,6 @@
 # Workspace browsing
 
-Kadan provides a browser for the selected agent's content; Tsuchi stores the records. Workspace starts on **Documents**, showing Markdown Spaces and slide decks in a parent/child hierarchy. Memories, personas and conversations stay outside that document hierarchy. **Memories** and **Files** have separate tabs.
+Kadan provides a browser for the selected agent's content; Tsuchi stores the records. Workspace starts on **Documents**, showing Markdown Spaces and slide decks in a parent/child hierarchy. Memories, personas and conversations stay outside that document hierarchy. **Memories** and **Files** have separate tabs. Users can [save an assistant reply](saving-chat-results.md) as a document in this collection.
 
 Users can open a document's subdocuments, follow breadcrumbs to an ancestor, or use **Back to** to return to its parent. Documents with an unavailable parent remain reachable. Search filters the document list without closing the open document or removing its parent navigation. Opening a result loads its available parent trail.
 

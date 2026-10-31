@@ -71,6 +71,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     "./agentRuns": agentRuns,
     "./outbox": outbox,
     "./uuid": { randomUuid: () => "sent-message" },
+    "./SaveChatResult": { default: "SaveChatResult" },
     "./api": {
       agentPath: key => `/agents/${key}`,
       async api(path, body) {
@@ -120,6 +121,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
   render();
   return {
     render, requests, storage,
+    savedResults: () => elements().filter(node => node.type === "SaveChatResult").map(node => node.props),
     retry: () => elements().find(node => node.type === "button" && node.props.children === "Retry").props.onClick(),
     notices: () => elements().filter(node => node.props?.className === "notice").map(node => node.props.children),
     alerts: () => elements().filter(node => node.props?.role === "alert").map(node => node.props.children[0]),
@@ -333,4 +335,18 @@ test("a stale mounted Messages sender cannot replace a continuation from Coding"
   view.composer().onSend(true); await settle(); view.render();
   assert.deepEqual(JSON.parse(view.storage.get(key)), pending);
   assert.equal(view.requests.filter(row => row.body).length, 0);
+});
+
+
+test("only saved assistant replies with text offer saving in the current agent and conversation", async () => {
+  const reply = message("reply", "assistant", "Useful reply");
+  const view = await chat([], { ...chain, messages: [
+    message("user", "user", "Question"), reply,
+    message("empty", "assistant", " "), message("tool", "tool", "Tool result"),
+  ] });
+  const controls = view.savedResults();
+  assert.equal(controls.length, 1);
+  assert.equal(controls[0].agentKey, "guide");
+  assert.equal(controls[0].conversationId, chain.id);
+  assert.equal(controls[0].message, reply);
 });
