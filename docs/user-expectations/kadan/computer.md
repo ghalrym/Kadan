@@ -20,7 +20,7 @@ After a computer replacement, a browser profile left locked by the old instance 
 
 The default computer has 2 CPUs, 4 GiB of memory and no GPU allocation. Advanced users can change Docker resource limits; heavier apps need sufficient host resources and may require extra installation. Changing limits requires a computer restart, interrupting open apps and running work. These limits belong to the computer and do not change Hikari's models or resources.
 
-Agents can use the same computer for [browser, file and command actions](agent-actions.md). Watching or taking control does not enable a separate copy of their environment. Files on that computer are separate from Tsuchi's stored files unless explicitly uploaded.
+Agents can use the same computer for [browser, file and command actions](agent-actions.md). Watching or taking control does not enable a separate copy of their environment. Files on that computer are separate from Tsuchi's stored files unless explicitly [saved into Workspace](file-delivery.md). Agents can also [copy a Workspace file onto the computer](opening-workspace-files.md) without changing the stored original.
 
 A disconnected view offers **Reconnect**. Reconnecting does not undo actions or restart the browser. Some browser failures can require a restart that loses open tabs and page state. A timed-out action may already have happened, so uncertain changes need inspection before retrying.
 
