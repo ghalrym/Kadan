@@ -1,5 +1,7 @@
 # Experimental LFM3 audio worker
 
+The parent worker owns each executor's temporary directory. The child uses it as its Python temporary-file root, keeping ASR utterance WAVs inside that lifetime. After confirmed exit and join, the parent removes the directory before sending a terminal result, including when termination skipped the child's context-manager cleanup. Repeated cancellation still waits for the shielded teardown.
+
 This unmerged draft describes an opt-in trial alongside the current call path. See the [trial expectations and owner acceptance gate](../../user-expectations/hikari/lfm3-audio-trial.md). All audio experiments default to disabled; the trial does not change ordinary call selection.
 
 This optional worker runs the released BF16 [LiquidAI/LFM3-Audio-2B](https://huggingface.co/LiquidAI/LFM3-Audio-2B), pinned to `9d49701c372d6011d900f6abb40c6b296fb706dd`. Its manifest verifies all required model, codec, tokenizer, configuration and custom-code files. The worker uses the experimental transport and Hikari's existing explicit license acknowledgement and download endpoint. It never adds the model to a hardware tier or changes the native speech, transcription, image or video workers.
