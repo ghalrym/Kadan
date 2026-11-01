@@ -24,6 +24,7 @@ class VisionRouteTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_encoded_screenshot_never_enters_queue(self):
         submit = AsyncMock()
         with (
+            patch.object(vision.subscriptions, "active", return_value=None),
             patch.object(vision.inference, "submit", submit),
             self.assertRaises(HTTPException) as error,
         ):
@@ -43,6 +44,7 @@ class VisionRouteTests(unittest.IsolatedAsyncioTestCase):
             return await call
 
         with (
+            patch.object(vision.subscriptions, "active", return_value=None),
             patch.object(vision.inference, "submit", submit),
             patch.object(vision, "infer", await_queue),
         ):
@@ -53,7 +55,7 @@ class VisionRouteTests(unittest.IsolatedAsyncioTestCase):
                 queued.model_dump(exclude_unset=True)["model"], "lfm3-vl-2b-bf16"
             )
             self.assertEqual(response.text, "A dialog is visible.")
-            submit.return_value = {"model": "different-model", "text": "Wrong source"}
+            submit.return_value = {"model": "gpt-6.1-terra", "text": "Wrong source"}
             with self.assertRaises(HTTPException) as error:
                 await vision.describe_screenshot(body, object())
         self.assertEqual(error.exception.status_code, 502)
@@ -86,3 +88,45 @@ class VisionRouteTests(unittest.IsolatedAsyncioTestCase):
     def test_request_rejects_external_image_url(self):
         with self.assertRaises(ValidationError):
             request(image_url="https://example.com/image.png")
+
+    async def test_subscription_vision_bypasses_local_queue(self):
+        from api.pydantic_models.subscriptions import ActiveSubscription
+
+        stream = AsyncMock()
+        stream.model = "gpt-6.1-terra"
+        stream.text.return_value = "A browser window."
+
+        async def await_call(request, call):
+            return await call
+
+        with (
+            patch.object(
+                vision.subscriptions,
+                "active",
+                return_value=ActiveSubscription(
+                    provider="codex", credential='{"tokens":{}}'
+                ),
+            ) as active,
+            patch.object(vision, "SubscriptionVision", return_value=stream),
+            patch.object(vision, "infer", await_call),
+            patch.object(vision.inference, "submit", AsyncMock()) as submit,
+        ):
+            result = await vision.describe_screenshot(request(), object())
+        active.assert_called_once_with("vision")
+        submit.assert_not_called()
+        self.assertEqual(result.model, "gpt-6.1-terra")
+        self.assertEqual(result.text, "A browser window.")
+
+    async def test_missing_selected_credential_fails_without_local_fallback(self):
+        with (
+            patch.object(
+                vision.subscriptions,
+                "active",
+                side_effect=vision.subscriptions.SubscriptionError("Sign in again"),
+            ),
+            patch.object(vision.inference, "submit", AsyncMock()) as submit,
+            self.assertRaises(HTTPException) as error,
+        ):
+            await vision.describe_screenshot(request(), object())
+        self.assertEqual(error.exception.status_code, 409)
+        submit.assert_not_called()

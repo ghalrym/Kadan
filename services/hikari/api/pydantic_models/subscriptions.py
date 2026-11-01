@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 SubscriptionProvider = Literal["claude", "codex"]
 Provider = Literal["local", "claude", "codex"]
-Capability = Literal["language"]
+Capability = Literal["language", "vision"]
 
 SUBSCRIPTION_MODELS: dict[SubscriptionProvider, str] = {
     "claude": "claude-haiku-5-5",
@@ -24,6 +24,7 @@ class CapabilityProviders(BaseModel):
     """Capabilities a subscription may serve; each defaults to its local model."""
 
     language: Provider = "local"
+    vision: Provider = "local"
 
 
 class SubscriptionsResponse(BaseModel):

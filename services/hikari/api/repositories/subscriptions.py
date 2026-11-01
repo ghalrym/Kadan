@@ -47,7 +47,7 @@ def validate_credential(provider: SubscriptionProvider, credential: str) -> str:
             auth = json.loads(credential)
         except ValueError as error:
             raise SubscriptionError(
-                "Paste the full contents of ~/.codex/auth.json."
+                "ChatGPT sign-in returned an unreadable response. Please sign in again."
             ) from error
         if not isinstance(auth, dict) or not isinstance(auth.get("tokens"), dict):
             raise SubscriptionError(

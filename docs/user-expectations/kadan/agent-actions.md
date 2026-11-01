@@ -20,3 +20,5 @@ A separate released BF16 LFM3-VL-2B worker lets the computer assistant ask about
 An interrupted or timed-out action may already have happened. After a runner restart, the assistant resumes its task, but Kadan does not automatically replay an unconfirmed action that could change state; the assistant is told to check before retrying. Stopping a chat response does not stop a computer task already handed over; stop it from the computer view. Stopping a task does not undo actions or guarantee that an already launched external process has stopped.
 
 See [Viewing and controlling the computer](computer.md), [Stopping chat work](stopping-chat-work.md) and [operator responsibility](../security.md).
+
+On this branch, Hikari can serve the same screenshot observation through an independently selected Claude or ChatGPT subscription. That choice needs a connected subscription but no local Vision download. It leaves the assistant's language provider, screenshot capture, observation limits and task cancellation unchanged. Failures return to the assistant without switching providers. This backend behavior and its future Settings interface have not been verified on master.

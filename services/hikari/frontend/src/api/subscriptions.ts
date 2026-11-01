@@ -7,11 +7,17 @@ import {
   startSubscriptionLogin,
   submitSubscriptionLoginCode,
 } from './generated/sdk.gen'
-import type { SubscriptionLogin, SubscriptionsResponse, SubscriptionStatus } from './generated/types.gen'
+import type {
+  CapabilityProviders,
+  SubscriptionLogin,
+  SubscriptionsResponse,
+  SubscriptionStatus,
+} from './generated/types.gen'
 
 export type { SubscriptionLogin, SubscriptionsResponse, SubscriptionStatus }
 export type SubscriptionProvider = SubscriptionStatus['provider']
 export type Provider = 'local' | SubscriptionProvider
+export type SubscriptionCapability = keyof CapabilityProviders
 
 export const providerNames: Record<Provider, string> = { local: 'Local', claude: 'Claude', codex: 'Codex' }
 
@@ -44,8 +50,8 @@ export const fetchSubscriptions = (signal: AbortSignal) => settled(getSubscripti
 export const disconnect = (provider: SubscriptionProvider, signal: AbortSignal) =>
   settled(disconnectSubscription({ path: { provider }, signal }))
 
-export const chooseLanguage = (provider: Provider, signal: AbortSignal) =>
-  settled(chooseCapabilityProvider({ path: { capability: 'language' }, body: { provider }, signal }))
+export const chooseProvider = (capability: SubscriptionCapability, provider: Provider, signal: AbortSignal) =>
+  settled(chooseCapabilityProvider({ path: { capability }, body: { provider }, signal }))
 
 export const startLogin = (provider: SubscriptionProvider, signal: AbortSignal) =>
   settled(startSubscriptionLogin({ path: { provider }, signal }))

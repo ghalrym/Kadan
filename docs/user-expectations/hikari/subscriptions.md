@@ -13,8 +13,16 @@ Claude and Codex stay unavailable on the toggle until the user signs in to them.
 
 A sign-in that is cancelled, rejected or left unfinished for 15 minutes connects nothing, and the user can try again. Hikari keeps the sign-in until the user signs out. Signing out of a subscription that is serving language switches language back to Local.
 
-The choice applies to every language request: Hikari Chat, Kadan agent conversations and direct chat API clients. Kadan treats language as ready while a subscription serves it, even if LFM3 was never downloaded. Vision, voice calls, images, video, speech, transcription, formatting and decisions always stay local.
+The choice applies to every language request: Hikari Chat, Kadan agent conversations and direct chat API clients. Kadan treats language as ready while a subscription serves it, even if LFM3 was never downloaded. Voice calls, images, video, speech, transcription, formatting and decisions stay local. Vision subscription support on this branch is described below.
 
 A subscription request uses the provider's own usage limits and terms. An expired sign-in, exhausted usage or provider outage fails the request with the provider's error; Hikari never falls back to the local model or to the other provider. Cancelling a request stops it, but the provider may still count usage already consumed. Subscription replies are not subject to local memory admission, and conversation prefix reuse does not apply.
 
 The service responsible for this feature is Hikari. See [Subscription providers architecture](../../architecture/hikari/subscriptions.md) for how requests reach each provider.
+
+## Vision subscriptions on this branch
+
+Hikari also supports an independent Vision choice of Local, Claude or ChatGPT, reusing the same connected subscriptions. ChatGPT uses the existing Codex connection. The Vision selector is available in Settings on this branch; this behavior has not been verified on master.
+
+Subscription Vision answers the existing screenshot question without downloading or loading LFM3-VL. It leaves Language unchanged. Local retains its license acknowledgement, download, loading and memory requirements. Signing out resets Vision and any other capability using that subscription to Local; it does not replay an active request. Changes apply to subsequent requests.
+
+Screenshots retain the PNG/JPEG, size and dimension limits of Local. Explicit reply token budgets are supported only by Local; subscription requests with a budget fail with an explanation. An unavailable installation, expired sign-in, usage limit or provider error fails without another provider taking over. Cancellation stops the provider process before request cleanup completes; already consumed usage may still count. Subscription observations use no local model memory admission.
