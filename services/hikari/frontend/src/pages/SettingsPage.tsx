@@ -184,8 +184,8 @@ function ModelRow({ capability, model, index, disabled, onDownload }: Capability
  */
 export default function SettingsPage() {
   const [rows, setRows] = useState<CapabilityModel[] | null>(null)
-  // Capabilities the confirmation dialog will download; null while it is closed.
-  const [pendingIds, setPendingIds] = useState<string[] | null>(null)
+  // Keep the models and licenses shown in the dialog stable while polling.
+  const [confirmation, setConfirmation] = useState<{ models: CapabilityModel[]; focusId: string } | null>(null)
   const [error, setError] = useState('')
   const [actionError, setActionError] = useState('')
   const [needsRefresh, setNeedsRefresh] = useState(false)
@@ -238,7 +238,7 @@ export default function SettingsPage() {
       if (!controller.signal.aborted) {
         setRows(next)
         setNeedsRefresh(false)
-        setPendingIds(null)
+        setConfirmation(null)
         setRefresh((value) => value + 1)
       }
     } catch (failure) {
@@ -255,14 +255,13 @@ export default function SettingsPage() {
   const complete = !!rows && modelsComplete(rows)
   const canDownload = !!rows && modelsCanDownload(rows)
   const resuming = !!rows?.some(({ model }) => downloadState(model) === 'failed')
-  const confirming = pendingIds !== null
-  const pending = rows?.filter((row) => pendingIds?.includes(row.capability.id) && modelsCanDownload([row])) ?? []
+  const confirming = confirmation !== null
+  const pending = confirmation?.models ?? []
   const notices = licenseNotices(pending)
   const pendingBytes = pending.reduce((total, { model }) => total + modelSize(model), 0)
-  const pendingAll = (pendingIds?.length ?? 0) > 1
-  function confirm(ids: string[]) {
+  function confirm(models: CapabilityModel[], focusId: string) {
     setAcknowledged(false)
-    setPendingIds(ids)
+    setConfirmation({ models: models.filter((row) => modelsCanDownload([row])), focusId })
   }
   const downloaded = rows?.filter(({ model }) => model?.status === 'complete').length ?? 0
 
@@ -289,9 +288,9 @@ export default function SettingsPage() {
     <div className="scroll-page">
       {confirming && rows && (
         <Modal
-          title={pendingAll ? 'Download Hikari’s models?' : `Download ${pending[0]?.capability.label ?? 'model'}?`}
-          close={() => !submitting && setPendingIds(null)}
-          returnFocusId={pendingAll ? 'models-download' : `model-download-${pendingIds[0]}`}
+          title={confirmation.focusId === 'models-download' ? 'Download Hikari’s models?' : `Download ${pending[0]?.capability.label ?? 'model'}?`}
+          close={() => !submitting && setConfirmation(null)}
+          returnFocusId={confirmation.focusId}
         >
           <p className="muted">
             This downloads {pending.length} {pending.length === 1 ? 'model' : 'models'}, about {gigabytes(pendingBytes)}.
@@ -313,7 +312,7 @@ export default function SettingsPage() {
           )}
           {errorPanel}
           <div className="models-dialog-actions">
-            <button type="button" className="button" autoFocus disabled={submitting} onClick={() => setPendingIds(null)}>
+            <button type="button" className="button" autoFocus disabled={submitting} onClick={() => setConfirmation(null)}>
               Cancel
             </button>
             <button
@@ -352,9 +351,9 @@ export default function SettingsPage() {
                   type="button"
                   className="button button--primary"
                   disabled={submitting || needsRefresh || !canDownload}
-                  onClick={() => confirm(rows.map(({ capability }) => capability.id))}
+                  onClick={() => confirm(rows, 'models-download')}
                 >
-                  {canDownload ? (resuming ? 'Resume downloads' : 'Download models') : 'Downloading…'}
+                  {canDownload ? (resuming ? 'Resume downloads' : 'Download models') : downloading ? 'Downloading…' : 'Unavailable'}
                 </button>
               )}
             </header>
@@ -366,7 +365,7 @@ export default function SettingsPage() {
                   index={index}
                   {...row}
                   disabled={submitting || needsRefresh}
-                  onDownload={() => confirm([row.capability.id])}
+                  onDownload={() => confirm([row], `model-download-${row.capability.id}`)}
                 />
               ))}
             </ol>

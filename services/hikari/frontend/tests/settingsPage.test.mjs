@@ -79,7 +79,7 @@ async function page(componentName = 'default') {
   const api = module({
     fetchModels: signal => request(reads, signal),
     downloadModels: (models, acknowledged, signal) => {
-      const pending = request(changes, signal, models)
+      const pending = request(changes, signal, Array.from(models))
       changes.at(-1).acknowledged = acknowledged
       return pending
     },
@@ -230,6 +230,38 @@ test('the remaining models can start while another download is active', async ()
   await view.click('Download models')
   await view.click('Download', modal(view.tree))
   assert.deepEqual(view.changes[0].models.map(row => row.capability.id), [capabilities[1].id])
+  view.unmount()
+})
+
+test('polling cannot change the batch or licenses after confirmation opens', async () => {
+  const view = await page()
+  const initial = rows()
+  initial[1].model.status = 'downloading'
+  view.reads[0].resolve(initial)
+  await view.flush()
+  await view.click('Download models')
+  await acknowledge(view)
+  const updated = rows()
+  updated[0].model.license_notice = 'Changed license'
+  updated[1].model.status = 'failed'
+  updated[1].model.license_notice = 'Another license'
+  view.reads.at(-1).resolve(updated)
+  await view.flush()
+  assert.match(content(modal(view.tree)), /Review this license/)
+  assert.doesNotMatch(content(modal(view.tree)), /Changed license|Another license/)
+  await view.click('Accept and download', modal(view.tree))
+  assert.deepEqual(view.changes[0].models.map(row => row.capability.id), [capabilities[0].id])
+  view.unmount()
+})
+
+test('an unavailable remaining model does not claim to be downloading', async () => {
+  const view = await page()
+  const models = rows('complete')
+  models[1].model = null
+  view.reads[0].resolve(models)
+  await view.flush()
+  assert.equal(button(view.tree, 'Unavailable').props.disabled, true)
+  assert.equal(button(view.tree, 'Downloading…'), undefined)
   view.unmount()
 })
 
