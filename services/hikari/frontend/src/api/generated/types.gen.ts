@@ -85,6 +85,10 @@ export type CapabilityProviderRequest = {
  */
 export type CapabilityProviders = {
   /**
+   * Image
+   */
+  image?: 'local' | 'codex'
+  /**
    * Language
    */
   language?: 'local' | 'claude' | 'codex'
@@ -1768,6 +1772,12 @@ export type ApiRoutesV1ImagesGenerationsImageRequest = {
    */
   prompt: string
   /**
+   * Provider
+   *
+   * Omit to use the image provider in Settings. Local explicitly preserves native generation, including pet stages.
+   */
+  provider?: 'local' | null
+  /**
    * Seed
    */
   seed?: number | null
@@ -2392,7 +2402,7 @@ export type ChooseCapabilityProviderData = {
     /**
      * Capability
      */
-    capability: 'language'
+    capability: 'language' | 'image'
   }
   query?: never
   url: '/v1/subscriptions/capabilities/{capability}'

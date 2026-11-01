@@ -18,3 +18,7 @@ The choice applies to every language request: Hikari Chat, Kadan agent conversat
 A subscription request uses the provider's own usage limits and terms. An expired sign-in, exhausted usage or provider outage fails the request with the provider's error; Hikari never falls back to the local model or to the other provider. Cancelling a request stops it, but the provider may still count usage already consumed. Subscription replies are not subject to local memory admission, and conversation prefix reuse does not apply.
 
 The service responsible for this feature is Hikari. See [Subscription providers architecture](../../architecture/hikari/subscriptions.md) for how requests reach each provider.
+
+## Image provider backend on this branch
+
+The subscription-image branch adds an independent Local or ChatGPT choice in Settings for image generation using the existing Codex connection. Claude cannot serve images. Signing out resets both language and image generation when they use that connection. Source and reference editing, pet creation and pet repair stay local. Other capabilities are unchanged. Owner validation is pending, and master behavior has not been verified. See [image generation](image-generation.md) for supported options and limitations.

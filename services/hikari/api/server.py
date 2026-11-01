@@ -14,8 +14,8 @@ from api.routes.v1 import (
     settings,
     subscriptions,
     videos,
-    workers,
     vision,
+    workers,
 )
 from api.routes.v1.audio import calls, speech, transcriptions
 from api.routes.v1.chat import completions, messages
@@ -24,6 +24,7 @@ from api.routes.v1.images import generations as image_generations
 from api.routes.v1.images import requests as image_requests
 from api.routes.v1.videos import generations as video_generations
 from api.services.inference import inference
+from api.services.subscription_images import image_subscriptions
 from api.services.subscription_login import logins
 from api.services.telemetry import TelemetryMiddleware
 
@@ -35,6 +36,7 @@ async def lifespan(app: FastAPI):
         cleanup.push_async_callback(shutdown, configure("hikari-api"))
         cleanup.push_async_callback(inference.close)
         cleanup.push_async_callback(logins.close)
+        cleanup.push_async_callback(image_subscriptions.close)
         await inference.start()
         yield
 

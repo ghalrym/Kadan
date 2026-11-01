@@ -286,6 +286,9 @@ class PetJobs(PetClient):
             body["model_id"] = model_id
         if seed is not None:
             body["seed"] = seed
+        if source is None:
+            # Pet stages depend on local seeds and reference conditioning.
+            body["provider"] = "local"
         if source is not None:
             body.update(
                 image="data:image/png;base64," + base64.b64encode(source).decode(),

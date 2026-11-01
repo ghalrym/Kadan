@@ -20,6 +20,10 @@ class ImageRequestIdentityTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(generations, "infer", side_effect=infer),
+            patch(
+                "api.services.subscription_images.subscriptions.active",
+                return_value=None,
+            ),
             patch.object(
                 generations.inference, "submit", new=AsyncMock(return_value=result)
             ) as submit,

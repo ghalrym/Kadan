@@ -88,6 +88,8 @@ def disconnect(session: Session, provider: SubscriptionProvider) -> None:
 
 
 def choose(session: Session, capability: Capability, provider: Provider) -> None:
+    if capability == "image" and provider == "claude":
+        raise SubscriptionError("Images support Local or ChatGPT only.")
     if provider != "local" and session.get(Subscription, provider) is None:
         raise SubscriptionError(f"Connect your {provider.title()} subscription first.")
     row = session.get(CapabilityProvider, capability)
