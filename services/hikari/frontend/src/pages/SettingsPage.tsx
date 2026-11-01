@@ -123,25 +123,17 @@ function StorageBar({ rows }: { rows: CapabilityModel[] }) {
   )
 }
 
-function ModelRow({ capability, model, selected, disabled, onSelect }: CapabilityModel & {
-  selected: boolean
+function ModelRow({ capability, model, index, disabled, onDownload }: CapabilityModel & {
+  index: number
   disabled: boolean
-  onSelect: (selected: boolean) => void
+  onDownload: () => void
 }) {
   const state = downloadState(model)
   const size = modelSize(model)
   const active = state === 'queued' || state === 'downloading'
   return (
     <li className={`model-row model-row--${state} tone-${capability.tone}`}>
-      <label className="model-row-choice">
-        <input
-          type="checkbox"
-          aria-label={`Select ${capability.label} for download`}
-          checked={selected}
-          disabled={disabled}
-          onChange={(event) => onSelect(event.target.checked)}
-        />
-      </label>
+      <span className="model-row-index mono faint">{String(index + 1).padStart(2, '0')}</span>
       <span className="model-row-swatch" aria-hidden="true" />
       <span className="model-row-label">
         <span className="model-row-capability">{capability.label}</span>
@@ -152,10 +144,26 @@ function ModelRow({ capability, model, selected, disabled, onSelect }: Capabilit
       <span className="mono faint model-row-size">
         {model && (active && size ? `${gigabytes(model.downloaded_bytes)} / ${downloadSize(model)}` : downloadSize(model))}
       </span>
-      <span className="mono model-row-status">
-        <span className="status-dot" aria-hidden="true" />
-        {stateLabels[state]}
-      </span>
+      {state === 'not_downloaded' || state === 'failed' ? (
+        <span className="mono model-row-status">
+          {state === 'failed' && <span className="model-row-failed">{stateLabels.failed}</span>}
+          <button
+            id={`model-download-${capability.id}`}
+            type="button"
+            className="button model-row-download"
+            aria-label={`${state === 'failed' ? 'Retry' : 'Download'} ${capability.label}`}
+            disabled={disabled}
+            onClick={onDownload}
+          >
+            {state === 'failed' ? 'Retry' : 'Download'}
+          </button>
+        </span>
+      ) : (
+        <span className="mono model-row-status">
+          <span className="status-dot" aria-hidden="true" />
+          {stateLabels[state]}
+        </span>
+      )}
       {/* A queued download is indeterminate until the worker reports its size. */}
       {model && active && (
         <progress
@@ -176,11 +184,11 @@ function ModelRow({ capability, model, selected, disabled, onSelect }: Capabilit
  */
 export default function SettingsPage() {
   const [rows, setRows] = useState<CapabilityModel[] | null>(null)
-  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  // Keep the models and licenses shown in the dialog stable while polling.
+  const [confirmation, setConfirmation] = useState<{ models: CapabilityModel[]; focusId: string } | null>(null)
   const [error, setError] = useState('')
   const [actionError, setActionError] = useState('')
   const [needsRefresh, setNeedsRefresh] = useState(false)
-  const [confirming, setConfirming] = useState(false)
   const [acknowledged, setAcknowledged] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [refresh, setRefresh] = useState(0)
@@ -229,9 +237,8 @@ export default function SettingsPage() {
       const next = await work(AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]))
       if (!controller.signal.aborted) {
         setRows(next)
-        setSelectedIds([])
         setNeedsRefresh(false)
-        setConfirming(false)
+        setConfirmation(null)
         setRefresh((value) => value + 1)
       }
     } catch (failure) {
@@ -246,9 +253,16 @@ export default function SettingsPage() {
   }
 
   const complete = !!rows && modelsComplete(rows)
-  const selected = rows?.filter((row) => selectedIds.includes(row.capability.id) && modelsCanDownload([row])) ?? []
-  const notices = licenseNotices(selected)
-  const selectedBytes = selected.reduce((total, { model }) => total + modelSize(model), 0)
+  const canDownload = !!rows && modelsCanDownload(rows)
+  const resuming = !!rows?.some(({ model }) => downloadState(model) === 'failed')
+  const confirming = confirmation !== null
+  const pending = confirmation?.models ?? []
+  const notices = licenseNotices(pending)
+  const pendingBytes = pending.reduce((total, { model }) => total + modelSize(model), 0)
+  function confirm(models: CapabilityModel[], focusId: string) {
+    setAcknowledged(false)
+    setConfirmation({ models: models.filter((row) => modelsCanDownload([row])), focusId })
+  }
   const downloaded = rows?.filter(({ model }) => model?.status === 'complete').length ?? 0
 
   const errorPanel = (actionError || error) && (
@@ -274,12 +288,12 @@ export default function SettingsPage() {
     <div className="scroll-page">
       {confirming && rows && (
         <Modal
-          title="Download selected models?"
-          close={() => !submitting && setConfirming(false)}
-          returnFocusId="models-download"
+          title={confirmation.focusId === 'models-download' ? 'Download Hikari’s models?' : `Download ${pending[0]?.capability.label ?? 'model'}?`}
+          close={() => !submitting && setConfirmation(null)}
+          returnFocusId={confirmation.focusId}
         >
           <p className="muted">
-            This downloads {selected.length} {selected.length === 1 ? 'model' : 'models'}, about {gigabytes(selectedBytes)}.
+            This downloads {pending.length} {pending.length === 1 ? 'model' : 'models'}, about {gigabytes(pendingBytes)}.
           </p>
           {notices.map((model) => (
             <p key={model.id} className="models-dialog-notice">
@@ -298,14 +312,14 @@ export default function SettingsPage() {
           )}
           {errorPanel}
           <div className="models-dialog-actions">
-            <button type="button" className="button" autoFocus disabled={submitting} onClick={() => setConfirming(false)}>
+            <button type="button" className="button" autoFocus disabled={submitting} onClick={() => setConfirmation(null)}>
               Cancel
             </button>
             <button
               type="button"
               className="button button--primary"
-              disabled={submitting || needsRefresh || selected.length === 0 || (notices.length > 0 && !acknowledged)}
-              onClick={() => void run((signal) => downloadModels(selected, true, signal), 'Could not start downloads')}
+              disabled={submitting || needsRefresh || pending.length === 0 || (notices.length > 0 && !acknowledged)}
+              onClick={() => void run((signal) => downloadModels(pending, true, signal), 'Could not start downloads')}
             >
               {submitting ? 'Starting…' : notices.length ? 'Accept and download' : 'Download'}
             </button>
@@ -336,24 +350,22 @@ export default function SettingsPage() {
                   id="models-download"
                   type="button"
                   className="button button--primary"
-                  disabled={submitting || needsRefresh || selected.length === 0}
-                  onClick={() => { setAcknowledged(false); setConfirming(true) }}
+                  disabled={submitting || needsRefresh || !canDownload}
+                  onClick={() => confirm(rows, 'models-download')}
                 >
-                  {submitting ? 'Starting…' : selected.length ? `Download selected (${selected.length})` : 'Download selected'}
+                  {canDownload ? (resuming ? 'Resume downloads' : 'Download models') : downloading ? 'Downloading…' : 'Unavailable'}
                 </button>
               )}
             </header>
             <StorageBar rows={rows} />
             <ol className="model-list">
-              {rows.map((row) => (
+              {rows.map((row, index) => (
                 <ModelRow
                   key={row.capability.id}
+                  index={index}
                   {...row}
-                  selected={selected.some((item) => item.capability.id === row.capability.id)}
-                  disabled={submitting || confirming || needsRefresh || !modelsCanDownload([row])}
-                  onSelect={(checked) => setSelectedIds((ids) => checked
-                    ? [...ids, row.capability.id]
-                    : ids.filter((id) => id !== row.capability.id))}
+                  disabled={submitting || needsRefresh}
+                  onDownload={() => confirm([row], `model-download-${row.capability.id}`)}
                 />
               ))}
             </ol>
