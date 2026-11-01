@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import struct
+import threading
 import unittest
 import zlib
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -248,13 +249,40 @@ class ImageTests(unittest.IsolatedAsyncioTestCase):
                 AsyncMock(return_value="local"),
             ) as submit,
             patch(
-                "api.routes.v1.images.generations.image_subscriptions.generate",
-                AsyncMock(),
+                "api.services.subscription_images.subscriptions.active"
             ) as subscription,
         ):
             self.assertEqual(await create_image(body, None), "local")
         submit.assert_awaited_once()
         subscription.assert_not_called()
+
+    async def test_cancellation_during_provider_lookup_prevents_generation(self):
+        registry = ImageSubscriptions()
+        started = threading.Event()
+        release = threading.Event()
+
+        def lookup(_capability):
+            started.set()
+            release.wait()
+            return ActiveSubscription(provider="codex", credential="{}")
+
+        local = AsyncMock()
+        with (
+            patch("api.services.subscription_images.subscriptions.active", lookup),
+            patch.object(SubscriptionImages, "generate", new=AsyncMock()) as generate,
+        ):
+            task = asyncio.create_task(
+                registry.generate(ImageRequest(prompt="fox"), "job", local)
+            )
+            await asyncio.to_thread(started.wait)
+            try:
+                self.assertTrue(await registry.cancel("job"))
+            finally:
+                release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            generate.assert_not_awaited()
+            local.assert_not_awaited()
 
     async def test_subscription_route_bypasses_native_admission(self):
         async def infer(request, call):

@@ -65,11 +65,7 @@ async def create_image(
     """Generate through the selected provider, or explicitly use Local."""
     job_id = x_kadan_request_id.hex if x_kadan_request_id else uuid4().hex
 
-    async def generate():
-        if body.provider != "local":
-            result = await image_subscriptions.generate(body, job_id)
-            if result is not None:
-                return result
+    async def local():
         return await inference.submit(
             body,
             feature="image",
@@ -77,4 +73,4 @@ async def create_image(
             job_id=job_id,
         )
 
-    return await infer(request, generate())
+    return await infer(request, image_subscriptions.generate(body, job_id, local))

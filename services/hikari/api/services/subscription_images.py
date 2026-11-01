@@ -291,20 +291,22 @@ class ImageSubscriptions:
     def __init__(self):
         self.requests = {}
 
-    async def generate(self, body, job_id):
-        try:
-            subscription = await asyncio.to_thread(subscriptions.active, "image")
-        except subscriptions.SubscriptionError as error:
-            raise InferenceFailure(str(error), 409) from error
-        if subscription is None:
-            return None
-        if subscription.provider != "codex":
-            raise InferenceFailure("This subscription cannot generate images.")
+    async def generate(self, body, job_id, local):
         if job_id in self.requests:
             raise InferenceFailure("This image request is already active.", 409)
         task = asyncio.current_task()
         self.requests[job_id] = task
         try:
+            if body.provider == "local":
+                return await local()
+            try:
+                subscription = await asyncio.to_thread(subscriptions.active, "image")
+            except subscriptions.SubscriptionError as error:
+                raise InferenceFailure(str(error), 409) from error
+            if subscription is None:
+                return await local()
+            if subscription.provider != "codex":
+                raise InferenceFailure("This subscription cannot generate images.")
             return await SubscriptionImages(subscription, body).generate()
         finally:
             self.requests.pop(job_id, None)
