@@ -3,6 +3,11 @@
 FROM python:3.12.15-slim-bookworm
 RUN python -m pip install --no-cache-dir --upgrade "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
 WORKDIR /app
+# Subscription language providers run through the user's own Claude Code and Codex CLIs.
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g @anthropic-ai/claude-code@2.1.296 @openai/codex@0.163.0 \
+    && npm cache clean --force
 COPY --from=tracing . /opt/kadan-tracing
 RUN pip install --no-cache-dir /opt/kadan-tracing
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1

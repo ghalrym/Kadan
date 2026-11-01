@@ -21,9 +21,11 @@ from api.pydantic_models.chat import (
     lfm3_messages,
     require_lfm3_tools,
 )
+from api.repositories import subscriptions
 from api.services.inference import inference
 from api.services.inference_http import infer
 from api.services.inference_errors import InferenceFailure
+from api.services.subscription_inference import SubscriptionStream
 
 router = APIRouter(prefix="/v1/chat/completions", tags=["Chat"])
 
@@ -229,6 +231,12 @@ async def create_completion(body: CompletionRequest, request: Request):
         "created": int(time.time()),
         "model": body.model or inference.model_id or "unknown",
     }
+    try:
+        subscription = await anyio.to_thread.run_sync(subscriptions.active, "language")
+    except subscriptions.SubscriptionError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if subscription is not None:
+        return await subscription_completion(body, request, subscription, identity)
     if body.stream:
         try:
             stream, model = await infer(request, inference.open_chat_stream(body))
@@ -260,4 +268,22 @@ async def create_completion(body: CompletionRequest, request: Request):
             )
         ],
         cache=result.get("cache"),
+    )
+
+
+async def subscription_completion(body, request, subscription, identity):
+    """Serve the turn from the user's subscription in the same response shapes."""
+    stream = SubscriptionStream(subscription, body)
+    identity["model"] = stream.model
+    if body.stream:
+        try:
+            await stream.start()
+        except InferenceFailure as exc:
+            raise HTTPException(exc.status_code, str(exc)) from exc
+        return OwnedStreamResponse(chunks(stream, identity), stream)
+    text = await infer(request, stream.text())
+    return CompletionResponse(
+        **identity,
+        message=CompletionOutputMessage(role="assistant", text=text),
+        choices=[CompletionChoice(message=AssistantMessage(content=text))],
     )

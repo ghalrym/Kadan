@@ -2,7 +2,7 @@
 
 Hikari's Chat page lets users try text inference directly. Its conversation and draft exist only in the open page and disappear on navigation or reload. It does not run agent tools or save a Kadan conversation.
 
-Enter sends a message; Shift+Enter inserts a newline. One reply runs at a time using released BF16 LFM3-1.7B. Review its license and download it in Hikari Settings before chatting. An unavailable worker or incomplete download produces an error without choosing another model. Retry and New chat keep the same model. Loading can delay replies.
+Enter sends a message; Shift+Enter inserts a newline. One reply runs at a time using released BF16 LFM3-1.7B, or the [subscription](subscriptions.md) selected for language in Settings. Review its license and download it in Hikari Settings before chatting locally. An unavailable worker or incomplete download produces an error without choosing another model. Retry and New chat keep the same model. Loading can delay replies.
 
 The page shows text as it arrives. Conversation capacity depends on the model's context setting, not the displayed character count. Requests that do not fit must fail rather than silently drop old messages. A reply can also stop at its output limit.
 

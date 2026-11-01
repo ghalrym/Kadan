@@ -10,6 +10,7 @@ from api.orm_models.decisions import (
 from api.orm_models.media import GeneratedSpeech, ImageSet, VideoJob
 from api.orm_models.requests import RequestRecord
 from api.orm_models.settings import ModelSetting
+from api.orm_models.subscriptions import CapabilityProvider, Subscription
 
 __all__ = [
     "Base",
@@ -24,4 +25,6 @@ __all__ = [
     "VideoJob",
     "RequestRecord",
     "ModelSetting",
+    "CapabilityProvider",
+    "Subscription",
 ]

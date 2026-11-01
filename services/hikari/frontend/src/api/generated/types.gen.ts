@@ -69,6 +69,28 @@ export type CancellationResponse = {
 }
 
 /**
+ * CapabilityProviderRequest
+ */
+export type CapabilityProviderRequest = {
+  /**
+   * Provider
+   */
+  provider: 'local' | 'claude' | 'codex'
+}
+
+/**
+ * CapabilityProviders
+ *
+ * Capabilities a subscription may serve; each defaults to its local model.
+ */
+export type CapabilityProviders = {
+  /**
+   * Language
+   */
+  language?: 'local' | 'claude' | 'codex'
+}
+
+/**
  * ChatMessage
  */
 export type ChatMessage = {
@@ -1337,6 +1359,81 @@ export type SpeechUnavailable = {
 }
 
 /**
+ * SubscriptionLogin
+ *
+ * A web sign-in in progress; `url` opens the provider's sign-in page.
+ */
+export type SubscriptionLogin = {
+  /**
+   * Error
+   */
+  error?: string | null
+  /**
+   * Needs Code
+   *
+   * Claude: its sign-in page shows a code to send back to Hikari.
+   */
+  needs_code: boolean
+  /**
+   * Provider
+   */
+  provider: 'claude' | 'codex'
+  /**
+   * Status
+   */
+  status: 'starting' | 'waiting' | 'verifying' | 'complete' | 'failed'
+  /**
+   * Url
+   */
+  url?: string | null
+  /**
+   * User Code
+   *
+   * Codex: the one-time code to enter on its sign-in page.
+   */
+  user_code?: string | null
+}
+
+/**
+ * SubscriptionLoginCode
+ */
+export type SubscriptionLoginCode = {
+  /**
+   * Code
+   */
+  code: string
+}
+
+/**
+ * SubscriptionStatus
+ */
+export type SubscriptionStatus = {
+  /**
+   * Connected
+   */
+  connected: boolean
+  /**
+   * Model
+   */
+  model: string
+  /**
+   * Provider
+   */
+  provider: 'claude' | 'codex'
+}
+
+/**
+ * SubscriptionsResponse
+ */
+export type SubscriptionsResponse = {
+  capabilities: CapabilityProviders
+  /**
+   * Subscriptions
+   */
+  subscriptions: Array<SubscriptionStatus>
+}
+
+/**
  * TranscriptionRequest
  */
 export type TranscriptionRequest = {
@@ -2271,6 +2368,215 @@ export type UpdateSettingsResponses = {
 
 export type UpdateSettingsResponse =
   UpdateSettingsResponses[keyof UpdateSettingsResponses]
+
+export type GetSubscriptionsData = {
+  body?: never
+  path?: never
+  query?: never
+  url: '/v1/subscriptions'
+}
+
+export type GetSubscriptionsResponses = {
+  /**
+   * Successful Response
+   */
+  200: SubscriptionsResponse
+}
+
+export type GetSubscriptionsResponse =
+  GetSubscriptionsResponses[keyof GetSubscriptionsResponses]
+
+export type ChooseCapabilityProviderData = {
+  body: CapabilityProviderRequest
+  path: {
+    /**
+     * Capability
+     */
+    capability: 'language'
+  }
+  query?: never
+  url: '/v1/subscriptions/capabilities/{capability}'
+}
+
+export type ChooseCapabilityProviderErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type ChooseCapabilityProviderError =
+  ChooseCapabilityProviderErrors[keyof ChooseCapabilityProviderErrors]
+
+export type ChooseCapabilityProviderResponses = {
+  /**
+   * Successful Response
+   */
+  200: SubscriptionsResponse
+}
+
+export type ChooseCapabilityProviderResponse =
+  ChooseCapabilityProviderResponses[keyof ChooseCapabilityProviderResponses]
+
+export type DisconnectSubscriptionData = {
+  body?: never
+  path: {
+    /**
+     * Provider
+     */
+    provider: 'claude' | 'codex'
+  }
+  query?: never
+  url: '/v1/subscriptions/{provider}'
+}
+
+export type DisconnectSubscriptionErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type DisconnectSubscriptionError =
+  DisconnectSubscriptionErrors[keyof DisconnectSubscriptionErrors]
+
+export type DisconnectSubscriptionResponses = {
+  /**
+   * Successful Response
+   */
+  200: SubscriptionsResponse
+}
+
+export type DisconnectSubscriptionResponse =
+  DisconnectSubscriptionResponses[keyof DisconnectSubscriptionResponses]
+
+export type CancelSubscriptionLoginData = {
+  body?: never
+  path: {
+    /**
+     * Provider
+     */
+    provider: 'claude' | 'codex'
+  }
+  query?: never
+  url: '/v1/subscriptions/{provider}/login'
+}
+
+export type CancelSubscriptionLoginErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type CancelSubscriptionLoginError =
+  CancelSubscriptionLoginErrors[keyof CancelSubscriptionLoginErrors]
+
+export type CancelSubscriptionLoginResponses = {
+  /**
+   * Successful Response
+   */
+  204: void
+}
+
+export type CancelSubscriptionLoginResponse =
+  CancelSubscriptionLoginResponses[keyof CancelSubscriptionLoginResponses]
+
+export type GetSubscriptionLoginData = {
+  body?: never
+  path: {
+    /**
+     * Provider
+     */
+    provider: 'claude' | 'codex'
+  }
+  query?: never
+  url: '/v1/subscriptions/{provider}/login'
+}
+
+export type GetSubscriptionLoginErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type GetSubscriptionLoginError =
+  GetSubscriptionLoginErrors[keyof GetSubscriptionLoginErrors]
+
+export type GetSubscriptionLoginResponses = {
+  /**
+   * Successful Response
+   */
+  200: SubscriptionLogin
+}
+
+export type GetSubscriptionLoginResponse =
+  GetSubscriptionLoginResponses[keyof GetSubscriptionLoginResponses]
+
+export type StartSubscriptionLoginData = {
+  body?: never
+  path: {
+    /**
+     * Provider
+     */
+    provider: 'claude' | 'codex'
+  }
+  query?: never
+  url: '/v1/subscriptions/{provider}/login'
+}
+
+export type StartSubscriptionLoginErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type StartSubscriptionLoginError =
+  StartSubscriptionLoginErrors[keyof StartSubscriptionLoginErrors]
+
+export type StartSubscriptionLoginResponses = {
+  /**
+   * Successful Response
+   */
+  200: SubscriptionLogin
+}
+
+export type StartSubscriptionLoginResponse =
+  StartSubscriptionLoginResponses[keyof StartSubscriptionLoginResponses]
+
+export type SubmitSubscriptionLoginCodeData = {
+  body: SubscriptionLoginCode
+  path: {
+    /**
+     * Provider
+     */
+    provider: 'claude' | 'codex'
+  }
+  query?: never
+  url: '/v1/subscriptions/{provider}/login/code'
+}
+
+export type SubmitSubscriptionLoginCodeErrors = {
+  /**
+   * Validation Error
+   */
+  422: HttpValidationError
+}
+
+export type SubmitSubscriptionLoginCodeError =
+  SubmitSubscriptionLoginCodeErrors[keyof SubmitSubscriptionLoginCodeErrors]
+
+export type SubmitSubscriptionLoginCodeResponses = {
+  /**
+   * Successful Response
+   */
+  200: SubscriptionLogin
+}
+
+export type SubmitSubscriptionLoginCodeResponse =
+  SubmitSubscriptionLoginCodeResponses[keyof SubmitSubscriptionLoginCodeResponses]
 
 export type ListVideosData = {
   body?: never

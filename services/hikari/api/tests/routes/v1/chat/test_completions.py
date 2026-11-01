@@ -81,6 +81,13 @@ class CompletionRequestTests(unittest.TestCase):
 
 
 class CompletionResponseTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        local = patch(
+            "api.routes.v1.chat.completions.subscriptions.active", return_value=None
+        )
+        local.start()
+        self.addCleanup(local.stop)
+
     async def receive(self):
         await asyncio.Future()
 
@@ -217,3 +224,51 @@ class CompletionResponseTests(unittest.IsolatedAsyncioTestCase):
                         for event in events[:-1]
                     )
                 )
+
+
+class SubscriptionCompletionTests(unittest.IsolatedAsyncioTestCase):
+    async def receive(self):
+        await asyncio.Future()
+
+    async def test_selected_subscription_replaces_the_local_model(self):
+        from api.pydantic_models.subscriptions import ActiveSubscription
+
+        class Stream:
+            model = "claude-haiku-5-5"
+
+            def __init__(self, subscription, body):
+                self.subscription = subscription
+
+            async def text(self):
+                return "<tool_call>\n<function=finish>\n</function>\n</tool_call>"
+
+        request = Request({"type": "http"}, receive=self.receive)
+        body = CompletionRequest(messages=[{"role": "user", "content": "Hello"}])
+        with (
+            patch(
+                "api.routes.v1.chat.completions.subscriptions.active",
+                return_value=ActiveSubscription(provider="claude", credential="t"),
+            ),
+            patch("api.routes.v1.chat.completions.SubscriptionStream", Stream),
+            patch("api.routes.v1.chat.completions.inference.submit") as submit,
+        ):
+            response = (await create_completion(body, request)).model_dump()
+        submit.assert_not_called()
+        self.assertEqual(response["model"], "claude-haiku-5-5")
+        self.assertIn("<function=finish>", response["choices"][0]["message"]["content"])
+        self.assertEqual(response["choices"][0]["finish_reason"], "stop")
+
+    async def test_unconnected_selection_is_a_conflict(self):
+        from api.repositories.subscriptions import SubscriptionError
+
+        request = Request({"type": "http"}, receive=self.receive)
+        body = CompletionRequest(messages=[{"role": "user", "content": "Hello"}])
+        with (
+            patch(
+                "api.routes.v1.chat.completions.subscriptions.active",
+                side_effect=SubscriptionError("not connected"),
+            ),
+            self.assertRaises(HTTPException) as error,
+        ):
+            await create_completion(body, request)
+        self.assertEqual(error.exception.status_code, 409)

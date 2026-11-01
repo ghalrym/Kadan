@@ -74,3 +74,28 @@
 .models-alert { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .models-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
 .models-dialog-actions .button { padding: 9px 14px; font-size: 13px; }
+
+/* Bring-your-own subscriptions; each capability toggles between local and a signed-in provider. */
+.subscriptions-panel { overflow: visible; }
+.subscriptions-error { margin: 0 22px 12px; font-size: 12.5px; overflow-wrap: anywhere; }
+.subscription-capability { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 22px; border-top: 1px solid var(--border); }
+.subscription-capability .segments > button:disabled { opacity: 0.45; cursor: default; }
+.subscription-list { margin: 0; padding: 0 0 8px; list-style: none; }
+.subscription-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; column-gap: 14px; padding: 12px 22px; border-top: 1px solid var(--border); }
+.subscription-name { font-size: 13.5px; font-weight: 500; }
+.subscription-status { display: inline-flex; align-items: center; gap: 7px; color: var(--faint); }
+.subscription-status--connected { color: var(--success); }
+.subscription-actions { display: flex; gap: 8px; }
+.subscription-actions .button { padding: 7px 12px; font-size: 12.5px; }
+.subscription-login { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 10px; margin-top: 12px; font-size: 13px; line-height: 1.55; }
+.subscription-steps { display: flex; flex-direction: column; gap: 12px; margin: 0; padding-left: 20px; }
+.subscription-steps li { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.subscription-steps .input { width: 100%; }
+.subscription-code { font-size: 15px; letter-spacing: 0.08em; }
+.subscription-login .models-dialog-actions { margin-top: 0; }
+
+@media (max-width: 640px) {
+  .subscription-capability { flex-direction: column; align-items: stretch; }
+  .subscription-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 8px; }
+  .subscription-actions { grid-column: 1 / -1; }
+}

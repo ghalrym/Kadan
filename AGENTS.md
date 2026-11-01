@@ -1,5 +1,14 @@
 # Agent Directions
 
+## Users are not technical
+
+Assume Kadan's users have no technical background. Every user-facing flow must be completable entirely in the web UI.
+
+- Never ask users to run terminal commands, edit or copy files, find paths such as `~/.codex`, or set environment variables.
+- Never expect users to understand Docker, containers, images, volumes, ports or rebuilds, and never mention them in UI text or user expectations.
+- Sign-ins use a link or button in the UI. When a capability only exists behind a CLI, the service drives that CLI and the UI shows only what the user must do, such as opening a link or entering a code.
+- Use plain language in UI text and error messages. Explain what to do next, not how the system works.
+
 ## Documentation
 
 Use documentation sparingly. Do not narrate code paths or document routine coding patterns.

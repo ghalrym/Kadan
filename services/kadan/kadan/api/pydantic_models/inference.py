@@ -20,6 +20,14 @@ class HikariModels(BaseModel):
     models: list[Checkpoint]
 
 
+class HikariCapabilityProviders(BaseModel):
+    language: Literal["local", "claude", "codex"] = "local"
+
+
+class HikariSubscriptions(BaseModel):
+    capabilities: HikariCapabilityProviders
+
+
 class HikariModelLifecycle(BaseModel):
     state: Literal["unloaded", "loading", "ready", "offloaded", "unloading", "error"]
     model_id: str | None = None
