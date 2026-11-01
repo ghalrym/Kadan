@@ -182,3 +182,7 @@ TF32 remains disabled for FP32 matrix multiplication and cuDNN operations during
 ATen generation, as does BF16 reduced-precision reduction. This consolidation does not change the accepted
 precision policy, sampling or model operators. New deployments and GPU validation
 remain separate owner-coordinated actions.
+
+## Subscription generation branch
+
+On this branch, generation can be routed before native submission to the [Codex subscription image backend](subscriptions.md#image-generation-backend-on-this-branch). Local generation, source/reference editing, pet stages, and the shared native image/video runtime retain the contracts above. The subscription backend does not enter worker scheduling, download checks or physical memory admission. UI integration and owner validation remain pending; this does not establish behavior on master.

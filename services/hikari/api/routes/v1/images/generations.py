@@ -1,5 +1,5 @@
 from typing import Annotated, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Header, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -8,12 +8,18 @@ from api.pydantic_models.inference_task import ImageModel
 from api.pydantic_models.media import ImageSet
 from api.services.inference import inference
 from api.services.inference_http import infer
+from api.services.subscription_images import image_subscriptions
 
 router = APIRouter(prefix="/v1/images/generations", tags=["Images"])
 
 
 class ImageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    provider: Literal["local"] | None = Field(
+        default=None,
+        exclude=True,
+        description="Omit to use the image provider in Settings. Local explicitly preserves native generation, including pet stages.",
+    )
     prompt: str = Field(min_length=1, max_length=8000, pattern=r"\S")
     aspect: Literal["1:1", "4:3", "3:4", "16:9"] = "1:1"
     count: Literal[1, 2, 4] = 4
@@ -56,13 +62,19 @@ async def create_image(
     request: Request,
     x_kadan_request_id: Annotated[UUID | None, Header()] = None,
 ) -> ImageResponse:
-    """Submit image generation to the single native inference worker."""
-    return await infer(
-        request,
-        inference.submit(
+    """Generate through the selected provider, or explicitly use Local."""
+    job_id = x_kadan_request_id.hex if x_kadan_request_id else uuid4().hex
+
+    async def generate():
+        if body.provider != "local":
+            result = await image_subscriptions.generate(body, job_id)
+            if result is not None:
+                return result
+        return await inference.submit(
             body,
             feature="image",
             operation="generate",
-            job_id=x_kadan_request_id.hex if x_kadan_request_id is not None else None,
-        ),
-    )
+            job_id=job_id,
+        )
+
+    return await infer(request, generate())

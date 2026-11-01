@@ -989,3 +989,24 @@ def test_generated_image_rejects_unbounded_capacity_hint(capacity):
             mime_type="image/png",
             next_batch_capacity=capacity,
         )
+
+
+def test_initial_pet_artwork_explicitly_uses_local_generation():
+    async def run():
+        services = Storage()
+        services.client.post = AsyncMock(
+            return_value=SimpleNamespace(
+                is_success=True,
+                json=lambda: {
+                    "image": {
+                        "seeds": [7],
+                        "images_base64": [base64.b64encode(PNG).decode()],
+                        "mime_type": "image/png",
+                    }
+                },
+            )
+        )
+        await PetJobs(services).image(uuid4(), "fox", None, IMAGE_MODEL)
+        assert services.client.post.call_args.kwargs["json"]["provider"] == "local"
+
+    asyncio.run(run())

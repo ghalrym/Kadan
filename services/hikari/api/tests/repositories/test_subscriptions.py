@@ -76,3 +76,34 @@ class ProviderTests(unittest.TestCase):
             [(row.provider, row.connected, row.model) for row in result.subscriptions],
             [("claude", True, "claude-haiku-5-5"), ("codex", False, "gpt-6.1-terra")],
         )
+
+
+class ImageProviderTests(unittest.TestCase):
+    def test_claude_cannot_be_selected_for_images(self):
+        session = MagicMock()
+        with self.assertRaisesRegex(
+            subscriptions.SubscriptionError, "Local or ChatGPT"
+        ):
+            subscriptions.choose(session, "image", "claude")
+        session.commit.assert_not_called()
+
+    def test_connected_codex_can_serve_images(self):
+        session = MagicMock()
+        session.get.side_effect = [
+            Subscription(provider="codex", credential="{}"),
+            None,
+        ]
+        subscriptions.choose(session, "image", "codex")
+        row = session.add.call_args.args[0]
+        self.assertEqual((row.capability, row.provider), ("image", "codex"))
+
+    def test_disconnect_resets_language_and_image_together(self):
+        session = MagicMock()
+        rows = [
+            CapabilityProvider(capability=capability, provider="codex")
+            for capability in ("language", "image")
+        ]
+        session.scalars.return_value = rows
+        subscriptions.disconnect(session, "codex")
+        self.assertEqual([row.provider for row in rows], ["local", "local"])
+        session.commit.assert_called_once()

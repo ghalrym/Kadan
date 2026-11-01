@@ -17,3 +17,5 @@ Character sheets are an experimental alternative, with no demonstrated quality a
 For generated candidates, **Repair a frame** creates a revised candidate while keeping the other saved frames and the previous candidate. Describe the problem, regenerate, then preview before selecting the revision. Imported pets do not support frame repair. Successful generation does not guarantee consistent appearance or motion; users judge the preview.
 
 Trashing artwork used by the selected pet clears its selection. Restoring that artwork does not automatically select the pet again.
+
+On the subscription-image branch, pet creation and repair explicitly retain Hikari's local generation and reference editing, even when conversation image generation uses ChatGPT. Pets still require the local image model and available memory. This preserves their saved seeds and reference workflow; subscription pet generation is not exposed. This branch behavior awaits owner validation and is not asserted as verified on master.

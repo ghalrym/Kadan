@@ -27,8 +27,12 @@ class CapabilityProvider(Base):
 
     __tablename__ = "capability_providers"
     __table_args__ = (
-        CheckConstraint("capability IN ('language')", name="capability"),
+        CheckConstraint("capability IN ('language', 'image')", name="capability"),
         CheckConstraint("provider IN ('local', 'claude', 'codex')", name="provider"),
+        CheckConstraint(
+            "capability != 'image' OR provider IN ('local', 'codex')",
+            name="image_provider",
+        ),
     )
 
     capability: Mapped[str] = mapped_column(Text, primary_key=True)
