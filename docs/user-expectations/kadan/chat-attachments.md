@@ -11,3 +11,5 @@ Attachment drafts belong to the conversation where they were selected. A failed 
 An agent receives the attached file references and can copy a stored file onto its computer for processing. This does not guarantee that it can interpret every document, recording or image format. A saved attachment is not automatically inserted into the model's text context. Files already in Tsuchi Trash or belonging to another agent cannot be attached; a failed submission must keep its recovery state.
 
 Users can download attachments from chat or find them in Workspace Files. Trashing a file in Tsuchi can make an earlier attachment unavailable. See [File delivery](file-delivery.md) for files produced by agents and [Saving chat notes](saving-chat-notes.md) for notes without a reply.
+
+The Vision subscription backend on this branch does not automatically send attached images for analysis or insert their pixels into a text conversation. It serves the existing screenshot observation capability; attachment handling is unchanged.

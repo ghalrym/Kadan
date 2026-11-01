@@ -23,3 +23,7 @@ visible shortcuts. Two cold vision executors completed in 7.19 and 6.74 seconds.
 Peak RSS was 4.43 GiB, CUDA allocation 3.71 GiB and reservation 3.75 GiB. This
 verifies this screenshot path, not arbitrary desktop understanding or maximum
 context fit. No computer input or control was needed for this observation.
+
+## Subscription alternative on this branch
+
+The API can route screenshot observations to a subscription before submitting local work; see [Vision subscription routing](subscriptions.md#vision-routing-on-this-branch). This leaves the LFM3-VL worker's license, admission, ownership and confirmed cleanup contracts unchanged. Subscription runs do not require this worker to be enabled or downloaded and own their process cleanup separately. Kadan's existing screenshot caller and observation limits are unchanged. This branch implementation is not evidence of deployment on master.

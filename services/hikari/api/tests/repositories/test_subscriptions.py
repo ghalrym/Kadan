@@ -60,11 +60,13 @@ class ProviderTests(unittest.TestCase):
         session = MagicMock()
         row = Subscription(provider="codex", credential="{}")
         served = CapabilityProvider(capability="language", provider="codex")
+        vision = CapabilityProvider(capability="vision", provider="codex")
         session.get.return_value = row
-        session.scalars.return_value = [served]
+        session.scalars.return_value = [served, vision]
         subscriptions.disconnect(session, "codex")
         session.delete.assert_called_once_with(row)
         self.assertEqual(served.provider, "local")
+        self.assertEqual(vision.provider, "local")
         session.commit.assert_called_once()
 
     def test_snapshot_defaults_language_to_local(self):
@@ -72,10 +74,23 @@ class ProviderTests(unittest.TestCase):
         session.scalars.side_effect = [["claude"], []]
         result = subscriptions.snapshot(session)
         self.assertEqual(result.capabilities.language, "local")
+        self.assertEqual(result.capabilities.vision, "local")
         self.assertEqual(
             [(row.provider, row.connected, row.model) for row in result.subscriptions],
             [("claude", True, "claude-haiku-5-5"), ("codex", False, "gpt-6.1-terra")],
         )
+
+    def test_vision_selection_does_not_modify_language(self):
+        session = MagicMock()
+        selected = CapabilityProvider(capability="vision", provider="local")
+        session.get.side_effect = [
+            Subscription(provider="claude", credential="t"),
+            selected,
+        ]
+        subscriptions.choose(session, "vision", "claude")
+        self.assertEqual(selected.provider, "claude")
+        session.get.assert_any_call(CapabilityProvider, "vision")
+        session.commit.assert_called_once()
 
 
 class ImageProviderTests(unittest.TestCase):

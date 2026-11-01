@@ -13,3 +13,5 @@ Settings also lets users connect a Claude or Codex subscription and switch langu
 Downloaded checkpoints persist in their model store across ordinary container restarts. Deleting that store loses them. Hikari verifies downloads before treating a checkpoint as complete; users must not modify completed checkpoints externally or share one store between independent installations. With [remote workers](remote-workers.md), model files reside on the computers serving the workloads.
 
 See [Model loading and context](model-lifecycle.md) for loaded-state behavior and [Settings architecture](../../architecture/hikari/model-settings.md) for download controls and saved settings.
+
+On this branch, Settings also offers a separate Vision provider choice using the same sign-ins; see [Vision subscriptions](subscriptions.md#vision-subscriptions-on-this-branch). This behavior has not been verified on master.

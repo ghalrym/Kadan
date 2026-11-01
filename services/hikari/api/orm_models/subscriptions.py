@@ -27,7 +27,9 @@ class CapabilityProvider(Base):
 
     __tablename__ = "capability_providers"
     __table_args__ = (
-        CheckConstraint("capability IN ('language', 'image')", name="capability"),
+        CheckConstraint(
+            "capability IN ('language', 'image', 'vision')", name="capability"
+        ),
         CheckConstraint("provider IN ('local', 'claude', 'codex')", name="provider"),
         CheckConstraint(
             "capability != 'image' OR provider IN ('local', 'codex')",

@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import {
   accountNames,
   cancelLogin,
+  chooseProvider,
   chooseImages,
-  chooseLanguage,
   disconnect,
   fetchSubscriptions,
   imageProviderNames,
@@ -18,6 +18,7 @@ import {
   type SubscriptionProvider,
   type SubscriptionsResponse,
 } from '../api/subscriptions'
+import { subscriptionCapabilities } from '../data/models'
 
 const providers: Provider[] = ['local', 'claude', 'codex']
 const imageProviders: ImageProvider[] = ['local', 'codex']
@@ -85,7 +86,7 @@ function LoginSteps({ login, submitting, onCode, onCancel }: {
 
 /**
  * Sign in to the user's own Claude or Codex subscription and choose which provider
- * serves language and image generation. Local keeps Hikari's downloaded models.
+ * serves language, vision and image generation. Local keeps Hikari's downloaded models.
  */
 export default function SubscriptionsPanel() {
   const [state, setState] = useState<SubscriptionsResponse | null>(null)
@@ -168,9 +169,7 @@ export default function SubscriptionsPanel() {
 
   const connected = (provider: Provider) =>
     provider === 'local' || !!state?.subscriptions.find((row) => row.provider === provider)?.connected
-  const language = (state?.capabilities.language ?? 'local') as Provider
-  const languageModel = (provider: Provider) => {
-    if (provider === 'local') return 'LFM3 1.7B on this computer'
+  const subscriptionModel = (provider: SubscriptionProvider) => {
     const model = state?.subscriptions.find((row) => row.provider === provider)?.model ?? ''
     return modelNames[model] ?? model
   }
@@ -188,28 +187,41 @@ export default function SubscriptionsPanel() {
       {!state && !error && <p role="status" className="muted subscriptions-error">Loading subscriptions…</p>}
       {state && (
         <>
-          <div className="subscription-capability tone-llm">
-            <span className="model-row-label">
-              <span className="model-row-capability">Language</span>
-              <span className="model-row-name">{languageModel(language)}</span>
-            </span>
-            <div className="segments" role="group" aria-label="Language provider">
-              {providers.map((provider) => (
-                <button
-                  type="button"
-                  key={provider}
-                  aria-pressed={provider === language}
-                  className={provider === language ? 'selected' : ''}
-                  disabled={submitting || !connected(provider)}
-                  title={connected(provider) ? undefined : `Sign in to ${providerNames[provider]} first`}
-                  onClick={() => provider !== language
-                    && void run((signal) => chooseLanguage(provider, signal), setState)}
-                >
-                  {providerNames[provider]}
-                </button>
-              ))}
-            </div>
-          </div>
+          {subscriptionCapabilities.map((capability) => {
+            const selected = (state.capabilities[capability.id] ?? 'local') as Provider
+            const names = capability.providers
+            return (
+              <div key={capability.id} className={`subscription-capability tone-${capability.tone}`}>
+                <span className="model-row-label">
+                  <span className="model-row-capability">{capability.label}</span>
+                  <span className="model-row-name">
+                    {selected === 'local' ? capability.local : subscriptionModel(selected)}
+                  </span>
+                  {capability.id === 'vision' && selected !== 'local' && (
+                    <span className="muted subscription-note">
+                      Uses your {accountNames[selected]} subscription, so the Vision model does not need to be downloaded.
+                    </span>
+                  )}
+                </span>
+                <div className="segments" role="group" aria-label={`${capability.label} provider`}>
+                  {providers.map((provider) => (
+                    <button
+                      type="button"
+                      key={provider}
+                      aria-pressed={provider === selected}
+                      className={provider === selected ? 'selected' : ''}
+                      disabled={submitting || !connected(provider)}
+                      title={connected(provider) ? undefined : `Sign in to ${providerNames[provider]} first`}
+                      onClick={() => provider !== selected
+                        && void run((signal) => chooseProvider(capability.id, provider, signal), setState)}
+                    >
+                      {names[provider]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
           <div className="subscription-capability subscription-capability--note tone-image">
             <span className="model-row-label">
               <span className="model-row-capability">Images</span>

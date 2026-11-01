@@ -92,6 +92,10 @@ export type CapabilityProviders = {
    * Language
    */
   language?: 'local' | 'claude' | 'codex'
+  /**
+   * Vision
+   */
+  vision?: 'local' | 'claude' | 'codex'
 }
 
 /**
@@ -483,7 +487,7 @@ export type DescribeResponse = {
   /**
    * Model
    */
-  model: 'lfm3-vl-2b-bf16'
+  model: 'lfm3-vl-2b-bf16' | 'claude-haiku-5-5' | 'gpt-6.1-terra'
   /**
    * Text
    */
@@ -2402,7 +2406,7 @@ export type ChooseCapabilityProviderData = {
     /**
      * Capability
      */
-    capability: 'language' | 'image'
+    capability: 'language' | 'image' | 'vision'
   }
   query?: never
   url: '/v1/subscriptions/capabilities/{capability}'

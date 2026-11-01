@@ -49,6 +49,26 @@ def test_tool_uses_fresh_screenshot_and_only_returns_a_bounded_observation():
     assert call.kwargs["json"]["image_base64"] == "c2NyZWVuc2hvdA=="
 
 
+@pytest.mark.parametrize("model", ["claude-haiku-5-5", "gpt-6.1-terra"])
+def test_subscription_observations_are_accepted(model):
+    target = computer(
+        response=httpx.Response(
+            200, json={"model": model, "text": "A Save button is visible."}
+        )
+    )
+    assert invoke(target) == {"model": model, "body": "A Save button is visible."}
+
+
+def test_unknown_model_is_rejected():
+    target = computer(
+        response=httpx.Response(
+            200, json={"model": "unknown", "text": "A Save button is visible."}
+        )
+    )
+    with pytest.raises(ServiceError, match="invalid screenshot description"):
+        invoke(target)
+
+
 def test_worker_failure_is_reported_without_fabricating_an_observation():
     with pytest.raises(ServiceError, match="HTTP 503"):
         invoke(computer(response=httpx.Response(503)))

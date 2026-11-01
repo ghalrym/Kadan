@@ -1,6 +1,6 @@
 # Subscription providers
 
-A capability can be served by the user's own subscription instead of its fixed local checkpoint. Only language is wired today. The design keeps the provider choice per capability so other capabilities can be added without changing how subscriptions are stored. See [subscription expectations](../../user-expectations/hikari/subscriptions.md).
+A capability can be served by the user's own subscription instead of its fixed local checkpoint. Language is wired in the current interface; this branch also wires Vision in Settings and the backend. The design keeps the provider choice per capability so other capabilities can be added without changing how subscriptions are stored. See [subscription expectations](../../user-expectations/hikari/subscriptions.md).
 
 ## Data ownership
 
@@ -43,9 +43,18 @@ Client disconnects and stream closure kill and reap the CLI process. A non-zero 
 
 Kadan's readiness check reads `/v1/subscriptions` first and reports language as ready while a subscription serves it, without requiring the LFM3 download. The API image installs pinned `@anthropic-ai/claude-code` and `@openai/codex` packages.
 
+## Vision routing on this branch
+
+`capabilities.vision` and `PUT /v1/subscriptions/capabilities/vision` use the existing `local`, `claude`, `codex` values. UI copy can call `codex` ChatGPT without changing the stored provider identifier. Migration 0004 widens the capability constraint; existing credentials and language selections remain intact. Connection state in the subscription snapshot is the readiness signal for subscription Vision, independent of local worker/download state. It is not proof that the provider will accept a request.
+
+The existing `/v1/vision/describe` request remains unchanged. A subscription selection bypasses the queue and local memory scheduler; `{model, text}` reports the actual provider model. `max_new_tokens` is rejected for subscriptions because these adapters cannot enforce that budget. Local worker result validation retains the fixed local model requirement.
+
+`SubscriptionVision` reuses the CLI lifecycle, event readers and conditional Codex credential refresh from `SubscriptionStream`. Each observation has its own temporary home and process, independent of language. Disconnect and cancellation kill and reap that process before deleting its screenshot and credentials. A concurrent sign-out or replacement wins over refresh. Provider changes affect new requests; active work is neither replayed nor silently rerouted.
+
+Claude receives an `--input-format stream-json` user message with a base64 image source and text question. Codex receives an actual PNG/JPEG file through `exec --image`; a textual filename is never used as image input. Both paths validate image encoding, format and dimensions before starting a process. The installed pinned CLI help and official [Claude streaming image documentation](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode) and [Codex CLI documentation](https://developers.openai.com/codex/cli/features) support these transports. Unit validation mocks processes; account permissions, model availability and visual quality still require owner validation. No paid inference was used. This is branch implementation, not verified master behavior.
 ## Image generation backend on this branch
 
-This branch adds `image` to `CapabilityProviders` and the capability constraint, with only `local` and `codex` allowed for images. Migration 0003 widens the existing constraint without recreating credentials or rewriting language settings. Another feature branch extends these same models and migration lineage; reconcile the capability fields and constraints by union, and sequence the migrations when combining them. Do not replace either branch's capability set. No behavior here is asserted as verified on master; UI integration and owner validation remain pending.
+This branch adds `image` to `CapabilityProviders` and the capability constraint, with only `local` and `codex` allowed for images. Migration 0003 widens the existing constraint without recreating credentials or rewriting language settings. Migration 0004 adds Vision while preserving the Image capability and its provider constraint. No behavior here is asserted as verified on master; UI integration and owner validation remain pending.
 
 `PUT /v1/subscriptions/capabilities/image` accepts the existing provider request. Claude is rejected with a conflict. `GET /v1/subscriptions` includes `capabilities.image`; a selected Codex connection means generation is eligible without local readiness, not that account entitlement or remaining quota was verified. Disconnect resets every served capability in one transaction. Running requests retain their credential snapshot. Token refresh uses the existing conditional credential update so disconnect or replacement wins.
 

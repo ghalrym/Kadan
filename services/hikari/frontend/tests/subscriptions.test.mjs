@@ -102,10 +102,13 @@ async function panel(state) {
     modelNames: {},
     fetchSubscriptions: async () => state,
     chooseImages: async provider => { choices.push(['image', provider]); return { ...state, capabilities: { ...state.capabilities, image: provider } } },
-    chooseLanguage: async provider => { choices.push(['language', provider]); return state },
+    chooseProvider: async (capability, provider) => { choices.push([capability, provider]); return state },
     cancelLogin: async () => {}, disconnect: async () => state, loginStatus: async () => {}, startLogin: async () => {}, submitLoginCode: async () => {},
   })
-  const modules = { react, 'react/jsx-runtime': module({ jsx, jsxs: jsx, Fragment: 'fragment' }), '../api/subscriptions': api }
+  const dataSource = await readFile(new URL('../src/data/models.ts', import.meta.url), 'utf8')
+  const data = new SourceTextModule(ts.transpileModule(dataSource, { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText, { context })
+  await data.link(() => {})
+  const modules = { '../data/models': data, react, 'react/jsx-runtime': module({ jsx, jsxs: jsx, Fragment: 'fragment' }), '../api/subscriptions': api }
   const component = new SourceTextModule(outputText, { context })
   await component.link(specifier => { assert.ok(modules[specifier], specifier); return modules[specifier] })
   await component.evaluate()

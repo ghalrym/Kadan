@@ -128,6 +128,16 @@
             ],
             "title": "Language",
             "type": "string"
+          },
+          "vision": {
+            "default": "local",
+            "enum": [
+              "local",
+              "claude",
+              "codex"
+            ],
+            "title": "Vision",
+            "type": "string"
           }
         },
         "title": "CapabilityProviders",
@@ -895,7 +905,11 @@
       "DescribeResponse": {
         "properties": {
           "model": {
-            "const": "lfm3-vl-2b-bf16",
+            "enum": [
+              "lfm3-vl-2b-bf16",
+              "claude-haiku-5-5",
+              "gpt-6.1-terra"
+            ],
             "title": "Model",
             "type": "string"
           },
@@ -4186,7 +4200,8 @@
             "schema": {
               "enum": [
                 "language",
-                "image"
+                "image",
+                "vision"
               ],
               "title": "Capability",
               "type": "string"

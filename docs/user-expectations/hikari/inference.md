@@ -45,3 +45,7 @@ LFM conversations retain no reusable prefix between requests. Language requests 
 When an idle model unloads or yields VRAM, Hikari can keep its reusable KV and recurrent state in RAM. A compatible later request restores that state after loading the model. Each worker retains at most one prefix; it can discard it sooner when RAM is needed for work. No reusable state is written to disk, and restarting the worker loses it.
 
 The prefix cache expires after one hour without reuse by default. Operators can configure this separately from model idle expiry: unloading a model does not restart the cache timer, and discarding its cache does not unload the model. Expiry waits for active and queued work. Conversation history and downloaded checkpoints are unaffected. Responses report actual reused and stored tokens and whether a prefix was restored from RAM; reuse does not guarantee a measured latency improvement.
+
+## Vision subscriptions on this branch
+
+The Hikari backend can answer screenshot questions through the independently selected Claude or ChatGPT subscription, without a local Vision checkpoint or memory allocation. Local behavior is unchanged. Provider failures are explicit and never trigger fallback; see [subscription expectations](subscriptions.md#vision-subscription-backend-on-this-branch). This branch behavior has not been verified on master.

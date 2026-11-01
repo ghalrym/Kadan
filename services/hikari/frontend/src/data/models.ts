@@ -15,3 +15,15 @@ export type Capability = (typeof capabilities)[number]
 
 /** Clip settings the video form starts from. */
 export const videoDefaults = { duration: 5, resolution: '480p' } as const
+
+/** Capabilities a subscription can serve instead of the model on this computer. */
+export const subscriptionCapabilities = [
+  {
+    id: 'language', label: 'Language', tone: 'llm', local: 'LFM3 1.7B on this computer',
+    providers: { local: 'Local', claude: 'Claude', codex: 'Codex' },
+  },
+  {
+    id: 'vision', label: 'Vision', tone: 'vision', local: 'LFM3-VL 2B on this computer',
+    providers: { local: 'Local', claude: 'Claude', codex: 'ChatGPT' },
+  },
+] as const
