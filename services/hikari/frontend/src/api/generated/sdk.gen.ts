@@ -348,7 +348,7 @@ export const editImages = <ThrowOnError extends boolean = false>(
 /**
  * Create Image
  *
- * Submit image generation to the single native inference worker.
+ * Generate through the selected provider, or explicitly use Local.
  */
 export const generateImages = <ThrowOnError extends boolean = false>(
   options: Options<GenerateImagesData, ThrowOnError>,

@@ -77,6 +77,8 @@ async function panel() {
   const api = module({
     accountNames: { claude: 'Claude', codex: 'ChatGPT' },
     providerNames: { local: 'Local', claude: 'Claude', codex: 'Codex' },
+    imageProviderNames: { local: 'Local', codex: 'ChatGPT' },
+    chooseImages: async () => {},
     modelNames: { 'claude-haiku-5-5': 'Claude Haiku 5.5', 'gpt-6.1-terra': 'GPT 6.1 Terra' },
     fetchSubscriptions: () => request(reads),
     chooseProvider: (capability, provider) => request(choices, { capability, provider }),

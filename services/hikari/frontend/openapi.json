@@ -110,6 +110,15 @@
       "CapabilityProviders": {
         "description": "Capabilities a subscription may serve; each defaults to its local model.",
         "properties": {
+          "image": {
+            "default": "local",
+            "enum": [
+              "local",
+              "codex"
+            ],
+            "title": "Image",
+            "type": "string"
+          },
           "language": {
             "default": "local",
             "enum": [
@@ -3183,6 +3192,19 @@
             "title": "Prompt",
             "type": "string"
           },
+          "provider": {
+            "anyOf": [
+              {
+                "const": "local",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Omit to use the image provider in Settings. Local explicitly preserves native generation, including pet stages.",
+            "title": "Provider"
+          },
           "seed": {
             "anyOf": [
               {
@@ -3654,7 +3676,7 @@
     },
     "/v1/images/generations": {
       "post": {
-        "description": "Submit image generation to the single native inference worker.",
+        "description": "Generate through the selected provider, or explicitly use Local.",
         "operationId": "generateImages",
         "parameters": [
           {
@@ -4178,6 +4200,7 @@
             "schema": {
               "enum": [
                 "language",
+                "image",
                 "vision"
               ],
               "title": "Capability",

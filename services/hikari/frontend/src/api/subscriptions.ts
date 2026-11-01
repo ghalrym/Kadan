@@ -18,6 +18,10 @@ export type { SubscriptionLogin, SubscriptionsResponse, SubscriptionStatus }
 export type SubscriptionProvider = SubscriptionStatus['provider']
 export type Provider = 'local' | SubscriptionProvider
 export type SubscriptionCapability = keyof CapabilityProviders
+/** Only ChatGPT can create images; Claude cannot. */
+export type ImageProvider = NonNullable<CapabilityProviders['image']>
+
+export const imageProviderNames: Record<ImageProvider, string> = { local: 'Local', codex: 'ChatGPT' }
 
 export const providerNames: Record<Provider, string> = { local: 'Local', claude: 'Claude', codex: 'Codex' }
 
@@ -52,6 +56,11 @@ export const disconnect = (provider: SubscriptionProvider, signal: AbortSignal) 
 
 export const chooseProvider = (capability: SubscriptionCapability, provider: Provider, signal: AbortSignal) =>
   settled(chooseCapabilityProvider({ path: { capability }, body: { provider }, signal }))
+
+export const chooseLanguage = (provider: Provider, signal: AbortSignal) => chooseProvider('language', provider, signal)
+
+export const chooseImages = (provider: ImageProvider, signal: AbortSignal) =>
+  settled(chooseCapabilityProvider({ path: { capability: 'image' }, body: { provider }, signal }))
 
 export const startLogin = (provider: SubscriptionProvider, signal: AbortSignal) =>
   settled(startSubscriptionLogin({ path: { provider }, signal }))

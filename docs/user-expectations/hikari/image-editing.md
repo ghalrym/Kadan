@@ -11,3 +11,5 @@ Reference editing is also available to applications using Hikari, including pet 
 The same [progress, cancellation and result lifetime](image-generation.md) apply. Users need to inspect the artwork to decide whether an edit meets their intent.
 
 See [Image worker architecture](../../architecture/hikari/worker-image.md) for input normalization and the source/reference contracts.
+
+On the subscription-image branch, source and reference editing always remain local, including masks, strength and pet frame conditioning. The ChatGPT generation choice does not select an editing provider. Editing therefore still requires the local checkpoint and available memory. Subscription editing is not exposed. This branch behavior awaits owner validation and is not asserted as verified on master.

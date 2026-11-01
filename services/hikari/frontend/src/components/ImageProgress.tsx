@@ -60,6 +60,28 @@ export function ImageProgressPanel({
   )
 }
 
+/**
+ * ChatGPT reports no progress, so show only that the request is still running.
+ */
+export function SubscriptionImageProgress({ elapsed, count }: { elapsed: number; count: number }) {
+  return (
+    <section className="image-progress" aria-label="Image generation progress">
+      <span className="eyebrow">Generation progress</span>
+      <strong role="status">Creating with ChatGPT…</strong>
+      <div className="image-progress__bar image-progress__bar--indeterminate" role="progressbar" aria-label="Image request progress">
+        <span />
+      </div>
+      <div className="image-progress__time mono faint">
+        <span>Request elapsed: {formatDuration(elapsed)}</span>
+      </div>
+      <p className="muted">
+        ChatGPT does not share progress or time estimates.{' '}
+        {count > 1 ? `It creates your ${count} images one at a time, and they appear together when all are done.` : 'Your image appears when it is done.'}
+      </p>
+    </section>
+  )
+}
+
 /** Keep request tiles pending until its response delivers actual images. */
 export function PendingImageSet({
   prompt,

@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 SubscriptionProvider = Literal["claude", "codex"]
 Provider = Literal["local", "claude", "codex"]
-Capability = Literal["language", "vision"]
+Capability = Literal["language", "image", "vision"]
 
 SUBSCRIPTION_MODELS: dict[SubscriptionProvider, str] = {
     "claude": "claude-haiku-5-5",
@@ -25,6 +25,7 @@ class CapabilityProviders(BaseModel):
 
     language: Provider = "local"
     vision: Provider = "local"
+    image: Literal["local", "codex"] = "local"
 
 
 class SubscriptionsResponse(BaseModel):

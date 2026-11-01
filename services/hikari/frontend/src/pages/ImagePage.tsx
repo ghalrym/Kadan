@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { Link } from 'react-router'
 import { ModeNavigation, SegmentedControl } from '../components/Controls'
 import { MediaPlaceholder, type Aspect } from '../components/Media'
-import { ImageProgressPanel, PendingImageSet } from '../components/ImageProgress'
+import { ImageProgressPanel, PendingImageSet, SubscriptionImageProgress } from '../components/ImageProgress'
 import { createImageRequestId, imageHistory, requestImages, type ImageOptions } from '../api/images'
+import { fetchSubscriptions, type ImageProvider } from '../api/subscriptions'
 import { prepareImageUpload, type ImageUpload } from '../api/imageUpload'
 import { describeImageProgress, estimateRemaining, type ImageProgressView } from '../api/imageProgress'
 import { usePolling } from '../hooks/usePolling'
@@ -17,7 +19,7 @@ const ASPECTS: Record<NonNullable<ImageOptions['aspect']>, Aspect> = {
   '16:9': 'wide',
 }
 
-type Run = { id: string; prompt: string; aspect: Aspect; count: number; started: number }
+type Run = { id: string; prompt: string; aspect: Aspect; count: number; started: number; chatgpt: boolean }
 type Tracked = {
   progress: MetricsResponse['inference_progress']
   view: ImageProgressView | null
@@ -80,6 +82,16 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
   const [loading, setLoading] = useState(true)
   const [refresh, setRefresh] = useState(0)
   const active = useRef<AbortController | null>(null)
+  // Settings chooses who creates new images; editing always stays on this computer.
+  const [provider, setProvider] = useState<ImageProvider>('local')
+  const chatgpt = !edit && provider === 'codex'
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchSubscriptions(controller.signal)
+      .then(state => { if (!controller.signal.aborted) setProvider(state.capabilities.image ?? 'local') })
+      .catch(() => {})
+    return () => controller.abort()
+  }, [])
   useEffect(() => {
     const controller = new AbortController()
     imageHistory(controller.signal)
@@ -144,6 +156,10 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (active.current || preparing || !prompt.trim() || (edit && !source)) return
+    if (chatgpt && seed !== '') {
+      setError('ChatGPT does not support the seed you entered. Choose Local in Settings to use it, or clear it before switching providers.')
+      return
+    }
     const requestId = createImageRequestId()
     const controller = new AbortController()
     active.current = controller
@@ -155,7 +171,7 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
         : source.width < source.height ? 'portrait'
           : source.width / source.height > 1.5 ? 'wide' : 'landscape'
       : ASPECTS[aspect]
-    setRun({ id: requestId, prompt: prompt.trim(), aspect: previewAspect, count, started: Date.now() })
+    setRun({ id: requestId, prompt: prompt.trim(), aspect: previewAspect, count, started: Date.now(), chatgpt })
     setNow(Date.now())
     try {
       const image = await requestImages(
@@ -163,7 +179,7 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
           prompt: prompt.trim(),
           ...(edit ? {} : { aspect }),
           count,
-          seed: seed === '' ? null : Number(seed),
+          seed: chatgpt || seed === '' ? null : Number(seed),
         },
         controller.signal,
         edit && source ? { image: source.dataUrl, mask: mask?.dataUrl ?? null, strength: strength / 100 } : undefined,
@@ -192,6 +208,8 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
     <div className="workspace image-workspace">
       <form className="workspace-controls" aria-label="Image settings" onSubmit={submit}>
         <ModeNavigation label="Image mode" options={[{ label: 'Generate from text', to: '/image' }, { label: 'Edit an image', to: '/image/edit' }]} />
+        {chatgpt && <p className="image-provider-note" role="note">New images are created with your ChatGPT subscription, so its usage limits apply. To use this computer instead, choose Local in <Link to="/settings">Settings</Link>.</p>}
+        {edit && provider === 'codex' && <p className="image-provider-note" role="note">Edits always run on this computer, even though ChatGPT creates your new images.</p>}
         {edit && <>
           <div className="field">
             <span className="eyebrow">Source image</span>
@@ -224,12 +242,17 @@ function ImageWorkspace({ edit }: { edit: boolean }) {
         </label>
         <div className={edit ? 'image-options image-options--edit' : 'image-options'}>
           {!edit && <SegmentedControl label="Aspect" options={['1:1', '4:3', '3:4', '16:9']} selected={aspect} onChange={value => setAspect(value as NonNullable<ImageOptions['aspect']>)} disabled={busy} />}
+          {chatgpt && <span className="image-option-hint muted">ChatGPT treats the shape as a request. Each result shows its actual size.</span>}
           <SegmentedControl label="Images" options={['1', '2', '4']} selected={String(count)} onChange={value => setCount(Number(value) as 1 | 2 | 4)} disabled={busy} />
         </div>
         {edit && <label className="field"><span className="row"><span className="eyebrow">Edit strength</span><span className="push-right mono muted">{strength}%</span></span><input type="range" min={0} max={100} value={strength} onChange={e => setStrength(Number(e.target.value))} disabled={busy} /><span className="row image-strength-scale muted"><span>0% preserves image</span><span>100% regenerates</span></span></label>}
-        <label className="field"><span className="eyebrow">Seed</span><input className="input mono" type="number" min={0} max={Number.MAX_SAFE_INTEGER} step={1} value={seed} onChange={e => setSeed(e.target.value)} placeholder="Random" disabled={busy} /></label>
+        <label className="field"><span className="eyebrow">Seed</span><input className="input mono" type="number" min={0} max={Number.MAX_SAFE_INTEGER} step={1} value={chatgpt ? '' : seed} onChange={e => setSeed(e.target.value)} placeholder={chatgpt ? 'Not available' : 'Random'} disabled={busy || chatgpt} />
+          {chatgpt && <span className="muted image-option-hint">ChatGPT does not use seeds, so the same prompt gives different images each time. Choose Local in Settings to set a seed.</span>}
+          {chatgpt && seed !== '' && <button type="button" className="button" onClick={() => setSeed('')} disabled={busy}>Clear previous seed</button>}
+        </label>
         <button className="button button--primary" disabled={busy || preparing !== null || !prompt.trim() || (edit && !source)}>{busy ? 'Waiting for images…' : edit ? 'Apply edit' : `Generate ${count} image${count === 1 ? '' : 's'}`}</button>
-        {run && view && <ImageProgressPanel view={view} elapsed={(now - run.started) / 1000} remaining={remaining} />}
+        {run?.chatgpt && <SubscriptionImageProgress elapsed={(now - run.started) / 1000} count={run.count} />}
+        {run && !run.chatgpt && view && <ImageProgressPanel view={view} elapsed={(now - run.started) / 1000} remaining={remaining} />}
         {busy && <button type="button" className="button" onClick={() => active.current?.abort()}>Cancel request</button>}
         {error && <p role="alert" className="error-panel">{error}</p>}
       </form>

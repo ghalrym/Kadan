@@ -3,13 +3,16 @@ import {
   accountNames,
   cancelLogin,
   chooseProvider,
+  chooseImages,
   disconnect,
   fetchSubscriptions,
+  imageProviderNames,
   loginStatus,
   modelNames,
   providerNames,
   startLogin,
   submitLoginCode,
+  type ImageProvider,
   type Provider,
   type SubscriptionLogin,
   type SubscriptionProvider,
@@ -18,6 +21,7 @@ import {
 import { subscriptionCapabilities } from '../data/models'
 
 const providers: Provider[] = ['local', 'claude', 'codex']
+const imageProviders: ImageProvider[] = ['local', 'codex']
 const pending = (login: SubscriptionLogin | null) => login?.status === 'waiting' || login?.status === 'verifying'
 
 /** The steps of one web sign-in: open the provider's page, then finish there or bring back its code. */
@@ -82,7 +86,7 @@ function LoginSteps({ login, submitting, onCode, onCancel }: {
 
 /**
  * Sign in to the user's own Claude or Codex subscription and choose which provider
- * serves language and vision. Local keeps Hikari's downloaded model.
+ * serves language, vision and image generation. Local keeps Hikari's downloaded models.
  */
 export default function SubscriptionsPanel() {
   const [state, setState] = useState<SubscriptionsResponse | null>(null)
@@ -169,6 +173,7 @@ export default function SubscriptionsPanel() {
     const model = state?.subscriptions.find((row) => row.provider === provider)?.model ?? ''
     return modelNames[model] ?? model
   }
+  const image = (state?.capabilities.image ?? 'local') as ImageProvider
 
   return (
     <section className="panel subscriptions-panel" aria-labelledby="subscriptions-title">
@@ -217,6 +222,35 @@ export default function SubscriptionsPanel() {
               </div>
             )
           })}
+          <div className="subscription-capability subscription-capability--note tone-image">
+            <span className="model-row-label">
+              <span className="model-row-capability">Images</span>
+              <span className="model-row-name">
+                {image === 'local' ? 'Qwen-Image on this computer' : 'Your ChatGPT subscription'}
+              </span>
+            </span>
+            <div className="segments" role="group" aria-label="Image provider">
+              {imageProviders.map((provider) => (
+                <button
+                  type="button"
+                  key={provider}
+                  aria-pressed={provider === image}
+                  className={provider === image ? 'selected' : ''}
+                  disabled={submitting || !connected(provider)}
+                  title={connected(provider) ? undefined : `Sign in to ${providerNames[provider]} first`}
+                  onClick={() => provider !== image
+                    && void run((signal) => chooseImages(provider, signal), setState)}
+                >
+                  {imageProviderNames[provider]}
+                </button>
+              ))}
+            </div>
+            <p className="muted subscription-capability-note">
+              {image === 'codex'
+                ? 'ChatGPT creates new images from text. Seeds are not available, and the shape you pick is a request, so check each image\'s size. Editing images and pets still use this computer.'
+                : 'Sign in to Codex to create images with ChatGPT instead. Claude cannot create images. Editing images and pets always use this computer.'}
+            </p>
+          </div>
           <ul className="subscription-list">
             {state.subscriptions.map(({ provider, connected: isConnected }) => (
               <li key={provider} className="subscription-row">
