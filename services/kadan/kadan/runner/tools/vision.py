@@ -19,7 +19,7 @@ class LookArguments(Arguments):
 
 @computer_tool("GET")
 async def computer_look(args: LookArguments, computer: SandboxClient) -> dict:
-    """Inspect the current computer screenshot with the LFM3 vision model.
+    """Inspect the current computer screenshot with the selected vision provider.
 
     Ask about visible text, controls, positions or the current app state. The
     observation can be wrong; it does not execute actions or confirm later state.
@@ -52,7 +52,8 @@ async def computer_look(args: LookArguments, computer: SandboxClient) -> dict:
         result = response.json()
         text = result["text"]
         if (
-            result["model"] != "lfm3-vl-2b-bf16"
+            result["model"]
+            not in ("lfm3-vl-2b-bf16", "claude-haiku-5-5", "gpt-6.1-terra")
             or not isinstance(text, str)
             or not text.strip()
         ):
