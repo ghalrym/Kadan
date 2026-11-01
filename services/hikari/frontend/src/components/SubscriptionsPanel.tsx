@@ -113,8 +113,10 @@ export default function SubscriptionsPanel() {
           const next = await loginStatus(polling, controller.signal)
           if (controller.signal.aborted) return
           if (next.status === 'complete') {
+            const subscriptions = await fetchSubscriptions(controller.signal)
+            if (controller.signal.aborted) return
+            setState(subscriptions)
             setLogin(null)
-            setState(await fetchSubscriptions(controller.signal))
           } else {
             setLogin(next)
             if (next.status === 'failed') setError(next.error ?? 'Sign-in did not finish. Please try again.')

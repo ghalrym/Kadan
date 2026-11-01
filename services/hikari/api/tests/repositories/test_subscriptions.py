@@ -1,6 +1,8 @@
 import json
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+from sqlalchemy.dialects import postgresql
 
 from api.orm_models.subscriptions import CapabilityProvider, Subscription
 from api.repositories import subscriptions
@@ -24,6 +26,21 @@ class CredentialTests(unittest.TestCase):
 
 
 class ProviderTests(unittest.TestCase):
+    def test_refresh_only_updates_the_matching_credential(self):
+        session = MagicMock()
+        with (
+            patch("api.repositories.subscriptions.get_engine"),
+            patch("api.repositories.subscriptions.Session") as session_class,
+        ):
+            session_class.return_value.__enter__.return_value = session
+            subscriptions.refresh("codex", "old", "new")
+        statement = session.execute.call_args.args[0]
+        compiled = statement.compile(dialect=postgresql.dialect())
+        self.assertIn("subscriptions.provider =", str(compiled))
+        self.assertIn("subscriptions.credential =", str(compiled).split("WHERE")[1])
+        self.assertEqual(set(compiled.params.values()), {"codex", "old", "new"})
+        session.commit.assert_called_once()
+
     def test_subscription_must_be_connected_before_it_serves_language(self):
         session = MagicMock()
         session.get.return_value = None

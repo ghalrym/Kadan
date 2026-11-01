@@ -150,11 +150,11 @@ class SubscriptionStream:
         ], env
 
     async def start(self) -> None:
-        self.home = Path(
-            tempfile.mkdtemp(prefix=f"hikari-{self.subscription.provider}-")
-        )
-        command, env = self._command()
         try:
+            self.home = Path(
+                tempfile.mkdtemp(prefix=f"hikari-{self.subscription.provider}-")
+            )
+            command, env = self._command()
             self.process = await asyncio.create_subprocess_exec(
                 *command,
                 cwd=self.home,
@@ -164,16 +164,21 @@ class SubscriptionStream:
                 stderr=asyncio.subprocess.PIPE,
                 limit=OUTPUT_LINE_LIMIT,
             )
+            self.stderr = asyncio.create_task(self.process.stderr.read())
+            self.process.stdin.write(self.prompt.encode())
+            await self.process.stdin.drain()
+            self.process.stdin.close()
         except FileNotFoundError as error:
-            await self.aclose()
+            with anyio.CancelScope(shield=True):
+                await self.aclose()
             raise InferenceFailure(
                 f"{self.subscription.provider.title()} is not available in this Hikari installation.",
                 503,
             ) from error
-        self.stderr = asyncio.create_task(self.process.stderr.read())
-        self.process.stdin.write(self.prompt.encode())
-        await self.process.stdin.drain()
-        self.process.stdin.close()
+        except BaseException:
+            with anyio.CancelScope(shield=True):
+                await self.aclose()
+            raise
 
     async def _events(self):
         async for line in self.process.stdout:

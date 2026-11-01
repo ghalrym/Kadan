@@ -2,7 +2,7 @@
 
 import json
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from api.database import get_engine
@@ -117,7 +117,11 @@ def active(capability: Capability) -> ActiveSubscription | None:
 def refresh(provider: SubscriptionProvider, previous: str, credential: str) -> None:
     """Keep a CLI-refreshed sign-in unless the user replaced or removed it meanwhile."""
     with Session(get_engine()) as session:
-        row = session.get(Subscription, provider)
-        if row is not None and row.credential == previous:
-            row.credential = credential
-            session.commit()
+        session.execute(
+            update(Subscription)
+            .where(
+                Subscription.provider == provider, Subscription.credential == previous
+            )
+            .values(credential=credential)
+        )
+        session.commit()

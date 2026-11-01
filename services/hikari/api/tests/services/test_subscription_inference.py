@@ -1,3 +1,4 @@
+import asyncio
 import json
 import unittest
 from pathlib import Path
@@ -219,3 +220,24 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
                 ActiveSubscription(provider="claude", credential="t"), request()
             ).start()
         self.assertEqual(caught.exception.status_code, 503)
+
+    async def test_cancelled_start_kills_process_and_removes_home(self):
+        process = FakeProcess([])
+
+        async def cancelled_drain():
+            raise asyncio.CancelledError
+
+        process.stdin.drain = cancelled_drain
+        stream = SubscriptionStream(
+            ActiveSubscription(provider="claude", credential="t"), request()
+        )
+        with (
+            patch(
+                "api.services.subscription_inference.asyncio.create_subprocess_exec",
+                return_value=process,
+            ) as spawn,
+            self.assertRaises(asyncio.CancelledError),
+        ):
+            await stream.start()
+        self.assertTrue(process.killed)
+        self.assertFalse(Path(spawn.call_args.kwargs["cwd"]).exists())
