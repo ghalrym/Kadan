@@ -88,10 +88,15 @@ class Boundary:
         self.inference_body = None
         self.assistant_conflict = False
         self.inference_status = 200
+        self.language = "local"
         self.note_conflict = False
 
     def __call__(self, request):
         self.requests.append((request.method, request.url.path))
+        if request.url.path == "/v1/subscriptions":
+            return httpx.Response(
+                200, json={"capabilities": {"language": self.language}}
+            )
         if request.url.path == "/v1/models":
             return httpx.Response(200, json=self.settings)
         if request.url.path == "/api/health":
@@ -148,7 +153,18 @@ def test_readiness_uses_actual_fixed_language_checkpoint(settings, state):
     status = run(boundary, lambda service: service.inference_status())
     assert status.state == state
     assert status.settings_url == "http://127.0.0.1:8088/settings"
-    assert boundary.requests == [("GET", "/v1/models")]
+    assert boundary.requests == [("GET", "/v1/subscriptions"), ("GET", "/v1/models")]
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_subscription_language_is_ready_without_local_download(provider):
+    boundary = Boundary(settings={"models": []})
+    boundary.language = provider
+    status = run(boundary, lambda service: service.inference_status())
+    assert status.state == "ready"
+    assert status.model_id == "lfm3-1.7b-bf16"
+    assert provider.title() in status.message
+    assert boundary.requests == [("GET", "/v1/subscriptions")]
 
 
 @pytest.mark.parametrize(
@@ -196,6 +212,8 @@ def test_fixed_lfm3_requires_its_own_downloaded_worker(models, expected):
     async def check():
         def boundary(request):
             assert request.method == "GET"
+            if request.url.path == "/v1/subscriptions":
+                return httpx.Response(200, json={"capabilities": {"language": "local"}})
             assert request.url.path == "/v1/models"
             return httpx.Response(200, json={"models": models})
 
@@ -357,6 +375,8 @@ def test_docker_status_requests_internal_origins_and_returns_browser_links(unava
             raise httpx.ConnectError("offline", request=request)
         if request.url.host == "tsuchi-api":
             return httpx.Response(200, json={"status": "ok"})
+        if request.url.path == "/v1/subscriptions":
+            return httpx.Response(200, json={"capabilities": {"language": "local"}})
         return httpx.Response(200, json={"models": []})
 
     async def status():
@@ -373,7 +393,8 @@ def test_docker_status_requests_internal_origins_and_returns_browser_links(unava
     result = asyncio.run(status())
     assert set(requests) == {
         "http://tsuchi-api:8000/api/health",
-        "http://hikari-api:8000/v1/models",
+        "http://hikari-api:8000/v1/subscriptions",
+        *(() if unavailable else ("http://hikari-api:8000/v1/models",)),
     }
     assert result.tsuchi.state == ("unavailable" if unavailable else "ready")
     assert result.hikari.state == "unavailable"

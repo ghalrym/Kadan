@@ -5,7 +5,7 @@ or `assistant` roles. Each message uses either Hikari's `text` field or the
 OpenAI `content` string. JSON responses include `choices` and Hikari's `message`;
 SSE responses use content deltas, a `stop` or `length` terminal chunk and `[DONE]`.
 
-The endpoint uses fixed `lfm3-1.7b-bf16`, whether `model` is supplied or omitted, and rejects other model IDs. Structured tool history follows [the LFM worker contract](worker-lfm3.md). Unknown fields, unsupported roles and malformed tool payloads fail validation. Before streaming starts, errors use FastAPI's HTTP status and `detail` body; stream failures use an `error` event followed by `[DONE]`, without a successful terminal choice.
+The endpoint uses fixed `lfm3-1.7b-bf16`, whether `model` is supplied or omitted, and rejects other model IDs. When a [subscription provider](subscriptions.md) serves language, the same request is answered by that subscription instead. Structured tool history follows [the LFM worker contract](worker-lfm3.md). Unknown fields, unsupported roles and malformed tool payloads fail validation. Before streaming starts, errors use FastAPI's HTTP status and `detail` body; stream failures use an `error` event followed by `[DONE]`, without a successful terminal choice.
 
 ## Playground state and retry
 

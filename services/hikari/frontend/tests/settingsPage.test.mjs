@@ -94,6 +94,7 @@ async function page(componentName = 'default') {
   const modules = {
     react, 'react/jsx-runtime': module({ jsx, jsxs: jsx, Fragment: 'fragment' }),
     '../api/settings': api,
+    '../components/SubscriptionsPanel': module({ default: function SubscriptionsPanel() { return null } }),
     './SettingsPage.css': module({}),
   }
   const component = new SourceTextModule(outputText, { context })

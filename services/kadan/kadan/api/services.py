@@ -10,6 +10,7 @@ from .pet_client import PetClient
 from .pydantic_models.inference import (
     HikariModelLifecycle,
     HikariModels,
+    HikariSubscriptions,
 )
 from .pydantic_models.resources import Memory, Message, Resource, ResourceKind
 from .routes.agents.conversations.notes import NoteInput
@@ -205,6 +206,17 @@ class LocalServices:
     async def inference_status(self) -> InferenceState:
         settings_url = self.settings.hikari_browser_url + "/settings"
         try:
+            providers = HikariSubscriptions.model_validate(
+                await self.json_request("Hikari", "GET", "/v1/subscriptions")
+            )
+            if providers.capabilities.language != "local":
+                # Hikari routes the fixed language ID to the user's subscription.
+                return InferenceState(
+                    state="ready",
+                    model_id="lfm3-1.7b-bf16",
+                    settings_url=settings_url,
+                    message=f"Language uses your {providers.capabilities.language.title()} subscription in Hikari.",
+                )
             catalog = HikariModels.model_validate(
                 await self.json_request("Hikari", "GET", "/v1/models")
             )

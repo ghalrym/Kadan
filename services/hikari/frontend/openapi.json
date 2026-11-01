@@ -88,6 +88,42 @@
         "title": "CancellationResponse",
         "type": "object"
       },
+      "CapabilityProviderRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "enum": [
+              "local",
+              "claude",
+              "codex"
+            ],
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider"
+        ],
+        "title": "CapabilityProviderRequest",
+        "type": "object"
+      },
+      "CapabilityProviders": {
+        "description": "Capabilities a subscription may serve; each defaults to its local model.",
+        "properties": {
+          "language": {
+            "default": "local",
+            "enum": [
+              "local",
+              "claude",
+              "codex"
+            ],
+            "title": "Language",
+            "type": "string"
+          }
+        },
+        "title": "CapabilityProviders",
+        "type": "object"
+      },
       "ChatMessage": {
         "properties": {
           "meta": {
@@ -2373,6 +2409,139 @@
         "title": "SpeechUnavailable",
         "type": "object"
       },
+      "SubscriptionLogin": {
+        "description": "A web sign-in in progress; `url` opens the provider's sign-in page.",
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "needs_code": {
+            "description": "Claude: its sign-in page shows a code to send back to Hikari.",
+            "title": "Needs Code",
+            "type": "boolean"
+          },
+          "provider": {
+            "enum": [
+              "claude",
+              "codex"
+            ],
+            "title": "Provider",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "starting",
+              "waiting",
+              "verifying",
+              "complete",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "user_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Codex: the one-time code to enter on its sign-in page.",
+            "title": "User Code"
+          }
+        },
+        "required": [
+          "provider",
+          "status",
+          "needs_code"
+        ],
+        "title": "SubscriptionLogin",
+        "type": "object"
+      },
+      "SubscriptionLoginCode": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "SubscriptionLoginCode",
+        "type": "object"
+      },
+      "SubscriptionStatus": {
+        "properties": {
+          "connected": {
+            "title": "Connected",
+            "type": "boolean"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "enum": [
+              "claude",
+              "codex"
+            ],
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "connected",
+          "model"
+        ],
+        "title": "SubscriptionStatus",
+        "type": "object"
+      },
+      "SubscriptionsResponse": {
+        "properties": {
+          "capabilities": {
+            "$ref": "#/components/schemas/CapabilityProviders"
+          },
+          "subscriptions": {
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionStatus"
+            },
+            "title": "Subscriptions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "subscriptions",
+          "capabilities"
+        ],
+        "title": "SubscriptionsResponse",
+        "type": "object"
+      },
       "TranscriptionRequest": {
         "additionalProperties": false,
         "properties": {
@@ -3960,6 +4129,309 @@
         "summary": "Update Settings",
         "tags": [
           "Settings"
+        ]
+      }
+    },
+    "/v1/subscriptions": {
+      "get": {
+        "operationId": "getSubscriptions",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Subscriptions",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/v1/subscriptions/capabilities/{capability}": {
+      "put": {
+        "operationId": "chooseCapabilityProvider",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "capability",
+            "required": true,
+            "schema": {
+              "const": "language",
+              "title": "Capability",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CapabilityProviderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Choose Provider",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/v1/subscriptions/{provider}": {
+      "delete": {
+        "operationId": "disconnectSubscription",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "enum": [
+                "claude",
+                "codex"
+              ],
+              "title": "Provider",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disconnect Subscription",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/v1/subscriptions/{provider}/login": {
+      "delete": {
+        "operationId": "cancelSubscriptionLogin",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "enum": [
+                "claude",
+                "codex"
+              ],
+              "title": "Provider",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Login",
+        "tags": [
+          "Subscriptions"
+        ]
+      },
+      "get": {
+        "operationId": "getSubscriptionLogin",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "enum": [
+                "claude",
+                "codex"
+              ],
+              "title": "Provider",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionLogin"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Login",
+        "tags": [
+          "Subscriptions"
+        ]
+      },
+      "post": {
+        "operationId": "startSubscriptionLogin",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "enum": [
+                "claude",
+                "codex"
+              ],
+              "title": "Provider",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionLogin"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Login",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/v1/subscriptions/{provider}/login/code": {
+      "post": {
+        "operationId": "submitSubscriptionLoginCode",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "enum": [
+                "claude",
+                "codex"
+              ],
+              "title": "Provider",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubscriptionLoginCode"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionLogin"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Login Code",
+        "tags": [
+          "Subscriptions"
         ]
       }
     },

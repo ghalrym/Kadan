@@ -15,15 +15,24 @@ import type {
   CancelImageRequestData,
   CancelImageRequestErrors,
   CancelImageRequestResponses,
+  CancelSubscriptionLoginData,
+  CancelSubscriptionLoginErrors,
+  CancelSubscriptionLoginResponses,
   CancelVideoData,
   CancelVideoErrors,
   CancelVideoResponses,
+  ChooseCapabilityProviderData,
+  ChooseCapabilityProviderErrors,
+  ChooseCapabilityProviderResponses,
   CreateCompletionData,
   CreateCompletionErrors,
   CreateCompletionResponses,
   DescribeScreenshotData,
   DescribeScreenshotErrors,
   DescribeScreenshotResponses,
+  DisconnectSubscriptionData,
+  DisconnectSubscriptionErrors,
+  DisconnectSubscriptionResponses,
   DownloadModelV1ModelsModelIdDownloadPostData,
   DownloadModelV1ModelsModelIdDownloadPostErrors,
   DownloadModelV1ModelsModelIdDownloadPostResponses,
@@ -54,6 +63,11 @@ import type {
   GetRequestResponses,
   GetSettingsData,
   GetSettingsResponses,
+  GetSubscriptionLoginData,
+  GetSubscriptionLoginErrors,
+  GetSubscriptionLoginResponses,
+  GetSubscriptionsData,
+  GetSubscriptionsResponses,
   GetVideoContentData,
   GetVideoContentErrors,
   GetVideoContentResponses,
@@ -77,6 +91,12 @@ import type {
   ListSpeechResponses,
   ListVideosData,
   ListVideosResponses,
+  StartSubscriptionLoginData,
+  StartSubscriptionLoginErrors,
+  StartSubscriptionLoginResponses,
+  SubmitSubscriptionLoginCodeData,
+  SubmitSubscriptionLoginCodeErrors,
+  SubmitSubscriptionLoginCodeResponses,
   TranscribeAudioData,
   TranscribeAudioErrors,
   TranscribeAudioResponses,
@@ -504,6 +524,130 @@ export const updateSettings = <ThrowOnError extends boolean = false>(
     ThrowOnError
   >({
     url: '/v1/settings',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })
+
+/**
+ * Get Subscriptions
+ */
+export const getSubscriptions = <ThrowOnError extends boolean = false>(
+  options?: Options<GetSubscriptionsData, ThrowOnError>,
+): RequestResult<GetSubscriptionsResponses, unknown, ThrowOnError> =>
+  (options?.client ?? client).get<
+    GetSubscriptionsResponses,
+    unknown,
+    ThrowOnError
+  >({ url: '/v1/subscriptions', ...options })
+
+/**
+ * Choose Provider
+ */
+export const chooseCapabilityProvider = <ThrowOnError extends boolean = false>(
+  options: Options<ChooseCapabilityProviderData, ThrowOnError>,
+): RequestResult<
+  ChooseCapabilityProviderResponses,
+  ChooseCapabilityProviderErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).put<
+    ChooseCapabilityProviderResponses,
+    ChooseCapabilityProviderErrors,
+    ThrowOnError
+  >({
+    url: '/v1/subscriptions/capabilities/{capability}',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  })
+
+/**
+ * Disconnect Subscription
+ */
+export const disconnectSubscription = <ThrowOnError extends boolean = false>(
+  options: Options<DisconnectSubscriptionData, ThrowOnError>,
+): RequestResult<
+  DisconnectSubscriptionResponses,
+  DisconnectSubscriptionErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).delete<
+    DisconnectSubscriptionResponses,
+    DisconnectSubscriptionErrors,
+    ThrowOnError
+  >({ url: '/v1/subscriptions/{provider}', ...options })
+
+/**
+ * Cancel Login
+ */
+export const cancelSubscriptionLogin = <ThrowOnError extends boolean = false>(
+  options: Options<CancelSubscriptionLoginData, ThrowOnError>,
+): RequestResult<
+  CancelSubscriptionLoginResponses,
+  CancelSubscriptionLoginErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).delete<
+    CancelSubscriptionLoginResponses,
+    CancelSubscriptionLoginErrors,
+    ThrowOnError
+  >({ url: '/v1/subscriptions/{provider}/login', ...options })
+
+/**
+ * Get Login
+ */
+export const getSubscriptionLogin = <ThrowOnError extends boolean = false>(
+  options: Options<GetSubscriptionLoginData, ThrowOnError>,
+): RequestResult<
+  GetSubscriptionLoginResponses,
+  GetSubscriptionLoginErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).get<
+    GetSubscriptionLoginResponses,
+    GetSubscriptionLoginErrors,
+    ThrowOnError
+  >({ url: '/v1/subscriptions/{provider}/login', ...options })
+
+/**
+ * Start Login
+ */
+export const startSubscriptionLogin = <ThrowOnError extends boolean = false>(
+  options: Options<StartSubscriptionLoginData, ThrowOnError>,
+): RequestResult<
+  StartSubscriptionLoginResponses,
+  StartSubscriptionLoginErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    StartSubscriptionLoginResponses,
+    StartSubscriptionLoginErrors,
+    ThrowOnError
+  >({ url: '/v1/subscriptions/{provider}/login', ...options })
+
+/**
+ * Submit Login Code
+ */
+export const submitSubscriptionLoginCode = <
+  ThrowOnError extends boolean = false,
+>(
+  options: Options<SubmitSubscriptionLoginCodeData, ThrowOnError>,
+): RequestResult<
+  SubmitSubscriptionLoginCodeResponses,
+  SubmitSubscriptionLoginCodeErrors,
+  ThrowOnError
+> =>
+  (options.client ?? client).post<
+    SubmitSubscriptionLoginCodeResponses,
+    SubmitSubscriptionLoginCodeErrors,
+    ThrowOnError
+  >({
+    url: '/v1/subscriptions/{provider}/login/code',
     ...options,
     headers: {
       'Content-Type': 'application/json',

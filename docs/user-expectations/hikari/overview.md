@@ -8,6 +8,7 @@ Downloading, loading and successful generation are separate states. Requests can
 | --- | --- |
 | [Inference operations](inference.md) | Automatic model loading, memory sharing, priorities and conversation prefix reuse. |
 | [Model settings and downloads](model-settings.md) | Review fixed assignments and licenses and track or resume downloads. |
+| [Subscription language providers](subscriptions.md) | Bring a Claude or Codex subscription and toggle language between local and subscription models. |
 | [Model loading and context](model-lifecycle.md) | Check readiness, manage context limits and explicitly load or unload language models. |
 | [Chat playground](chat-playground.md) | Try streaming text conversations with cancellation and retry controls. |
 | [Decisions](decisions.md) | Evaluate choices, scores and criteria using specialist model judgments. |

@@ -11,6 +11,7 @@ import {
   type CapabilityModel,
   type CheckpointStatus,
 } from '../api/settings'
+import SubscriptionsPanel from '../components/SubscriptionsPanel'
 import './SettingsPage.css'
 
 /** Format bytes as decimal GB to match checkpoint size estimates. */
@@ -330,6 +331,7 @@ export default function SettingsPage() {
         <header className="models-intro">
           <h1>Models</h1>
         </header>
+        <SubscriptionsPanel />
         {!confirming && errorPanel}
         {!rows && !error && <p role="status" className="muted">Loading models…</p>}
         {rows && (

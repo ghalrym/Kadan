@@ -1,0 +1,61 @@
+import json
+import unittest
+from unittest.mock import MagicMock
+
+from api.orm_models.subscriptions import CapabilityProvider, Subscription
+from api.repositories import subscriptions
+
+
+class CredentialTests(unittest.TestCase):
+    def test_codex_requires_a_chatgpt_auth_file(self):
+        for credential in ("not json", json.dumps({"OPENAI_API_KEY": "sk"})):
+            with self.assertRaises(subscriptions.SubscriptionError):
+                subscriptions.validate_credential("codex", credential)
+        auth = json.dumps({"tokens": {"access_token": "a"}})
+        self.assertEqual(subscriptions.validate_credential("codex", f" {auth}\n"), auth)
+
+    def test_claude_token_is_trimmed_and_single(self):
+        self.assertEqual(
+            subscriptions.validate_credential("claude", " sk-ant-oat01-x\n"),
+            "sk-ant-oat01-x",
+        )
+        with self.assertRaises(subscriptions.SubscriptionError):
+            subscriptions.validate_credential("claude", "Your token: sk-ant-oat01-x")
+
+
+class ProviderTests(unittest.TestCase):
+    def test_subscription_must_be_connected_before_it_serves_language(self):
+        session = MagicMock()
+        session.get.return_value = None
+        with self.assertRaises(subscriptions.SubscriptionError):
+            subscriptions.choose(session, "language", "claude")
+        session.commit.assert_not_called()
+
+    def test_local_needs_no_subscription(self):
+        session = MagicMock()
+        session.get.return_value = None
+        subscriptions.choose(session, "language", "local")
+        added = session.add.call_args.args[0]
+        self.assertEqual((added.capability, added.provider), ("language", "local"))
+        session.commit.assert_called_once()
+
+    def test_disconnect_returns_its_capabilities_to_local(self):
+        session = MagicMock()
+        row = Subscription(provider="codex", credential="{}")
+        served = CapabilityProvider(capability="language", provider="codex")
+        session.get.return_value = row
+        session.scalars.return_value = [served]
+        subscriptions.disconnect(session, "codex")
+        session.delete.assert_called_once_with(row)
+        self.assertEqual(served.provider, "local")
+        session.commit.assert_called_once()
+
+    def test_snapshot_defaults_language_to_local(self):
+        session = MagicMock()
+        session.scalars.side_effect = [["claude"], []]
+        result = subscriptions.snapshot(session)
+        self.assertEqual(result.capabilities.language, "local")
+        self.assertEqual(
+            [(row.provider, row.connected, row.model) for row in result.subscriptions],
+            [("claude", True, "claude-haiku-5-5"), ("codex", False, "gpt-6.1-terra")],
+        )
