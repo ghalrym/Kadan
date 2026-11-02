@@ -626,7 +626,7 @@ class RunMessage(Model):
 class RunEvent(Model):
     """An external event that wakes the agent; Kadan owns its content."""
 
-    kind: Literal["codex", "computer"]
+    kind: Literal["codex", "computer", "task"]
     content: str = Field(min_length=1, max_length=20000)
 
 
@@ -659,12 +659,69 @@ class AgentRun(AgentRunState):
     id: UUID
     agent_key: AgentKey
     conversation_id: UUID
+    task_id: UUID | None = None
     trigger_message_id: UUID | None = None
     trigger_job_id: UUID | None = None
     trigger_event: RunEvent | None = None
     persona_id: UUID | None = None
     references: list[ReferenceSnapshot] = Field(default_factory=list, max_length=3)
     delivered_message_ids: list[UUID] = Field(default_factory=list)
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskCheckpoint(Model):
+    message: str | None = Field(
+        default=None, min_length=1, max_length=16000, pattern=r"\S"
+    )
+    action_id: UUID
+    task_id: UUID | None = None
+    expected_version: int | None = Field(default=None, ge=1)
+    goal: str = Field(min_length=1, max_length=4000, pattern=r"\S")
+    progress: str = Field(default="", max_length=8000)
+    next_step: str = Field(default="", max_length=4000)
+    blocker: str | None = Field(default=None, max_length=4000)
+    status: Literal["active", "waiting", "completed", "failed"] = "active"
+    wait_kind: Literal["user", "tool", "timer"] | None = None
+    wake_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def valid_wait(self) -> Self:
+        if (self.status == "waiting") != (self.wait_kind is not None):
+            raise ValueError("Waiting tasks require a reason to wait")
+        if (self.wait_kind == "timer") != (self.wake_at is not None):
+            raise ValueError("Only timer waits require a wake time")
+        if self.wake_at is not None and self.wake_at.utcoffset() is None:
+            raise ValueError("Wake times require a timezone")
+        if self.status in {"active", "waiting"} and not self.next_step.strip():
+            raise ValueError("Unfinished tasks require a next step")
+        if self.wait_kind == "user" and (
+            not (self.blocker or "").strip() or self.message is None
+        ):
+            raise ValueError(
+                "Waiting for the user requires a visible question and blocker"
+            )
+        if self.status == "failed" and not (self.blocker or "").strip():
+            raise ValueError("Failed tasks require an explanation")
+        if (self.task_id is None) != (self.expected_version is None):
+            raise ValueError("Task updates require the saved task version")
+        return self
+
+
+class AssistantTask(Model):
+    id: UUID
+    agent_key: AgentKey
+    conversation_id: UUID
+    origin_run_id: UUID
+    current_run_id: UUID
+    goal: str = Field(min_length=1, max_length=4000)
+    progress: str = Field(max_length=8000)
+    next_step: str = Field(max_length=4000)
+    blocker: str | None = Field(default=None, max_length=4000)
+    status: Literal["active", "waiting", "paused", "completed", "failed", "cancelled"]
+    wait_kind: Literal["user", "tool", "timer"] | None = None
+    wake_at: datetime | None = None
     version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
@@ -790,4 +847,5 @@ class ExportManifest(Model):
     activity: list[Activity] = Field(default_factory=list)
     pet_jobs: list[PetJob] = Field(default_factory=list)
     agent_runs: list[AgentRun] = Field(default_factory=list)
+    assistant_tasks: list[AssistantTask] = Field(default_factory=list)
     image_jobs: list[ImageJob] = Field(default_factory=list)

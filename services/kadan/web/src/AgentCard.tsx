@@ -26,10 +26,11 @@ interface Props {
   onCall: () => void;
   onOpenComputer: () => void;
   activity: ReactNode;
+  goals?: ReactNode;
 }
 
 /** The agent's contact card, opened from its pet: presence, calling, its computer and conversation activity. */
-export default function AgentCard({ agentName, sheet, mood, presence, onClose, callDisabled, callTitle, onCall, onOpenComputer, activity }: Props) {
+export default function AgentCard({ agentName, sheet, mood, presence, onClose, callDisabled, callTitle, onCall, onOpenComputer, activity, goals }: Props) {
   const card = useRef<HTMLDivElement>(null);
   const [computer, setComputer] = useState<ComputerStatus | null>(null);
   const [frame, setFrame] = useState(0);
@@ -117,6 +118,7 @@ export default function AgentCard({ agentName, sheet, mood, presence, onClose, c
           </span>
         </button>
       </section>
+      {goals}
       {activity}
     </div>
   );

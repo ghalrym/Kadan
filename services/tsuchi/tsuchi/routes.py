@@ -17,6 +17,7 @@ from .models import (
     AgentRunState,
     Asset,
     AssetUpdate,
+    AssistantTask,
     ChatResultInput,
     ComputerTask,
     ComputerThread,
@@ -42,6 +43,7 @@ from .models import (
     RunEvent,
     Runner,
     Stats,
+    TaskCheckpoint,
     VersionInput,
     resource_input_adapter,
 )
@@ -109,6 +111,10 @@ class EventRunCreate(Model):
     id: UUID
     origin_run_id: UUID
     event: RunEvent
+
+
+class OwnedTaskCheckpoint(TaskCheckpoint):
+    worker_id: UUID
 
 
 class RunUpdate(AgentRunState):
@@ -269,6 +275,37 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         return repository.create_event_run(
             key, conversation_id, value.id, value.origin_run_id, value.event
         )
+
+    @router.get(
+        "/agents/{key}/resources/{conversation_id}/tasks",
+        response_model=list[AssistantTask],
+    )
+    def conversation_tasks(key: AgentKey, conversation_id: UUID):
+        return repository.conversation_tasks(key, conversation_id)
+
+    @router.get("/agents/{key}/tasks/{task_id}", response_model=AssistantTask)
+    def get_task(key: AgentKey, task_id: UUID):
+        return repository.get_task(key, task_id)
+
+    @router.post("/agents/{key}/runs/{run_id}/task", response_model=AssistantTask)
+    def checkpoint_task(key: AgentKey, run_id: UUID, value: OwnedTaskCheckpoint):
+        checkpoint = TaskCheckpoint.model_validate(
+            value.model_dump(exclude={"worker_id"})
+        )
+        return repository.checkpoint_task(key, run_id, checkpoint, value.worker_id)
+
+    @router.post("/agents/{key}/tasks/{task_id}/{action}", response_model=AssistantTask)
+    def control_task(
+        key: AgentKey,
+        task_id: UUID,
+        action: Literal["pause", "resume", "cancel"],
+        value: VersionInput,
+    ):
+        return repository.control_task(key, task_id, action, value.expected_version)
+
+    @router.post("/assistant-tasks/wake", response_model=list[AssistantTask])
+    def wake_tasks():
+        return repository.wake_tasks()
 
     @router.get("/agents/{key}/runs/{run_id}", response_model=AgentRun)
     def get_run(key: AgentKey, run_id: UUID):

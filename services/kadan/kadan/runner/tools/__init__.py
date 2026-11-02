@@ -11,6 +11,7 @@ from . import (
     conversation,
     display,
     file,
+    goals,
     history,
     jupyter,
     mcp,
@@ -30,6 +31,7 @@ CONVERSATION_TOOLS: list[StructuredTool] = [
     *conversation.TOOLS,
     *workspace.TOOLS,
     *history.TOOLS,
+    *goals.TOOLS,
 ]
 MEMORY_TOOLS: list[StructuredTool] = memory.TOOLS
 CODING_TOOLS: list[StructuredTool] = coding.START_TOOLS

@@ -11,3 +11,9 @@ Updates arrive periodically and can lag saved changes. Loading and failed reads 
 Activity counts cover response and image records, not Codex work. [Codex threads](coding.md) are tracked in the Coding tab, and stopping a response leaves Codex running.
 
 Activity is a summary of retained work, not the agent's hidden reasoning, command transcript or a complete audit of external effects. Failures and stops remain available for review without being retried automatically. Use [Stop and Stop image](stopping-chat-work.md) for active work; viewing Activity does not cancel, resume or replay it.
+
+On this branch, **Goals** appears above Activity on the agent's card. It shows the
+conversation's [saved ongoing goals](durable-goals.md), separately from response
+and image records. A finished response does not finish its goal. Goals have their
+own waiting, pause and cancellation states and controls. This addition still needs
+the project owner's manual application validation.

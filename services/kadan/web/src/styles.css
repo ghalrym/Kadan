@@ -2385,7 +2385,7 @@ dialog::backdrop {
   outline: none;
   overflow-y: auto;
 }
-.agent-card > :not(.agent-card-activity) {
+.agent-card > :not(.agent-card-activity):not(.agent-card-goals) {
   flex-shrink: 0;
 }
 @keyframes card-in {
@@ -2768,3 +2768,27 @@ dialog::backdrop {
 .save-chat-result form { max-width: 520px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-sm); }
 .save-chat-result label { display: grid; gap: 6px; }
 .save-chat-result input { width: 100%; }
+
+.agent-card-goals {
+  display: flex;
+  flex-direction: column;
+  min-height: 80px;
+  flex-shrink: 1;
+  font-size: 13px;
+}
+.agent-card-goals h3 {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+.goals-content { min-height: 0; max-height: 300px; overflow-y: auto; }
+.goal-list { list-style: none; padding: 0; margin: 0; }
+.goal-list li { padding: 8px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.goal-list strong, .goal-list .activity-state { display: block; }
+.goal-list p { margin: 5px 0; white-space: pre-wrap; color: var(--muted); }
+.goal-list b { font-weight: 500; }
+.goal-controls { display: flex; gap: 8px; margin-top: 8px; }
+.goal-controls button { padding: 3px 8px; border: 1px solid var(--border); border-radius: var(--r-sm); }
+.goal-note { margin: 6px 0 0; color: var(--faint); font-size: 11px; }
+.goals-content > details { margin-top: 8px; }

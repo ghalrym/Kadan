@@ -8,6 +8,7 @@ import AgentCard from "./AgentCard";
 import ComputerViewer from "./ComputerViewer";
 import ChatExport from "./ChatExport";
 import Activity from "./Activity";
+import Goals from "./Goals";
 import { useVoiceCall } from "./VoiceCallControl";
 import { activeLabel } from "./presence";
 import { useAgentPet } from "./PetContext";
@@ -439,6 +440,7 @@ export default function Chat({
         setCard(false);
         setComputer(true);
       }}
+      goals={<Goals key={`${agentKey}:${chain.id}`} agentKey={agentKey} conversationId={chain.id} />}
       activity={<Activity
         conversation={chain}
         runs={runs}
