@@ -58,7 +58,7 @@ class AgentRunState(BaseModel):
 
 
 class RunEvent(BaseModel):
-    kind: Literal["codex", "computer"]
+    kind: Literal["codex", "computer", "task"]
     content: str = Field(min_length=1, max_length=20000)
 
 
@@ -72,6 +72,7 @@ class AgentRun(AgentRunState):
     trigger_message_id: UUID | None = None
     trigger_job_id: UUID | None = None
     trigger_event: RunEvent | None = None
+    task_id: UUID | None = None
     persona_id: UUID | None = None
     references: list[ReferenceSnapshot] = Field(default_factory=list, max_length=3)
     delivered_message_ids: list[UUID] = Field(default_factory=list)

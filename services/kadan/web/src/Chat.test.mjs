@@ -71,6 +71,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     "./ComputerViewer": { default: "ComputerViewer" },
     "./ChatExport": { default: "ChatExport" },
     "./Activity": { default: "Activity" },
+    "./Goals": { default: "Goals" },
     "./VoiceCallControl": { useVoiceCall: (_agent, _persona, disabled) => {
       callDisabled = disabled;
       return { active: false, unavailable: null, ...callOptions.voiceCall, start: (...args) => callStarts.push(args) };

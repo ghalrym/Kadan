@@ -118,6 +118,7 @@ test("Chat passes saved history to export while its draft and optimistic outgoin
     "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true }) },
     "./Pet": { default: "Pet", useMood: () => ["idle", () => {}] },
     "./Activity": {},
+    "./Goals": {},
     "./attachments": { ChatAttachments: class { entries = []; } },
     "./SaveChatResult": {},
     "./RequestReferences": { default: "RequestReferences" },

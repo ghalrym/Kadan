@@ -19,6 +19,7 @@ from .models import (
     AgentRun,
     AgentRunState,
     Asset,
+    AssistantTask,
     ComputerSteering,
     ComputerTask,
     ComputerTaskOrigin,
@@ -48,6 +49,7 @@ from .models import (
     RunEvent,
     Runner,
     Stats,
+    TaskCheckpoint,
     resource_adapter,
     resource_input_adapter,
     utc_now,
@@ -142,6 +144,17 @@ class Repository:
                 );
                 CREATE INDEX IF NOT EXISTS agent_runs_conversation ON agent_runs(agent_key, conversation_id);
                 CREATE INDEX IF NOT EXISTS agent_runs_status ON agent_runs(status);
+                CREATE TABLE IF NOT EXISTS assistant_tasks (
+                    id TEXT PRIMARY KEY, agent_key TEXT NOT NULL REFERENCES agents(key),
+                    conversation_id TEXT NOT NULL REFERENCES resources(id),
+                    status TEXT NOT NULL, data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS assistant_tasks_conversation
+                    ON assistant_tasks(agent_key, conversation_id, status);
+                CREATE TABLE IF NOT EXISTS task_checkpoints (
+                    action_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES agent_runs(id),
+                    request TEXT NOT NULL, result TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS image_jobs (
                     id TEXT PRIMARY KEY, agent_key TEXT NOT NULL REFERENCES agents(key),
                     run_id TEXT NOT NULL REFERENCES agent_runs(id),
@@ -525,12 +538,23 @@ class Repository:
                     )
                 )
             self._append_run_message(db, key, conversation, message)
+            task_row = db.execute(
+                "SELECT data FROM assistant_tasks WHERE agent_key = ? AND conversation_id = ? AND status IN ('active', 'waiting')",
+                (key, str(conversation_id)),
+            ).fetchone()
+            linked_task = (
+                AssistantTask.model_validate_json(task_row[0]) if task_row else None
+            )
             now = utc_now()
             run = AgentRun(
                 id=message.id,
                 trace_parent=carrier().get("traceparent"),
                 agent_key=key,
                 conversation_id=conversation_id,
+                task_id=linked_task.id if linked_task else None,
+                trigger_event=self._user_task_event(db, linked_task)
+                if linked_task
+                else None,
                 trigger_message_id=message.id,
                 persona_id=persona_id,
                 references=snapshots,
@@ -575,14 +599,489 @@ class Repository:
                 agent_key=key,
                 conversation_id=conversation_id,
                 trigger_event=event,
+                task_id=origin.task_id,
                 persona_id=origin.persona_id,
                 references=origin.references,
                 version=1,
                 created_at=now,
                 updated_at=now,
             )
+            run = self._task_event_run(db, run)
             self._save_run(db, run)
             return run
+
+    @staticmethod
+    def _task(db: sqlite3.Connection, key: str, task_id: UUID) -> AssistantTask:
+        row = db.execute(
+            "SELECT data FROM assistant_tasks WHERE agent_key = ? AND id = ?",
+            (key, str(task_id)),
+        ).fetchone()
+        if row is None:
+            raise StorageError("Task not found", 404)
+        return AssistantTask.model_validate_json(row[0])
+
+    @staticmethod
+    def _save_task(db: sqlite3.Connection, task: AssistantTask) -> None:
+        db.execute(
+            "INSERT INTO assistant_tasks VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET status=excluded.status, data=excluded.data",
+            (
+                str(task.id),
+                task.agent_key,
+                str(task.conversation_id),
+                task.status,
+                task.model_dump_json(),
+            ),
+        )
+
+    @staticmethod
+    def _task_change(
+        db: sqlite3.Connection, task: AssistantTask, **changes
+    ) -> AssistantTask:
+        updated = AssistantTask.model_validate(
+            {
+                **task.model_dump(),
+                **changes,
+                "version": task.version + 1,
+                "updated_at": utc_now(),
+            }
+        )
+        Repository._save_task(db, updated)
+        return updated
+
+    def get_task(self, key: str, task_id: UUID) -> AssistantTask:
+        with self.connect() as db:
+            task = self._task(db, key, task_id)
+            self._conversation(db, key, task.conversation_id)
+            return task
+
+    def conversation_tasks(
+        self, key: str, conversation_id: UUID
+    ) -> list[AssistantTask]:
+        with self.connect() as db:
+            self._conversation(db, key, conversation_id)
+            return [
+                AssistantTask.model_validate_json(row[0])
+                for row in db.execute(
+                    "SELECT data FROM assistant_tasks WHERE agent_key = ? AND conversation_id = ? ORDER BY rowid",
+                    (key, str(conversation_id)),
+                )
+            ]
+
+    def checkpoint_task(
+        self, key: str, run_id: UUID, value: TaskCheckpoint, worker_id: UUID
+    ) -> AssistantTask:
+        with self.connect(write=True) as db:
+            run = self._run(db, key, run_id)
+            self._owned_run(db, run, worker_id)
+            request = value.model_dump_json(exclude={"expected_version"})
+            receipt = db.execute(
+                "SELECT run_id, request, result FROM task_checkpoints WHERE action_id = ?",
+                (str(value.action_id),),
+            ).fetchone()
+            if receipt is not None:
+                if receipt[0] != str(run.id) or receipt[1] != request:
+                    raise StorageError("This checkpoint ID is already in use", 409)
+                return AssistantTask.model_validate_json(receipt[2])
+            if value.wake_at is not None and value.wake_at < utc_now() + timedelta(
+                seconds=30
+            ):
+                raise StorageError(
+                    "Choose a wake time at least thirty seconds from now", 422
+                )
+            fields = value.model_dump(
+                exclude={"action_id", "task_id", "expected_version", "message"}
+            )
+            if value.task_id is None:
+                if (
+                    run.task_id is not None
+                    or db.execute(
+                        "SELECT 1 FROM assistant_tasks WHERE agent_key = ? AND conversation_id = ? "
+                        "AND status IN ('active', 'waiting', 'paused')",
+                        (key, str(run.conversation_id)),
+                    ).fetchone()
+                ):
+                    raise StorageError(
+                        "This conversation already has an unfinished task", 409
+                    )
+                now = utc_now()
+                task = AssistantTask(
+                    id=value.action_id,
+                    agent_key=key,
+                    conversation_id=run.conversation_id,
+                    origin_run_id=run.id,
+                    current_run_id=run.id,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                    **fields,
+                )
+                self._save_task(db, task)
+                run = run.model_copy(
+                    update={
+                        "task_id": task.id,
+                        "version": run.version + 1,
+                        "updated_at": now,
+                    }
+                )
+                self._save_run(db, run)
+                # Replies already queued before task creation must still resume it.
+                for row in db.execute(
+                    "SELECT data FROM agent_runs WHERE agent_key = ? AND conversation_id = ? AND status = 'queued'",
+                    (key, str(run.conversation_id)),
+                ).fetchall():
+                    queued = AgentRun.model_validate_json(row[0])
+                    if queued.trigger_message_id is not None and queued.task_id is None:
+                        self._save_run(
+                            db,
+                            queued.model_copy(
+                                update={
+                                    "task_id": task.id,
+                                    "version": queued.version + 1,
+                                    "updated_at": now,
+                                }
+                            ),
+                        )
+            else:
+                task = self._task(db, key, value.task_id)
+                if (
+                    run.task_id != task.id
+                    or task.conversation_id != run.conversation_id
+                ):
+                    raise StorageError("This task belongs to another run", 409)
+                self._check_version(task, value.expected_version)
+                if task.status in {"paused", "cancelled", "completed", "failed"}:
+                    raise StorageError(
+                        "This task must be resumed before updating it", 409
+                    )
+                task = self._task_change(db, task, current_run_id=run.id, **fields)
+            if value.message is not None:
+                conversation = self._conversation(db, key, run.conversation_id)
+                message_id = uuid5(value.action_id, "task-message")
+                self._append_run_message(
+                    db,
+                    key,
+                    conversation,
+                    Message(
+                        id=message_id,
+                        role="assistant",
+                        content=value.message,
+                        created_at=utc_now(),
+                    ),
+                )
+                if message_id not in run.delivered_message_ids:
+                    run = run.model_copy(
+                        update={
+                            "delivered_message_ids": [
+                                *run.delivered_message_ids,
+                                message_id,
+                            ],
+                            "version": run.version + 1,
+                            "updated_at": utc_now(),
+                        }
+                    )
+                    self._save_run(db, run)
+            if task.status in {"completed", "failed"}:
+                self._settle_task_queue(db, task)
+            elif task.status == "waiting" and task.wait_kind == "user":
+                self._settle_task_queue(db, task, keep_user_tasks=True)
+            db.execute(
+                "INSERT INTO task_checkpoints VALUES (?, ?, ?, ?)",
+                (str(value.action_id), str(run.id), request, task.model_dump_json()),
+            )
+            return task
+
+    @staticmethod
+    def _settle_task_queue(
+        db: sqlite3.Connection, task: AssistantTask, *, keep_user_tasks: bool = False
+    ) -> None:
+        for row in db.execute(
+            "SELECT data FROM agent_runs WHERE agent_key = ? AND conversation_id = ? AND status = 'queued'",
+            (task.agent_key, str(task.conversation_id)),
+        ).fetchall():
+            run = AgentRun.model_validate_json(row[0])
+            if run.task_id == task.id:
+                if keep_user_tasks and run.trigger_message_id is not None:
+                    continue
+                changes = (
+                    {"task_id": None}
+                    if run.trigger_message_id
+                    else {"status": "cancelled"}
+                )
+                Repository._save_run(
+                    db,
+                    run.model_copy(
+                        update={
+                            **changes,
+                            "version": run.version + 1,
+                            "updated_at": utc_now(),
+                        }
+                    ),
+                )
+
+    @staticmethod
+    def _task_event_run(db: sqlite3.Connection, run: AgentRun) -> AgentRun:
+        if run.task_id is None:
+            return run
+        task = Repository._task(db, run.agent_key, run.task_id)
+        if task.status in {"paused", "cancelled", "completed", "failed"} or (
+            task.status == "waiting" and task.wait_kind == "user"
+        ):
+            # Retain completion evidence without executing a paused goal.
+            return run.model_copy(update={"status": "cancelled"})
+        return run
+
+    @staticmethod
+    def _retained_task_events(
+        db: sqlite3.Connection, task: AssistantTask
+    ) -> list[dict]:
+        evidence = []
+        for row in db.execute(
+            "SELECT data FROM agent_runs WHERE agent_key = ? AND conversation_id = ? AND status = 'cancelled' ORDER BY updated_at DESC LIMIT 50",
+            (task.agent_key, str(task.conversation_id)),
+        ):
+            previous = AgentRun.model_validate_json(row[0])
+            if previous.task_id == task.id:
+                if (
+                    previous.trigger_event is not None
+                    and previous.trigger_event.kind != "task"
+                ):
+                    evidence.append(
+                        {
+                            "kind": previous.trigger_event.kind,
+                            "content": previous.trigger_event.content[:2000],
+                        }
+                    )
+                elif previous.trigger_job_id is not None:
+                    evidence.append(
+                        {"kind": "image", "job_id": str(previous.trigger_job_id)}
+                    )
+                if len(evidence) == 5:
+                    break
+        delegated = []
+        for row in db.execute(
+            "SELECT data FROM agent_runs WHERE agent_key = ? AND conversation_id = ? ORDER BY updated_at DESC LIMIT 50",
+            (task.agent_key, str(task.conversation_id)),
+        ):
+            previous = AgentRun.model_validate_json(row[0])
+            if previous.task_id != task.id:
+                continue
+            for index in range(len(previous.transcript) - 1, -1, -1):
+                entry = previous.transcript[index]
+                if entry.role != "assistant" or not entry.content.startswith(
+                    '{"tool":'
+                ):
+                    continue
+                try:
+                    command = json.loads(entry.content)
+                except (ValueError, TypeError):
+                    continue
+                tool = command.get("tool")
+                args = command.get("arguments")
+                if tool not in {
+                    "codex_start",
+                    "use_computer",
+                    "generate_image",
+                } or not isinstance(args, dict):
+                    continue
+                action_id = uuid5(previous.id, f"command:{index + 1}")
+                item = {
+                    "kind": "delegated_action",
+                    "tool": tool,
+                    "run_id": str(previous.id),
+                    "action_id": str(action_id),
+                    "request_id": str(
+                        uuid5(action_id, "request")
+                        if tool == "generate_image"
+                        else action_id
+                    ),
+                    "intent": str(args.get("instructions", args.get("prompt", "")))[
+                        :1000
+                    ],
+                    "outcome": "May have started; inspect saved tool status before repeating this work.",
+                }
+                for name in ("thread_id", "cwd"):
+                    if isinstance(args.get(name), str):
+                        item[name] = args[name][:512]
+                if tool == "use_computer":
+                    item["computer_task_id"] = str(action_id)
+                elif tool == "generate_image":
+                    item["job_id"] = str(action_id)
+                if index + 1 < len(previous.transcript):
+                    result_entry = previous.transcript[index + 1]
+                    if result_entry.role == "user" and result_entry.content.startswith(
+                        "Tool result: "
+                    ):
+                        try:
+                            result = json.loads(
+                                result_entry.content.removeprefix("Tool result: ")
+                            )
+                        except (ValueError, TypeError):
+                            result = None
+                        if isinstance(result, dict):
+                            item["outcome"] = (
+                                "A tool result was recorded; inspect its current status before repeating this work."
+                            )
+                            for name in (
+                                "thread_id",
+                                "job_id",
+                                "task_id",
+                                "status",
+                                "running",
+                                "error",
+                            ):
+                                if isinstance(result.get(name), (str, bool)):
+                                    item[name] = (
+                                        result[name][:1000]
+                                        if isinstance(result[name], str)
+                                        else result[name]
+                                    )
+                delegated.append(item)
+                if len(delegated) == 5:
+                    break
+            if len(delegated) == 5:
+                break
+        combined = [*delegated, *evidence]
+        while combined and len(json.dumps(combined, ensure_ascii=False)) > 16000:
+            combined.pop()
+        return combined
+
+    @staticmethod
+    def _user_task_event(
+        db: sqlite3.Connection, task: AssistantTask
+    ) -> RunEvent | None:
+        evidence = Repository._retained_task_events(db, task)
+        if not evidence:
+            return None
+        return RunEvent(
+            kind="task",
+            content=json.dumps(
+                {
+                    "task_id": str(task.id),
+                    "reason": "The user replied. Retained tool completions are evidence, not a new instruction.",
+                    "retained_events": evidence,
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+    @staticmethod
+    def _queue_task(
+        db: sqlite3.Connection, task: AssistantTask, reason: str
+    ) -> AssistantTask:
+        now = utc_now()
+        run_id = uuid5(task.id, f"wake:{task.version}")
+        origin = Repository._run(db, task.agent_key, task.origin_run_id)
+        evidence = Repository._retained_task_events(db, task)
+        event = RunEvent(
+            kind="task",
+            content=json.dumps(
+                {
+                    "reason": reason,
+                    "task_id": str(task.id),
+                    "retained_events": evidence,
+                },
+                ensure_ascii=False,
+            ),
+        )
+        run = AgentRun(
+            id=run_id,
+            agent_key=task.agent_key,
+            conversation_id=task.conversation_id,
+            task_id=task.id,
+            trigger_event=event,
+            persona_id=origin.persona_id,
+            references=origin.references,
+            version=1,
+            created_at=now,
+            updated_at=now,
+        )
+        Repository._save_run(db, run)
+        return Repository._task_change(
+            db,
+            task,
+            status="active",
+            wait_kind=None,
+            wake_at=None,
+            current_run_id=run.id,
+        )
+
+    def control_task(
+        self, key: str, task_id: UUID, action: str, expected_version: int
+    ) -> AssistantTask:
+        with self.connect(write=True) as db:
+            task = self._task(db, key, task_id)
+            self._conversation(db, key, task.conversation_id)
+            target = {"pause": "paused", "cancel": "cancelled", "resume": "active"}.get(
+                action
+            )
+            if target is None:
+                raise StorageError("Unknown task action", 422)
+            if task.status == target:
+                return task
+            self._check_version(task, expected_version)
+            if action == "resume":
+                if task.status not in {"paused", "failed"}:
+                    raise StorageError(
+                        "Only paused or failed tasks can be resumed", 409
+                    )
+                if db.execute(
+                    "SELECT 1 FROM assistant_tasks WHERE agent_key = ? AND conversation_id = ? "
+                    "AND id != ? AND status IN ('active', 'waiting', 'paused')",
+                    (key, str(task.conversation_id), str(task.id)),
+                ).fetchone():
+                    raise StorageError(
+                        "This conversation already has an unfinished task", 409
+                    )
+                return self._queue_task(
+                    db,
+                    task,
+                    "Resumed by the user. Inspect saved outcomes before repeating external work.",
+                )
+            if task.status in {"completed", "cancelled", "failed"}:
+                raise StorageError("This task is already finished", 409)
+            task = self._task_change(
+                db, task, status=target, wait_kind=None, wake_at=None
+            )
+            for row in db.execute(
+                "SELECT data FROM agent_runs WHERE agent_key = ? AND conversation_id = ? AND status IN ('queued', 'running')",
+                (key, str(task.conversation_id)),
+            ).fetchall():
+                run = AgentRun.model_validate_json(row[0])
+                if run.task_id == task.id:
+                    self._save_run(
+                        db,
+                        run.model_copy(
+                            update={
+                                "status": "cancelled",
+                                "owner_id": None,
+                                "lease_expires_at": None,
+                                "version": run.version + 1,
+                                "updated_at": utc_now(),
+                            }
+                        ),
+                    )
+            return task
+
+    def wake_tasks(self) -> list[AssistantTask]:
+        woken = []
+        with self.connect(write=True) as db:
+            for row in db.execute(
+                "SELECT t.data FROM assistant_tasks t JOIN resources c ON c.id=t.conversation_id AND c.agent_key=t.agent_key WHERE t.status='waiting' AND c.deleted=0 AND c.kind='conversation'"
+            ).fetchall():
+                task = AssistantTask.model_validate_json(row[0])
+                if task.wait_kind != "timer" or task.wake_at > utc_now():
+                    continue
+                if any(
+                    AgentRun.model_validate_json(r[0]).task_id == task.id
+                    for r in db.execute(
+                        "SELECT data FROM agent_runs WHERE agent_key = ? AND conversation_id = ? AND status IN ('queued', 'running')",
+                        (task.agent_key, str(task.conversation_id)),
+                    )
+                ):
+                    continue
+                woken.append(self._queue_task(db, task, "The saved timer is due."))
+        return woken
 
     def get_run(self, key: str, run_id: UUID) -> AgentRun:
         with self.connect() as db:
@@ -641,6 +1140,23 @@ class Repository:
             if value.transcript[: len(current.transcript)] != current.transcript:
                 raise StorageError("Persisted agent transcript is immutable", 409)
             now = utc_now()
+            task = self._task(db, key, current.task_id) if current.task_id else None
+            if task is not None and (
+                task.status in {"paused", "cancelled"}
+                or (
+                    task.status in {"completed", "failed"}
+                    and current.status == "queued"
+                )
+            ):
+                raise StorageError("This task is not active", 409)
+            if (
+                task is not None
+                and current.status == "queued"
+                and current.trigger_message_id is None
+                and task.status == "waiting"
+                and task.wait_kind == "user"
+            ):
+                raise StorageError("This task is waiting for the user", 409)
             claiming = current.status == "queued" or (
                 current.status == "running" and current.lease_expires_at <= now
             )
@@ -691,7 +1207,41 @@ class Repository:
                     "updated_at": now,
                 }
             )
+            if (
+                task is not None
+                and current.status == "queued"
+                and current.trigger_message_id is not None
+            ):
+                updated = updated.model_copy(
+                    update={"trigger_event": self._user_task_event(db, task)}
+                )
             self._save_run(db, updated)
+            if task is not None:
+                if current.status == "queued":
+                    self._task_change(
+                        db,
+                        task,
+                        status="active",
+                        wait_kind=None,
+                        wake_at=None,
+                        current_run_id=current.id,
+                    )
+                elif (
+                    value.status in {"failed", "cancelled"}
+                    and task.status in {"active", "waiting"}
+                ) or (value.status == "completed" and task.status == "active"):
+                    failed_task = self._task_change(
+                        db,
+                        task,
+                        status="failed",
+                        wait_kind=None,
+                        wake_at=None,
+                        blocker=(
+                            value.error
+                            or "The response ended without a saved next step. Review and resume the task."
+                        )[:4000],
+                    )
+                    self._settle_task_queue(db, failed_task)
             return updated
 
     def cancel_run(self, key: str, run_id: UUID) -> AgentRun:
@@ -709,6 +1259,18 @@ class Repository:
                 }
             )
             self._save_run(db, updated)
+            if current.task_id is not None:
+                task = self._task(db, key, current.task_id)
+                if task.status in {"active", "waiting"}:
+                    paused_task = self._task_change(
+                        db,
+                        task,
+                        status="paused",
+                        wait_kind=None,
+                        wake_at=None,
+                        blocker="The response was stopped. Resume the task when you are ready.",
+                    )
+                    self._settle_task_queue(db, paused_task)
             return updated
 
     @traced("kadan.storage.deliver_run_message")
@@ -864,17 +1426,21 @@ class Repository:
         now = utc_now()
         self._save_run(
             db,
-            AgentRun(
-                id=job.event_run_id,
-                trace_parent=carrier().get("traceparent") or job.trace_parent,
-                agent_key=job.agent_key,
-                conversation_id=job.conversation_id,
-                trigger_job_id=job.id,
-                persona_id=origin.persona_id,
-                references=origin.references,
-                version=1,
-                created_at=now,
-                updated_at=now,
+            Repository._task_event_run(
+                db,
+                AgentRun(
+                    id=job.event_run_id,
+                    trace_parent=carrier().get("traceparent") or job.trace_parent,
+                    agent_key=job.agent_key,
+                    conversation_id=job.conversation_id,
+                    trigger_job_id=job.id,
+                    task_id=origin.task_id,
+                    persona_id=origin.persona_id,
+                    references=origin.references,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                ),
             ),
         )
 
@@ -1069,17 +1635,21 @@ class Repository:
         )
         Repository._save_run(
             db,
-            AgentRun(
-                id=task.event_run_id,
-                trace_parent=carrier().get("traceparent"),
-                agent_key=task.agent_key,
-                conversation_id=task.origin.conversation_id,
-                trigger_event=RunEvent(kind="computer", content=content),
-                persona_id=origin.persona_id,
-                references=origin.references,
-                version=1,
-                created_at=now,
-                updated_at=now,
+            Repository._task_event_run(
+                db,
+                AgentRun(
+                    id=task.event_run_id,
+                    trace_parent=carrier().get("traceparent"),
+                    agent_key=task.agent_key,
+                    conversation_id=task.origin.conversation_id,
+                    trigger_event=RunEvent(kind="computer", content=content),
+                    task_id=origin.task_id,
+                    persona_id=origin.persona_id,
+                    references=origin.references,
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                ),
             ),
         )
 
@@ -2483,6 +3053,13 @@ class Repository:
                 AgentRun.model_validate_json(row[0])
                 for row in db.execute(
                     "SELECT data FROM agent_runs WHERE agent_key = ? ORDER BY id",
+                    (key,),
+                )
+            ],
+            assistant_tasks=[
+                AssistantTask.model_validate_json(row[0])
+                for row in db.execute(
+                    "SELECT data FROM assistant_tasks WHERE agent_key = ? ORDER BY id",
                     (key,),
                 )
             ],

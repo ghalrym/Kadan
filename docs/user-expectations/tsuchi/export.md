@@ -1,6 +1,6 @@
 # Export
 
-Tsuchi's **Export namespace** downloads a ZIP containing the selected agent's stored content. It includes the agent record, resources, revision history, file metadata and original files, retained activity, pet records, agent runs and image jobs. Trashed content is included.
+Tsuchi's **Export namespace** downloads a ZIP containing the selected agent's stored content. It includes the agent record, resources, revision history, file metadata and original files, retained activity, pet records, agent runs and image jobs. On this branch it also includes saved assistant goals and their progress. Trashed content is included.
 
 The archive represents saved state at export time. Unsaved editor drafts and changes saved afterward are not included. Other agents, Hikari's models and playground results, and the agent computer's filesystem are outside its scope. Runner assignments are also excluded.
 

@@ -119,6 +119,8 @@ class Boundary:
         assert service == "Tsuchi"
         base = self.controller.path("test", self.current.id)
         body = kwargs.get("json", {})
+        if path.endswith("/tasks") and method == "GET":
+            return []
         if path == base and method == "GET":
             return self.current.model_dump(mode="json")
         if path == base and method == "PUT":

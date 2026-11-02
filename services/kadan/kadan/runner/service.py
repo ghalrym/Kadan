@@ -64,6 +64,11 @@ class AgentRunner:
 
     async def reconcile(self) -> None:
         runner = await self.assignments()
+        # Storage atomically queues due goal timers. Polling never runs inference
+        # for idle or user-blocked goals, and survives runner process restarts.
+        await self.services.json_request(
+            "Tsuchi", "POST", "/api/assistant-tasks/wake", json={}
+        )
         values = await self.services.json_request("Tsuchi", "GET", "/api/agent-runs")
         runs = [AgentRun.model_validate(value) for value in values]
         by_id = {run.id: run for run in runs}

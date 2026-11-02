@@ -17,3 +17,9 @@ Image cancellation remains visible as "Stopping image…" while cleanup is pendi
 A service restart must recover durable work without duplicating messages already delivered. It must not restart a cancelled response. The user can send another message in the same conversation after stopping.
 
 See the [chat behavior and persistence design](../../architecture/kadan/agent-conversations.md) for the supporting service contract.
+
+On this branch, a [saved ongoing goal](durable-goals.md) also has **Pause** and
+**Cancel goal** controls on the agent's card. These stop its current response and
+future continuation; they do not undo actions or stop separately handed-off work.
+**Resume** explicitly continues a paused goal. Stopping a response does not grant
+permission to restart a stopped goal. Manual application validation remains pending.

@@ -63,6 +63,7 @@ function chat(chain, storageValues = {}) {
     "./SaveChatResult": { default: "SaveChatResult" },
     "./ChatExport": { default: "ChatExport" },
     "./Activity": { default: "Activity" },
+    "./Goals": { default: "Goals" },
     "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true }) },
     "./Pet": { default: "Pet", useMood: () => ["idle", reactToMood] },
     "./AgentCard": { default: "AgentCard" },
