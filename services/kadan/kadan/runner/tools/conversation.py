@@ -1,6 +1,6 @@
 """Tools that act on the conversation: visible messages, images and the run."""
 
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 from pydantic import Field
@@ -37,10 +37,25 @@ class GenerateImageArguments(Arguments):
     )
 
 
+class SendProgressUpdateArguments(Arguments):
+    content: str = Field(min_length=1, max_length=16000, pattern=r"\S")
+    importance: Literal["routine", "important"] = Field(
+        default="important",
+        description="Keep important for failures, urgency, questions or completed results. Only routine notices may be suppressed.",
+    )
+    requested_by_user: bool = Field(
+        default=True,
+        strict=True,
+        description="Keep true for any update the user requested; false only for an unsolicited optional routine notice.",
+    )
+
+
 class Conversation(Protocol):
     """The run a conversation tool acts on; `AgentRuns` provides it."""
 
     async def send_message(self, args: SendMessageArguments) -> dict: ...
+
+    async def send_progress_update(self, args: SendProgressUpdateArguments) -> dict: ...
 
     async def generate_image(self, args: GenerateImageArguments) -> dict: ...
 
@@ -57,6 +72,20 @@ async def send_message(args: SendMessageArguments, conversation: Conversation) -
     should see.
     """
     return await conversation.send_message(args)
+
+
+@conversation_tool
+async def send_progress_update(
+    args: SendProgressUpdateArguments, conversation: Conversation
+) -> dict:
+    """Offer an optional routine progress notice, then continue this response.
+
+    Only unsolicited timer notices may be suppressed as redundant. Use send_message
+    for replies, questions, failures, urgent issues, completed results and requested
+    updates. This tool never completes the goal or changes its next step. Continue
+    working or checkpoint the correct saved wait after its result.
+    """
+    return await conversation.send_progress_update(args)
 
 
 @conversation_tool
@@ -92,4 +121,10 @@ async def read_request_references(
     return await conversation.read_request_references()
 
 
-TOOLS = [send_message, generate_image, finish, read_request_references]
+TOOLS = [
+    send_message,
+    send_progress_update,
+    generate_image,
+    finish,
+    read_request_references,
+]

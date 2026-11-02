@@ -53,6 +53,7 @@ from .conversation_history import (
     history_page,
 )
 from .memories import AgentMemories
+from .progress_updates import decide as progress_update_decision
 from .tools import (
     ALL_TOOLS,
     CODEX_TOOLS,
@@ -66,7 +67,11 @@ from .tools import (
 from .tools.base import invoke_computer_tool
 from .tools.coding import CodexStartArguments
 from .tools.computer import UseComputerArguments
-from .tools.conversation import GenerateImageArguments, SendMessageArguments
+from .tools.conversation import (
+    GenerateImageArguments,
+    SendMessageArguments,
+    SendProgressUpdateArguments,
+)
 from .tools.goals import CheckpointTaskArguments
 from .tools.persona import UpdatePersonaArguments
 from .tools.workspace import (
@@ -346,6 +351,43 @@ class RunConversation:
             "delivered": True,
             "message_id": str(self.action_id),
         }
+
+    async def send_progress_update(self, args: SendProgressUpdateArguments) -> dict:
+        self.run = await self.runs.owned(self.run)
+        decision = self.run.progress_update_decisions.get(self.action_id)
+        if decision is None:
+            task = None
+            if self.run.task_id:
+                tasks = await self.runs.tasks(self.run)
+                task = next(
+                    (item for item in tasks if item.id == self.run.task_id), None
+                )
+            decision = await progress_update_decision(
+                self.runs.services,
+                self.run,
+                task,
+                args.content,
+                args.requested_by_user,
+                args.importance,
+            )
+            # This checkpoint precedes either outcome. Recovery uses it rather
+            # than reclassifying a notice that may already have been delivered.
+            self.run = await self.runs.update(
+                self.run,
+                progress_update_decisions={
+                    **self.run.progress_update_decisions,
+                    self.action_id: decision,
+                },
+            )
+        if decision == "suppress":
+            return {
+                "tool": "send_progress_update",
+                "delivered": False,
+                "suppressed": True,
+            }
+        return await self.send_message(
+            SendMessageArguments(content=args.content, end_run=False)
+        )
 
     async def generate_image(self, args: GenerateImageArguments) -> dict:
         await self.wait_for_tool()

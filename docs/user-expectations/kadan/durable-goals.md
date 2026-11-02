@@ -13,3 +13,6 @@ The assistant can wait for your reply, for work it handed off, or until a later 
 The card refreshes saved goals periodically while open. A failed refresh leaves the last received goals visible, labels them as the last update and disables changes until a fresh read succeeds. A failed change may have been saved; Kadan checks the saved state before enabling another change. Finished and failed goals remain available under **Finished and failed**, with their recorded progress and blocker. Failed goals are not automatically retried. Choose **Resume** on a failed goal to start a fresh response from its saved progress.
 
 See [Conversation activity](conversation-activity.md) and [Stopping chat work](stopping-chat-work.md).
+
+The assistant can offer [optional progress notices](progress-updates.md) for routine
+timer checks. Omitting such a notice does not change the goal's saved state.
