@@ -633,6 +633,9 @@ class RunEvent(Model):
 class AgentRunState(Model):
     status: Literal["queued", "running", "completed", "failed", "cancelled"] = "queued"
     transcript: list[RunMessage] = Field(default_factory=list, max_length=1000)
+    progress_update_decisions: dict[UUID, Literal["send", "suppress"]] = Field(
+        default_factory=dict, max_length=24
+    )
     owner_id: UUID | None = None
     lease_expires_at: datetime | None = None
     error: str | None = Field(default=None, max_length=10000)

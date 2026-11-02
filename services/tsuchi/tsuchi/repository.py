@@ -1139,6 +1139,11 @@ class Repository:
             self._check_version(current, expected_version)
             if value.transcript[: len(current.transcript)] != current.transcript:
                 raise StorageError("Persisted agent transcript is immutable", 409)
+            if any(
+                value.progress_update_decisions.get(action_id) != decision
+                for action_id, decision in current.progress_update_decisions.items()
+            ):
+                raise StorageError("Saved progress update decisions are immutable", 409)
             now = utc_now()
             task = self._task(db, key, current.task_id) if current.task_id else None
             if task is not None and (
@@ -1163,9 +1168,10 @@ class Repository:
             if claiming:
                 if value.status != "running":
                     raise StorageError("Claim the agent run before updating it", 409)
-                if (
-                    current.status == "running"
-                    and value.transcript != current.transcript
+                if current.status == "running" and (
+                    value.transcript != current.transcript
+                    or value.progress_update_decisions
+                    != current.progress_update_decisions
                 ):
                     raise StorageError(
                         "Recovering a run cannot change its transcript", 409

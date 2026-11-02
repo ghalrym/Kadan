@@ -73,9 +73,9 @@ def required(schema: dict, root: dict) -> dict:
 
 
 def test_every_tool_has_a_unique_name_and_a_description():
-    assert len(ALL_TOOLS) == 24
+    assert len(ALL_TOOLS) == 25
     assert len(TOOLS_BY_NAME) == len(ALL_TOOLS) + len(COMPUTER_AGENT_TOOLS)
-    assert len(CONVERSATION_TOOLS) == 13
+    assert len(CONVERSATION_TOOLS) == 14
     assert all(tool.description for tool in [*ALL_TOOLS, *COMPUTER_AGENT_TOOLS])
 
 
