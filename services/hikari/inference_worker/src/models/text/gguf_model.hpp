@@ -312,6 +312,16 @@ public:
         std::span<const ImageSpan> images = {}
     ) = 0;
 
+    // Optional GPU-resident boundary checkpoint save/rewind (zero full-attention
+    // KV re-upload when rewinding a live GPU conversation to an earlier boundary).
+    virtual void save_gpu_boundary(unsigned /*slot_idx*/, std::size_t /*tokens*/) {}
+
+    virtual bool try_rewind_gpu_boundary(
+        unsigned /*slot_idx*/, std::size_t /*boundary_tokens*/
+    ) {
+        return false;
+    }
+
     // Optional GPU-side argmax fast path (avoids copying full vocab logits to host).
     // Returns std::nullopt when unsupported so Engine falls back to forward() + select().
     virtual std::optional<unsigned> forward_argmax(

@@ -685,6 +685,26 @@ public:
         gpu_needs_upload_ = true;
     }
 
+    void save_gpu_boundary(unsigned slot_idx, std::size_t tokens) override {
+        if (!gpu_ || gpu_needs_upload_ || gpu_valid_tokens_ != tokens || !tokens)
+            return;
+        gpu_->save_boundary(slot_idx, tokens, weights_.cancel());
+    }
+
+    bool try_rewind_gpu_boundary(
+        unsigned slot_idx, std::size_t boundary_tokens
+    ) override {
+        if (!gpu_ || gpu_needs_upload_ || !boundary_tokens
+            || gpu_valid_tokens_ < boundary_tokens)
+            return false;
+        if (!gpu_->restore_boundary(slot_idx, boundary_tokens, weights_.cancel()))
+            return false;
+        gpu_valid_tokens_ = boundary_tokens;
+        host_state_stale_ = true;
+        gpu_needs_upload_ = false;
+        return true;
+    }
+
     std::optional<unsigned> forward_argmax(
         std::span<const unsigned> tokens,
         std::size_t position,
@@ -1784,6 +1804,8 @@ std::size_t inkling2_loop_state_bytes(std::size_t context) {
 std::size_t inkling2_loop_device_state_bytes(std::size_t context) {
     // Mirrored KV caches stay in FP16 (2 bytes/value); short-conv state,
     // relative-position bias tables and small resident layer params stay F32.
+    // Includes 2 bounded GPU boundary snapshots (40 FP16 SWA windows + 48 conv
+    // states each) for zero-reupload prefix rewind across turns.
     std::size_t total = 0;
     for (std::size_t s = 0; s < n_slots; ++s) {
         const std::size_t cap = is_swa_phys(slot_phys(s))
@@ -1792,6 +1814,7 @@ std::size_t inkling2_loop_device_state_bytes(std::size_t context) {
         total += 2 * cap * n_embd_k_gqa * sizeof(std::uint16_t);
         total += n_conv_hist * n_conv_channels * sizeof(float);
     }
+    total += InklingGeometry::n_gpu_boundary_slots * inkling_gpu_boundary_bytes(context);
     total += n_phys * n_rel_extent * n_rel * sizeof(float);
     total += 16ULL * 1024 * 1024;  // small layer params, pointer tables & step state
     return total;

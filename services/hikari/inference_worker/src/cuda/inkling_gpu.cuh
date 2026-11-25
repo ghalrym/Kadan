@@ -20,6 +20,7 @@ using G = kadan::InklingGeometry;
 constexpr std::uint64_t kInklingConvKey = 0x494E4B0000000001ULL;
 constexpr std::uint64_t kInklingParamsKey = 0x494E4B0000000002ULL;
 constexpr std::uint64_t kInklingStepKey = 0x494E4B0000000003ULL;
+constexpr std::uint64_t kInklingBoundaryKeyBase = 0x494E4B0000000010ULL;
 
 constexpr float kRmsEps = 1e-6f;
 constexpr float kQkClip = 22.627416997969522f;  // 16 * sqrt(2)
@@ -2177,6 +2178,8 @@ public:
     }
 
     void reset() override {
+        for (auto& b : gpu_boundaries_)
+            b = {};
         std::atomic_bool no_cancel{false};
         run_on_state_(
             no_cancel,
@@ -2196,6 +2199,229 @@ public:
                 }
             }
         );
+    }
+
+    void save_boundary(
+        unsigned slot_idx,
+        std::size_t valid_tokens,
+        const std::atomic_bool& cancel
+    ) override {
+        if (slot_idx >= G::n_gpu_boundary_slots || !valid_tokens)
+            return;
+        const std::size_t conv_floats = G::n_slots * G::n_conv_hist * G::n_conv_channels;
+        const std::size_t boundary_bytes = kadan::inkling_gpu_boundary_bytes(desc_.context);
+        const std::size_t boundary_floats = boundary_bytes / sizeof(float);
+        const std::size_t swa_win = std::min(desc_.context, G::n_swa_window);
+        const std::size_t ring_cap = 2 * swa_win;
+        const std::size_t win_start = valid_tokens > swa_win ? valid_tokens - swa_win : 0;
+        const std::size_t count = valid_tokens - win_start;
+        const std::size_t src_start = win_start % ring_cap;
+        const std::size_t part1 = std::min(count, ring_cap - src_start);
+        const std::size_t part2 = count - part1;
+
+        run_on_state_(
+            cancel,
+            [&](DeviceWorkspace& ws, const std::atomic_bool& failed) {
+                stop(cancel, failed);
+                auto& arena =
+                    static_cast<CudaDeviceOperations&>(ws.operations());
+                const auto conv_it = arena.recurrent.find(kInklingConvKey);
+                if (conv_it == arena.recurrent.end() || !conv_it->second.data) {
+                    gpu_boundaries_[slot_idx] = {};
+                    return;
+                }
+                for (std::size_t s = 0; s < G::n_slots; ++s) {
+                    if (!G::is_swa_phys(G::slot_phys(s)))
+                        continue;
+                    const auto mit = arena.mirrors.find(s);
+                    if (mit == arena.mirrors.end() || !mit->second.data) {
+                        gpu_boundaries_[slot_idx] = {};
+                        return;
+                    }
+                }
+                auto* rec = arena.recurrent_state(
+                    kInklingBoundaryKeyBase + slot_idx, boundary_floats, false
+                );
+                if (!rec || !rec->data) {
+                    gpu_boundaries_[slot_idx] = {};
+                    return;
+                }
+                cudaStream_t stream = arena.ensure_inkling_stream();
+                checked(cudaMemcpyAsync(
+                    rec->data,
+                    conv_it->second.data,
+                    conv_floats * sizeof(float),
+                    cudaMemcpyDeviceToDevice,
+                    stream
+                ));
+                auto* swa_dst = reinterpret_cast<__half*>(rec->data + conv_floats);
+                const std::size_t row_bytes = G::n_embd_k_gqa * sizeof(__half);
+                std::size_t swa_idx = 0;
+                for (std::size_t s = 0; s < G::n_slots; ++s) {
+                    if (!G::is_swa_phys(G::slot_phys(s)))
+                        continue;
+                    const auto& m = arena.mirrors.at(s);
+                    const auto* m_keys = reinterpret_cast<const __half*>(m.data);
+                    const auto* m_vals = m_keys + m.capacity * G::n_embd_k_gqa;
+                    __half* dst_k =
+                        swa_dst + (swa_idx * 2) * swa_win * G::n_embd_k_gqa;
+                    __half* dst_v = dst_k + swa_win * G::n_embd_k_gqa;
+                    checked(cudaMemcpyAsync(
+                        dst_k,
+                        m_keys + src_start * G::n_embd_k_gqa,
+                        part1 * row_bytes,
+                        cudaMemcpyDeviceToDevice,
+                        stream
+                    ));
+                    checked(cudaMemcpyAsync(
+                        dst_v,
+                        m_vals + src_start * G::n_embd_k_gqa,
+                        part1 * row_bytes,
+                        cudaMemcpyDeviceToDevice,
+                        stream
+                    ));
+                    if (part2 > 0) {
+                        checked(cudaMemcpyAsync(
+                            dst_k + part1 * G::n_embd_k_gqa,
+                            m_keys,
+                            part2 * row_bytes,
+                            cudaMemcpyDeviceToDevice,
+                            stream
+                        ));
+                        checked(cudaMemcpyAsync(
+                            dst_v + part1 * G::n_embd_k_gqa,
+                            m_vals,
+                            part2 * row_bytes,
+                            cudaMemcpyDeviceToDevice,
+                            stream
+                        ));
+                    }
+                    ++swa_idx;
+                }
+                gpu_boundaries_[slot_idx] = {true, valid_tokens};
+            }
+        );
+    }
+
+    bool restore_boundary(
+        unsigned slot_idx,
+        std::size_t boundary_tokens,
+        const std::atomic_bool& cancel
+    ) override {
+        if (slot_idx >= G::n_gpu_boundary_slots || !boundary_tokens)
+            return false;
+        if (!gpu_boundaries_[slot_idx].valid
+            || gpu_boundaries_[slot_idx].tokens != boundary_tokens)
+            return false;
+
+        const std::size_t conv_floats = G::n_slots * G::n_conv_hist * G::n_conv_channels;
+        const std::size_t boundary_bytes = kadan::inkling_gpu_boundary_bytes(desc_.context);
+        const std::size_t boundary_floats = boundary_bytes / sizeof(float);
+        const std::size_t swa_win = std::min(desc_.context, G::n_swa_window);
+        const std::size_t ring_cap = 2 * swa_win;
+        const std::size_t win_start =
+            boundary_tokens > swa_win ? boundary_tokens - swa_win : 0;
+        const std::size_t count = boundary_tokens - win_start;
+        const std::size_t dst_start = win_start % ring_cap;
+        const std::size_t part1 = std::min(count, ring_cap - dst_start);
+        const std::size_t part2 = count - part1;
+
+        bool restored = false;
+        run_on_state_(
+            cancel,
+            [&](DeviceWorkspace& ws, const std::atomic_bool& failed) {
+                stop(cancel, failed);
+                auto& arena =
+                    static_cast<CudaDeviceOperations&>(ws.operations());
+                const auto bnd_it =
+                    arena.recurrent.find(kInklingBoundaryKeyBase + slot_idx);
+                const auto conv_it = arena.recurrent.find(kInklingConvKey);
+                if (bnd_it == arena.recurrent.end() || !bnd_it->second.data
+                    || bnd_it->second.floats != boundary_floats
+                    || conv_it == arena.recurrent.end() || !conv_it->second.data) {
+                    gpu_boundaries_[slot_idx] = {};
+                    return;
+                }
+                for (std::size_t s = 0; s < G::n_slots; ++s) {
+                    const auto mit = arena.mirrors.find(s);
+                    if (mit == arena.mirrors.end() || !mit->second.data) {
+                        gpu_boundaries_[slot_idx] = {};
+                        return;
+                    }
+                    if (!G::is_swa_phys(G::slot_phys(s))) {
+                        if (mit->second.capacity < boundary_tokens
+                            || mit->second.valid < boundary_tokens) {
+                            gpu_boundaries_[slot_idx] = {};
+                            return;
+                        }
+                    }
+                }
+
+                cudaStream_t stream = arena.ensure_inkling_stream();
+                checked(cudaMemcpyAsync(
+                    conv_it->second.data,
+                    bnd_it->second.data,
+                    conv_floats * sizeof(float),
+                    cudaMemcpyDeviceToDevice,
+                    stream
+                ));
+                const auto* swa_src =
+                    reinterpret_cast<const __half*>(bnd_it->second.data + conv_floats);
+                const std::size_t row_bytes = G::n_embd_k_gqa * sizeof(__half);
+                std::size_t swa_idx = 0;
+                for (std::size_t s = 0; s < G::n_slots; ++s) {
+                    auto& m = arena.mirrors.at(s);
+                    if (G::is_swa_phys(G::slot_phys(s))) {
+                        auto* m_keys = reinterpret_cast<__half*>(m.data);
+                        auto* m_vals = m_keys + m.capacity * G::n_embd_k_gqa;
+                        const __half* src_k =
+                            swa_src + (swa_idx * 2) * swa_win * G::n_embd_k_gqa;
+                        const __half* src_v = src_k + swa_win * G::n_embd_k_gqa;
+                        checked(cudaMemcpyAsync(
+                            m_keys + dst_start * G::n_embd_k_gqa,
+                            src_k,
+                            part1 * row_bytes,
+                            cudaMemcpyDeviceToDevice,
+                            stream
+                        ));
+                        checked(cudaMemcpyAsync(
+                            m_vals + dst_start * G::n_embd_k_gqa,
+                            src_v,
+                            part1 * row_bytes,
+                            cudaMemcpyDeviceToDevice,
+                            stream
+                        ));
+                        if (part2 > 0) {
+                            checked(cudaMemcpyAsync(
+                                m_keys,
+                                src_k + part1 * G::n_embd_k_gqa,
+                                part2 * row_bytes,
+                                cudaMemcpyDeviceToDevice,
+                                stream
+                            ));
+                            checked(cudaMemcpyAsync(
+                                m_vals,
+                                src_v + part1 * G::n_embd_k_gqa,
+                                part2 * row_bytes,
+                                cudaMemcpyDeviceToDevice,
+                                stream
+                            ));
+                        }
+                        ++swa_idx;
+                    }
+                    // Full-attention mirrors stay untouched in place (0 bytes copied!).
+                    m.valid = boundary_tokens;
+                }
+                checked(cudaStreamSynchronize(stream));
+                for (unsigned i = 0; i < G::n_gpu_boundary_slots; ++i) {
+                    if (i != slot_idx && gpu_boundaries_[i].valid
+                        && gpu_boundaries_[i].tokens > boundary_tokens)
+                        gpu_boundaries_[i] = {};
+                }
+                restored = true;
+            }
+        );
+        return restored;
     }
 
     void sync_to_host(
@@ -2421,6 +2647,8 @@ public:
         std::size_t valid_tokens,
         const std::atomic_bool& cancel
     ) override {
+        for (auto& b : gpu_boundaries_)
+            b = {};
         require(slots.size() == G::n_slots, "inkling_gpu_sync_slots");
         run_on_state_(
             cancel,
@@ -2687,6 +2915,13 @@ public:
                 // Synchronize legacy stream once so any mirror/weight copy is visible.
                 checked(cuda_trace::synchronize(cudaStreamLegacy));
 
+                // Writing KV positions >= `position` invalidates any saved GPU boundary
+                // whose full-attention KV suffix extends past `position`.
+                for (auto& b : gpu_boundaries_) {
+                    if (b.valid && b.tokens > position)
+                        b = {};
+                }
+
                 if (rows == 1 && need_head) {
                     // Stage 3: CUDA Graph capture & replay for single-token decode!
                     const unsigned full_segs =
@@ -2871,11 +3106,17 @@ private:
         std::vector<float> msg_query;
     };
 
+    struct GpuBoundaryMeta {
+        bool valid = false;
+        std::size_t tokens = 0;
+    };
+
     StateRunner run_on_state_;
     kadan::InklingGpuModelDesc desc_;
     std::vector<float> out_norm_, out_res_query_;
     std::vector<HostPhysParams> host_layers_;
     std::vector<HostLoopParams> host_loops_;
+    std::array<GpuBoundaryMeta, G::n_gpu_boundary_slots> gpu_boundaries_{};
 
     // GPU-resolved handles (valid while kInklingParamsKey is present in arena.rel_biases)
     const float* d_out_norm_ = nullptr;

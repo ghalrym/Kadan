@@ -148,6 +148,7 @@ void round_trip() {
     const std::size_t expected_device_state =
         (40ULL * 2 * (2 * 1024) + 8ULL * 2 * 2048) * 1024 * sizeof(std::uint16_t)
         + 48ULL * 3 * 6656 * sizeof(float)
+        + 2ULL * kadan::inkling_gpu_boundary_bytes(2048)
         + 24ULL * 1024 * 16 * sizeof(float)
         + (16ULL * 1024 * 1024);
     check(model->device_state_bytes() == expected_device_state, "inkling_device_state_bytes");
@@ -265,8 +266,11 @@ void inkling_gpu_geometry_and_scratch() {
     const std::size_t prefill_scratch = kadan::inkling_gpu_scratch_bytes(512);
     check(decode_scratch > 0 && decode_scratch < prefill_scratch, "inkling_scratch_monotonic");
     check(prefill_scratch < (512ULL << 20), "inkling_prefill_scratch_bounded");
-    // At 65,536 context, FP16 KV mirrors + F32 conv + params must stay well
-    // below 3 GiB so IQ4_NL (16.4 GiB) fits on a single 24 GiB GPU.
+    // At 65,536 context, FP16 KV mirrors + F32 conv + 2 GPU boundary snapshots
+    // + params must stay well below 3 GiB so IQ4_NL (16.4 GiB) fits on 24 GiB.
+    const std::size_t bnd_2k = kadan::inkling_gpu_boundary_bytes(2048);
+    const std::size_t bnd_65k = kadan::inkling_gpu_boundary_bytes(65536);
+    check(bnd_2k == bnd_65k && bnd_2k % sizeof(float) == 0, "inkling_gpu_boundary_bytes");
     const std::size_t dev_65k = inkling2_loop_device_state_bytes(65536);
     check(dev_65k < (3ULL << 30), "inkling_65k_device_state_fits_single_24g");
     check(dev_65k < inkling2_loop_state_bytes(65536), "inkling_fp16_smaller_than_host_f32");

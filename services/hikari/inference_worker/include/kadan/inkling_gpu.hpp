@@ -42,6 +42,8 @@ struct InklingGeometry {
     static constexpr std::size_t loop_gate_rank = 64;
     static constexpr std::size_t loop_ctrl_count = 4;
     static constexpr std::size_t n_slots = n_phys + (loop_passes - 1) * loop_core_len;  // 48
+    static constexpr std::size_t n_swa_slots = 40;
+    static constexpr std::size_t n_gpu_boundary_slots = 2;
 
     static constexpr bool is_swa_phys(std::size_t ip) {
         return (ip % n_block_size) != (n_block_size - 1);
@@ -158,6 +160,19 @@ inline std::size_t inkling_gpu_scratch_bytes(std::size_t max_rows) {
     return total;
 }
 
+// Exact bytes of one GPU-resident boundary snapshot (40 active FP16 SWA windows
+// + 48 F32 short-conv states). Full-attention KV mirrors are append-only and
+// rewind in place with zero bytes copied.
+inline std::size_t inkling_gpu_boundary_bytes(std::size_t context) {
+    using G = InklingGeometry;
+    const std::size_t swa_win = std::min(context, G::n_swa_window);
+    const std::size_t swa_bytes =
+        G::n_swa_slots * 2 * swa_win * G::n_embd_k_gqa * sizeof(std::uint16_t);
+    const std::size_t conv_bytes =
+        G::n_slots * G::n_conv_hist * G::n_conv_channels * sizeof(float);
+    return swa_bytes + conv_bytes;
+}
+
 // GPU-resident Inkling 2 Mini forward executor owned by a single-GPU
 // DenseCompute when the model's packed weights + FP16 KV state fit in VRAM.
 class InklingGpuExecutor {
@@ -166,6 +181,25 @@ public:
 
     // Resets GPU-resident KV/conv validity (invalidates any captured decode graph).
     virtual void reset() = 0;
+
+    // Copies the 40 active FP16 SWA windows and 48 F32 short-conv states on GPU
+    // (D2D) into boundary slot `slot_idx` (< n_gpu_boundary_slots) at `valid_tokens`.
+    virtual void save_boundary(
+        unsigned /*slot_idx*/,
+        std::size_t /*valid_tokens*/,
+        const std::atomic_bool& /*cancel*/
+    ) {}
+
+    // Restores GPU state to `boundary_tokens` from boundary slot `slot_idx` D2D,
+    // rewinding the 8 full-attention KV mirrors in place (0 bytes copied).
+    // Returns false if the GPU snapshot or live full-attention mirrors are absent.
+    virtual bool restore_boundary(
+        unsigned /*slot_idx*/,
+        std::size_t /*boundary_tokens*/,
+        const std::atomic_bool& /*cancel*/
+    ) {
+        return false;
+    }
 
     // Copies GPU-resident FP16 KV + F32 conv state back into host `slots`
     // for prefix checkpointing (`CheckpointPool`). Only copies [0..valid_tokens)

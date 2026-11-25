@@ -111,10 +111,13 @@ struct Engine::Impl {
         std::string_view conversation,
         bool is_static,
         std::span<const unsigned> entry_tokens,
-        std::span<const ImageTag> entry_images
+        std::span<const ImageTag> entry_images,
+        bool save_gpu_boundary = false
     ) {
         if (!tokens || entry_tokens.size() != tokens || !pool.budget_bytes())
             return;
+        if (save_gpu_boundary)
+            model->save_gpu_boundary(is_static ? 0u : 1u, tokens);
         auto compacted = model->snapshot_state(tokens, p.context);
         pool.save(
             conversation, is_static, entry_tokens, entry_images, std::move(compacted)
@@ -301,10 +304,37 @@ std::size_t Engine::begin_request(
             m.prefix.committed().begin(), m.prefix.committed().end(), prompt.begin()
         );
 
+    // Check whether a miss can rewind the still-live GPU KV state in place to
+    // a matching checkpoint boundary (0 full-attention bytes copied or uploaded).
+    std::size_t gpu_rewind_len = 0;
+    bool gpu_rewind_static = false;
+    std::vector<ImageTag> gpu_rewind_images;
+    if (!will_live_hit && !m.poisoned && reuse_prefix && live_stored > 0
+        && live_stored == m.tokens) {
+        if (const auto* entry =
+                m.pool.find_best(prompt, conversation, prompt_images)) {
+            const std::size_t n = entry->tokens.size();
+            if (n > 0 && n <= live_stored
+                && std::equal(
+                    entry->tokens.begin(), entry->tokens.end(), m.prefix.committed().begin()
+                )
+                && images_within_prefix(m.live_images, n) == entry->images) {
+                gpu_rewind_len = n;
+                gpu_rewind_static = entry->is_static;
+                gpu_rewind_images = entry->images;
+            }
+        }
+    }
+
     // Preserve a valid outgoing live conversation in the checkpoint pool before
     // resetting, so interleaving conversations or disposable non-reusable calls
     // (such as vision inspections) never clobber cached conversation state.
-    if (!will_live_hit && !m.poisoned && live_stored > 0
+    // Skip saving the abandoned post-reasoning suffix when the same conversation
+    // is rewinding directly to its own earlier checkpoint boundary on GPU.
+    const bool same_conv_rewind =
+        gpu_rewind_len > 0 && !conversation.empty()
+        && conversation == m.prefix.conversation();
+    if (!will_live_hit && !same_conv_rewind && !m.poisoned && live_stored > 0
         && !m.prefix.conversation().empty() && live_stored == m.tokens) {
         m.save_pool_entry(
             m.prefix.conversation(), false, m.prefix.committed(), m.live_images
@@ -324,23 +354,45 @@ std::size_t Engine::begin_request(
         m.static_tokens.assign(prompt.begin(), prompt.begin() + m.static_boundary);
     }
     if (!reused) {
-        m.execution.idle();
-        m.model->reset();
-        m.tokens = 0;
-        m.poisoned = false;
-        m.retained_state.clear();
-        m.live_images.clear();
-        // Released mirrors re-upload the restored keys on first attention.
-        if (reuse_prefix) {
-            if (const auto* entry =
-                    m.pool.find_best(prompt, conversation, prompt_images)) {
-                try {
-                    m.restore_pool_entry(*entry);
-                } catch (...) {
-                    m.poisoned = true;
-                    m.prefix.clear();
-                    m.live_images.clear();
-                    throw;
+        bool rewound_on_gpu = false;
+        if (gpu_rewind_len > 0) {
+            const auto started = std::chrono::steady_clock::now();
+            if (m.model->try_rewind_gpu_boundary(
+                    gpu_rewind_static ? 0u : 1u, gpu_rewind_len
+                )) {
+                m.tokens = gpu_rewind_len;
+                m.poisoned = false;
+                m.live_images = std::move(gpu_rewind_images);
+                m.prefix.resume(
+                    prompt.first(gpu_rewind_len),
+                    gpu_rewind_static ? "static_prefix_hit" : "checkpoint_hit"
+                );
+                m.cache_restore_ms = std::chrono::duration<double, std::milli>(
+                                         std::chrono::steady_clock::now() - started
+                                     )
+                                         .count();
+                rewound_on_gpu = true;
+            }
+        }
+        if (!rewound_on_gpu) {
+            m.execution.idle();
+            m.model->reset();
+            m.tokens = 0;
+            m.poisoned = false;
+            m.retained_state.clear();
+            m.live_images.clear();
+            // Released mirrors re-upload the restored keys on first attention.
+            if (reuse_prefix) {
+                if (const auto* entry =
+                        m.pool.find_best(prompt, conversation, prompt_images)) {
+                    try {
+                        m.restore_pool_entry(*entry);
+                    } catch (...) {
+                        m.poisoned = true;
+                        m.prefix.clear();
+                        m.live_images.clear();
+                        throw;
+                    }
                 }
             }
         }
@@ -547,11 +599,11 @@ serving::Token Engine::prefill(
             if (!last && m.static_boundary && m.tokens == m.static_boundary
                 && m.save_static && m.live_images.empty()
                 && m.static_tokens.size() == m.tokens) {
-                m.save_pool_entry("", true, m.static_tokens, {});
+                m.save_pool_entry("", true, m.static_tokens, {}, true);
             }
             if (!last && m.boundary && m.tokens == m.boundary && m.prefix.retaining()) {
                 m.save_pool_entry(
-                    m.prefix.conversation(), false, m.prefix.committed(), m.live_images
+                    m.prefix.conversation(), false, m.prefix.committed(), m.live_images, true
                 );
             }
             if (progress) {
