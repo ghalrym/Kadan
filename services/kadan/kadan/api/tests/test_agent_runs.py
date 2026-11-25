@@ -1799,66 +1799,7 @@ def test_selected_reference_over_context_budget_fails_without_truncation(boundar
     assert tool_result(boundary)["references"][0]["markdown"] == "x" * 12000
 
 
-def codex_start_command(**changes):
-    return command(
-        "codex_start",
-        **{
-            "prompt": "Build a hello world server",
-            "cwd": "/home/gem/hello",
-            "message": "Codex is building it now.",
-            **changes,
-        },
-    )
-
-
-@pytest.fixture
-def codex_starts(boundary, monkeypatch):
-    from kadan.api.pydantic_models.coding import CodexStarted
-
-    boundary.sandbox.configured = True
-    starts = []
-
-    async def start(self, task, request_id, origin):
-        starts.append((task, request_id, origin))
-        if task.cwd == "/rejected":
-            raise ServiceError("Use an absolute project folder.", 409, "codex_rejected")
-        return CodexStarted(thread_id=uuid4(), cwd=task.cwd, running=True)
-
-    monkeypatch.setattr("kadan.runner.agent_runs.CodingClient.start", start)
-    return starts
-
-
-def test_codex_start_tells_the_user_and_ends_the_response(boundary, codex_starts):
-    boundary.controller.inference = Commands(codex_start_command())
-    asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == "completed"
-    assert [item.content for item in boundary.deliveries] == [
-        "Codex is building it now."
-    ]
-    assert len(boundary.controller.inference.calls) == 1
-    task, request_id, origin = codex_starts[0]
-    assert task.cwd == "/home/gem/hello"
-    assert request_id == boundary.deliveries[0].id
-    assert (origin.agent_key, origin.conversation_id, origin.run_id) == (
-        "test",
-        boundary.conversation.id,
-        boundary.current.id,
-    )
-
-
-def test_codex_start_failure_returns_to_the_model_without_a_message(
-    boundary, codex_starts
-):
-    boundary.controller.inference = Commands(
-        codex_start_command(cwd="/rejected"),
-        send(content="Codex could not start.", end_run=True),
-    )
-    asyncio.run(boundary.controller.process(boundary.current))
-    assert tool_result(boundary, -3)["error"] == "Use an absolute project folder."
-    assert [item.content for item in boundary.deliveries] == ["Codex could not start."]
-
-
-def test_codex_event_run_starts_from_the_event(boundary):
+def test_historical_codex_event_run_starts_from_the_event(boundary):
     from kadan.api.pydantic_models.agent_runs import RunEvent
 
     run = boundary.current.model_copy(

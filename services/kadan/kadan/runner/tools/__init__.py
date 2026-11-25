@@ -6,7 +6,6 @@ from . import (
     bash,
     browser,
     code,
-    coding,
     computer,
     conversation,
     display,
@@ -32,9 +31,6 @@ CONVERSATION_TOOLS: list[StructuredTool] = [
     *history.TOOLS,
 ]
 MEMORY_TOOLS: list[StructuredTool] = memory.TOOLS
-CODING_TOOLS: list[StructuredTool] = coding.START_TOOLS
-# Codex threads stay with the conversation agent; they run on the computer.
-CODEX_TOOLS: list[StructuredTool] = coding.TOOLS
 DELEGATION_TOOLS: list[StructuredTool] = computer.TOOLS
 PERSONA_TOOLS: list[StructuredTool] = persona.TOOLS
 # Only the computer agent binds these.
@@ -59,8 +55,6 @@ ALL_TOOLS = [
     *CONVERSATION_TOOLS,
     *MEMORY_TOOLS,
     *PERSONA_TOOLS,
-    *CODING_TOOLS,
-    *CODEX_TOOLS,
     *DELEGATION_TOOLS,
 ]
 COMPUTER_AGENT_TOOLS = [*COMPUTER_TOOLS, *VISION_TOOLS, *TASK_TOOLS]

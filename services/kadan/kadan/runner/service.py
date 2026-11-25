@@ -10,7 +10,6 @@ from ..api.pydantic_models.agent_runs import AgentRun
 from ..api.pydantic_models.runners import Runner
 from ..api.services import LocalServices
 from .agent_runs import AgentRuns
-from .codex_events import CodexEvents
 from .computer_tasks import ComputerTasks
 from .config import RunnerSettings
 from .image_jobs import ImageJobs
@@ -26,7 +25,6 @@ class RunnerServices(LocalServices):
         self.runs = AgentRuns(self, owner)
         self.images = ImageJobs(self)
         self.pets = PetJobs(self)
-        self.codex = CodexEvents(self)
         self.computer = ComputerTasks(self)
 
 
@@ -126,12 +124,10 @@ async def serve(client, settings, runner_settings: RunnerSettings, stop: asyncio
     runner = AgentRunner(services, runner_settings)
     services.images.start()
     services.pets.start()
-    services.codex.start()
     services.computer.start()
     try:
         await runner.run(stop)
     finally:
         await services.images.close()
         await services.pets.close()
-        await services.codex.close()
         await services.computer.close()

@@ -8,7 +8,6 @@ import {
   Palette,
   Pencil,
   Server,
-  Code2,
   RefreshCw,
   X,
 } from "lucide-react";
@@ -23,7 +22,6 @@ import { agentHue } from "./pet";
 import PetEditor from "./PetEditor";
 import RenameAgent from "./RenameAgent";
 import RunnerAssignment from "./RunnerAssignment";
-import Coding from "./Coding";
 import { PetContext, useAgentPet } from "./PetContext";
 
 /** Animate a view change, letting the agent's pet glide between layouts. */
@@ -63,7 +61,6 @@ export default function App() {
   const [editingPet, setEditingPet] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [assigningRunner, setAssigningRunner] = useState(false);
-  const [coding, setCoding] = useState(false);
   const petSelectionRevision = useRef(0);
   const petReadRevision = useRef(0);
   const pendingPetSelection = useRef(0);
@@ -351,10 +348,6 @@ export default function App() {
             <FolderOpen size={17} />
             Workspace
           </button>
-          <button disabled={!key} onClick={() => { setMenu(false); setCoding(true); }}>
-            <Code2 size={17} />
-            Coding
-          </button>
         </nav>
         <nav className="panel-nav" aria-label="Agent settings">
           <h2 className="panel-label">Agent</h2>
@@ -502,7 +495,6 @@ export default function App() {
           restoreFocus();
         }}
       />}
-      {coding && <Coding key={key} onClose={() => { setCoding(false); restoreFocus(); }} />}
       {assigningRunner && agent && <RunnerAssignment
         agent={agent}
         onClose={() => {

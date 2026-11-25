@@ -18,7 +18,6 @@ from langgraph.errors import NodeCancelledError
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ValidationError
 
-from ..api.coding_client import CodingClient
 from ..api.config import ServiceError
 from ..api.pydantic_models.agent_runs import (
     AgentRun,
@@ -31,7 +30,6 @@ from ..api.pydantic_models.agent_runs import (
     TranscriptEntry,
     UnrecoveredRecord,
 )
-from ..api.pydantic_models.coding import CodexOrigin, CodexTask
 from ..api.pydantic_models.computer import ComputerTask
 from ..api.pydantic_models.resources import Message, Resource, ResourceKind
 from ..api.run_client import RunClient
@@ -51,16 +49,12 @@ from .conversation_history import (
 from .memories import AgentMemories
 from .tools import (
     ALL_TOOLS,
-    CODEX_TOOLS,
-    CODING_TOOLS,
     CONVERSATION_TOOLS,
     DELEGATION_TOOLS,
     MEMORY_TOOLS,
     PERSONA_TOOLS,
     TOOLS_BY_NAME,
 )
-from .tools.base import invoke_computer_tool
-from .tools.coding import CodexStartArguments
 from .tools.computer import UseComputerArguments
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
 from .tools.persona import UpdatePersonaArguments
@@ -152,32 +146,6 @@ class RunConversation:
         self.end_run = False
         self.finished = False
         self.replayed = replayed
-
-    async def start_codex(self, args: CodexStartArguments) -> dict:
-        if not self.runs.services.sandbox.configured:
-            return {"error": "No computer is configured for this agent."}
-        if args.thread_id is None and args.cwd is None:
-            return {"error": "Give a project folder for a new thread, or a thread_id."}
-        # The start is keyed by this action ID, so a replay after a restart returns
-        # the original Codex run instead of starting another.
-        try:
-            started = await CodingClient(self.runs.services.sandbox).start(
-                CodexTask(**args.model_dump(exclude={"message"})),
-                self.action_id,
-                CodexOrigin(
-                    agent_key=self.run.agent_key,
-                    conversation_id=self.run.conversation_id,
-                    run_id=self.run.id,
-                ),
-            )
-        except ServiceError as error:
-            return {"error": str(error)}
-        # Tell the user and end this run; the finished Codex run wakes the agent
-        # again in this conversation with its result.
-        await self.send_message(
-            SendMessageArguments(content=args.message, end_run=True)
-        )
-        return started.model_dump(mode="json")
 
     async def use_computer(self, args: UseComputerArguments) -> dict:
         if not self.runs.services.sandbox.configured:
@@ -872,22 +840,11 @@ class AgentRuns(RunClient):
 
         elif tool in MEMORY_TOOLS:
             result = await self.use_memory(tool, command, run, state.replayed)
-        elif (
-            tool in CONVERSATION_TOOLS
-            or tool in CODING_TOOLS
-            or (tool in DELEGATION_TOOLS)
-        ):
+        elif tool in CONVERSATION_TOOLS or tool in DELEGATION_TOOLS:
             result = await tool.ainvoke(
                 command.arguments,
                 config={"configurable": {"conversation": conversation}},
             )
-        elif tool in CODEX_TOOLS:
-            result = {
-                "tool": tool.name,
-                **await invoke_computer_tool(
-                    tool, command.arguments, self.services.sandbox, state.replayed
-                ),
-            }
         else:
             result = {"tool": command.tool, "error": "This tool is not available."}
         if conversation.finished:

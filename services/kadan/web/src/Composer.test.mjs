@@ -118,13 +118,13 @@ test("missing settings link keeps guidance visible without a dead action", () =>
 });
 
 
-test("response cancellation has a visible label and explains that Codex threads keep running", () => {
+test("response cancellation has a visible label and explains that background tasks keep running", () => {
   let stopped = 0;
   const tree = compose({ onStop: () => stopped++ });
   const stop = elements(tree).find(node => node.props?.["aria-label"] === "Stop response");
   assert.ok(stop.props.children.includes("Stop response"));
   const help = elements(tree).find(node => node.props?.id === stop.props["aria-describedby"]);
-  assert.match(help.props.children, /Codex threads keep running; stop them in Coding/);
+  assert.match(help.props.children, /Background tasks keep running independently/);
   stop.props.onClick();
   assert.equal(stopped, 1);
   const pending = elements(compose({ onStop() {}, stopping: true })).find(node => node.props?.["aria-label"] === "Stop response");

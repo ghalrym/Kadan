@@ -21,7 +21,7 @@ from .routes.agents import (
 from .routes.agents import computer as agent_computer
 from .routes.agents.assets import content
 from .routes.agents.conversations import notes, results, runs
-from .routes.computer import coding, screenshot, vnc
+from .routes.computer import screenshot, vnc
 from .services import LocalServices
 
 
@@ -70,7 +70,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         results.router,
         runs.router,
         computer.router,
-        coding.router,
         screenshot.router,
         vnc.router,
     ):

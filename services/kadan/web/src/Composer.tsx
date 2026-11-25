@@ -232,7 +232,7 @@ export default function Composer({
                 type="button"
                 aria-label="Stop response"
                 aria-describedby="stop-response-help"
-                title="Stop response. Codex threads keep running; stop them in Coding."
+                title="Stop response. Background tasks keep running independently."
                 onClick={onStop}
                 disabled={stopping}
               >
@@ -241,7 +241,7 @@ export default function Composer({
               </button>
             )}
             {onStop && <span id="stop-response-help" className="sr-only">
-              Stops current and queued replies in this conversation. Codex threads keep running; stop them in Coding.
+              Stops current and queued replies in this conversation. Background tasks keep running independently.
             </span>}
             <button
               className="send"

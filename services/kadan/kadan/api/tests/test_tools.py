@@ -73,7 +73,7 @@ def required(schema: dict, root: dict) -> dict:
 
 
 def test_every_tool_has_a_unique_name_and_a_description():
-    assert len(ALL_TOOLS) == 23
+    assert len(ALL_TOOLS) == 20
     assert len(TOOLS_BY_NAME) == len(ALL_TOOLS) + len(COMPUTER_AGENT_TOOLS)
     assert len(CONVERSATION_TOOLS) == 12
     computer_names = {tool.name for tool in COMPUTER_TOOLS}
@@ -89,9 +89,9 @@ def test_every_tool_has_a_unique_name_and_a_description():
     assert all(tool.description for tool in [*ALL_TOOLS, *COMPUTER_AGENT_TOOLS])
 
 
-def test_codex_stays_with_the_conversation_agent():
+def test_computer_delegation_stays_with_the_conversation_agent():
     names = {tool.name for tool in ALL_TOOLS}
-    assert {"codex_start", "codex_threads", "codex_stop", "use_computer"} <= names
+    assert "use_computer" in names
     assert not names & {tool.name for tool in COMPUTER_AGENT_TOOLS}
 
 
