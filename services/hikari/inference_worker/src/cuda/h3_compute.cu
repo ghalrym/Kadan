@@ -1205,6 +1205,7 @@ public:
         const void* scratch = nullptr;
         std::uint64_t kv_gen = 0;
         std::size_t full_cap = 0;
+        bool argmax_mode = false;
         bool operator==(const InklingGraphKey&) const = default;
     };
 

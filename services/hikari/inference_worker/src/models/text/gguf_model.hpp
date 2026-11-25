@@ -311,6 +311,17 @@ public:
         const Progress& progress,
         std::span<const ImageSpan> images = {}
     ) = 0;
+
+    // Optional GPU-side argmax fast path (avoids copying full vocab logits to host).
+    // Returns std::nullopt when unsupported so Engine falls back to forward() + select().
+    virtual std::optional<unsigned> forward_argmax(
+        std::span<const unsigned> /*tokens*/,
+        std::size_t /*position*/,
+        const Progress& /*progress*/,
+        std::span<const ImageSpan> /*images*/ = {}
+    ) {
+        return std::nullopt;
+    }
 };
 
 // Exact metadata contract for inkling2_loop, shared by acquisition and loading.

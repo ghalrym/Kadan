@@ -185,8 +185,10 @@ public:
 
     // Runs all 48 Inkling 2 Mini logical slots 100% on GPU from pre-embedded
     // `input_embeddings` ([rows * n_embd]). Returns `logits` ([n_vocab_unpadded])
-    // when `want_logits` is true, else empty. Returns false if the device cannot
-    // admit the full model or KV state (caller falls back cleanly to Strata path).
+    // when `want_logits` is true and `argmax_out` is null; when `argmax_out` is
+    // non-null, computes exact argmax + finiteness on GPU and writes only the
+    // winning token ID (avoiding an 800 KB logits D2H copy). Returns false if
+    // the device cannot admit the full model or KV state (clean Strata fallback).
     virtual bool forward(
         std::span<const float> input_embeddings,
         std::size_t rows,
@@ -194,7 +196,8 @@ public:
         bool want_logits,
         std::vector<float>& logits_out,
         const std::function<void(const char*, std::size_t)>& progress,
-        const std::atomic_bool& cancel
+        const std::atomic_bool& cancel,
+        unsigned* argmax_out = nullptr
     ) = 0;
 };
 }  // namespace kadan

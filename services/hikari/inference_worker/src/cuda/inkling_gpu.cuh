@@ -54,19 +54,38 @@ struct StepParams {
     unsigned pad[3];
 };
 
+struct ArgmaxResult {
+    unsigned token;
+    unsigned nonfinite;
+};
+
 struct OutputChunkDesc {
-    const unsigned char* ptr;
+    const unsigned char* qs;
+    const __half* scales;
     unsigned first_row;
     unsigned row_count;
 };
 
 struct MatrixRef {
-    const unsigned char* ptr = nullptr;
-    std::size_t row_bytes = 0;
+    const unsigned char* qs = nullptr;
+    const __half* scales = nullptr;
+    std::size_t qs_row_bytes = 0;
     unsigned in = 0;
     unsigned out = 0;
     WeightKind kind = kWKindF32;
 };
+
+inline std::size_t soa_qs_row_bytes(std::size_t in, WeightKind kind) {
+    if (kind == kWKindF32)
+        return in * sizeof(float);
+    return (in / 32u) * (kind == kWKindIQ4_NL ? 16u : 32u);
+}
+
+inline std::size_t soa_scales_offset(std::size_t rows, std::size_t in, WeightKind kind) {
+    if (kind == kWKindF32)
+        return 0;
+    return rows * soa_qs_row_bytes(in, kind);
+}
 
 struct PhysLayerGpu {
     bool is_swa = false;
@@ -96,8 +115,10 @@ struct PhysLayerGpu {
 
     WeightKind gate_up_kind = kWKindIQ4_NL;
     WeightKind down_kind = kWKindIQ4_NL;
-    std::size_t gate_up_row_bytes = 0;
-    std::size_t down_row_bytes = 0;
+    std::size_t gate_up_qs_row_bytes = 0;
+    std::size_t gate_up_scales_offset = 0;
+    std::size_t down_qs_row_bytes = 0;
+    std::size_t down_scales_offset = 0;
     std::array<const unsigned char*, G::n_experts> gate_up_ptrs{};
     std::array<const unsigned char*, G::n_experts> down_ptrs{};
     const unsigned char* const* d_gate_up_ptrs = nullptr;
@@ -163,30 +184,62 @@ __device__ inline float block_sum_128(float v, float* shared) {
 }
 
 // ============================================================================
-// Weight validation & FP16 dequantization kernels
+// Weight SoA repacking, validation & FP16 dequantization kernels
 // ============================================================================
 
-__global__ void inkling_validate_packed_kernel(
-    const unsigned char* data,
+// Validates weight finiteness and (for IQ4_NL / Q8_0) repacks AoS blocks into
+// 16B/32B-aligned SoA layout: [all contiguous qs] ++ [all contiguous __half scales].
+__global__ void inkling_repack_soa_validate_kernel(
+    const unsigned char* __restrict__ src,
+    unsigned char* __restrict__ dst_qs,
+    __half* __restrict__ dst_scales,
     std::size_t count,
     int kind,
-    unsigned* status
+    unsigned* __restrict__ status
 ) {
     const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i >= count)
         return;
     if (kind == kWKindF32) {
-        const float v = reinterpret_cast<const float*>(data)[i];
+        const float v = reinterpret_cast<const float*>(src)[i];
         if (!isfinite(v))
             atomicOr(status, 1U);
-    } else {
-        const std::size_t stride = (kind == kWKindIQ4_NL) ? 18 : 34;
-        const unsigned char* blk = data + i * stride;
-        const unsigned short bits =
-            static_cast<unsigned short>(unsigned(blk[0]) | (unsigned(blk[1]) << 8));
-        const float d = __half2float(__ushort_as_half(bits));
-        if (!isfinite(d))
+    } else if (kind == kWKindIQ4_NL) {
+        const unsigned char* blk = src + i * 18;
+        const unsigned short bits = *reinterpret_cast<const unsigned short*>(blk);
+        const __half h = __ushort_as_half(bits);
+        if (!isfinite(__half2float(h)))
             atomicOr(status, 1U);
+        dst_scales[i] = h;
+        const auto* p = reinterpret_cast<const unsigned short*>(blk + 2);
+        reinterpret_cast<uint4*>(dst_qs)[i] = make_uint4(
+            unsigned(p[0]) | (unsigned(p[1]) << 16),
+            unsigned(p[2]) | (unsigned(p[3]) << 16),
+            unsigned(p[4]) | (unsigned(p[5]) << 16),
+            unsigned(p[6]) | (unsigned(p[7]) << 16)
+        );
+    } else {
+        // Q8_0: 2B half scale + 32B signed int8 qs -> 32B-aligned qs + contiguous half scales
+        const unsigned char* blk = src + i * 34;
+        const unsigned short bits = *reinterpret_cast<const unsigned short*>(blk);
+        const __half h = __ushort_as_half(bits);
+        if (!isfinite(__half2float(h)))
+            atomicOr(status, 1U);
+        dst_scales[i] = h;
+        const auto* p = reinterpret_cast<const unsigned short*>(blk + 2);
+        auto* out4 = reinterpret_cast<uint4*>(dst_qs) + i * 2;
+        out4[0] = make_uint4(
+            unsigned(p[0]) | (unsigned(p[1]) << 16),
+            unsigned(p[2]) | (unsigned(p[3]) << 16),
+            unsigned(p[4]) | (unsigned(p[5]) << 16),
+            unsigned(p[6]) | (unsigned(p[7]) << 16)
+        );
+        out4[1] = make_uint4(
+            unsigned(p[8]) | (unsigned(p[9]) << 16),
+            unsigned(p[10]) | (unsigned(p[11]) << 16),
+            unsigned(p[12]) | (unsigned(p[13]) << 16),
+            unsigned(p[14]) | (unsigned(p[15]) << 16)
+        );
     }
 }
 
@@ -206,11 +259,12 @@ __global__ void inkling_fp16_to_f32_kernel(
         dst[i] = __half2float(src[i]);
 }
 
-// Dequantizes packed weights [out, in] into __half [out, in] for FP16 Tensor Core GEMM.
+// Dequantizes SoA packed weights [out, in] into __half [out, in] for FP16 Tensor Core GEMM.
 // One warp (32 lanes) per 32-element quant block -> 8 blocks per 256-thread CTA.
 template <int Kind>
 __global__ void inkling_dequant_fp16_kernel(
-    const unsigned char* __restrict__ packed,
+    const unsigned char* __restrict__ qs,
+    const __half* __restrict__ scales,
     __half* __restrict__ out,
     std::size_t total_blocks
 ) {
@@ -220,22 +274,16 @@ __global__ void inkling_dequant_fp16_kernel(
         return;
     const unsigned lane = threadIdx.x & 31u;
     if constexpr (Kind == kWKindF32) {
-        const auto* f = reinterpret_cast<const float*>(packed) + blk_idx * 32 + lane;
+        const auto* f = reinterpret_cast<const float*>(qs) + blk_idx * 32 + lane;
         out[blk_idx * 32 + lane] = __float2half_rn(*f);
     } else if constexpr (Kind == kWKindQ8_0) {
-        const unsigned char* b = packed + blk_idx * 34;
-        const unsigned short bits =
-            static_cast<unsigned short>(unsigned(b[0]) | (unsigned(b[1]) << 8));
-        const float d = __half2float(__ushort_as_half(bits));
-        const signed char q = static_cast<signed char>(b[2 + lane]);
+        const float d = __half2float(scales[blk_idx]);
+        const signed char q = static_cast<signed char>(qs[blk_idx * 32 + lane]);
         out[blk_idx * 32 + lane] = __float2half_rn(d * float(q));
     } else {
-        // IQ4_NL: 2B half d + 16B nibbles (low = 0..15, high = 16..31)
-        const unsigned char* b = packed + blk_idx * 18;
-        const unsigned short bits =
-            static_cast<unsigned short>(unsigned(b[0]) | (unsigned(b[1]) << 8));
-        const float d = __half2float(__ushort_as_half(bits));
-        const unsigned byte = b[2 + (lane & 15u)];
+        // IQ4_NL SoA: 16B nibbles (low = 0..15, high = 16..31) + contiguous half scales
+        const float d = __half2float(scales[blk_idx]);
+        const unsigned byte = qs[blk_idx * 16 + (lane & 15u)];
         const unsigned idx = (lane < 16u) ? (byte & 15u) : (byte >> 4);
         out[blk_idx * 32 + lane] =
             __float2half_rn(d * float(static_cast<signed char>(iq4nl_u8(idx))));
@@ -243,7 +291,7 @@ __global__ void inkling_dequant_fp16_kernel(
 }
 
 // ============================================================================
-// Q8 input quantization + __dp4a GEMV kernels (decode & small-row m < 16)
+// Q8 input quantization + __dp4a GEMV & fused decode projection kernels
 // ============================================================================
 
 // One warp per 32-element block; 8 blocks per 256-thread CTA.
@@ -278,18 +326,22 @@ __global__ void inkling_quantize_q8_kernel(
     }
 }
 
-// 4-lane-per-block coalesced IQ4_NL quarter-block loader:
-// `sub` in 0..3 reads 4 consecutive nibble bytes -> 8 weights (4 low + 4 high).
-// Across 4 lanes, all 16 nibble bytes of the block are read contiguously!
-__device__ inline float load_iq4nl_quarter(
-    const unsigned char* blk, unsigned sub, int32_t& w_lo, int32_t& w_hi
+// 4-lane-per-block coalesced SoA IQ4_NL quarter-block loader:
+// Single 32-bit aligned LDG.32 per lane -> 16 contiguous bytes across 4 lanes!
+__device__ inline float load_iq4nl_soa_quarter(
+    const unsigned char* qs_row,
+    const __half* sc_row,
+    unsigned b,
+    unsigned sub,
+    int32_t& w_lo,
+    int32_t& w_hi
 ) {
-    const unsigned short bits = *reinterpret_cast<const unsigned short*>(blk);
-    const float d = __half2float(__ushort_as_half(bits));
-    const auto* p = reinterpret_cast<const unsigned short*>(blk + 2 + sub * 4u);
-    const unsigned u0 = p[0], u1 = p[1];
-    const unsigned b0 = u0 & 0xffu, b1 = u0 >> 8;
-    const unsigned b2 = u1 & 0xffu, b3 = u1 >> 8;
+    const float d = __half2float(sc_row[b]);
+    const unsigned p = reinterpret_cast<const unsigned*>(qs_row)[b * 4u + sub];
+    const unsigned b0 = p & 0xffu;
+    const unsigned b1 = (p >> 8) & 0xffu;
+    const unsigned b2 = (p >> 16) & 0xffu;
+    const unsigned b3 = p >> 24;
     w_lo = static_cast<int32_t>(
         iq4nl_u8(b0 & 15u) | (iq4nl_u8(b1 & 15u) << 8)
         | (iq4nl_u8(b2 & 15u) << 16) | (iq4nl_u8(b3 & 15u) << 24)
@@ -301,17 +353,20 @@ __device__ inline float load_iq4nl_quarter(
     return d;
 }
 
-// 4-lane-per-block coalesced Q8_0 quarter-block loader:
-// `sub` in 0..3 reads 8 consecutive int8s (2 int32s). Across 4 lanes, all 32
-// bytes of the block are read contiguously!
-__device__ inline float load_q8_0_quarter(
-    const unsigned char* blk, unsigned sub, int32_t& w0, int32_t& w1
+// 4-lane-per-block coalesced SoA Q8_0 quarter-block loader:
+// Single 64-bit aligned LDG.64 per lane -> 32 contiguous bytes across 4 lanes!
+__device__ inline float load_q8_0_soa_quarter(
+    const unsigned char* qs_row,
+    const __half* sc_row,
+    unsigned b,
+    unsigned sub,
+    int32_t& w0,
+    int32_t& w1
 ) {
-    const unsigned short bits = *reinterpret_cast<const unsigned short*>(blk);
-    const float d = __half2float(__ushort_as_half(bits));
-    const auto* p = reinterpret_cast<const unsigned short*>(blk + 2 + sub * 8u);
-    w0 = static_cast<int32_t>(unsigned(p[0]) | (unsigned(p[1]) << 16));
-    w1 = static_cast<int32_t>(unsigned(p[2]) | (unsigned(p[3]) << 16));
+    const float d = __half2float(sc_row[b]);
+    const uint2 p = reinterpret_cast<const uint2*>(qs_row)[b * 4u + sub];
+    w0 = static_cast<int32_t>(p.x);
+    w1 = static_cast<int32_t>(p.y);
     return d;
 }
 
@@ -327,22 +382,20 @@ __device__ inline void load_q8_shared(
     __syncthreads();
 }
 
-// Single-row or small-multi-row (1..15) matvec:
+// Single-row or small-multi-row (1..15) matvec on aligned SoA weights:
 // 1 warp per output column, 4 warps/CTA (128 threads -> 2x SM occupancy).
-// For quantized weights, 4 lanes share each 32-element block (8 blocks/warp step),
-// giving 100% coalesced weight reads and zero warp tail waste on K=2304/3072/4608.
 template <int Kind, unsigned MaxRows>
 __global__ void inkling_matvec_kernel(
-    const unsigned char* __restrict__ weights,
+    const unsigned char* __restrict__ qs,
+    const __half* __restrict__ scales,
     const Q8Block* __restrict__ x_q8,
     const float* __restrict__ x_f32,
     float* __restrict__ out,
-    std::size_t row_bytes,
+    std::size_t qs_row_bytes,
     unsigned in_dim,
     unsigned out_dim,
     unsigned rows
 ) {
-    // Cache single-row quantized input in shared memory (max 144 blocks = 5.18 KB).
     __shared__ Q8Block s_x[MaxRows == 1 && Kind != kWKindF32 ? 144 : 1];
     const unsigned n_blocks = in_dim >> 5;
     if constexpr (MaxRows == 1 && Kind != kWKindF32) {
@@ -354,7 +407,7 @@ __global__ void inkling_matvec_kernel(
     if (col >= out_dim)
         return;
     const unsigned lane = threadIdx.x & 31u;
-    const unsigned char* wrow = weights + std::size_t(col) * row_bytes;
+    const unsigned char* wrow = qs + std::size_t(col) * qs_row_bytes;
     float sums[MaxRows];
 #pragma unroll
     for (unsigned r = 0; r < MaxRows; ++r)
@@ -383,14 +436,14 @@ __global__ void inkling_matvec_kernel(
     } else {
         const unsigned grp = lane >> 2;  // 0..7
         const unsigned sub = lane & 3u;  // 0..3
-        constexpr std::size_t bbytes = (Kind == kWKindIQ4_NL) ? 18 : 34;
+        const __half* sc_row = scales + std::size_t(col) * n_blocks;
         const Q8Block* x_src =
             (MaxRows == 1 && n_blocks <= 144u) ? static_cast<const Q8Block*>(s_x) : x_q8;
         for (unsigned b = grp; b < n_blocks; b += 8u) {
             int32_t w0, w1;
             const float wd = (Kind == kWKindIQ4_NL)
-                                 ? load_iq4nl_quarter(wrow + std::size_t(b) * bbytes, sub, w0, w1)
-                                 : load_q8_0_quarter(wrow + std::size_t(b) * bbytes, sub, w0, w1);
+                                 ? load_iq4nl_soa_quarter(wrow, sc_row, b, sub, w0, w1)
+                                 : load_q8_0_soa_quarter(wrow, sc_row, b, sub, w0, w1);
 #pragma unroll
             for (unsigned r = 0; r < MaxRows; ++r) {
                 if (MaxRows == 1 || r < rows) {
@@ -422,7 +475,96 @@ __global__ void inkling_matvec_kernel(
     }
 }
 
-// Fused final output head (200058 x 2304, chunked across <=16 MiB bank slices)
+struct DecodeProjEntry {
+    const unsigned char* qs;
+    const __half* scales;
+    float* out;
+    std::size_t qs_row_bytes;
+    unsigned out_dim;
+    unsigned col_offset;
+    int kind;
+};
+
+struct FusedDecodeProjArgs {
+    DecodeProjEntry entries[6];
+    const Q8Block* x_q8;
+    const float* x_f32;
+    unsigned count;
+    unsigned in_dim;
+    unsigned total_cols;
+};
+
+// Fused multi-matrix single-row decode projection megakernel:
+// Projects up to 6 matrices sharing the same input vector in one kernel launch,
+// loading x_q8 once into shared memory with zero warp divergence (1 warp = 1 column).
+__global__ void inkling_fused_decode_proj_kernel(FusedDecodeProjArgs args) {
+    __shared__ Q8Block s_x[144];
+    const unsigned n_blocks = args.in_dim >> 5;
+    if (args.x_q8 && n_blocks <= 144u)
+        load_q8_shared(args.x_q8, s_x, n_blocks);
+
+    const unsigned global_col = blockIdx.x * 4u + (threadIdx.x >> 5);
+    if (global_col >= args.total_cols)
+        return;
+
+    unsigned idx = 0u;
+    for (unsigned i = 1u; i < args.count; ++i) {
+        if (global_col >= args.entries[i].col_offset)
+            idx = i;
+    }
+    const DecodeProjEntry& e = args.entries[idx];
+    const unsigned col = global_col - e.col_offset;
+    const unsigned lane = threadIdx.x & 31u;
+    const unsigned char* wrow = e.qs + std::size_t(col) * e.qs_row_bytes;
+    float sum = 0.0f;
+
+    if (e.kind == kWKindF32) {
+        const auto* wf = reinterpret_cast<const float4*>(wrow);
+        const auto* xf = reinterpret_cast<const float4*>(args.x_f32);
+        const unsigned n_vec = args.in_dim >> 2;
+        for (unsigned v = lane; v < n_vec; v += 32u) {
+            const float4 w = wf[v], x = xf[v];
+            sum = fmaf(w.x, x.x, sum);
+            sum = fmaf(w.y, x.y, sum);
+            sum = fmaf(w.z, x.z, sum);
+            sum = fmaf(w.w, x.w, sum);
+        }
+    } else if (e.kind == kWKindIQ4_NL) {
+        const unsigned grp = lane >> 2;
+        const unsigned sub = lane & 3u;
+        const __half* sc_row = e.scales + std::size_t(col) * n_blocks;
+        const Q8Block* x_src = (n_blocks <= 144u) ? static_cast<const Q8Block*>(s_x) : args.x_q8;
+        for (unsigned b = grp; b < n_blocks; b += 8u) {
+            int32_t w0, w1;
+            const float wd = load_iq4nl_soa_quarter(wrow, sc_row, b, sub, w0, w1);
+            const Q8Block& xb = x_src[b];
+            int32_t acc = __dp4a(w0, xb.qs[sub], 0);
+            acc = __dp4a(w1, xb.qs[sub + 4u], acc);
+            sum = fmaf(wd * xb.d, float(acc), sum);
+        }
+    } else {
+        const unsigned grp = lane >> 2;
+        const unsigned sub = lane & 3u;
+        const __half* sc_row = e.scales + std::size_t(col) * n_blocks;
+        const Q8Block* x_src = (n_blocks <= 144u) ? static_cast<const Q8Block*>(s_x) : args.x_q8;
+        for (unsigned b = grp; b < n_blocks; b += 8u) {
+            int32_t w0, w1;
+            const float wd = load_q8_0_soa_quarter(wrow, sc_row, b, sub, w0, w1);
+            const Q8Block& xb = x_src[b];
+            int32_t acc = __dp4a(w0, xb.qs[sub * 2u], 0);
+            acc = __dp4a(w1, xb.qs[sub * 2u + 1u], acc);
+            sum = fmaf(wd * xb.d, float(acc), sum);
+        }
+    }
+
+#pragma unroll
+    for (unsigned off = 16; off; off >>= 1)
+        sum += __shfl_down_sync(0xffffffffu, sum, off);
+    if (lane == 0u)
+        e.out[col] = sum;
+}
+
+// Fused final output head (200058 x 2304, chunked across <=16 MiB SoA slices)
 // + softcap 30 * tanh(x / 30), 4 warps/CTA (128 threads), 4 lanes/block + shared x_q8!
 template <int Kind>
 __global__ void inkling_output_softcap_kernel(
@@ -431,7 +573,7 @@ __global__ void inkling_output_softcap_kernel(
     const Q8Block* __restrict__ x_q8,
     const float* __restrict__ x_f32,
     float* __restrict__ logits,
-    std::size_t row_bytes,
+    std::size_t qs_row_bytes,
     unsigned out_dim
 ) {
     constexpr unsigned n_blocks = G::n_embd >> 5;  // 72
@@ -452,7 +594,8 @@ __global__ void inkling_output_softcap_kernel(
             hi = mid;
     }
     const OutputChunkDesc ch = chunks[lo];
-    const unsigned char* wrow = ch.ptr + std::size_t(col - ch.first_row) * row_bytes;
+    const unsigned local_row = col - ch.first_row;
+    const unsigned char* wrow = ch.qs + std::size_t(local_row) * qs_row_bytes;
     float sum = 0.0f;
     if constexpr (Kind == kWKindF32) {
         const auto* wf = reinterpret_cast<const float4*>(wrow);
@@ -467,12 +610,12 @@ __global__ void inkling_output_softcap_kernel(
     } else {
         const unsigned grp = lane >> 2;
         const unsigned sub = lane & 3u;
-        constexpr std::size_t bbytes = (Kind == kWKindIQ4_NL) ? 18 : 34;
+        const __half* sc_row = ch.scales + std::size_t(local_row) * n_blocks;
         for (unsigned b = grp; b < n_blocks; b += 8u) {
             int32_t w0, w1;
             const float wd = (Kind == kWKindIQ4_NL)
-                                 ? load_iq4nl_quarter(wrow + std::size_t(b) * bbytes, sub, w0, w1)
-                                 : load_q8_0_quarter(wrow + std::size_t(b) * bbytes, sub, w0, w1);
+                                 ? load_iq4nl_soa_quarter(wrow, sc_row, b, sub, w0, w1)
+                                 : load_q8_0_soa_quarter(wrow, sc_row, b, sub, w0, w1);
             const Q8Block& xb = s_x[b];
             int32_t acc;
             if constexpr (Kind == kWKindIQ4_NL) {
@@ -490,6 +633,118 @@ __global__ void inkling_output_softcap_kernel(
         sum += __shfl_down_sync(0xffffffffu, sum, off);
     if (lane == 0u)
         logits[col] = kFinalSoftcap * tanhf(sum * (1.0f / kFinalSoftcap));
+}
+
+// 2-stage GPU argmax + finiteness check over logits[0..n-1] (lowest-index tie break).
+// Eliminates 800 KB D2H copy + 2 host scans per token on greedy decode.
+__device__ inline void argmax_merge(
+    float& bv, unsigned& bi, unsigned& bad, float ov, unsigned oi, unsigned ob
+) {
+    bad |= ob;
+    if (oi != 0xffffffffu && (bi == 0xffffffffu || ov > bv || (ov == bv && oi < bi))) {
+        bv = ov;
+        bi = oi;
+    }
+}
+
+__global__ void inkling_argmax_stage1_kernel(
+    const float* __restrict__ logits,
+    unsigned n,
+    float* __restrict__ p_val,
+    unsigned* __restrict__ p_idx,
+    unsigned* __restrict__ p_bad
+) {
+    __shared__ float sv[8];
+    __shared__ unsigned si[8];
+    __shared__ unsigned sb[8];
+    float bv = -INFINITY;
+    unsigned bi = 0xffffffffu;
+    unsigned bad = 0u;
+    const unsigned stride = gridDim.x * blockDim.x;
+    for (unsigned i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
+        const float v = logits[i];
+        if (!isfinite(v)) {
+            bad = 1u;
+        } else if (bi == 0xffffffffu || v > bv || (v == bv && i < bi)) {
+            bv = v;
+            bi = i;
+        }
+    }
+#pragma unroll
+    for (unsigned off = 16; off; off >>= 1) {
+        const float ov = __shfl_down_sync(0xffffffffu, bv, off);
+        const unsigned oi = __shfl_down_sync(0xffffffffu, bi, off);
+        const unsigned ob = __shfl_down_sync(0xffffffffu, bad, off);
+        argmax_merge(bv, bi, bad, ov, oi, ob);
+    }
+    if ((threadIdx.x & 31u) == 0u) {
+        const unsigned w = threadIdx.x >> 5;
+        sv[w] = bv;
+        si[w] = bi;
+        sb[w] = bad;
+    }
+    __syncthreads();
+    if (threadIdx.x < 32u) {
+        bv = threadIdx.x < 8u ? sv[threadIdx.x] : -INFINITY;
+        bi = threadIdx.x < 8u ? si[threadIdx.x] : 0xffffffffu;
+        bad = threadIdx.x < 8u ? sb[threadIdx.x] : 0u;
+#pragma unroll
+        for (unsigned off = 4; off; off >>= 1) {
+            const float ov = __shfl_down_sync(0xffffffffu, bv, off);
+            const unsigned oi = __shfl_down_sync(0xffffffffu, bi, off);
+            const unsigned ob = __shfl_down_sync(0xffffffffu, bad, off);
+            argmax_merge(bv, bi, bad, ov, oi, ob);
+        }
+        if (threadIdx.x == 0u) {
+            p_val[blockIdx.x] = bv;
+            p_idx[blockIdx.x] = bi;
+            p_bad[blockIdx.x] = bad;
+        }
+    }
+}
+
+__global__ void inkling_argmax_stage2_kernel(
+    const float* __restrict__ p_val,
+    const unsigned* __restrict__ p_idx,
+    const unsigned* __restrict__ p_bad,
+    ArgmaxResult* __restrict__ out
+) {
+    __shared__ float sv[8];
+    __shared__ unsigned si[8];
+    __shared__ unsigned sb[8];
+    float bv = p_val[threadIdx.x];
+    unsigned bi = p_idx[threadIdx.x];
+    unsigned bad = p_bad[threadIdx.x];
+#pragma unroll
+    for (unsigned off = 16; off; off >>= 1) {
+        const float ov = __shfl_down_sync(0xffffffffu, bv, off);
+        const unsigned oi = __shfl_down_sync(0xffffffffu, bi, off);
+        const unsigned ob = __shfl_down_sync(0xffffffffu, bad, off);
+        argmax_merge(bv, bi, bad, ov, oi, ob);
+    }
+    if ((threadIdx.x & 31u) == 0u) {
+        const unsigned w = threadIdx.x >> 5;
+        sv[w] = bv;
+        si[w] = bi;
+        sb[w] = bad;
+    }
+    __syncthreads();
+    if (threadIdx.x < 32u) {
+        bv = threadIdx.x < 8u ? sv[threadIdx.x] : -INFINITY;
+        bi = threadIdx.x < 8u ? si[threadIdx.x] : 0xffffffffu;
+        bad = threadIdx.x < 8u ? sb[threadIdx.x] : 0u;
+#pragma unroll
+        for (unsigned off = 4; off; off >>= 1) {
+            const float ov = __shfl_down_sync(0xffffffffu, bv, off);
+            const unsigned oi = __shfl_down_sync(0xffffffffu, bi, off);
+            const unsigned ob = __shfl_down_sync(0xffffffffu, bad, off);
+            argmax_merge(bv, bi, bad, ov, oi, ob);
+        }
+        if (threadIdx.x == 0u) {
+            out->token = (bi == 0xffffffffu) ? 0u : bi;
+            out->nonfinite = bad;
+        }
+    }
 }
 
 // ============================================================================
@@ -1072,9 +1327,9 @@ __device__ inline float situ_act(float g, float u) {
     return g_act * u_act;
 }
 
-// Fused decode (rows == 1) indirect-GPU MoE gate_up + SiTU:
+// Fused decode (rows == 1) indirect-GPU MoE gate_up + SiTU on aligned SoA weights:
 // Grid: dim3(ceil(1152/4)=288, 8), Block: 128 threads (4 warps = 4 cols),
-// 4 lanes/block coalesced loads + shared x_q8 (2.59 KB).
+// 4 lanes/block coalesced LDG.32/LDG.64 + shared x_q8 (2.59 KB).
 template <int Kind>
 __global__ void inkling_moe_decode_gate_up_situ_kernel(
     const unsigned* __restrict__ experts,  // [8]
@@ -1082,7 +1337,8 @@ __global__ void inkling_moe_decode_gate_up_situ_kernel(
     const Q8Block* __restrict__ x_q8,
     const float* __restrict__ x_f32,
     float* __restrict__ act_out,  // [8, 1152]
-    std::size_t row_bytes
+    std::size_t qs_row_bytes,
+    std::size_t scales_offset
 ) {
     constexpr unsigned n_blocks = G::n_embd >> 5;  // 72
     __shared__ Q8Block s_x[Kind != kWKindF32 ? n_blocks : 1];
@@ -1096,8 +1352,8 @@ __global__ void inkling_moe_decode_gate_up_situ_kernel(
     const unsigned lane = threadIdx.x & 31u;
     const unsigned e = experts[k];
     const unsigned char* w_base = gate_up_ptrs[e];
-    const unsigned char* w_gate = w_base + std::size_t(col) * row_bytes;
-    const unsigned char* w_up = w_base + std::size_t(col + G::n_ff_exp) * row_bytes;
+    const unsigned char* w_gate = w_base + std::size_t(col) * qs_row_bytes;
+    const unsigned char* w_up = w_base + std::size_t(col + G::n_ff_exp) * qs_row_bytes;
 
     float g_sum = 0.0f, u_sum = 0.0f;
     if constexpr (Kind == kWKindF32) {
@@ -1118,17 +1374,17 @@ __global__ void inkling_moe_decode_gate_up_situ_kernel(
     } else {
         const unsigned grp = lane >> 2;
         const unsigned sub = lane & 3u;
-        constexpr std::size_t bbytes = (Kind == kWKindIQ4_NL) ? 18 : 34;
+        const auto* sc_base = reinterpret_cast<const __half*>(w_base + scales_offset);
+        const __half* sc_gate = sc_base + std::size_t(col) * n_blocks;
+        const __half* sc_up = sc_base + std::size_t(col + G::n_ff_exp) * n_blocks;
         for (unsigned b = grp; b < n_blocks; b += 8u) {
             int32_t wg0, wg1, wu0, wu1;
-            const float dg =
-                (Kind == kWKindIQ4_NL)
-                    ? load_iq4nl_quarter(w_gate + std::size_t(b) * bbytes, sub, wg0, wg1)
-                    : load_q8_0_quarter(w_gate + std::size_t(b) * bbytes, sub, wg0, wg1);
-            const float du =
-                (Kind == kWKindIQ4_NL)
-                    ? load_iq4nl_quarter(w_up + std::size_t(b) * bbytes, sub, wu0, wu1)
-                    : load_q8_0_quarter(w_up + std::size_t(b) * bbytes, sub, wu0, wu1);
+            const float dg = (Kind == kWKindIQ4_NL)
+                                 ? load_iq4nl_soa_quarter(w_gate, sc_gate, b, sub, wg0, wg1)
+                                 : load_q8_0_soa_quarter(w_gate, sc_gate, b, sub, wg0, wg1);
+            const float du = (Kind == kWKindIQ4_NL)
+                                 ? load_iq4nl_soa_quarter(w_up, sc_up, b, sub, wu0, wu1)
+                                 : load_q8_0_soa_quarter(w_up, sc_up, b, sub, wu0, wu1);
             const Q8Block& xb = s_x[b];
             int32_t ag, au;
             if constexpr (Kind == kWKindIQ4_NL) {
@@ -1155,7 +1411,7 @@ __global__ void inkling_moe_decode_gate_up_situ_kernel(
 
 // Fused decode (rows == 1) deterministic MoE down + weighted reduce across all 8 experts:
 // Grid: ceil(2304/4)=576 blocks, Block: 128 threads (4 warps = 4 cols),
-// 4 lanes/block coalesced loads + shared act_q8 (8 * 36 blocks = 10.37 KB).
+// 4 lanes/block coalesced LDG.32/LDG.64 + shared act_q8 (8 * 36 blocks = 10.37 KB).
 template <int Kind>
 __global__ void inkling_moe_decode_down_reduce_kernel(
     const unsigned* __restrict__ experts,    // [8]
@@ -1164,7 +1420,8 @@ __global__ void inkling_moe_decode_down_reduce_kernel(
     const Q8Block* __restrict__ act_q8,      // [8, 1152/32=36]
     const float* __restrict__ act_f32,       // [8, 1152]
     float* __restrict__ moe_out,             // [2304]
-    std::size_t row_bytes
+    std::size_t qs_row_bytes,
+    std::size_t scales_offset
 ) {
     constexpr unsigned n_blocks = G::n_ff_exp >> 5;  // 36
     __shared__ Q8Block s_act[Kind != kWKindF32 ? G::n_experts_used * n_blocks : 1];
@@ -1181,7 +1438,8 @@ __global__ void inkling_moe_decode_down_reduce_kernel(
     for (unsigned k = 0; k < G::n_experts_used; ++k) {
         const unsigned e = experts[k];
         const float wk = exp_weights[k];
-        const unsigned char* wrow = down_ptrs[e] + std::size_t(col) * row_bytes;
+        const unsigned char* w_base = down_ptrs[e];
+        const unsigned char* wrow = w_base + std::size_t(col) * qs_row_bytes;
         float sum = 0.0f;
         if constexpr (Kind == kWKindF32) {
             const auto* wf = reinterpret_cast<const float4*>(wrow);
@@ -1195,14 +1453,14 @@ __global__ void inkling_moe_decode_down_reduce_kernel(
                 sum = fmaf(w.w, x.w, sum);
             }
         } else {
-            constexpr std::size_t bbytes = (Kind == kWKindIQ4_NL) ? 18 : 34;
+            const __half* sc_row =
+                reinterpret_cast<const __half*>(w_base + scales_offset) + std::size_t(col) * n_blocks;
             const Q8Block* xk = s_act + std::size_t(k) * n_blocks;
             for (unsigned b = grp; b < n_blocks; b += 8u) {
                 int32_t w0, w1;
-                const float wd =
-                    (Kind == kWKindIQ4_NL)
-                        ? load_iq4nl_quarter(wrow + std::size_t(b) * bbytes, sub, w0, w1)
-                        : load_q8_0_quarter(wrow + std::size_t(b) * bbytes, sub, w0, w1);
+                const float wd = (Kind == kWKindIQ4_NL)
+                                     ? load_iq4nl_soa_quarter(wrow, sc_row, b, sub, w0, w1)
+                                     : load_q8_0_soa_quarter(wrow, sc_row, b, sub, w0, w1);
                 const Q8Block& xb = xk[b];
                 int32_t acc;
                 if constexpr (Kind == kWKindIQ4_NL) {
@@ -1317,15 +1575,15 @@ inline void launch_dequant_fp16(
     const unsigned grid = unsigned((total_blocks + 7u) / 8u);
     if (m.kind == kWKindF32)
         inkling_dequant_fp16_kernel<kWKindF32><<<grid, 256, 0, stream>>>(
-            m.ptr, dst, total_blocks
+            m.qs, m.scales, dst, total_blocks
         );
     else if (m.kind == kWKindQ8_0)
         inkling_dequant_fp16_kernel<kWKindQ8_0><<<grid, 256, 0, stream>>>(
-            m.ptr, dst, total_blocks
+            m.qs, m.scales, dst, total_blocks
         );
     else
         inkling_dequant_fp16_kernel<kWKindIQ4_NL><<<grid, 256, 0, stream>>>(
-            m.ptr, dst, total_blocks
+            m.qs, m.scales, dst, total_blocks
         );
     checked(cudaGetLastError());
 }
@@ -1352,19 +1610,19 @@ inline void launch_matvec_dp4a(
         constexpr int K = decltype(kind_tag)::value;
         if (rows == 1u)
             inkling_matvec_kernel<K, 1><<<grid, 128, 0, stream>>>(
-                m.ptr, x_q8, x_f32, out, m.row_bytes, m.in, m.out, 1u
+                m.qs, m.scales, x_q8, x_f32, out, m.qs_row_bytes, m.in, m.out, 1u
             );
         else if (rows <= 4u)
             inkling_matvec_kernel<K, 4><<<grid, 128, 0, stream>>>(
-                m.ptr, x_q8, x_f32, out, m.row_bytes, m.in, m.out, rows
+                m.qs, m.scales, x_q8, x_f32, out, m.qs_row_bytes, m.in, m.out, rows
             );
         else if (rows <= 8u)
             inkling_matvec_kernel<K, 8><<<grid, 128, 0, stream>>>(
-                m.ptr, x_q8, x_f32, out, m.row_bytes, m.in, m.out, rows
+                m.qs, m.scales, x_q8, x_f32, out, m.qs_row_bytes, m.in, m.out, rows
             );
         else
             inkling_matvec_kernel<K, 15><<<grid, 128, 0, stream>>>(
-                m.ptr, x_q8, x_f32, out, m.row_bytes, m.in, m.out, rows
+                m.qs, m.scales, x_q8, x_f32, out, m.qs_row_bytes, m.in, m.out, rows
             );
     };
     if (m.kind == kWKindF32)
@@ -1373,6 +1631,34 @@ inline void launch_matvec_dp4a(
         dispatch(std::integral_constant<int, kWKindQ8_0>{});
     else
         dispatch(std::integral_constant<int, kWKindIQ4_NL>{});
+    checked(cudaGetLastError());
+}
+
+inline void launch_fused_decode_proj(
+    std::initializer_list<std::pair<const MatrixRef*, float*>> pairs,
+    const Q8Block* x_q8,
+    const float* x_f32,
+    cudaStream_t stream
+) {
+    FusedDecodeProjArgs args{};
+    args.x_q8 = nullptr;
+    args.x_f32 = x_f32;
+    unsigned off = 0u;
+    for (const auto& [m, out] : pairs) {
+        if (!m)
+            continue;
+        if (args.count == 0u)
+            args.in_dim = m->in;
+        if (m->kind != kWKindF32)
+            args.x_q8 = x_q8;
+        args.entries[args.count++] = {
+            m->qs, m->scales, out, m->qs_row_bytes, m->out, off, int(m->kind)
+        };
+        off += m->out;
+    }
+    args.total_cols = off;
+    const unsigned grid = (args.total_cols + 3u) / 4u;
+    inkling_fused_decode_proj_kernel<<<grid, 128, 0, stream>>>(args);
     checked(cudaGetLastError());
 }
 
@@ -1411,10 +1697,14 @@ struct ScratchViews {
     float* logits = nullptr;
     float* attn_partial = nullptr;
     void* blas_ws = nullptr;
-    unsigned* row_experts = nullptr;   // [rows, 8]
-    float* row_weights = nullptr;      // [rows, 8]
-    unsigned* exp_token_idx = nullptr; // [rows * 8]
+    unsigned* row_experts = nullptr;      // [rows, 8]
+    float* row_weights = nullptr;         // [rows, 8]
+    unsigned* exp_token_idx = nullptr;    // [rows * 8]
     unsigned* exp_slot_for_rk = nullptr;  // [rows * 8]
+    float* argmax_p_val = nullptr;        // [256]
+    unsigned* argmax_p_idx = nullptr;     // [256]
+    unsigned* argmax_p_bad = nullptr;     // [256]
+    ArgmaxResult* argmax_out = nullptr;   // [1]
     std::size_t total_bytes = 0;
 
     static ScratchViews plan(std::size_t rows, CudaDeviceOperations& arena, bool bind_ptrs) {
@@ -1492,17 +1782,25 @@ struct ScratchViews {
         v.logits = arena.at<float>(off_logits);
         v.attn_partial = arena.at<float>(off_partial);
         v.blas_ws = arena.at<void>(off_blas);
-        // Sub-slice routing metadata inside the 2 MiB block
+        // Sub-slice routing & argmax metadata inside the 2 MiB block
         Layout ml;
         const auto off_re = ml.add(expert_rows * sizeof(unsigned));
         const auto off_rw = ml.add(expert_rows * sizeof(float));
         const auto off_ti = ml.add(expert_rows * sizeof(unsigned));
         const auto off_sr = ml.add(expert_rows * sizeof(unsigned));
+        const auto off_apv = ml.add(256 * sizeof(float));
+        const auto off_api = ml.add(256 * sizeof(unsigned));
+        const auto off_apb = ml.add(256 * sizeof(unsigned));
+        const auto off_ao = ml.add(sizeof(ArgmaxResult));
         require(ml.bytes <= kRoutingMetaBytes, "inkling_gpu_meta_scratch");
         v.row_experts = arena.at<unsigned>(off_meta + off_re);
         v.row_weights = arena.at<float>(off_meta + off_rw);
         v.exp_token_idx = arena.at<unsigned>(off_meta + off_ti);
         v.exp_slot_for_rk = arena.at<unsigned>(off_meta + off_sr);
+        v.argmax_p_val = arena.at<float>(off_meta + off_apv);
+        v.argmax_p_idx = arena.at<unsigned>(off_meta + off_api);
+        v.argmax_p_bad = arena.at<unsigned>(off_meta + off_apb);
+        v.argmax_out = arena.at<ArgmaxResult>(off_meta + off_ao);
         return v;
     }
 };
@@ -2050,7 +2348,8 @@ public:
         bool want_logits,
         std::vector<float>& logits_out,
         const std::function<void(const char*, std::size_t)>& progress,
-        const std::atomic_bool& cancel
+        const std::atomic_bool& cancel,
+        unsigned* argmax_out = nullptr
     ) override {
         require(!cancel.load(), "h3_cuda_cancelled");
         require(
@@ -2062,12 +2361,16 @@ public:
         for (float v : input_embeddings)
             require(std::isfinite(v), "h3_cuda_nonfinite_input");
 
+        const bool want_argmax = (argmax_out != nullptr);
+        const bool need_head = want_logits || want_argmax;
+
         if (want_logits)
             logits_out.resize(G::n_vocab_unpadded);
         else
             logits_out.clear();
 
         bool completed = false;
+        ArgmaxResult host_argmax{0u, 0u};
         run_on_state_(
             cancel,
             [&](DeviceWorkspace& ws, const std::atomic_bool& failed) {
@@ -2110,7 +2413,7 @@ public:
                 // Synchronize legacy stream once so any mirror/weight copy is visible.
                 checked(cuda_trace::synchronize(cudaStreamLegacy));
 
-                if (rows == 1 && want_logits) {
+                if (rows == 1 && need_head) {
                     // Stage 3: CUDA Graph capture & replay for single-token decode!
                     const unsigned full_segs =
                         unsigned((std::max<std::size_t>(full_cap, 256) + 255) / 256);
@@ -2119,7 +2422,7 @@ public:
                     require(partial_need <= kAttnPartialBytes, "inkling_gpu_partial_limit");
 
                     const CudaDeviceOperations::InklingGraphKey key{
-                        arena.data, arena.inkling_kv_gen, full_cap
+                        arena.data, arena.inkling_kv_gen, full_cap, want_argmax
                     };
                     if (!arena.inkling_graph || arena.inkling_graph_key != key) {
                         arena.invalidate_inkling_graph();
@@ -2134,6 +2437,7 @@ public:
                                 conv_rec->data,
                                 reinterpret_cast<const StepParams*>(step_rec->data),
                                 full_segs,
+                                want_argmax,
                                 stream
                             );
                             checked(cudaStreamEndCapture(stream, &graph));
@@ -2170,13 +2474,24 @@ public:
                         stream
                     ));
                     checked(cudaGraphLaunch(arena.inkling_graph, stream));
-                    checked(cudaMemcpyAsync(
-                        logits_out.data(),
-                        sv.logits,
-                        G::n_vocab_unpadded * sizeof(float),
-                        cudaMemcpyDeviceToHost,
-                        stream
-                    ));
+                    if (want_argmax) {
+                        checked(cudaMemcpyAsync(
+                            &host_argmax,
+                            sv.argmax_out,
+                            sizeof(host_argmax),
+                            cudaMemcpyDeviceToHost,
+                            stream
+                        ));
+                    }
+                    if (want_logits) {
+                        checked(cudaMemcpyAsync(
+                            logits_out.data(),
+                            sv.logits,
+                            G::n_vocab_unpadded * sizeof(float),
+                            cudaMemcpyDeviceToHost,
+                            stream
+                        ));
+                    }
                     checked(cudaStreamSynchronize(stream));
                     for (std::size_t s = 0; s < G::n_slots; ++s)
                         arena.mirrors[s].valid = position + 1;
@@ -2188,7 +2503,7 @@ public:
                     return;
                 }
 
-                // Multi-row prefill (or 1-row without logits): eager GPU-resident path
+                // Multi-row prefill (or 1-row without head): eager GPU-resident path
                 // using FP16 Tensor Core GEMM (m >= 16) + dp4a (m < 16).
                 struct BlasScope {
                     cublasHandle_t h;
@@ -2220,13 +2535,23 @@ public:
                     conv_rec->data,
                     rows,
                     position,
-                    want_logits,
+                    need_head,
+                    want_argmax,
                     progress,
                     cancel,
                     failed,
                     stream
                 );
 
+                if (want_argmax) {
+                    checked(cudaMemcpyAsync(
+                        &host_argmax,
+                        sv.argmax_out,
+                        sizeof(host_argmax),
+                        cudaMemcpyDeviceToHost,
+                        stream
+                    ));
+                }
                 if (want_logits) {
                     checked(cudaMemcpyAsync(
                         logits_out.data(),
@@ -2243,9 +2568,15 @@ public:
             }
         );
 
-        if (completed && want_logits) {
-            for (float v : logits_out)
-                require(std::isfinite(v), "h3_cuda_nonfinite_output");
+        if (completed) {
+            if (want_argmax) {
+                require(!host_argmax.nonfinite, "h3_cuda_nonfinite_output");
+                *argmax_out = host_argmax.token;
+            }
+            if (want_logits && !want_argmax) {
+                for (float v : logits_out)
+                    require(std::isfinite(v), "h3_cuda_nonfinite_output");
+            }
         }
         return completed;
     }
@@ -2278,27 +2609,36 @@ private:
     std::array<PhysLayerGpu, G::n_phys> gpu_layers_{};
     std::array<LoopLayerGpu, G::loop_core_len> gpu_loops_{};
     WeightKind output_kind_ = kWKindQ8_0;
-    std::size_t output_row_bytes_ = 0;
+    std::size_t output_qs_row_bytes_ = 0;
     unsigned output_chunk_count_ = 0;
     const OutputChunkDesc* d_output_chunks_ = nullptr;
 
+    // Distinct key width for SoA-repacked quantized chunks (9 for IQ4_NL, 17 for Q8_0)
+    // so retained SoA chunks never collide with AoS Strata keys while preserving
+    // key.count * key.width == exact retained byte count.
     static DeviceWeights::Key matrix_key(
         const kadan::InklingMatrixDesc& m,
         std::size_t first_row,
         std::size_t row_count
     ) {
-        const bool f32 = !m.encoding;
-        const std::size_t values = f32 ? 1 : gguf::block_values(*m.encoding);
-        const std::size_t block = f32 ? sizeof(float) : gguf::block_bytes(*m.encoding);
+        if (!m.encoding) {
+            return DeviceWeights::Key{
+                m.identity, first_row * m.in, row_count * m.in, sizeof(float)
+            };
+        }
+        const std::size_t values = gguf::block_values(*m.encoding);
+        const std::size_t block = gguf::block_bytes(*m.encoding);
+        // block is 18 (IQ4_NL) or 34 (Q8_0), both even -> half width (9 / 17) with 2x count.
         return DeviceWeights::Key{
             m.identity,
-            first_row * (m.in / values),
-            (row_count * m.in) / values,
-            block
+            first_row * (m.in / values) * 2u,
+            (row_count * m.in / values) * 2u,
+            block / 2u
         };
     }
 
-    // Admits a single matrix chunk (<= 16 MiB) into arena.weights with GPU finiteness validation.
+    // Admits a single matrix chunk (<= 16 MiB) into arena.weights with GPU finiteness
+    // validation and (for IQ4_NL / Q8_0) on-GPU repacking into 16B/32B-aligned SoA layout.
     const unsigned char* admit_chunk(
         DeviceWorkspace& ws,
         CudaDeviceOperations& arena,
@@ -2326,6 +2666,7 @@ private:
         Layout l;
         const auto off_status = l.add(sizeof(unsigned));
         const auto off_staged = l.add(bytes);
+        const auto off_repacked = (kind == kWKindF32) ? off_staged : l.add(bytes);
         ws.ensure(l.bytes);
         checked(cudaMemsetAsync(
             arena.at<void>(off_status), 0, sizeof(unsigned), cudaStreamLegacy
@@ -2335,8 +2676,18 @@ private:
         ));
         const std::size_t elem_count =
             (kind == kWKindF32) ? (row_count * m.in) : ((row_count * m.in) / 32u);
-        inkling_validate_packed_kernel<<<unsigned((elem_count + 255) / 256), 256>>>(
+        unsigned char* dst_qs =
+            (kind == kWKindF32) ? nullptr : arena.at<unsigned char>(off_repacked);
+        __half* dst_scales =
+            (kind == kWKindF32)
+                ? nullptr
+                : reinterpret_cast<__half*>(
+                      dst_qs + soa_scales_offset(row_count, m.in, kind)
+                  );
+        inkling_repack_soa_validate_kernel<<<unsigned((elem_count + 255) / 256), 256>>>(
             arena.at<unsigned char>(off_staged),
+            dst_qs,
+            dst_scales,
             elem_count,
             int(kind),
             arena.at<unsigned>(off_status)
@@ -2350,7 +2701,7 @@ private:
         stop(cancel, failed);
 
         auto* retained = arena.weights.retain_device(
-            key, arena.at<void>(off_staged), bytes, cancel
+            key, arena.at<void>(off_repacked), bytes, cancel
         );
         return static_cast<const unsigned char*>(retained);
     }
@@ -2372,7 +2723,17 @@ private:
         const auto* ptr = admit_chunk(ws, arena, m, 0, m.out, *k, cancel, failed);
         if (!ptr)
             return false;
-        dst = {ptr, m.row_bytes, unsigned(m.in), unsigned(m.out), *k};
+        const std::size_t sc_off = soa_scales_offset(m.out, m.in, *k);
+        const __half* scales =
+            (*k == kWKindF32) ? nullptr : reinterpret_cast<const __half*>(ptr + sc_off);
+        dst = {
+            ptr,
+            scales,
+            soa_qs_row_bytes(m.in, *k),
+            unsigned(m.in),
+            unsigned(m.out),
+            *k
+        };
         return true;
     }
 
@@ -2385,7 +2746,7 @@ private:
         // Fast path: if immutable params AND first weight are still resident, pointers are valid!
         if (arena.rel_biases.count(kInklingParamsKey) && d_out_norm_ && output_chunk_count_) {
             const auto first_key = matrix_key(desc_.layers[0].wq, 0, desc_.layers[0].wq.out);
-            if (arena.weights.find(first_key, true) == gpu_layers_[0].wq.ptr)
+            if (arena.weights.find(first_key, true) == gpu_layers_[0].wq.qs)
                 return true;
         }
 
@@ -2417,15 +2778,19 @@ private:
             }
             dst.gate_up_kind = *to_weight_kind(src.wffn_gate_up[0].encoding);
             dst.down_kind = *to_weight_kind(src.wffn_down[0].encoding);
-            dst.gate_up_row_bytes = src.wffn_gate_up[0].row_bytes;
-            dst.down_row_bytes = src.wffn_down[0].row_bytes;
+            dst.gate_up_qs_row_bytes = soa_qs_row_bytes(G::n_embd, dst.gate_up_kind);
+            dst.gate_up_scales_offset =
+                soa_scales_offset(2 * G::n_ff_exp, G::n_embd, dst.gate_up_kind);
+            dst.down_qs_row_bytes = soa_qs_row_bytes(G::n_ff_exp, dst.down_kind);
+            dst.down_scales_offset =
+                soa_scales_offset(G::n_embd, G::n_ff_exp, dst.down_kind);
             for (std::size_t e = 0; e < G::n_experts; ++e) {
                 MatrixRef gu_ref, dn_ref;
                 if (!admit_matrix(ws, arena, src.wffn_gate_up[e], gu_ref, cancel, failed)
                     || !admit_matrix(ws, arena, src.wffn_down[e], dn_ref, cancel, failed))
                     return false;
-                dst.gate_up_ptrs[e] = gu_ref.ptr;
-                dst.down_ptrs[e] = dn_ref.ptr;
+                dst.gate_up_ptrs[e] = gu_ref.qs;
+                dst.down_ptrs[e] = dn_ref.qs;
             }
         }
         for (std::size_t i = 0; i < G::loop_core_len; ++i) {
@@ -2439,10 +2804,10 @@ private:
             }
         }
 
-        // 2. Admit output.weight (only unpadded rows 0..200057!) in <= 16 MiB chunks.
+        // 2. Admit output.weight (only unpadded rows 0..200057!) in <= 16 MiB SoA chunks.
         const auto& ow = desc_.output_weight;
         output_kind_ = *to_weight_kind(ow.encoding);
-        output_row_bytes_ = ow.row_bytes;
+        output_qs_row_bytes_ = soa_qs_row_bytes(ow.in, output_kind_);
         const std::size_t max_chunk_rows =
             std::max<std::size_t>(1, gguf_projection_staging_bytes / ow.row_bytes);
         std::vector<OutputChunkDesc> host_chunks;
@@ -2452,7 +2817,13 @@ private:
                 admit_chunk(ws, arena, ow, first, count, output_kind_, cancel, failed);
             if (!ptr)
                 return false;
-            host_chunks.push_back({ptr, unsigned(first), unsigned(count)});
+            const __half* scales =
+                (output_kind_ == kWKindF32)
+                    ? nullptr
+                    : reinterpret_cast<const __half*>(
+                          ptr + soa_scales_offset(count, ow.in, output_kind_)
+                      );
+            host_chunks.push_back({ptr, scales, unsigned(first), unsigned(count)});
         }
         require(host_chunks.size() <= kMaxOutputChunks, "inkling_gpu_output_chunks");
         output_chunk_count_ = unsigned(host_chunks.size());
@@ -2687,28 +3058,37 @@ private:
                     sv.ctrl_gate, sv.x_q8, std::size_t(rows) * G::loop_gate_rank, stream
                 );
             }
-            project_matrix(
-                blas,
-                m_gain,
-                sv.ctrl_gate,
-                sv.in_fp16,
-                sv.x_q8,
-                sv.w_fp16,
-                sv.ctrl_g,
-                rows,
-                stream
-            );
-            project_matrix(
-                blas,
-                m_forget,
-                sv.ctrl_gate,
-                sv.in_fp16,
-                sv.x_q8,
-                sv.w_fp16,
-                sv.ctrl_f,
-                rows,
-                stream
-            );
+            if (rows == 1u) {
+                launch_fused_decode_proj(
+                    {{&m_gain, sv.ctrl_g}, {&m_forget, sv.ctrl_f}},
+                    sv.x_q8,
+                    sv.ctrl_gate,
+                    stream
+                );
+            } else {
+                project_matrix(
+                    blas,
+                    m_gain,
+                    sv.ctrl_gate,
+                    sv.in_fp16,
+                    sv.x_q8,
+                    sv.w_fp16,
+                    sv.ctrl_g,
+                    rows,
+                    stream
+                );
+                project_matrix(
+                    blas,
+                    m_forget,
+                    sv.ctrl_gate,
+                    sv.in_fp16,
+                    sv.x_q8,
+                    sv.w_fp16,
+                    sv.ctrl_f,
+                    rows,
+                    stream
+                );
+            }
 
             inkling_ctrl_blend_norm_kernel<<<rows, 256, 0, stream>>>(
                 src_targets[k], messages[k], sv.ctrl_g, sv.ctrl_f, norm_w[k], dst_targets[k]
@@ -2844,26 +3224,78 @@ private:
         };
 
         prep_input(in_q);
-        project_matrix(arena.blas, l.wq, in_q, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.q, rows, stream);
-        project_matrix(arena.blas, l.wrel, in_q, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.r_cur, rows, stream);
-        project_matrix(arena.blas, l.wsink, in_q, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.sinks, rows, stream);
-        project_matrix(arena.blas, l.wgate, in_q, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.gate, rows, stream);
-        if (shared_swa) {
-            project_matrix(arena.blas, l.wk, in_k, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.k_raw, rows, stream);
-            project_matrix(arena.blas, l.wv, in_v, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.v_raw, rows, stream);
+        if (rows == 1u) {
+            if (shared_swa) {
+                launch_fused_decode_proj(
+                    {{&l.wq, sv.q},
+                     {&l.wrel, sv.r_cur},
+                     {&l.wsink, sv.sinks},
+                     {&l.wgate, sv.gate},
+                     {&l.wk, sv.k_raw},
+                     {&l.wv, sv.v_raw}},
+                    sv.x_q8,
+                    in_q,
+                    stream
+                );
+            } else {
+                launch_fused_decode_proj(
+                    {{&l.wq, sv.q},
+                     {&l.wrel, sv.r_cur},
+                     {&l.wsink, sv.sinks},
+                     {&l.wgate, sv.gate}},
+                    sv.x_q8,
+                    in_q,
+                    stream
+                );
+                prep_input(in_k);
+                if (!l.is_swa) {
+                    launch_fused_decode_proj(
+                        {{&l.wk, sv.k_raw}, {&l.wk_conv_proj, sv.k_dyn}},
+                        sv.x_q8,
+                        in_k,
+                        stream
+                    );
+                } else {
+                    project_matrix(
+                        arena.blas, l.wk, in_k, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.k_raw, rows, stream
+                    );
+                }
+                prep_input(in_v);
+                if (!l.is_swa) {
+                    launch_fused_decode_proj(
+                        {{&l.wv, sv.v_raw}, {&l.wv_conv_proj, sv.v_dyn}},
+                        sv.x_q8,
+                        in_v,
+                        stream
+                    );
+                } else {
+                    project_matrix(
+                        arena.blas, l.wv, in_v, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.v_raw, rows, stream
+                    );
+                }
+            }
         } else {
-            prep_input(in_k);
-            project_matrix(arena.blas, l.wk, in_k, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.k_raw, rows, stream);
-            if (!l.is_swa)
-                project_matrix(
-                    arena.blas, l.wk_conv_proj, in_k, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.k_dyn, rows, stream
-                );
-            prep_input(in_v);
-            project_matrix(arena.blas, l.wv, in_v, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.v_raw, rows, stream);
-            if (!l.is_swa)
-                project_matrix(
-                    arena.blas, l.wv_conv_proj, in_v, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.v_dyn, rows, stream
-                );
+            project_matrix(arena.blas, l.wq, in_q, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.q, rows, stream);
+            project_matrix(arena.blas, l.wrel, in_q, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.r_cur, rows, stream);
+            project_matrix(arena.blas, l.wsink, in_q, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.sinks, rows, stream);
+            project_matrix(arena.blas, l.wgate, in_q, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.gate, rows, stream);
+            if (shared_swa) {
+                project_matrix(arena.blas, l.wk, in_k, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.k_raw, rows, stream);
+                project_matrix(arena.blas, l.wv, in_v, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.v_raw, rows, stream);
+            } else {
+                prep_input(in_k);
+                project_matrix(arena.blas, l.wk, in_k, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.k_raw, rows, stream);
+                if (!l.is_swa)
+                    project_matrix(
+                        arena.blas, l.wk_conv_proj, in_k, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.k_dyn, rows, stream
+                    );
+                prep_input(in_v);
+                project_matrix(arena.blas, l.wv, in_v, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.v_raw, rows, stream);
+                if (!l.is_swa)
+                    project_matrix(
+                        arena.blas, l.wv_conv_proj, in_v, sv.in_fp16, sv.x_q8, sv.w_fp16, sv.v_dyn, rows, stream
+                    );
+            }
         }
 
         // 3. K and V causal short convolutions
@@ -3134,7 +3566,8 @@ private:
                         sv.x_q8,
                         ffn_h,
                         sv.act_out,
-                        l.gate_up_row_bytes
+                        l.gate_up_qs_row_bytes,
+                        l.gate_up_scales_offset
                     );
                 checked(cudaGetLastError());
             };
@@ -3159,7 +3592,8 @@ private:
                         sv.x_q8,
                         sv.act_out,
                         moe_out,
-                        l.down_row_bytes
+                        l.down_qs_row_bytes,
+                        l.down_scales_offset
                     );
                 checked(cudaGetLastError());
             };
@@ -3246,9 +3680,15 @@ private:
                 const unsigned m = exp_offsets[e + 1] - off;
                 if (!m)
                     continue;
+                const auto* base_ptr = l.gate_up_ptrs[e];
+                const __half* sc_ptr =
+                    l.gate_up_scales_offset
+                        ? reinterpret_cast<const __half*>(base_ptr + l.gate_up_scales_offset)
+                        : nullptr;
                 const MatrixRef mat{
-                    l.gate_up_ptrs[e],
-                    l.gate_up_row_bytes,
+                    base_ptr,
+                    sc_ptr,
+                    l.gate_up_qs_row_bytes,
                     unsigned(G::n_embd),
                     unsigned(2 * G::n_ff_exp),
                     l.gate_up_kind
@@ -3285,9 +3725,15 @@ private:
                 const unsigned m = exp_offsets[e + 1] - off;
                 if (!m)
                     continue;
+                const auto* base_ptr = l.down_ptrs[e];
+                const __half* sc_ptr =
+                    l.down_scales_offset
+                        ? reinterpret_cast<const __half*>(base_ptr + l.down_scales_offset)
+                        : nullptr;
                 const MatrixRef mat{
-                    l.down_ptrs[e],
-                    l.down_row_bytes,
+                    base_ptr,
+                    sc_ptr,
+                    l.down_qs_row_bytes,
                     unsigned(G::n_ff_exp),
                     unsigned(G::n_embd),
                     l.down_kind
@@ -3331,6 +3777,7 @@ private:
         unsigned n_blocks,
         const float* cur,
         unsigned rows,
+        bool run_argmax,
         cudaStream_t stream
     ) const {
         // Last row only: mix(blocks, cur, out_res_query) + fused rms_norm(out_norm)
@@ -3358,7 +3805,7 @@ private:
                 sv.x_q8,
                 sv.inputs[0],
                 sv.logits,
-                output_row_bytes_,
+                output_qs_row_bytes_,
                 unsigned(G::n_vocab_unpadded)
             );
         else if (output_kind_ == kWKindQ8_0)
@@ -3368,7 +3815,7 @@ private:
                 sv.x_q8,
                 sv.inputs[0],
                 sv.logits,
-                output_row_bytes_,
+                output_qs_row_bytes_,
                 unsigned(G::n_vocab_unpadded)
             );
         else
@@ -3378,10 +3825,25 @@ private:
                 sv.x_q8,
                 sv.inputs[0],
                 sv.logits,
-                output_row_bytes_,
+                output_qs_row_bytes_,
                 unsigned(G::n_vocab_unpadded)
             );
         checked(cudaGetLastError());
+
+        if (run_argmax) {
+            inkling_argmax_stage1_kernel<<<256, 256, 0, stream>>>(
+                sv.logits,
+                unsigned(G::n_vocab_unpadded),
+                sv.argmax_p_val,
+                sv.argmax_p_idx,
+                sv.argmax_p_bad
+            );
+            checked(cudaGetLastError());
+            inkling_argmax_stage2_kernel<<<1, 256, 0, stream>>>(
+                sv.argmax_p_val, sv.argmax_p_idx, sv.argmax_p_bad, sv.argmax_out
+            );
+            checked(cudaGetLastError());
+        }
     }
 
     // Complete 48-slot decode + output head captured inside a single CUDA Graph.
@@ -3391,6 +3853,7 @@ private:
         float* conv_base,
         const StepParams* d_step_params,
         unsigned full_segs,
+        bool run_argmax,
         cudaStream_t stream
     ) const {
         float* cur = sv.residual[0];
@@ -3463,7 +3926,7 @@ private:
             );
         }
 
-        run_output_head_gpu(sv, blocks, n_blocks, cur, 1u, stream);
+        run_output_head_gpu(sv, blocks, n_blocks, cur, 1u, run_argmax, stream);
     }
 
     // Complete 48-slot eager prefill (or 1-row without logits).
@@ -3473,7 +3936,8 @@ private:
         float* conv_base,
         std::size_t rows,
         std::size_t position,
-        bool want_logits,
+        bool need_head,
+        bool run_argmax,
         const std::function<void(const char*, std::size_t)>& progress,
         const std::atomic_bool& cancel,
         const std::atomic_bool& failed,
@@ -3551,8 +4015,8 @@ private:
                 progress("layer", ++visit);
         }
 
-        if (want_logits)
-            run_output_head_gpu(sv, blocks, n_blocks, cur, unsigned(rows), stream);
+        if (need_head)
+            run_output_head_gpu(sv, blocks, n_blocks, cur, unsigned(rows), run_argmax, stream);
     }
 };
 

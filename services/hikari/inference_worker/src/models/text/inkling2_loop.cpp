@@ -685,6 +685,49 @@ public:
         gpu_needs_upload_ = true;
     }
 
+    std::optional<unsigned> forward_argmax(
+        std::span<const unsigned> tokens,
+        std::size_t position,
+        const Progress& progress,
+        std::span<const ImageSpan> images
+    ) override {
+        const std::size_t rows = tokens.size();
+        need(rows > 0 && position + rows <= context_, "gguf_text_forward_range");
+        if (!gpu_tried_) {
+            gpu_tried_ = true;
+            gpu_ = try_create_gpu_executor();
+        }
+        if (!gpu_)
+            return std::nullopt;
+        Vec cur = embed_rows(tokens, position, images);
+        weights_.check_unchanged();
+        if (position == 0) {
+            gpu_->reset();
+            gpu_valid_tokens_ = 0;
+            gpu_needs_upload_ = false;
+        } else if (gpu_needs_upload_ || gpu_valid_tokens_ != position) {
+            gpu_->sync_from_host(slots_, position, weights_.cancel());
+            gpu_valid_tokens_ = position;
+            gpu_needs_upload_ = false;
+        }
+        Vec unused_logits;
+        unsigned chosen = 0;
+        if (gpu_->forward(
+                cur, rows, position, true, unused_logits, progress, weights_.cancel(), &chosen
+            )) {
+            weights_.check_unchanged();
+            gpu_valid_tokens_ = position + rows;
+            host_state_stale_ = true;
+            return chosen;
+        }
+        if (host_state_stale_) {
+            gpu_->sync_to_host(slots_, gpu_valid_tokens_, weights_.cancel());
+            host_state_stale_ = false;
+        }
+        gpu_.reset();
+        return std::nullopt;
+    }
+
     Vec forward(
         std::span<const unsigned> tokens,
         std::size_t position,
@@ -697,36 +740,7 @@ public:
 
         // 1. Token embeddings (+ token_embd_norm) with optional raw image embeddings
         //    (image embeddings explicitly skip token_embd_norm, per inkling2.cpp).
-        Vec cur(rows * n_embd);
-        std::vector<bool> is_image_row(rows, false);
-        for (const auto& img : images) {
-            need(
-                img.embeddings.size() == img.tokens * n_embd,
-                "gguf_text_image_span_shape"
-            );
-            const std::size_t img_begin = img.offset;
-            const std::size_t img_end = img.offset + img.tokens;
-            const std::size_t ov_begin = std::max(position, img_begin);
-            const std::size_t ov_end = std::min(position + rows, img_end);
-            for (std::size_t p = ov_begin; p < ov_end; ++p) {
-                const std::size_t r = p - position;
-                const std::size_t src_row = p - img_begin;
-                std::memcpy(
-                    cur.data() + r * n_embd,
-                    img.embeddings.data() + src_row * n_embd,
-                    n_embd * sizeof(float)
-                );
-                is_image_row[r] = true;
-            }
-        }
-        for (std::size_t r = 0; r < rows; ++r) {
-            if (is_image_row[r])
-                continue;
-            need(tokens[r] < n_vocab_unpadded, "gguf_text_token_range");
-            auto row_span = std::span(cur).subspan(r * n_embd, n_embd);
-            weights_.rows("token_embd.weight", tokens[r], row_span);
-            rms_norm(row_span, tok_norm_, rms_eps);
-        }
+        Vec cur = embed_rows(tokens, position, images);
 
         // Fast path: 100% GPU-resident 48-slot forward pass (+ decode CUDA Graph)
         // when the single state GPU holds all packed weights and FP16 KV state.
@@ -864,6 +878,45 @@ public:
     }
 
 private:
+    Vec embed_rows(
+        std::span<const unsigned> tokens,
+        std::size_t position,
+        std::span<const ImageSpan> images
+    ) const {
+        const std::size_t rows = tokens.size();
+        Vec cur(rows * n_embd);
+        std::vector<bool> is_image_row(rows, false);
+        for (const auto& img : images) {
+            need(
+                img.embeddings.size() == img.tokens * n_embd,
+                "gguf_text_image_span_shape"
+            );
+            const std::size_t img_begin = img.offset;
+            const std::size_t img_end = img.offset + img.tokens;
+            const std::size_t ov_begin = std::max(position, img_begin);
+            const std::size_t ov_end = std::min(position + rows, img_end);
+            for (std::size_t p = ov_begin; p < ov_end; ++p) {
+                const std::size_t r = p - position;
+                const std::size_t src_row = p - img_begin;
+                std::memcpy(
+                    cur.data() + r * n_embd,
+                    img.embeddings.data() + src_row * n_embd,
+                    n_embd * sizeof(float)
+                );
+                is_image_row[r] = true;
+            }
+        }
+        for (std::size_t r = 0; r < rows; ++r) {
+            if (is_image_row[r])
+                continue;
+            need(tokens[r] < n_vocab_unpadded, "gguf_text_token_range");
+            auto row_span = std::span(cur).subspan(r * n_embd, n_embd);
+            weights_.rows("token_embd.weight", tokens[r], row_span);
+            rms_norm(row_span, tok_norm_, rms_eps);
+        }
+        return cur;
+    }
+
     static bool has_tensor(
         const checkpoint::GgufCheckpoint& gguf, std::string_view name
     ) {

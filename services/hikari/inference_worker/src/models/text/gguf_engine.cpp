@@ -471,6 +471,14 @@ serving::Token Engine::step(unsigned token, bool logits) {
     need(m.active && !m.poisoned && m.tokens < m.p.context, "gguf_text_step_state");
     try {
         const std::array<unsigned, 1> row{token};
+        if (logits) {
+            if (const auto chosen = m.model->forward_argmax(row, m.tokens, {})) {
+                m.weights->advance(1);
+                ++m.tokens;
+                m.prefix.commit(row);
+                return {*chosen, m.model->eos(*chosen), m.tokens};
+            }
+        }
         const auto values = m.model->forward(row, m.tokens, logits, {});
         m.weights->advance(1);
         ++m.tokens;
@@ -511,6 +519,7 @@ serving::Token Engine::prefill(
                 progress("prefill_layer", ++completed_layers);
         };
         Vec logits;
+        std::optional<unsigned> chosen_last;
         for (std::size_t done = 0; done < prompt.size();) {
             auto count = std::min(chunk_rows, prompt.size() - done);
             // A chunk ends at a requested checkpoint boundary so the state is
@@ -520,9 +529,16 @@ serving::Token Engine::prefill(
             if (m.boundary > m.tokens && m.boundary < m.tokens + count)
                 count = m.boundary - m.tokens;
             const bool last = done + count == prompt.size();
-            logits = m.model->forward(
-                prompt.subspan(done, count), m.tokens, last, layer_progress, images
-            );
+            if (last) {
+                chosen_last = m.model->forward_argmax(
+                    prompt.subspan(done, count), m.tokens, layer_progress, images
+                );
+            }
+            if (!chosen_last) {
+                logits = m.model->forward(
+                    prompt.subspan(done, count), m.tokens, last, layer_progress, images
+                );
+            }
             m.weights->advance(count);
             m.tokens += count;
             m.prefix.commit(prompt.subspan(done, count));
@@ -544,6 +560,8 @@ serving::Token Engine::prefill(
                     progress("prefill_token", row + 1);
             }
         }
+        if (chosen_last)
+            return {*chosen_last, m.model->eos(*chosen_last), m.tokens};
         return m.select(logits);
     } catch (...) {
         m.poisoned = true;
