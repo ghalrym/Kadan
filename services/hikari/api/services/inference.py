@@ -131,7 +131,11 @@ class InferenceService:
         }
 
     def language_status(self):
-        model_id = "lfm3-1.7b-bf16"
+        model_id = (
+            self.worker.models.selected_model_id
+            if self.worker.models
+            else "inkling-2-mini-iq4-nl"
+        )
         checkpoint = (
             next(
                 (model for model in self.worker.models.models if model.id == model_id),
@@ -141,13 +145,11 @@ class InferenceService:
             else None
         )
         workers = [
-            worker
-            for worker in self.worker.workers.values()
-            if worker.kind == "lfm3_llm"
+            worker for worker in self.worker.workers.values() if worker.kind == "llm"
         ]
         error = None
         if not workers or checkpoint is None:
-            error = "The LFM3 conversation worker is unavailable."
+            error = "The language worker is unavailable."
         elif checkpoint.status != "complete":
             error = (
                 "Download the language checkpoint in Hikari Settings before inference."
@@ -157,18 +159,28 @@ class InferenceService:
         active = [
             job
             for job in self.worker.jobs.values()
-            if job.worker == "lfm3_llm" and not job.result.done()
+            if job.worker == "llm" and not job.result.done()
         ]
+        resident = next(
+            (
+                worker
+                for worker in workers
+                if worker.residency_known
+                and getattr(worker, "resident_model", None) == model_id
+            ),
+            None,
+        )
         running = any(job.state == "running" for job in active)
         state = (
             "error"
             if error
             else "ready"
-            if running
+            if (running or resident is not None)
             else "loading"
             if active
             else "unloaded"
         )
+        resident_context = getattr(resident, "resident_context", None) or {}
         return {
             "state": state,
             "model_id": model_id,
@@ -177,7 +189,7 @@ class InferenceService:
             "configured_context_limit": checkpoint.context_limit
             if checkpoint
             else None,
-            "effective_context_limit": None,
+            "effective_context_limit": resident_context.get("effective"),
             "supported_context_limit": checkpoint.architecture_context_limit
             if checkpoint
             else None,
@@ -278,7 +290,7 @@ class InferenceService:
         if job.request.operation == "configure":
             return
         feature = job.request.feature
-        native_language = feature == "llm" and job.worker != "lfm3_llm"
+        native_language = feature == "llm"
         if native_language and event.context is not None:
             self.context = event.context
         if native_language and event.model is not None:
@@ -511,7 +523,7 @@ class InferenceService:
         for job in tuple(self.worker.jobs.values()):
             if job.request.feature == "llm":
                 await self.cancel(job.request.id)
-        await self.worker.offload("lfm3_llm")
+        await self.worker.offload("llm")
         return self.language_status()
 
 

@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from api.pydantic_models.inference_task import InferenceTask
-from api.pydantic_models.model_store import ModelAssignments, ModelStoreStatus
+from api.pydantic_models.model_store import ModelStoreStatus
 from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
 from api.services.inference_worker import (
@@ -73,19 +73,14 @@ CHECKPOINT_WORKERS = {
     "formatting": "formatting",
     "image": "image",
     "video": "video",
-    "vision": "lfm3_vision",
     "audio": "lfm3_audio",
 }
 
 EXPERIMENTAL_MODELS = {
     "d1-2b-cpu-f32": ("lfm3_decision", None),
-    "lfm3-1.7b-bf16": ("lfm3_llm", "HIKARI_ENABLE_LFM3_TEXT"),
-    "lfm3-vl-2b-bf16": ("lfm3_vision", "HIKARI_ENABLE_LFM3_VISION"),
     "lfm3-audio-2b-bf16": ("lfm3_audio", None),
 }
 EXPERIMENTAL_FEATURES = {
-    "llm": "lfm3-1.7b-bf16",
-    "vision": "lfm3-vl-2b-bf16",
     "audio_call": "lfm3-audio-2b-bf16",
 }
 
@@ -308,7 +303,18 @@ class WorkerHub:
             if base is not None
             else ModelStoreStatus(models=[])
         )
-        visible = set(ModelAssignments().model_dump().values())
+        llm_worker = next(
+            (
+                worker
+                for worker in self.workers.values()
+                if worker.kind == "llm" and worker.models is not None
+            ),
+            None,
+        )
+        if llm_worker is not None:
+            snapshot.selected_model_id = llm_worker.models.selected_model_id
+        snapshot.defaults.llm = snapshot.selected_model_id
+        visible = set(snapshot.defaults.model_dump().values())
         snapshot.models = []
         known = set()
         for worker in self.workers.values():

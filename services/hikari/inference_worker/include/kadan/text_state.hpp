@@ -7,19 +7,15 @@ struct AttentionState {
     std::vector<float> keys, values;
 };
 
-struct RecurrentState {
-    std::vector<float> convolution, recurrent;
-    bool device = false;
-};
-
-struct QsaState {
+struct InklingLayerState {
     AttentionState attention;
-    std::vector<float> raw_keys, pooled;
+    // Causal short-convolution history for K, V, attn_post_conv, and ffn_post_conv:
+    // (l_cache - 1) * (2 * n_embd_k_gqa + 2 * n_embd) floats.
+    std::vector<float> conv;
+    bool sliding_window = false;
 };
 
 struct ModelState {
-    std::vector<std::variant<AttentionState, RecurrentState, QsaState>> layers;
-    std::vector<float> ple;
-    std::vector<unsigned> recent;
+    std::vector<std::variant<AttentionState, InklingLayerState>> layers;
 };
 }  // namespace kadan::text

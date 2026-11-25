@@ -28,6 +28,7 @@
 #include "kadan/h3_resident.hpp"
 #include "kadan/image_vae.hpp"
 #include "kadan/quantization.hpp"
+#include "kadan/weight_slab_pool.hpp"
 
 namespace kadan::video {
 namespace {
@@ -480,6 +481,138 @@ __global__ void cached_attention_combine(
         if (in[z * (dim + 2) + 1] > 0)
             maximum = fmaxf(maximum, in[z * (dim + 2)]);
     float total = 0;
+    for (unsigned z = 0; z < segments; ++z)
+        if (in[z * (dim + 2) + 1] > 0)
+            total += in[z * (dim + 2) + 1] * expf(in[z * (dim + 2)] - maximum);
+    for (unsigned d = threadIdx.x; d < dim; d += blockDim.x) {
+        float sum = 0;
+        for (unsigned z = 0; z < segments; ++z)
+            if (in[z * (dim + 2) + 1] > 0)
+                sum += in[z * (dim + 2) + 2 + d] * expf(in[z * (dim + 2)] - maximum);
+        out[(std::size_t(row) * heads + head) * dim + d] = sum / total;
+    }
+}
+
+// Inkling 2 causal attention over a mirrored KV cache with relative-position bias,
+// learned virtual sink logits, and optional sliding-window ring buffer.
+__global__ void inkling_attention_kernel(
+    const float* q,
+    const float* rel_q,
+    const float* rel_bias,
+    const float* keys,
+    const float* values,
+    float* partial,
+    unsigned position,
+    unsigned heads,
+    unsigned kv_heads,
+    unsigned dim,
+    unsigned rel_dim,
+    unsigned rel_extent,
+    unsigned window,
+    unsigned ring_cap,
+    unsigned ring_mask,
+    float scale
+) {
+    constexpr unsigned warps = cached_attention_threads / 32;
+    __shared__ float query[cached_attention_dim], rel_query[32], scores[warps];
+    const unsigned row = blockIdx.x, head = blockIdx.y, segment = blockIdx.z;
+    const unsigned lane = threadIdx.x % 32, warp = threadIdx.x / 32;
+    const unsigned kv = head / (heads / kv_heads);
+    const unsigned pos_q = position + row;
+    const unsigned pos_k_min =
+        (window && pos_q + 1 > window) ? (pos_q + 1 - window) : 0;
+    const unsigned visible = pos_q - pos_k_min + 1;
+    const unsigned begin = segment * cached_attention_segment,
+                   end = min(visible, begin + cached_attention_segment);
+    const std::size_t width = std::size_t(kv_heads) * dim;
+    for (unsigned d = threadIdx.x; d < dim; d += cached_attention_threads)
+        query[d] = q[(std::size_t(row) * heads + head) * dim + d];
+    if (threadIdx.x < rel_dim)
+        rel_query[threadIdx.x] =
+            rel_q[(std::size_t(row) * heads + head) * rel_dim + threadIdx.x];
+    __syncthreads();
+    float maximum = -INFINITY, total = 0, acc[2] = {0, 0};
+    for (unsigned first = begin; first < end; first += warps) {
+        const unsigned t = first + warp;
+        if (t < end) {
+            const unsigned pos_k = pos_k_min + t;
+            const unsigned slot_k =
+                ring_mask ? (pos_k & ring_mask) : (ring_cap ? pos_k % ring_cap : pos_k);
+            const float* key =
+                keys + std::size_t(slot_k) * width + std::size_t(kv) * dim;
+            float dot = 0;
+            for (unsigned d = lane; d < dim; d += 32)
+                dot = fmaf(query[d], key[d], dot);
+            for (unsigned offset = 16; offset; offset /= 2)
+                dot += __shfl_down_sync(0xffffffffu, dot, offset);
+            const unsigned dist = pos_q - pos_k;
+            float rel_dot = 0;
+            if (dist < rel_extent) {
+                rel_dot = lane < rel_dim
+                              ? rel_query[lane]
+                                    * rel_bias[std::size_t(dist) * rel_dim + lane]
+                              : 0.0f;
+                for (unsigned offset = 16; offset; offset /= 2)
+                    rel_dot += __shfl_down_sync(0xffffffffu, rel_dot, offset);
+            }
+            if (!lane)
+                scores[warp] = fmaf(dot, scale, rel_dot);
+        } else if (!lane)
+            scores[warp] = -INFINITY;
+        __syncthreads();
+        float tile = maximum;
+        for (unsigned w = 0; w < warps; ++w)
+            tile = fmaxf(tile, scores[w]);
+        const float correction = isfinite(maximum) ? expf(maximum - tile) : 0.0f;
+        total *= correction;
+        acc[0] *= correction;
+        acc[1] *= correction;
+        for (unsigned w = 0; w < warps && first + w < end; ++w) {
+            const float p = expf(scores[w] - tile);
+            total += p;
+            const unsigned pos_k = pos_k_min + first + w;
+            const unsigned slot_k =
+                ring_mask ? (pos_k & ring_mask) : (ring_cap ? pos_k % ring_cap : pos_k);
+            const float* value =
+                values + std::size_t(slot_k) * width + std::size_t(kv) * dim;
+            for (unsigned i = 0; i < 2; ++i) {
+                const unsigned d = threadIdx.x + i * cached_attention_threads;
+                if (d < dim)
+                    acc[i] = fmaf(p, value[d], acc[i]);
+            }
+        }
+        maximum = tile;
+        __syncthreads();
+    }
+    auto* out =
+        partial + ((std::size_t(row) * heads + head) * gridDim.z + segment) * (dim + 2);
+    if (!threadIdx.x) {
+        out[0] = maximum;
+        out[1] = total;
+    }
+    for (unsigned i = 0; i < 2; ++i) {
+        const unsigned d = threadIdx.x + i * cached_attention_threads;
+        if (d < dim)
+            out[2 + d] = acc[i];
+    }
+}
+
+__global__ void inkling_attention_combine(
+    const float* partial,
+    const float* sinks,
+    float* out,
+    unsigned heads,
+    unsigned dim,
+    unsigned segments
+) {
+    const unsigned row = blockIdx.x, head = blockIdx.y;
+    const auto* in = partial + (std::size_t(row) * heads + head) * segments * (dim + 2);
+    const float sink_logit = sinks[std::size_t(row) * heads + head];
+    float maximum = sink_logit;
+    for (unsigned z = 0; z < segments; ++z)
+        if (in[z * (dim + 2) + 1] > 0)
+            maximum = fmaxf(maximum, in[z * (dim + 2)]);
+    float total = expf(sink_logit - maximum);
     for (unsigned z = 0; z < segments; ++z)
         if (in[z * (dim + 2) + 1] > 0)
             total += in[z * (dim + 2) + 1] * expf(in[z * (dim + 2)] - maximum);
@@ -984,6 +1117,11 @@ public:
     const std::atomic_bool* failed = nullptr;
     Bytes scratch_bytes = 0;
     const Bytes scratch_limit;
+
+private:
+    WeightSlabPool weight_pool_;
+
+public:
     DeviceWeights weights;
 
     // One layer's mirrored KV cache: keys for `capacity` positions, then values.
@@ -998,7 +1136,21 @@ public:
     CudaDeviceOperations(
         Resources& resources, int device, Workload workload, Bytes limit, Bytes scratch
     )
-        : scratch_limit(scratch), weights(resources, device, workload, limit, *this),
+        : scratch_limit(scratch),
+          weight_pool_(
+              [](Bytes bytes) -> void* {
+                  void* pointer = nullptr;
+                  const auto status = cudaMalloc(&pointer, bytes);
+                  if (status == cudaErrorMemoryAllocation) {
+                      cudaGetLastError();
+                      return nullptr;
+                  }
+                  checked(status);
+                  return pointer;
+              },
+              [](void* pointer) { checked(cudaFree(pointer)); }
+          ),
+          weights(resources, device, workload, limit, *this),
           ledger_(resources), device_(device), workload_(workload) {
     }
 
@@ -1058,6 +1210,7 @@ public:
     };
 
     std::map<std::uint64_t, Recurrent> recurrent;
+    std::map<std::uint64_t, Recurrent> rel_biases;
 
     // A zeroed buffer of `floats` for a layer's first step, otherwise the one
     // that step created. Nullptr when it cannot be admitted or no longer exists.
@@ -1073,6 +1226,21 @@ public:
         return &r;
     }
 
+    // Immutable per-physical-layer relative-position bias table, uploaded once.
+    const float* rel_bias(std::uint64_t layer, std::span<const float> values) {
+        auto& r = rel_biases[layer];
+        if (r.data && r.floats == values.size())
+            return r.data;
+        release_recurrent(r);
+        if (!admit_state(values.size_bytes(), r.data, r.reservation))
+            return nullptr;
+        r.floats = values.size();
+        checked(cuda_trace::copy(
+            r.data, values.data(), values.size_bytes(), cudaMemcpyHostToDevice
+        ));
+        return r.data;
+    }
+
     // Request boundary: KV mirrors and recurrent state.
     void release_mirrors() {
         for (auto& [layer, m] : mirrors)
@@ -1081,6 +1249,9 @@ public:
         for (auto& [layer, r] : recurrent)
             release_recurrent(r);
         recurrent.clear();
+        for (auto& [layer, r] : rel_biases)
+            release_recurrent(r);
+        rel_biases.clear();
     }
 
 private:
@@ -1096,7 +1267,7 @@ private:
         const Bytes growth =
             scratch_limit > scratch_bytes ? scratch_limit - scratch_bytes : 0;
         if (snapshot.used[at] + bytes + growth > snapshot.capacity[at]
-            || bytes > available_weight_bytes())
+            || bytes > physical_available_bytes())
             return false;
         auto footprint = snapshot.capacity;
         std::fill(footprint.begin(), footprint.end(), 0);
@@ -1120,6 +1291,14 @@ private:
         ledger_.loaded(reservation);
         ledger_.pin(reservation);
         return true;
+    }
+
+    Bytes physical_available_bytes() const {
+        std::size_t free = 0, total = 0;
+        checked(cudaMemGetInfo(&free, &total));
+        const auto remaining =
+            scratch_limit > scratch_bytes ? scratch_limit - scratch_bytes : 0;
+        return free > remaining ? free - remaining : 0;
     }
 
     void release_recurrent(Recurrent& r) {
@@ -1152,22 +1331,11 @@ private:
 
 public:
     Bytes available_weight_bytes() override {
-        std::size_t free = 0, total = 0;
-        checked(cudaMemGetInfo(&free, &total));
-        const auto remaining =
-            scratch_limit > scratch_bytes ? scratch_limit - scratch_bytes : 0;
-        return free > remaining ? free - remaining : 0;
+        return std::max(physical_available_bytes(), weight_pool_.largest_free_block());
     }
 
     void* allocate_weight(Bytes bytes) override {
-        void* pointer = nullptr;
-        const auto status = cudaMalloc(&pointer, bytes);
-        if (status == cudaErrorMemoryAllocation) {
-            cudaGetLastError();
-            return nullptr;
-        }
-        checked(status);
-        return pointer;
+        return weight_pool_.allocate(bytes);
     }
 
     void copy_weight(
@@ -1197,7 +1365,7 @@ public:
     }
 
     void free_weight(void* pointer) override {
-        checked(cudaFree(pointer));
+        weight_pool_.free(pointer);
     }
 
     void* allocate_host(Bytes bytes) override {
@@ -1641,6 +1809,7 @@ class Compute final : public H3Compute {
     std::vector<Bytes> weight_capacities_;
     std::vector<Bytes> scratch_limits_;
     Bytes inventory_bytes_ = 0, state_reserve_ = 0;
+    std::size_t state_device_ = 0;
     bool replan_ = false;
 
     template <class F> void all_devices(F function) {
@@ -1687,6 +1856,8 @@ class Compute final : public H3Compute {
                                 2 * mirror.capacity * mirror.width * sizeof(float);
                         for (const auto& [layer, recurrent] : ops.recurrent)
                             state[devices_[i] + 1] += recurrent.floats * sizeof(float);
+                        for (const auto& [layer, rel] : ops.rel_biases)
+                            state[devices_[i] + 1] += rel.floats * sizeof(float);
                     }
                 })
                 .get();
@@ -1744,6 +1915,57 @@ class Compute final : public H3Compute {
                     )
                 );
             }
+        } catch (...) {
+            failed = true;
+            error = std::current_exception();
+        }
+        join_device_tasks(tasks, error);
+        if (error || cancel.load()) {
+            if (!error)
+                error =
+                    std::make_exception_ptr(std::runtime_error("h3_cuda_cancelled"));
+            rethrow_after_cleanup(error, [&] { release_scratch_locked(); });
+        }
+    }
+
+    // Runs single-device stateful work (KV mirrors, recurrent state) on the
+    // selected state device, keeping each layer's state pinned to that device.
+    template <class F>
+    void run_on_state_device(const std::atomic_bool& cancel, F function) {
+        std::lock_guard lock(operation_mutex_);
+        require(!quarantined_.load(), "h3_cuda_cleanup_unconfirmed");
+        if (cancel.load())
+            rethrow_after_cleanup(
+                std::make_exception_ptr(std::runtime_error("h3_cuda_cancelled")),
+                [&] { release_scratch_locked(); }
+            );
+        if (replan_)
+            plan_weights_locked();
+        std::atomic_bool failed = false;
+        std::vector<std::future<void>> tasks;
+        tasks.reserve(1);
+        std::exception_ptr error;
+        try {
+            tasks.push_back(
+                threads_[state_device_]->submit_work(
+                    [&](DeviceWorkspace& workspace) {
+                        auto& ops = static_cast<CudaDeviceOperations&>(
+                            workspace.operations()
+                        );
+                        struct CancelScope {
+                            CudaDeviceOperations& ops;
+                            ~CancelScope() {
+                                ops.cancellation = nullptr;
+                                ops.failed = nullptr;
+                            }
+                        } scope{ops};
+                        ops.cancellation = &cancel;
+                        ops.failed = &failed;
+                        function(workspace, failed);
+                    },
+                    &failed
+                )
+            );
         } catch (...) {
             failed = true;
             error = std::current_exception();
@@ -2588,13 +2810,19 @@ public:
         weight_capacities_.resize(devices_.size());
         const auto used = resources_->snapshot().used;
         native_bf16_ = workload_ == Workload::image;
-        for (int device : devices_) {
+        Bytes best_available = 0;
+        for (std::size_t i = 0; i < devices_.size(); ++i) {
+            const int device = devices_[i];
             int major = 0;
             checked(cudaDeviceGetAttribute(
                 &major, cudaDevAttrComputeCapabilityMajor, device
             ));
             native_bf16_ = native_bf16_ && major >= 8;
             const auto available = capacity[device + 1] - used[device + 1];
+            if (i == 0 || available > best_available) {
+                best_available = available;
+                state_device_ = i;
+            }
             // Text projections and grouped attention stay within 1 GiB; the
             // rest of the device goes to the routed-expert bank.
             const Bytes scratch = std::min<Bytes>(
@@ -3007,7 +3235,8 @@ private:
         // Freeze the partition until park/replan so cached identities keep
         // stable slices.
         const auto ledger = resources_->snapshot();
-        Bytes total = 0;
+        std::vector<Bytes> capacities(threads_.size(), 0);
+        std::optional<std::size_t> locked_state_device;
         for (std::size_t i = 0; i < threads_.size(); ++i)
             threads_[i]
                 ->submit([&, i](DeviceWorkspace& workspace) {
@@ -3025,40 +3254,32 @@ private:
                                              ? ops.scratch_limit - ops.scratch_bytes
                                              : 0;
                     const auto granted = headroom > scratch ? headroom - scratch : 0;
-                    const auto capacity = std::min(
+                    capacities[i] = std::min(
                         {ops.weights.maximum_capacity(),
                          ops.available_weight_bytes(),
                          granted}
                     );
-                    // Request state (KV mirrors) keeps up to an eighth of it.
-                    weight_capacities_[i] =
-                        capacity - std::min(state_reserve_, capacity / 8);
-                    total += weight_capacities_[i];
+                    if (!ops.mirrors.empty() || !ops.recurrent.empty()
+                        || !ops.rel_biases.empty())
+                        locked_state_device = i;
                 })
                 .get();
+        const auto plan = plan_device_weights(
+            capacities, bytes, state_reserve_, locked_state_device
+        );
+        state_device_ = plan.state_device;
+        weight_capacities_ = plan.weight_capacities;
         for (std::size_t i = 0; i < threads_.size(); ++i)
             threads_[i]
                 ->submit([&, i](DeviceWorkspace& workspace) {
                     auto& bank =
                         static_cast<CudaDeviceOperations&>(workspace.operations())
                             .weights;
-                    // A ceiling per bank leaves room for tensor channel rounding.
-                    const auto share = weight_boundary(bytes, weight_capacities_, i + 1)
-                                       - weight_boundary(bytes, weight_capacities_, i);
-                    bank.bound(
-                        std::min(
-                            weight_capacities_[i],
-                            share
-                                + std::min<Bytes>(
-                                    16 * 1024 * 1024,
-                                    std::numeric_limits<Bytes>::max() - share
-                                )
-                        )
-                    );
+                    bank.bound(plan.bank_bounds[i]);
                 })
                 .get();
         replan_ = false;
-        return total >= bytes;
+        return plan.fits;
     }
 
 public:
@@ -3578,15 +3799,11 @@ public:
         for (float v : q)
             require(std::isfinite(v), "h3_cuda_nonfinite_input");
         bool admitted = false;
-        // split(1) keeps the complete mirror on the last selected device,
-        // including when projections use several devices.
-        split(
-            1,
+        // Keep the complete KV mirror on the planned state device (roomiest
+        // GPU), including when projections span multiple devices.
+        run_on_state_device(
             cancel,
-            [&](DeviceWorkspace& device_workspace,
-                std::size_t,
-                std::size_t,
-                const std::atomic_bool& failed) {
+            [&](DeviceWorkspace& device_workspace, const std::atomic_bool& failed) {
                 auto& arena =
                     static_cast<CudaDeviceOperations&>(device_workspace.operations());
                 // Ownership of the device and its context precedes the mirror.
@@ -3735,6 +3952,267 @@ public:
         return admitted;
     }
 
+    bool attend_inkling_cached(
+        const InklingAttention& a, const std::atomic_bool& cancel
+    ) override {
+        require(!cancel.load(), "h3_cuda_cancelled");
+        const auto width = a.kv_heads * a.dim, positions = a.position + a.rows;
+        if (!a.rows || a.rows > 65535 || !a.heads || !a.kv_heads
+            || a.heads % a.kv_heads || a.heads > 65535 || !a.dim
+            || a.dim > cached_attention_dim || !a.rel_dim || a.rel_dim > 32
+            || !a.rel_extent || a.rel_bias.size() != a.rel_extent * a.rel_dim
+            || a.q.size() != a.rows * a.heads * a.dim
+            || a.output.size() != a.q.size()
+            || a.rel_q.size() != a.rows * a.heads * a.rel_dim
+            || a.sinks.size() != a.rows * a.heads
+            || a.new_keys.size() != a.rows * width
+            || a.new_values.size() != a.rows * width)
+            return false;
+        if (a.window) {
+            if (a.rows > a.window || a.window > std::size_t(INT_MAX) / 2
+                || 2 * a.window > std::size_t(INT_MAX) / std::max<std::size_t>(width, 1)
+                || a.past_keys.size() < a.window * width
+                || a.past_values.size() < a.window * width)
+                return false;
+        } else {
+            if (positions > std::size_t(INT_MAX) / std::max<std::size_t>(width, 1)
+                || a.past_keys.size() < positions * width
+                || a.past_values.size() < positions * width)
+                return false;
+        }
+        for (float v : a.q)
+            require(std::isfinite(v), "h3_cuda_nonfinite_input");
+        for (float v : a.rel_q)
+            require(std::isfinite(v), "h3_cuda_nonfinite_input");
+        for (float v : a.sinks)
+            require(std::isfinite(v), "h3_cuda_nonfinite_input");
+        const std::size_t longest = a.window ? std::min(positions, a.window) : positions;
+        const std::size_t ring_cap = a.window ? 2 * a.window : 0;
+        const unsigned ring_mask =
+            (ring_cap && (ring_cap & (ring_cap - 1)) == 0) ? unsigned(ring_cap - 1) : 0;
+        bool admitted = false;
+        run_on_state_device(
+            cancel,
+            [&](DeviceWorkspace& device_workspace, const std::atomic_bool& failed) {
+                auto& arena =
+                    static_cast<CudaDeviceOperations&>(device_workspace.operations());
+                device_workspace.ensure(256);
+                auto* m = arena.mirror(a.layer, a.window ? ring_cap : positions, width);
+                if (!m)
+                    return;
+                admitted = true;
+                if (a.window) {
+                    auto upload_ring = [&](std::span<const float> src_k,
+                                           std::span<const float> src_v,
+                                           std::size_t start_pos,
+                                           std::size_t n_rows) {
+                        const std::size_t dst = start_pos % ring_cap;
+                        const std::size_t first_part = std::min(n_rows, ring_cap - dst);
+                        checked(cuda_trace::copy(
+                            m->data + dst * width,
+                            src_k.data(),
+                            first_part * width * sizeof(float),
+                            cudaMemcpyHostToDevice
+                        ));
+                        checked(cuda_trace::copy(
+                            m->data + m->capacity * width + dst * width,
+                            src_v.data(),
+                            first_part * width * sizeof(float),
+                            cudaMemcpyHostToDevice
+                        ));
+                        if (first_part < n_rows) {
+                            const std::size_t rem = n_rows - first_part;
+                            checked(cuda_trace::copy(
+                                m->data,
+                                src_k.data() + first_part * width,
+                                rem * width * sizeof(float),
+                                cudaMemcpyHostToDevice
+                            ));
+                            checked(cuda_trace::copy(
+                                m->data + m->capacity * width,
+                                src_v.data() + first_part * width,
+                                rem * width * sizeof(float),
+                                cudaMemcpyHostToDevice
+                            ));
+                        }
+                    };
+                    if (m->valid != a.position) {
+                        m->valid = 0;
+                        const std::size_t win_start =
+                            a.position > a.window - 1 ? a.position - (a.window - 1) : 0;
+                        const std::size_t past_count = a.position - win_start;
+                        if (past_count > 0) {
+                            std::vector<float> pk(past_count * width);
+                            std::vector<float> pv(past_count * width);
+                            for (std::size_t i = 0; i < past_count; ++i) {
+                                const std::size_t src_slot = (win_start + i) % a.window;
+                                std::memcpy(
+                                    pk.data() + i * width,
+                                    a.past_keys.data() + src_slot * width,
+                                    width * sizeof(float)
+                                );
+                                std::memcpy(
+                                    pv.data() + i * width,
+                                    a.past_values.data() + src_slot * width,
+                                    width * sizeof(float)
+                                );
+                            }
+                            for (float v : pk)
+                                require(std::isfinite(v), "h3_cuda_nonfinite_input");
+                            for (float v : pv)
+                                require(std::isfinite(v), "h3_cuda_nonfinite_input");
+                            upload_ring(pk, pv, win_start, past_count);
+                        }
+                    }
+                    for (float v : a.new_keys)
+                        require(std::isfinite(v), "h3_cuda_nonfinite_input");
+                    for (float v : a.new_values)
+                        require(std::isfinite(v), "h3_cuda_nonfinite_input");
+                    upload_ring(a.new_keys, a.new_values, a.position, a.rows);
+                    m->valid = positions;
+                } else {
+                    const auto first = std::min(m->valid, a.position);
+                    const auto count = (positions - first) * width;
+                    for (float v : a.past_keys.subspan(first * width, count))
+                        require(std::isfinite(v), "h3_cuda_nonfinite_input");
+                    for (float v : a.past_values.subspan(first * width, count))
+                        require(std::isfinite(v), "h3_cuda_nonfinite_input");
+                    m->valid = first;
+                    checked(cuda_trace::copy(
+                        m->data + first * width,
+                        a.past_keys.data() + first * width,
+                        count * sizeof(float),
+                        cudaMemcpyHostToDevice
+                    ));
+                    checked(cuda_trace::copy(
+                        m->data + m->capacity * width + first * width,
+                        a.past_values.data() + first * width,
+                        count * sizeof(float),
+                        cudaMemcpyHostToDevice
+                    ));
+                    m->valid = positions;
+                }
+                const float* rel_bias_dev = arena.rel_bias(a.rel_layer, a.rel_bias);
+                const std::size_t rel_bias_scratch_bytes =
+                    rel_bias_dev ? 0 : a.rel_bias.size_bytes();
+                const auto segments = unsigned(
+                    (longest + cached_attention_segment - 1) / cached_attention_segment
+                );
+                const auto layout = [&](std::size_t group) {
+                    Layout l;
+                    l.add(a.q.size_bytes());
+                    l.add(a.rel_q.size_bytes());
+                    l.add(a.sinks.size_bytes());
+                    l.add(rel_bias_scratch_bytes);
+                    l.add(a.output.size_bytes());
+                    l.add(group * a.heads * segments * (a.dim + 2) * sizeof(float));
+                    return l.bytes;
+                };
+                std::size_t group = a.rows;
+                while (group > 1 && layout(group) > arena.scratch_limit)
+                    group = (group + 1) / 2;
+                Layout l;
+                const auto query = l.add(a.q.size_bytes()),
+                           rel_q_off = l.add(a.rel_q.size_bytes()),
+                           sinks_off = l.add(a.sinks.size_bytes()),
+                           rel_bias_off = l.add(rel_bias_scratch_bytes),
+                           upload_end = l.bytes,
+                           result = l.add(a.output.size_bytes()),
+                           partial = l.add(
+                               group * a.heads * segments * (a.dim + 2) * sizeof(float)
+                           );
+                require(l.bytes <= arena.scratch_limit, "h3_cuda_attention_scratch");
+                device_workspace.ensure(l.bytes);
+                stop(cancel, failed);
+                {
+                    std::vector<std::byte> upload(upload_end);
+                    std::memcpy(upload.data() + query, a.q.data(), a.q.size_bytes());
+                    std::memcpy(
+                        upload.data() + rel_q_off, a.rel_q.data(), a.rel_q.size_bytes()
+                    );
+                    std::memcpy(
+                        upload.data() + sinks_off, a.sinks.data(), a.sinks.size_bytes()
+                    );
+                    if (!rel_bias_dev)
+                        std::memcpy(
+                            upload.data() + rel_bias_off,
+                            a.rel_bias.data(),
+                            a.rel_bias.size_bytes()
+                        );
+                    checked(cuda_trace::copy(
+                        arena.at<void>(query),
+                        upload.data(),
+                        upload.size(),
+                        cudaMemcpyHostToDevice
+                    ));
+                }
+                const float* rb_ptr =
+                    rel_bias_dev ? rel_bias_dev : arena.at<float>(rel_bias_off);
+                for (std::size_t first = 0; first < a.rows; first += group) {
+                    stop(cancel, failed);
+                    const auto count = std::min(group, a.rows - first);
+                    const auto row_values = first * a.heads * a.dim;
+                    const auto row_rel = first * a.heads * a.rel_dim;
+                    const auto row_sinks = first * a.heads;
+                    cuda_trace::kernel(
+                        serving::CudaKernel::cached_attention_kernel,
+                        cudaStreamLegacy,
+                        [&] {
+                            inkling_attention_kernel<<<
+                                dim3(unsigned(count), unsigned(a.heads), segments),
+                                cached_attention_threads>>>(
+                                arena.at<float>(query) + row_values,
+                                arena.at<float>(rel_q_off) + row_rel,
+                                rb_ptr,
+                                m->data,
+                                m->data + m->capacity * width,
+                                arena.at<float>(partial),
+                                unsigned(a.position + first),
+                                unsigned(a.heads),
+                                unsigned(a.kv_heads),
+                                unsigned(a.dim),
+                                unsigned(a.rel_dim),
+                                unsigned(a.rel_extent),
+                                unsigned(a.window),
+                                unsigned(ring_cap),
+                                ring_mask,
+                                a.scale
+                            );
+                        }
+                    );
+                    checked(cudaGetLastError());
+                    cuda_trace::kernel(
+                        serving::CudaKernel::cached_attention_combine,
+                        cudaStreamLegacy,
+                        [&] {
+                            inkling_attention_combine<<<
+                                dim3(unsigned(count), unsigned(a.heads)),
+                                256>>>(
+                                arena.at<float>(partial),
+                                arena.at<float>(sinks_off) + row_sinks,
+                                arena.at<float>(result) + row_values,
+                                unsigned(a.heads),
+                                unsigned(a.dim),
+                                segments
+                            );
+                        }
+                    );
+                    checked(cudaGetLastError());
+                }
+                checked(cuda_trace::copy(
+                    a.output.data(),
+                    arena.at<void>(result),
+                    a.output.size_bytes(),
+                    cudaMemcpyDeviceToHost
+                ));
+            }
+        );
+        if (admitted)
+            for (float v : a.output)
+                require(std::isfinite(v), "h3_cuda_nonfinite_output");
+        return admitted;
+    }
+
     void copy_recurrent_state(
         std::uint64_t layer, std::span<float> state, std::span<float> history
     ) override {
@@ -3791,15 +4269,11 @@ public:
                           history_floats = past * channels,
                           constant_floats = channels * step.kernel + 2 * heads + dim;
         bool done = false;
-        // The single task keeps this layer's state on the same selected device
-        // for every step; projection partitioning does not change its owner.
-        split(
-            1,
+        // Keep this layer's recurrent state on the planned state device for
+        // every step; projection partitioning does not change its owner.
+        run_on_state_device(
             cancel,
-            [&](DeviceWorkspace& device_workspace,
-                std::size_t,
-                std::size_t,
-                const std::atomic_bool& failed) {
+            [&](DeviceWorkspace& device_workspace, const std::atomic_bool& failed) {
                 auto& arena =
                     static_cast<CudaDeviceOperations&>(device_workspace.operations());
                 device_workspace.ensure(256);
@@ -3972,7 +4446,8 @@ public:
         // Jobs that share an input span (every expert of a token) upload and
         // check it once; input_offsets[j] is job j's float offset.
         std::vector<std::size_t> input_offsets(jobs.size());
-        std::vector<float> host_input;
+        std::vector<std::size_t> unique_jobs;
+        unique_jobs.reserve(jobs.size());
         for (std::size_t j = 0; j < jobs.size(); ++j) {
             const auto& job = jobs[j];
             std::size_t shared = 0;
@@ -3984,12 +4459,18 @@ public:
                 input_offsets[j] = input_offsets[shared];
                 continue;
             }
+            input_offsets[j] = inputs;
+            inputs += job.input.size();
+            unique_jobs.push_back(j);
+        }
+        std::vector<float> host_input;
+        host_input.reserve(inputs);
+        for (const auto j : unique_jobs) {
+            const auto& job = jobs[j];
             for (float v : job.input)
                 require(std::isfinite(v), "h3_cuda_nonfinite_input");
-            input_offsets[j] = host_input.size();
             host_input.insert(host_input.end(), job.input.begin(), job.input.end());
         }
-        inputs = host_input.size();
         for (const auto& job : jobs)
             for (const auto& other : jobs)
                 require(

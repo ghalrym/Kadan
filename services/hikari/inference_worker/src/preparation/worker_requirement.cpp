@@ -22,11 +22,7 @@ constexpr std::size_t max_prompt_bytes = 32000;
 std::string default_model(Workload workload, const ModelStore& store) {
     switch (workload) {
     case Workload::llm:
-        throw RequestError(
-            "Language inference uses the LFM3 worker; native requests require an "
-            "explicit checkpoint.",
-            422
-        );
+        return store.selected_llm_id();
     case Workload::formatting:
         return "superwhisper-s1-mini";
     case Workload::speech:
@@ -155,10 +151,12 @@ Json worker_requirement(
     const auto config = read_document(root / "config.json");
     // A queued load's explicit context wins, as in chat preparation.
     const auto saved = requested_context ? *requested_context : store.context(model);
-    const auto context = saved.is_null() ? config.value("text_config", config)
-                                               .at("max_position_embeddings")
-                                               .get<std::size_t>()
-                                         : saved.get<std::size_t>();
+    const auto supported = config.value("text_config", config)
+                               .at("max_position_embeddings")
+                               .get<std::size_t>();
+    const auto context = saved.is_null()
+                             ? std::min(store.default_llm_context(), supported)
+                             : saved.get<std::size_t>();
     const std::atomic_bool cancel = false;
     const auto layout = text::plan(root.c_str(), context, &cancel);
     const checkpoint::GgufCheckpoint gguf(root.string(), cancel);
@@ -168,13 +166,21 @@ Json worker_requirement(
         if (tensor.rank == 3 && tensor.shape[2] > 1)
             experts += tensor.bytes;
     }
-    const Bytes pinned = layout.packed > experts ? layout.packed - experts : 0;
+    Bytes vision_bytes = 0;
+    for (const auto& item : fs::directory_iterator(root)) {
+        const auto name = item.path().filename().string();
+        if (item.is_regular_file() && name.starts_with("mmproj-")
+            && name.ends_with(".gguf"))
+            vision_bytes += item.file_size();
+    }
+    const Bytes pinned =
+        (layout.packed > experts ? layout.packed - experts : 0) + vision_bytes;
     return footprint(
         model,
-        layout.host + text_host_headroom,
-        layout.host + layout.packed + text_host_headroom,
+        layout.host + vision_bytes + text_host_headroom,
+        layout.host + layout.packed + vision_bytes + text_host_headroom,
         pinned + layout.host + device_headroom,
-        layout.packed + layout.host + device_headroom,
+        layout.packed + vision_bytes + layout.host + device_headroom,
         device_headroom
     );
 }

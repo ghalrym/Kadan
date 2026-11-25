@@ -4,9 +4,6 @@ from unittest.mock import patch
 
 from api.pydantic_models.inference_task import InferenceTask
 from api.pydantic_models.model_store import ModelAssignments, ModelStoreStatus
-from api.services.inference import InferenceService
-from api.services.inference_errors import InferenceFailure
-from api.services.inference_worker import WorkerEvent
 from api.services.worker_hub import WorkerHub, target_worker
 
 
@@ -48,54 +45,21 @@ class ExperimentalRoutingTests(unittest.TestCase):
         with patch.dict("os.environ", {}, clear=True):
             self.assertEqual(hub._store_targets(request), [cpu])
 
-    def test_experimental_events_do_not_replace_native_language_status(self):
-        service = InferenceService()
-        service.state, service.model_id, service.context = (
-            "ready",
-            "native-moe",
-            {"effective": 2048},
-        )
-        request = InferenceTask(input={"feature": "llm", "model": "lfm3-1.7b-bf16"})
-        job = SimpleNamespace(
-            request=request, worker="lfm3_llm", image_progress=None, progress=None
-        )
-        for state in ("loading", "succeeded", "failed", "cancelled"):
-            with self.subTest(state=state):
-                service._observe(
-                    job,
-                    WorkerEvent(
-                        state=state, model="lfm3-1.7b-bf16", context={"effective": 8192}
-                    ),
-                )
-                self.assertEqual(service.state, "ready")
-                self.assertEqual(service.model_id, "native-moe")
-                self.assertEqual(service.context, {"effective": 2048})
-                self.assertIsNone(service.error)
-
-    def test_default_chat_uses_fixed_lfm_worker(self):
-        request = InferenceTask(input={"feature": "llm", "messages": []})
-        with patch.dict("os.environ", {"HIKARI_ENABLE_LFM3_TEXT": "true"}):
-            self.assertEqual(target_worker(request), "lfm3_llm")
-
-    def test_explicit_model_requires_server_flag(self):
-        request = InferenceTask(input={"feature": "llm", "model": "lfm3-1.7b-bf16"})
-        with (
-            patch.dict("os.environ", {"HIKARI_ENABLE_LFM3_TEXT": "false"}),
-            self.assertRaisesRegex(InferenceFailure, "HIKARI_ENABLE_LFM3_TEXT"),
+    def test_chat_and_load_always_route_to_native_llm_worker(self):
+        for operation, payload in (
+            ("generate", {"feature": "llm", "messages": []}),
+            (
+                "load",
+                {"feature": "llm", "model": "inkling-2-mini-iq4-nl"},
+            ),
+            (
+                "load",
+                {"feature": "llm", "model": "inkling-2-mini-q8-0"},
+            ),
         ):
-            target_worker(request)
-        with patch.dict("os.environ", {"HIKARI_ENABLE_LFM3_TEXT": "true"}):
-            self.assertEqual(target_worker(request), "lfm3_llm")
-
-    def test_advisory_load_cannot_claim_residency(self):
-        request = InferenceTask(
-            operation="load", input={"feature": "llm", "model": "lfm3-1.7b-bf16"}
-        )
-        with (
-            patch.dict("os.environ", {"HIKARI_ENABLE_LFM3_TEXT": "true"}),
-            self.assertRaisesRegex(InferenceFailure, "per request"),
-        ):
-            target_worker(request)
+            with self.subTest(operation=operation, payload=payload):
+                request = InferenceTask(operation=operation, input=payload)
+                self.assertEqual(target_worker(request), "llm")
 
     def test_native_primary_settings_survive_catalog_refresh(self):
         hub = WorkerHub()
@@ -104,7 +68,8 @@ class ExperimentalRoutingTests(unittest.TestCase):
         hub.workers = {"native": SimpleNamespace(models=native, kind="llm")}
         hub._refresh_models()
         self.assertFalse(hub.models.whisper_formatting)
-        self.assertEqual(hub.models.selected_model_id, "lfm3-1.7b-bf16")
+        self.assertEqual(hub.models.selected_model_id, "inkling-2-mini-iq4-nl")
+        self.assertEqual(hub.models.defaults.llm, "inkling-2-mini-iq4-nl")
         self.assertIsNot(hub.models, native)
 
     def test_default_audio_call_routes_without_opt_in_and_keeps_standalone_speech(self):
@@ -130,6 +95,8 @@ class ExperimentalRoutingTests(unittest.TestCase):
                         target_worker(InferenceTask(input=request)), worker
                     )
         defaults = ModelAssignments()
+        self.assertEqual(defaults.llm, "inkling-2-mini-iq4-nl")
         self.assertEqual(defaults.audio_call, "lfm3-audio-2b-bf16")
         self.assertEqual(defaults.transcription, "whisper-medium")
         self.assertEqual(defaults.speech, "qwen-tts-1.7b-custom")
+        self.assertEqual(defaults.image, "qwen-image-2.1-turbo")

@@ -184,6 +184,90 @@ void dispatch(std::span<const Bytes> capacities) {
         }
     }
 }
+void plan_device_weights_tests() {
+    constexpr Bytes mib = 1024ULL * 1024;
+    constexpr Bytes gib = 1024ULL * mib;
+
+    // Asymmetric dual GPU (24 GiB primary + 12 GiB secondary with ~7.13 GiB free):
+    // state_device must pick the roomiest GPU (0), reserve the full state
+    // envelope on GPU 0 only, and water-fill the weight inventory across both GPUs.
+    {
+        const std::array<Bytes, 2> caps{
+            20ULL * gib + 256 * mib,
+            7ULL * gib + 130 * mib,
+        };
+        const Bytes inventory = 18ULL * gib + 480 * mib;
+        const Bytes state_reserve = 4ULL * gib + 640 * mib;
+        const auto plan = plan_device_weights(caps, inventory, state_reserve);
+        check(plan.fits);
+        check(plan.state_device == 0);
+        check(plan.weight_capacities.size() == 2 && plan.bank_bounds.size() == 2);
+        // Secondary GPU gets its full 7.13 GiB; primary GPU takes the remaining ~11.35 GiB.
+        check(plan.weight_capacities[1] == caps[1]);
+        check(plan.weight_capacities[0] == inventory - caps[1]);
+        // Primary GPU keeps well over the full state_reserve unreserved in its ledger.
+        check(caps[0] - plan.bank_bounds[0] >= state_reserve);
+        check(plan.bank_bounds[1] <= caps[1]);
+    }
+
+    // Symmetric dual GPU with spare capacity water-fills 50/50.
+    {
+        const std::array<Bytes, 2> caps{22ULL * gib, 22ULL * gib};
+        const auto plan = plan_device_weights(caps, 18ULL * gib, 4ULL * gib);
+        check(plan.fits);
+        check(plan.state_device == 0);
+        check(plan.weight_capacities[0] == 9ULL * gib);
+        check(plan.weight_capacities[1] == 9ULL * gib);
+        check(plan.bank_bounds[0] == 9ULL * gib + 16 * mib);
+        check(plan.bank_bounds[1] == 9ULL * gib + 16 * mib);
+    }
+
+    // Single GPU: reserves spare headroom up to state_reserve without forcing
+    // a fitting model to overflow.
+    {
+        const std::array<Bytes, 1> caps{22ULL * gib};
+        const auto plan = plan_device_weights(caps, 18ULL * gib, 5ULL * gib);
+        check(plan.fits);
+        check(plan.state_device == 0);
+        check(plan.weight_capacities[0] == 18ULL * gib);
+        check(caps[0] - plan.bank_bounds[0] == 4ULL * gib);
+    }
+
+    // Oversubscribed dual GPU: reserves at most state_cap / 8 on state_device
+    // only, leaving the secondary GPU's full capacity for weights.
+    {
+        const std::array<Bytes, 2> caps{8ULL * gib, 16ULL * gib};
+        const auto plan = plan_device_weights(caps, 30ULL * gib, 4ULL * gib);
+        check(!plan.fits);
+        check(plan.state_device == 1);
+        check(plan.weight_capacities[0] == 8ULL * gib);
+        check(plan.weight_capacities[1] == 14ULL * gib);
+        check(plan.bank_bounds[0] <= 8ULL * gib);
+        check(plan.bank_bounds[1] <= 14ULL * gib);
+    }
+
+    // Locked state device preserves an existing mirror owner even if another
+    // device currently reports more free VRAM.
+    {
+        const std::array<Bytes, 2> caps{20ULL * gib, 10ULL * gib};
+        const auto plan = plan_device_weights(caps, 18ULL * gib, 4ULL * gib, 1);
+        check(plan.fits);
+        check(plan.state_device == 1);
+        check(caps[1] - plan.bank_bounds[1] >= 4ULL * gib);
+    }
+
+    // Empty device list and zero-inventory edge cases.
+    {
+        const auto empty_zero = plan_device_weights({}, 0, 1024);
+        check(empty_zero.fits && empty_zero.weight_capacities.empty());
+        const auto empty_nonzero = plan_device_weights({}, 1024, 1024);
+        check(!empty_nonzero.fits);
+        const std::array<Bytes, 1> caps{1ULL * gib};
+        const auto zero_inv = plan_device_weights(caps, 0, 128 * mib);
+        check(zero_inv.fits && zero_inv.state_device == 0);
+        check(zero_inv.bank_bounds[0] == 16 * mib);
+    }
+}
 }  // namespace
 
 int main() {
@@ -193,5 +277,6 @@ int main() {
     dispatch(std::array<Bytes, 2>{1, 3});
     dispatch(std::array<Bytes, 3>{0, 1, 0});
     dispatch(std::array<Bytes, 3>{0, 0, 0});
+    plan_device_weights_tests();
     std::cout << "gguf batch partition tests passed\n";
 }

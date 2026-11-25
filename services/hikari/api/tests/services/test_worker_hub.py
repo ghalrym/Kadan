@@ -181,7 +181,7 @@ def chat():
         operation="completion",
         input={
             "feature": "llm",
-            "model": "qwen3.6-35b-a3b-q4-k-m",
+            "model": "inkling-2-mini-iq4-nl",
             "messages": [{"role": "user", "text": "hi"}],
         },
     )
@@ -577,43 +577,42 @@ class AuthorizationTests(unittest.TestCase):
     def test_requested_model_reads_either_field(self):
         video = InferenceTask(input={"feature": "video", "prompt": "sea"})
         self.assertEqual(requested_model(video), "h3-fl2va-int8-turbo")
-        self.assertEqual(requested_model(chat()), "qwen3.6-35b-a3b-q4-k-m")
+        self.assertEqual(requested_model(chat()), "inkling-2-mini-iq4-nl")
 
 
 class RegistrationTests(HubTestCase):
     async def test_physical_ram_is_independent_of_capped_worker_registration_order(
         self,
     ):
-        with patch.dict(os.environ, {"HIKARI_ENABLE_LFM3_TEXT": "true"}):
-            for order in (("lfm3_llm", "video"), ("video", "lfm3_llm")):
-                with self.subTest(order=order):
-                    workers = {}
-                    for kind in order:
-                        _, workers[kind] = await self.connect(
-                            kind,
-                            computer="-".join(order),
-                            ram_free=23 if kind == "lfm3_llm" else 400,
-                            physical_ram_free=400,
-                            ram_limit=23 if kind == "lfm3_llm" else None,
-                            gpus=(("GPU-a", 23), ("GPU-b", 23)),
-                            replies={
-                                "load": ok,
-                                "requirement": needs((16, 0), (16, 0)),
-                            },
-                        )
-                    language, video = workers["lfm3_llm"], workers["video"]
-                    self.assertIs(language.computer, video.computer)
-                    ledger = video.computer.ledger
-                    self.assertEqual(ledger.capacity, [400 * GIB, 23 * GIB, 23 * GIB])
-                    self.assertEqual(language.slot.host_limit, 23 * GIB)
-                    self.assertIsNone(video.slot.host_limit)
-                    video.slot.pending = 1
-                    video.slot.requirement = Requirement(
-                        "h3", (117 * GIB, 3 * GIB), (117 * GIB, 3 * GIB)
+        for order in (("llm", "video"), ("video", "llm")):
+            with self.subTest(order=order):
+                workers = {}
+                for kind in order:
+                    _, workers[kind] = await self.connect(
+                        kind,
+                        computer="-".join(order),
+                        ram_free=23 if kind == "llm" else 400,
+                        physical_ram_free=400,
+                        ram_limit=23 if kind == "llm" else None,
+                        gpus=(("GPU-a", 23), ("GPU-b", 23)),
+                        replies={
+                            "load": ok,
+                            "requirement": needs((16, 0), (16, 0)),
+                        },
                     )
-                    await self.hub._schedule(video.computer)
-                    self.assertEqual(video.slot.budget[0], 117 * GIB)
-                    self.assertTrue(video.slot.loaded)
+                language, video = workers["llm"], workers["video"]
+                self.assertIs(language.computer, video.computer)
+                ledger = video.computer.ledger
+                self.assertEqual(ledger.capacity, [400 * GIB, 23 * GIB, 23 * GIB])
+                self.assertEqual(language.slot.host_limit, 23 * GIB)
+                self.assertIsNone(video.slot.host_limit)
+                video.slot.pending = 1
+                video.slot.requirement = Requirement(
+                    "h3", (117 * GIB, 3 * GIB), (117 * GIB, 3 * GIB)
+                )
+                await self.hub._schedule(video.computer)
+                self.assertEqual(video.slot.budget[0], 117 * GIB)
+                self.assertTrue(video.slot.loaded)
 
     async def test_legacy_first_registration_retains_conservative_physical_baseline(
         self,
@@ -696,12 +695,14 @@ class RegistrationTests(HubTestCase):
                 checkpoints=[
                     checkpoint("qwen-image-2.1-turbo", kind="image"),
                     checkpoint("whisper-tiny.en", kind="transcription"),
-                    checkpoint("qwen3.6-35b-a3b-q4-k-m"),
+                    checkpoint("inkling-2-mini-iq4-nl"),
                 ]
             ),
         )
-        self.assertEqual(self.hub.models.selected_model_id, "lfm3-1.7b-bf16")
-        self.assertEqual(self.hub.models.models, [])
+        self.assertEqual(self.hub.models.selected_model_id, "inkling-2-mini-iq4-nl")
+        self.assertEqual(
+            [m.id for m in self.hub.models.models], ["inkling-2-mini-iq4-nl"]
+        )
         self.assertEqual(len(worker.models.models), 3)
 
     async def test_late_worker_receives_the_primary_settings(self):
@@ -2314,7 +2315,7 @@ class LoadContextTests(HubTestCase):
     def load_task(self, **context):
         return InferenceTask(
             operation="load",
-            input={"feature": "llm", "model": "qwen3.6-35b-a3b-q4-k-m", **context},
+            input={"feature": "llm", "model": "inkling-2-mini-iq4-nl", **context},
         )
 
     async def test_a_smaller_load_context_is_planned_instead_of_rejected(self):
@@ -2322,9 +2323,7 @@ class LoadContextTests(HubTestCase):
         _, worker = await self.connect_with_context_needs(asked, loads)
         job = await self.hub.submit(self.load_task(context_limit=8192))
         await self.hub._schedule(worker.computer)
-        self.assertEqual(
-            asked[-1], {"model": "qwen3.6-35b-a3b-q4-k-m", "context": 8192}
-        )
+        self.assertEqual(asked[-1], {"model": "inkling-2-mini-iq4-nl", "context": 8192})
         self.assertEqual(loads, [[GIB, 6 * GIB]])
         self.assertFalse(job.result.done())
 
@@ -2334,17 +2333,15 @@ class LoadContextTests(HubTestCase):
         worker.slot.loaded = worker.slot.busy = True
         await self.hub.submit(self.load_task(context_limit=None))
         await self.hub._schedule(worker.computer)
-        self.assertEqual(
-            asked[-1], {"model": "qwen3.6-35b-a3b-q4-k-m", "context": None}
-        )
+        self.assertEqual(asked[-1], {"model": "inkling-2-mini-iq4-nl", "context": None})
         await self.hub.submit(chat())
         self.assertEqual(
             self.hub._head_fields(worker),
-            {"model": "qwen3.6-35b-a3b-q4-k-m", "context": None},
+            {"model": "inkling-2-mini-iq4-nl", "context": None},
         )
         self.hub.jobs.pop(next(iter(self.hub.jobs)))
         self.assertEqual(
-            self.hub._head_fields(worker), {"model": "qwen3.6-35b-a3b-q4-k-m"}
+            self.hub._head_fields(worker), {"model": "inkling-2-mini-iq4-nl"}
         )
 
     async def test_requirement_follows_a_new_head_job(self):
@@ -2357,6 +2354,4 @@ class LoadContextTests(HubTestCase):
         await self.hub.submit(self.load_task(context_limit=4096))
         worker.slot.busy = True
         await self.hub._schedule(worker.computer)
-        self.assertEqual(
-            asked[-1], {"model": "qwen3.6-35b-a3b-q4-k-m", "context": 4096}
-        )
+        self.assertEqual(asked[-1], {"model": "inkling-2-mini-iq4-nl", "context": 4096})

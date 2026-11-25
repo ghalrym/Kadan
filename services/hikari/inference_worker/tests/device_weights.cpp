@@ -1,5 +1,7 @@
 #include "kadan/device_weights.hpp"
+#include "kadan/weight_slab_pool.hpp"
 
+#include <cstdint>
 #include <functional>
 #include <iostream>
 using namespace kadan;
@@ -277,10 +279,169 @@ void device_copy_failures_preserve_ownership() {
     }
 }
 
+void weight_slab_pool_tests() {
+    constexpr Bytes mib = 1024ULL * 1024;
+    struct FakeRaw {
+        std::map<void*, Bytes> live;
+        std::uintptr_t cursor = 0x10000000ULL;
+        Bytes cap = ~Bytes(0);
+        Bytes used = 0;
+        unsigned alloc_calls = 0, free_calls = 0;
+        bool fail_free = false;
+
+        void* alloc(Bytes bytes) {
+            ++alloc_calls;
+            if (bytes > cap - used)
+                return nullptr;
+            // Keep fake slab addresses 256-byte aligned and strictly disjoint.
+            const Bytes step = ((bytes + 4095) / 4096) * 4096;
+            auto* ptr = reinterpret_cast<void*>(cursor);  // NOLINT(performance-no-int-to-ptr)
+            cursor += step;
+            live.emplace(ptr, bytes);
+            used += bytes;
+            return ptr;
+        }
+
+        void free(void* ptr) {
+            ++free_calls;
+            if (fail_free)
+                throw std::runtime_error("slab_raw_free");
+            const auto it = live.find(ptr);
+            check(it != live.end());
+            used -= it->second;
+            live.erase(it);
+        }
+    };
+
+    // Invalid configuration rejected.
+    {
+        FakeRaw raw;
+        auto a = [&](Bytes b) { return raw.alloc(b); };
+        auto f = [&](void* p) { raw.free(p); };
+        fails([&] { WeightSlabPool({}, f); });
+        fails([&] { WeightSlabPool(a, {}); });
+        fails([&] { WeightSlabPool(a, f, 0); });
+        fails([&] { WeightSlabPool(a, f, 100); });
+    }
+
+    // Packing 200 sub-MiB routed expert slices into minimal 32 MiB slabs with
+    // 256-byte alignment, disjoint intervals, and immediate slab reclamation.
+    {
+        FakeRaw raw;
+        WeightSlabPool pool(
+            [&](Bytes b) { return raw.alloc(b); },
+            [&](void* p) { raw.free(p); }
+        );
+        check(pool.allocate(0) == nullptr);
+        pool.free(nullptr);
+        fails([&] { pool.free(reinterpret_cast<void*>(0x1234)); });
+
+        constexpr Bytes slice_bytes = 884736;  // 864 KiB IQ4_NL routed expert slice
+        std::vector<void*> ptrs;
+        std::vector<std::pair<std::uintptr_t, std::uintptr_t>> intervals;
+        for (int i = 0; i < 200; ++i) {
+            void* p = pool.allocate(slice_bytes);
+            check(p != nullptr);
+            const auto addr = reinterpret_cast<std::uintptr_t>(p);
+            check(addr % WeightSlabPool::alignment == 0);
+            ptrs.push_back(p);
+            intervals.emplace_back(addr, addr + slice_bytes);
+        }
+        // 32 MiB / 864 KiB = 37 slices per slab -> 200 slices fit in 6 slabs!
+        check(raw.alloc_calls == 6 && pool.slab_count() == 6 && pool.direct_count() == 0);
+        std::sort(intervals.begin(), intervals.end());
+        for (std::size_t i = 1; i < intervals.size(); ++i)
+            check(intervals[i - 1].second <= intervals[i].first);
+
+        for (void* p : ptrs)
+            pool.free(p);
+        check(
+            pool.slab_count() == 0 && pool.direct_count() == 0
+            && pool.largest_free_block() == 0 && raw.live.empty()
+            && raw.free_calls == 6
+        );
+    }
+
+    // Coalescing (left, right, both) and best-fit reuse inside a single slab.
+    {
+        FakeRaw raw;
+        WeightSlabPool pool(
+            [&](Bytes b) { return raw.alloc(b); },
+            [&](void* p) { raw.free(p); },
+            4096,
+            2048
+        );
+        void* a = pool.allocate(512);
+        void* b = pool.allocate(512);
+        void* c = pool.allocate(512);
+        void* d = pool.allocate(512);
+        check(pool.slab_count() == 1 && pool.largest_free_block() == 2048);
+
+        // Free a and c (two separate 512-byte holes), then free b to coalesce all three into 1536 bytes.
+        pool.free(a);
+        pool.free(c);
+        check(pool.largest_free_block() == 2048);
+        pool.free(b);
+        // Best-fit for 1536 must reuse the coalesced [0, 1536) block rather than splitting the 2048 tail!
+        void* merged = pool.allocate(1536);
+        check(merged == a && pool.slab_count() == 1 && pool.largest_free_block() == 2048);
+
+        pool.free(merged);
+        pool.free(d);
+        check(pool.slab_count() == 0 && raw.live.empty());
+    }
+
+    // Direct allocation for > max_pooled_bytes and OOM fallback when a full slab
+    // cannot be allocated but a smaller direct allocation still fits.
+    {
+        FakeRaw raw;
+        WeightSlabPool pool(
+            [&](Bytes b) { return raw.alloc(b); },
+            [&](void* p) { raw.free(p); },
+            4 * mib,
+            2 * mib
+        );
+        void* big = pool.allocate(3 * mib);
+        check(big != nullptr && pool.direct_count() == 1 && pool.slab_count() == 0);
+        pool.free(big);
+        check(pool.direct_count() == 0 && raw.live.empty());
+
+        // Restrict remaining raw capacity to 1 MiB (< 4 MiB slab): small alloc falls back to direct.
+        raw.cap = 1 * mib;
+        void* fallback = pool.allocate(512 * 1024);
+        check(
+            fallback != nullptr && pool.slab_count() == 0 && pool.direct_count() == 1
+        );
+        // Exceeding remaining cap returns nullptr cleanly.
+        check(pool.allocate(1 * mib) == nullptr);
+        pool.free(fallback);
+        check(pool.direct_count() == 0 && raw.live.empty());
+    }
+
+    // If raw_free throws on last slice, slab remains tracked rather than leaked silently.
+    {
+        FakeRaw raw;
+        WeightSlabPool pool(
+            [&](Bytes b) { return raw.alloc(b); },
+            [&](void* p) { raw.free(p); },
+            4096,
+            2048
+        );
+        void* p = pool.allocate(512);
+        raw.fail_free = true;
+        fails([&] { pool.free(p); });
+        check(pool.slab_count() == 1 && raw.live.size() == 1);
+        raw.fail_free = false;
+        pool.free(p);
+        check(pool.slab_count() == 0 && raw.live.empty());
+    }
+}
+
 int main() {
     device_copy_admission_and_publication();
     device_copy_refusal_preserves_scratch();
     device_copy_failures_preserve_ownership();
+    weight_slab_pool_tests();
     const Bytes host = DeviceWeights::metadata_bytes;
     std::atomic_bool cancel = false;
     std::array<float, 8> values{};

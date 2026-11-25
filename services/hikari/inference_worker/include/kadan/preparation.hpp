@@ -89,6 +89,8 @@ public:
     const CatalogEntry& entry(const std::string& model) const;
     fs::path acquire(const std::string& model, const std::atomic_bool& cancel);
     fs::path require_local(const std::string& model, const std::atomic_bool& cancel);
+    std::string selected_llm_id() const;
+    std::size_t default_llm_context() const;
     std::string whisper_selected() const;
     std::string whisper_model(const std::string& name) const;
     Json context(const std::string& model) const;

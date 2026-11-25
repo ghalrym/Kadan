@@ -455,7 +455,7 @@ void reader_rows() {
     fails([&] { metadata.string("missing"); }, "gguf_missing_metadata");
     GgufCheckpoint checkpoint(f.root, cancel);
     check(checkpoint.tensor_count() == 4 && checkpoint.tensor("q3").bytes == 440);
-    check(checkpoint.tensor("q3").shape == std::array<std::uint64_t, 3>{256, 2, 2});
+    check(checkpoint.tensor("q3").shape == std::array<std::uint64_t, 4>{256, 2, 2, 1});
     const auto id0 = checkpoint.identity("q3", 0), id1 = checkpoint.identity("q3", 1);
     check(
         id0.payload_end == id1.payload_begin
@@ -620,7 +620,7 @@ void metadata_failures() {
     fails([&] { GgufCheckpoint bad(f.root, cancel); }, "gguf_tensor_type");
     f.write(1, {{"unaligned", 11, {255, 1}, Bytes(110)}}, 1);
     fails([&] { GgufCheckpoint bad(f.root, cancel); }, "gguf_tensor_block_alignment");
-    f.write(1, {{"rank", 0, {1, 1, 1, 1}, f32({1})}}, 1);
+    f.write(1, {{"rank", 0, {1, 1, 1, 1, 1}, f32({1})}}, 1);
     fails([&] { GgufCheckpoint bad(f.root, cancel); }, "gguf_tensor_rank");
     f.write(
         1,
@@ -664,13 +664,16 @@ void single_file_tensors() {
         {{"q6", 14, {256, 1}, q6},
          {"iq4", 20, {32, 1}, iq4},
          {"bf16", 30, {2, 1}, bf16},
-         {"conv", 0, {2, 1, 2}, f32({1, 2, 3, 4})}},
+         {"conv", 0, {2, 1, 2}, f32({1, 2, 3, 4})},
+         {"patch", 0, {2, 2, 1, 1}, f32({5, 6, 7, 8})}},
         4,
         true
     );
+    // Companion mmproj GGUF files are skipped on directory open and loaded directly.
+    std::filesystem::copy_file(f.root / "model.gguf", f.root / "mmproj-vision.gguf");
     const std::atomic_bool cancel{false};
     GgufCheckpoint checkpoint(f.root, cancel);
-    check(checkpoint.tensor_count() == 4);
+    check(checkpoint.tensor_count() == 5);
     check(checkpoint.has("muse-spark.hash_offsets") && !checkpoint.has("split.no"));
     const auto offsets = checkpoint.integers("muse-spark.hash_offsets");
     check(offsets.size() == 2 && offsets[1] == 300001275);
@@ -683,10 +686,15 @@ void single_file_tensors() {
     std::array<float, 2> bf16_row{};
     checkpoint.read_rows("bf16", 0, 0, bf16_row, cancel);
     check(bf16_row[0] == 1.f && bf16_row[1] == -2.f);
-    // Small F32 tensors of any rank are read whole.
+    // Small F32 tensors of up to 4 dimensions are read whole.
     std::array<float, 4> conv{};
     checkpoint.read_vector("conv", conv, cancel);
     check(conv[0] == 1.f && conv[3] == 4.f);
+    std::array<float, 4> patch{};
+    checkpoint.read_vector("patch", patch, cancel);
+    check(patch[0] == 5.f && patch[3] == 8.f);
+    GgufCheckpoint direct(f.root / "mmproj-vision.gguf", cancel);
+    check(direct.tensor_count() == 5);
     std::array<float, 3> wrong{};
     fails([&] { checkpoint.read_vector("conv", wrong, cancel); }, "gguf_vector_shape");
 }

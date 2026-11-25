@@ -10,13 +10,14 @@ const { outputText } = ts.transpileModule(source, {
 })
 
 const capabilities = [
-  { id: 'lfm3-1.7b-bf16', label: 'Language', short: 'Language' },
+  { id: 'inkling-2-mini', label: 'Language', short: 'Language' },
   { id: 'whisper-medium', label: 'Speech to text', short: 'STT' },
 ]
 function rows(status = 'not_downloaded', overrides = {}) {
   return capabilities.map(capability => ({ capability, model: {
-    id: capability.id, display_name: `${capability.id} (experimental)`, repo_id: 'repo', status, license: 'lfm1.0',
-    license_notice: capability.id.startsWith('lfm3') ? 'Review this license' : null,
+    id: capability.id === 'inkling-2-mini' ? 'inkling-2-mini-iq4-nl' : capability.id,
+    display_name: `${capability.id} (experimental)`, repo_id: 'repo', status, license: 'apache-2.0',
+    license_notice: capability.id === 'inkling-2-mini' ? 'Review this license' : null,
     license_url: null, downloaded_bytes: 0, total_bytes: 0, estimated_bytes: 1e9, error: null, ...overrides,
   } }))
 }

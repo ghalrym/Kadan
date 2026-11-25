@@ -4,11 +4,11 @@ Users expect Hikari to run chat, decisions, speech synthesis, transcription and 
 
 ## Language models and hardware
 
-### Default LFM3 conversation model
+### Inkling 2 Mini language and vision model
 
-The standard deployment uses a separate released BF16 LFM3-1.7B worker for Hikari Chat and Kadan text conversations. Unavailable workers and incomplete user-approved downloads produce an error, with no substitution. Every other capability also uses its fixed assignment, independent of the computer serving it. The retained native MoE engine is not a selectable conversation model.
+The standard deployment uses Inkling 2 Mini running natively on Hikari's Strata MoE engine for Hikari Chat, Kadan agent conversations, and computer screenshot observations. Unavailable workers and incomplete user-approved downloads produce an error, with no substitution. Every other capability also uses its fixed assignment, independent of the computer serving it.
 
-This worker loads the model for each request and returns the completed reply through the existing chat interface. Its 262,144-token context is shared by input and output. Generation includes private reasoning that is removed before a reply is returned. By default, generation can use all space remaining after the complete prompt; clients can set smaller generation and reasoning budgets. Reaching the generation budget returns an incomplete response. Output that ends before reasoning closes fails without exposing that reasoning. Prompts leaving no reply space fail without truncating history. Long replies can take much longer and can still fail if memory is insufficient. It does not retain a conversation prefix or support manual preloading. A worker reconnects after losing the service connection, but interrupted work is not automatically replayed. Model quality, latency and physical fit require owner validation on the target computer; a connected worker or downloaded checkpoint does not prove successful inference.
+Generation includes private reasoning that is separated from the visible reply. By default, generation can use the space remaining after the complete prompt; clients can set smaller generation and reasoning budgets. Reaching the generation budget returns an incomplete response. Prompts leaving no reply space fail without truncating history. Long replies can take longer and can still fail if memory is insufficient. A worker reconnects after losing the service connection, but interrupted work is not automatically replayed. Model quality, latency and physical fit require owner validation on the target computer; a connected worker or downloaded checkpoint does not prove successful inference.
 
 ## Multiple inference types at once
 
@@ -32,7 +32,7 @@ Hikari tries to keep room for chat while other work runs, but chat has no uncond
 
 Models load on demand. A first request or returning to a previously unloaded inference type can incur model-loading time. Switching workloads under memory pressure can also require a model to reload. Hikari handles this automatically.
 
-Models retained between requests unload after one hour without work, measured from the last request's completion. LFM conversation and screenshot executors instead release their models after each request. Operators can configure the retained-model idle period; see [inference architecture](../../architecture/hikari/inference.md). Idle expiry never interrupts active or queued requests. Explicit unloading and requests that need memory can release a model sooner. A later request reloads it; downloaded checkpoints and conversation history are unchanged.
+Models retained between requests unload after one hour without work, measured from the last request's completion. Operators can configure the retained-model idle period; see [inference architecture](../../architecture/hikari/inference.md). Idle expiry never interrupts active or queued requests. Explicit unloading and requests that need memory can release a model sooner. A later request reloads it; downloaded checkpoints and conversation history are unchanged.
 
 A queued request has been accepted, not completed. Hikari must not silently truncate chat history or reduce requested media settings to force a fit. Invalid inputs, unavailable checkpoints and execution failures must produce explicit errors rather than fabricated results. Cancellation must finish cleanup before the released resources are reused. If a worker cannot confirm cleanup, its affected capacity stays unavailable and may require a worker restart. An uncertain operation is not automatically replayed.
 
@@ -40,12 +40,8 @@ Concurrent throughput, model quality and physical memory fit require manual vali
 
 ## Conversation prefix reuse
 
-LFM conversations retain no reusable prefix between requests. Language requests served by the retained native worker can reuse its last completed prefix when the earlier prompt exactly starts a longer one. Direct clients can disable reuse; requests without a conversation identity do not retain a prefix. Edited, shorter or identical prompts, another conversation, cancellation and incompatible model or context settings require a fresh prefill. A different worker may also miss the cache.
+Language requests served by Inkling 2 Mini can reuse its last completed prefix when the earlier prompt exactly starts a longer one (up to any image attachment). Direct clients can disable reuse; requests without a conversation identity do not retain a prefix. Edited, shorter or identical prompts, another conversation, cancellation and incompatible model or context settings require a fresh prefill. A different worker may also miss the cache.
 
 When an idle model unloads or yields VRAM, Hikari can keep its reusable KV and recurrent state in RAM. A compatible later request restores that state after loading the model. Each worker retains at most one prefix; it can discard it sooner when RAM is needed for work. No reusable state is written to disk, and restarting the worker loses it.
 
 The prefix cache expires after one hour without reuse by default. Operators can configure this separately from model idle expiry: unloading a model does not restart the cache timer, and discarding its cache does not unload the model. Expiry waits for active and queued work. Conversation history and downloaded checkpoints are unaffected. Responses report actual reused and stored tokens and whether a prefix was restored from RAM; reuse does not guarantee a measured latency improvement.
-
-## Vision subscriptions on this branch
-
-The Hikari backend can answer screenshot questions through the independently selected Claude or ChatGPT subscription, without a local Vision checkpoint or memory allocation. Local behavior is unchanged. Provider failures are explicit and never trigger fallback; see [subscription expectations](subscriptions.md#vision-subscription-backend-on-this-branch). This branch behavior has not been verified on master.

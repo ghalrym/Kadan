@@ -70,11 +70,17 @@ def resource(kind="conversation", messages=None, **changes):
     return Resource(**{**fields, **changes})
 
 
-def ready_models(status="complete", available=True):
+def ready_models(status="complete", available=True, model_id="inkling-2-mini-iq4-nl"):
     return {
+        "selected_model_id": model_id,
         "models": [
-            {"id": "lfm3-1.7b-bf16", "status": status, "inference_available": available}
-        ]
+            {
+                "id": model_id,
+                "kind": "llm",
+                "status": status,
+                "inference_available": available,
+            }
+        ],
     }
 
 
@@ -145,10 +151,11 @@ def run(boundary, operation):
         (ready_models(status="failed"), "model_required"),
         (ready_models(available=False), "unavailable"),
         (ready_models(), "ready"),
+        (ready_models(model_id="inkling-2-mini-q8-0"), "ready"),
         ({}, "unavailable"),
     ],
 )
-def test_readiness_uses_actual_fixed_language_checkpoint(settings, state):
+def test_readiness_uses_actual_active_language_checkpoint(settings, state):
     boundary = Boundary(settings=settings)
     status = run(boundary, lambda service: service.inference_status())
     assert status.state == state
@@ -162,68 +169,90 @@ def test_subscription_language_is_ready_without_local_download(provider):
     boundary.language = provider
     status = run(boundary, lambda service: service.inference_status())
     assert status.state == "ready"
-    assert status.model_id == "lfm3-1.7b-bf16"
+    assert status.model_id is None
     assert provider.title() in status.message
     assert boundary.requests == [("GET", "/v1/subscriptions")]
 
 
 @pytest.mark.parametrize(
-    ("models", "expected"),
+    ("models", "selected", "expected", "expected_model"),
     [
-        ([], "unavailable"),
+        ([], None, "unavailable", None),
         (
-            [{"id": "native", "status": "complete", "inference_available": True}],
+            [
+                {
+                    "id": "qwen-image-2.1-turbo",
+                    "kind": "image",
+                    "status": "complete",
+                    "inference_available": True,
+                }
+            ],
+            None,
             "unavailable",
+            None,
         ),
         (
             [
                 {
-                    "id": "lfm3-1.7b-bf16",
+                    "id": "inkling-2-mini-iq4-nl",
+                    "kind": "llm",
                     "status": "not_downloaded",
                     "inference_available": True,
                 }
             ],
+            "inkling-2-mini-iq4-nl",
             "model_required",
+            "inkling-2-mini-iq4-nl",
         ),
         (
             [
                 {
-                    "id": "lfm3-1.7b-bf16",
+                    "id": "inkling-2-mini-iq4-nl",
+                    "kind": "llm",
                     "status": "complete",
                     "inference_available": False,
                 }
             ],
+            "inkling-2-mini-iq4-nl",
             "unavailable",
+            "inkling-2-mini-iq4-nl",
         ),
         (
             [
                 {
-                    "id": "lfm3-1.7b-bf16",
+                    "id": "inkling-2-mini-q8-0",
+                    "kind": "llm",
                     "status": "complete",
                     "inference_available": True,
-                    "context_limit": 262144,
+                    "context_limit": 131072,
                 }
             ],
+            "inkling-2-mini-q8-0",
             "ready",
+            "inkling-2-mini-q8-0",
         ),
     ],
 )
-def test_fixed_lfm3_requires_its_own_downloaded_worker(models, expected):
+def test_active_inkling_requires_its_own_downloaded_worker(
+    models, selected, expected, expected_model
+):
     async def check():
         def boundary(request):
             assert request.method == "GET"
             if request.url.path == "/v1/subscriptions":
                 return httpx.Response(200, json={"capabilities": {"language": "local"}})
             assert request.url.path == "/v1/models"
-            return httpx.Response(200, json={"models": models})
+            return httpx.Response(
+                200, json={"models": models, "selected_model_id": selected}
+            )
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(boundary)) as client:
             service = LocalServices(client, Settings(_env_file=None))
             status = await service.inference_status()
             assert status.state == expected
-            assert status.model_id == "lfm3-1.7b-bf16"
+            assert status.model_id == expected_model
             if expected == "ready":
-                assert status.context_limit == 262144
+                assert status.context_limit == 131072
 
     asyncio.run(check())
 
@@ -407,12 +436,14 @@ def test_docker_status_requests_internal_origins_and_returns_browser_links(unava
     [
         (
             httpx.Response(
-                200, json={"state": "loading", "model_id": "lfm3-1.7b-bf16"}
+                200, json={"state": "loading", "model_id": "inkling-2-mini-iq4-nl"}
             ),
             "loading",
         ),
         (
-            httpx.Response(200, json={"state": "ready", "model_id": "lfm3-1.7b-bf16"}),
+            httpx.Response(
+                200, json={"state": "ready", "model_id": "inkling-2-mini-iq4-nl"}
+            ),
             "ready",
         ),
         (httpx.Response(200, json={"state": "ready", "model_id": "other"}), "unloaded"),

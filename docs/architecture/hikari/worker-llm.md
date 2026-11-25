@@ -1,8 +1,6 @@
 # Language worker (`llm`)
 
-Retains the native engine for explicit internal checkpoint requests. Public chat uses the separate fixed LFM3 worker. This engine serves
-mixture-of-experts checkpoints larger than the GPU by tiering routed experts
-across VRAM, RAM and disk (the Strata/FreeToken approach).
+Serves public chat, agent tool-calling turns, and multimodal screenshot vision using Thinking Machines Lab's Inkling 2 Mini (`ggml-org/Inkling-2-Mini-GGUF`) on Hikari's native C++ Strata engine. This is the only local language model in Hikari; Qwen LLM checkpoints and the separate LFM3 text/vision Python workers have been removed.
 
 ## Program and container
 
@@ -13,53 +11,38 @@ across VRAM, RAM and disk (the Strata/FreeToken approach).
 - Its own image, built by `workers/llm/Dockerfile`: CUDA; no LibTorch, no FFmpeg.
 - Its own Compose service, `hikari-worker-llm` (GPU). It can be scaled, and
   run on another computer using the same services in `compose.yaml`.
+- Configured via Compose environment variables:
+  - `HIKARI_LLM_QUANT`: `IQ4_NL` (default → `inkling-2-mini-iq4-nl`) or `Q8_0` (→ `inkling-2-mini-q8-0`).
+  - `HIKARI_LLM_CONTEXT_LIMIT`: effective context window in tokens (default `65536`, range `[4096, 1048576]`).
 - It connects to the API and takes memory only as the API grants it. Workers on
   one computer share its RAM and GPUs in the API's ledger.
 
 ## Serves
 
-- Internal explicitly named native language requests. A native load may carry its own `context_limit`; public lifecycle controls belong to LFM.
+- `POST /v1/chat/completions` (text, structured tools, and multimodal `image_url` screenshots) when the Language capability provider is set to `local`.
+- Public lifecycle reads and explicit unload via `/model-lifecycle`.
 
 ## Engine
 
-- Pinned GGUF mixture-of-experts checkpoints. The catalog retains their metadata without hardware profiles or saved selection; native language requests must name a checkpoint.
-- Non-expert weights and context state stay pinned in VRAM. Only routed experts
-  move between VRAM, RAM and disk.
-- Routed experts held in RAM run on the CPU alongside the GPU batch. They are
-  not streamed over PCIe by default.
-- Prefill runs in 512-token chunks because each chunk touches nearly every
-  routed expert. Experts stay on the batched path at any row count: the GPU
-  repeats its packed pass for each group of 8 rows against weights it reads
-  once, and the CPU split prices host work by bytes times rows.
-
+- Dense GGUF multimodal architecture (`inkling2`) with a bundled F16 vision projector (`mmproj`) for native image encoding.
+- Supports Inkling 2 Mini's chat template, reasoning blocks, structured `<tool_call>` / `<tool_response>` history, and multimodal image embeddings.
+- Uses quantized weight projections with in-kernel dequantization (no F32 weight expansion on the decode path).
+- Supports prefix cache reuse and conversation checkpoints across turns in the same conversation, with host-side detachment on offload.
 ## Memory
 
-- **Minimum:** non-expert weights + context state + 2.4 GiB of VRAM headroom.
-  RAM is the GGUF plan's host bytes + 4 GiB. Routed experts are the rank-3
-  tensors with more than one expert.
-- **Preferred:** every expert in VRAM, plus a RAM cache of the whole model.
-- **Context:** sized from a queued load's explicit context first, then the
-  saved limit, then the model's supported maximum.
-- **Scratch:** each GPU keeps a 1 GiB scratch envelope for projections and
-  grouped attention; the rest of the grant goes to the weight bank.
-- **Several GPUs:** the budget may span GPUs. Each GPU it uses needs its own
-  2.4 GiB floor.
-- **Budget limits:** the GPU weight bank sizes itself from the smaller of free
-  VRAM and the room left in its budget. Admission therefore never depends on the
-  total number of expert slices.
+- **Minimum:** model weights + vision projector + KV cache state + VRAM headroom, plus host RAM for staging and prefix checkpoint state.
+- **Context:** sized from the configured `HIKARI_LLM_CONTEXT_LIMIT` (default `65536`) or an explicit request context limit within the checkpoint's supported maximum.
+- **Several GPUs:** the budget may span GPUs where supported, with per-GPU headroom enforced.
 
 ## Scheduling
 
-- Priority 1, shared with decisions: the highest.
-- While it is not loaded, other workers leave its minimum free so chat can start
-  beside an image or video.
-- When idle lower-priority workers hold memory, it takes back the VRAM it lacks.
-  They shrink to their minimum.
-- Any change to its budget closes the engine. The next request reloads the whole
-  model within the new budget; there is no live resize of the expert cache.
+- Priority 1, shared with decisions and live voice calls: the highest.
+- While it is not loaded, other workers leave its minimum free where possible so chat can start beside an image (Qwen-Image) or video (H3) request.
+- When idle lower-priority workers hold memory, it takes back the VRAM it lacks so GPU sharing between LLM and image/video generation works automatically without manual unloading.
+- Any change to its budget closes the engine cleanly before releasing memory; the next request reloads within the new budget.
 
 ## Constraints
 
 - Keep the decode path on batched `GgufWeights::project` with in-kernel
   dequantization. No F32 expansion of weights on that path.
-- Never require the dense model to fit in VRAM to admit a request.
+- Never silently truncate chat history or substitute another model to force a fit.

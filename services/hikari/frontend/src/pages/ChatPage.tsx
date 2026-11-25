@@ -56,7 +56,6 @@ export default function ChatPage() {
             setMessages([...conversation, { role: 'assistant', text }])
         },
         conversationId.current,
-        'lfm3-1.7b-bf16',
       )
       if (active.current !== controller || controller.signal.aborted) return
       setMessages([...conversation, message])
@@ -100,7 +99,7 @@ export default function ChatPage() {
 
   return (
     <div className="chat-page">
-      <p className="faint">LFM3 1.7B BF16</p>
+      <p className="faint">Inkling 2 Mini</p>
       <div
         className="chat-history"
         role="log"
@@ -111,8 +110,8 @@ export default function ChatPage() {
           {messages.length === 0 && (
             <p className="muted">
               Send a message to test the chat API. Conversation history stays in
-              this browser tab. Download LFM3 in Settings before sending a
-              message.
+              this browser tab. Download Inkling 2 Mini in Settings or connect a
+              subscription before sending a message.
             </p>
           )}
           {messages.map((message, index) => (

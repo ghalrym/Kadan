@@ -13,7 +13,7 @@ const models = ts.transpileModule(modelsSource, { compilerOptions: { module: ts.
 
 function snapshot(capabilities = {}, connected = { claude: true, codex: true }) {
   return {
-    capabilities: { language: 'local', vision: 'local', ...capabilities },
+    capabilities: { language: 'local', image: 'local', ...capabilities },
     subscriptions: [
       { provider: 'claude', connected: connected.claude, model: 'claude-haiku-5-5' },
       { provider: 'codex', connected: connected.codex, model: 'gpt-6.1-terra' },
@@ -124,54 +124,50 @@ async function loaded(state) {
   return view
 }
 
-test('vision offers Local, Claude and ChatGPT while language keeps Codex', async () => {
+test('language offers Local Inkling 2 Mini, Claude and Codex without a separate vision toggle', async () => {
   const view = await loaded(snapshot())
-  assert.deepEqual(options(view.tree, 'Vision').map(content), ['Local', 'Claude', 'ChatGPT'])
+  assert.equal(group(view.tree, 'Vision'), undefined)
   assert.deepEqual(options(view.tree, 'Language').map(content), ['Local', 'Claude', 'Codex'])
-  assert.equal(selected(view.tree, 'Vision'), 'Local')
-  assert.match(content(capabilityRow(view.tree, 'Vision')), /LFM3-VL 2B on this computer/)
+  assert.equal(selected(view.tree, 'Language'), 'Local')
+  assert.match(content(capabilityRow(view.tree, 'Language')), /Inkling 2 Mini on this computer/)
+  assert.match(content(capabilityRow(view.tree, 'Images')), /Qwen-Image on this computer/)
 })
 
-test('vision subscription options wait for their sign-in', async () => {
+test('language subscription options wait for their sign-in', async () => {
   const view = await loaded(snapshot({}, { claude: false, codex: true }))
-  const claude = option(view.tree, 'Vision', 'Claude')
+  const claude = option(view.tree, 'Language', 'Claude')
   assert.equal(claude.props.disabled, true)
   assert.equal(claude.props.title, 'Sign in to Claude first')
-  assert.equal(option(view.tree, 'Vision', 'ChatGPT').props.disabled, false)
+  assert.equal(option(view.tree, 'Language', 'Codex').props.disabled, false)
 })
 
-test('choosing ChatGPT for vision saves vision only and needs no download', async () => {
+test('choosing Codex for language saves language and shows GPT 6.1 Terra', async () => {
   const view = await loaded(snapshot())
-  await view.click(option(view.tree, 'Vision', 'ChatGPT'))
-  assert.deepEqual(view.choices.map(({ capability, provider }) => [capability, provider]), [['vision', 'codex']])
-  view.choices[0].resolve(snapshot({ vision: 'codex' }))
+  await view.click(option(view.tree, 'Language', 'Codex'))
+  assert.deepEqual(view.choices.map(({ capability, provider }) => [capability, provider]), [['language', 'codex']])
+  view.choices[0].resolve(snapshot({ language: 'codex' }))
   await view.flush()
-  assert.equal(selected(view.tree, 'Vision'), 'ChatGPT')
-  assert.equal(selected(view.tree, 'Language'), 'Local')
-  const row = content(capabilityRow(view.tree, 'Vision'))
-  assert.match(row, /GPT 6\.1 Terra/)
-  assert.match(row, /ChatGPT\s+subscription, so the Vision model does not need to be downloaded/)
-  assert.doesNotMatch(content(capabilityRow(view.tree, 'Language')), /download/)
+  assert.equal(selected(view.tree, 'Language'), 'Codex')
+  assert.match(content(capabilityRow(view.tree, 'Language')), /GPT 6\.1 Terra/)
 })
 
-test('a failed vision choice is reported and the selection stays', async () => {
+test('a failed language choice is reported and the selection stays', async () => {
   const view = await loaded(snapshot())
-  await view.click(option(view.tree, 'Vision', 'Claude'))
+  await view.click(option(view.tree, 'Language', 'Claude'))
   view.choices[0].reject(new Error('Sign in to Claude again, then try once more.'))
   await view.flush()
   assert.equal(alert(view.tree), 'Sign in to Claude again, then try once more.')
-  assert.equal(selected(view.tree, 'Vision'), 'Local')
+  assert.equal(selected(view.tree, 'Language'), 'Local')
 })
 
-test('signing out shows vision back on Local', async () => {
-  const view = await loaded(snapshot({ language: 'claude', vision: 'claude' }))
-  assert.equal(selected(view.tree, 'Vision'), 'Claude')
+test('signing out shows language back on Local', async () => {
+  const view = await loaded(snapshot({ language: 'claude' }))
+  assert.equal(selected(view.tree, 'Language'), 'Claude')
   const signOut = elements(view.tree).find(node => node.type === 'button' && content(node) === 'Sign out')
   await view.click(signOut)
   assert.equal(view.disconnects[0].provider, 'claude')
   view.disconnects[0].resolve(snapshot({}, { claude: false, codex: true }))
   await view.flush()
-  assert.equal(selected(view.tree, 'Vision'), 'Local')
   assert.equal(selected(view.tree, 'Language'), 'Local')
-  assert.equal(option(view.tree, 'Vision', 'Claude').props.disabled, true)
+  assert.equal(option(view.tree, 'Language', 'Claude').props.disabled, true)
 })

@@ -1,18 +1,49 @@
+#include <string_view>
+
 #include "kadan/preparation.hpp"
 
 namespace kadan::serving {
+namespace {
+constexpr std::size_t chat_image_max_bytes = 20ULL * 1024 * 1024;
+constexpr std::size_t chat_image_max_encoded = 28ULL * 1024 * 1024;
+constexpr std::string_view png_data_url_prefix = "data:image/png;base64,";
+constexpr std::uint8_t png_magic[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
+
+std::vector<std::uint8_t> decode_chat_png(std::string_view data_url) {
+    preparation_check(
+        data_url.size() <= chat_image_max_encoded
+            && data_url.starts_with(png_data_url_prefix),
+        "Chat images must be PNG data URLs up to 20 MiB",
+        422
+    );
+    const auto decoded = base64_decode(
+        data_url.substr(png_data_url_prefix.size()),
+        chat_image_max_encoded - png_data_url_prefix.size()
+    );
+    preparation_check(
+        decoded.size() >= sizeof(png_magic) && decoded.size() <= chat_image_max_bytes
+            && std::equal(
+                std::begin(png_magic),
+                std::end(png_magic),
+                reinterpret_cast<const std::uint8_t*>(decoded.data())
+            ),
+        "Invalid PNG image data",
+        422
+    );
+    return std::vector<std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(decoded.data()),
+        reinterpret_cast<const std::uint8_t*>(decoded.data()) + decoded.size()
+    );
+}
+}  // namespace
+
 void prepare_input(
     ChatRequest& input,
     InferenceRequest& request,
     ModelStore& store,
     const std::atomic_bool& cancel
 ) {
-    preparation_check(
-        input.model.has_value(),
-        "Native language requests require an explicit checkpoint.",
-        422
-    );
-    request.model = *input.model;
+    request.model = input.model.value_or(store.selected_llm_id());
     preparation_check(
         store.entry(request.model).inference_available,
         "This checkpoint has no supported inference engine.",
@@ -28,7 +59,8 @@ void prepare_input(
         configured =
             saved.is_null() ? std::nullopt : std::optional(saved.get<std::size_t>());
     }
-    const auto effective = configured.value_or(supported);
+    const auto effective =
+        configured.value_or(std::min(store.default_llm_context(), supported));
     preparation_check(
         supported > 0 && effective > 0 && effective <= supported,
         "Configured context exceeds the checkpoint limit.",
@@ -41,6 +73,12 @@ void prepare_input(
         "Chat requires messages",
         422
     );
+    for (auto& msg : input.messages) {
+        msg.decoded_images.clear();
+        msg.decoded_images.reserve(msg.images.size());
+        for (const auto& url : msg.images)
+            msg.decoded_images.push_back(decode_chat_png(url));
+    }
 }
 
 Json present_chat(const InferenceRequest& request, Json result) {

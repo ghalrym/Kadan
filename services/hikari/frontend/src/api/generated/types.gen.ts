@@ -92,28 +92,112 @@ export type CapabilityProviders = {
    * Language
    */
   language?: 'local' | 'claude' | 'codex'
+}
+
+/**
+ * ChatCallFunction
+ */
+export type ChatCallFunction = {
   /**
-   * Vision
+   * Arguments
    */
-  vision?: 'local' | 'claude' | 'codex'
+  arguments: {
+    [key: string]: JsonValue
+  }
+  /**
+   * Name
+   */
+  name: string
+}
+
+/**
+ * ChatFunction
+ */
+export type ChatFunction = {
+  /**
+   * Description
+   */
+  description?: string
+  /**
+   * Name
+   */
+  name: string
+  /**
+   * Parameters
+   */
+  parameters?: {
+    [key: string]: JsonValue
+  }
+  /**
+   * Strict
+   */
+  strict?: boolean | null
 }
 
 /**
  * ChatMessage
+ *
+ * Unified chat message supporting text, images, reasoning, and tool calls.
  */
 export type ChatMessage = {
+  /**
+   * Images
+   */
+  images?: Array<string> | null
   /**
    * Meta
    */
   meta?: string | null
   /**
+   * Name
+   */
+  name?: string | null
+  /**
+   * Reasoning Content
+   */
+  reasoning_content?: string | null
+  /**
    * Role
    */
-  role: 'system' | 'user' | 'assistant'
+  role: 'system' | 'user' | 'assistant' | 'tool'
   /**
    * Text
    */
-  text: string
+  text?: string
+  /**
+   * Tool Call Id
+   */
+  tool_call_id?: string | null
+  /**
+   * Tool Calls
+   */
+  tool_calls?: Array<ChatToolCall> | null
+}
+
+/**
+ * ChatTool
+ */
+export type ChatTool = {
+  function: ChatFunction
+  /**
+   * Type
+   */
+  type?: 'function'
+}
+
+/**
+ * ChatToolCall
+ */
+export type ChatToolCall = {
+  function: ChatCallFunction
+  /**
+   * Id
+   */
+  id: string
+  /**
+   * Type
+   */
+  type?: 'function'
 }
 
 /**
@@ -163,7 +247,6 @@ export type CheckpointStatus = {
     | 'formatting'
     | 'image'
     | 'decision'
-    | 'vision'
     | 'audio'
   /**
    * License
@@ -285,24 +368,6 @@ export type CompletionChoice = {
 }
 
 /**
- * CompletionMessage
- */
-export type CompletionMessage = {
-  /**
-   * Meta
-   */
-  meta?: string | null
-  /**
-   * Role
-   */
-  role: 'system' | 'user' | 'assistant'
-  /**
-   * Text
-   */
-  text: string
-}
-
-/**
  * CompletionOutputMessage
  */
 export type CompletionOutputMessage = {
@@ -339,11 +404,15 @@ export type CompletionRequest = {
   /**
    * Messages
    */
-  messages: Array<CompletionMessage | Lfm3Message>
+  messages: Array<ChatMessage>
   /**
    * Model
    */
-  model?: 'lfm3-1.7b-bf16'
+  model?: 'inkling-2-mini-iq4-nl' | 'inkling-2-mini-q8-0' | null
+  /**
+   * Reasoning Effort
+   */
+  reasoning_effort?: 'low' | 'medium' | 'high' | null
   /**
    * Reasoning Tokens
    *
@@ -363,7 +432,7 @@ export type CompletionRequest = {
   /**
    * Tools
    */
-  tools?: Array<Lfm3Tool> | null
+  tools?: Array<ChatTool> | null
 }
 
 /**
@@ -452,46 +521,6 @@ export type DecisionResponse = {
    * Answers
    */
   answers: Array<ChoiceAnswer | ScoreAnswer | NoulAnswer>
-}
-
-/**
- * DescribeRequest
- */
-export type DescribeRequest = {
-  /**
-   * Image Base64
-   */
-  image_base64: string
-  /**
-   * Max New Tokens
-   */
-  max_new_tokens?: number | null
-  /**
-   * Media Type
-   */
-  media_type: 'image/png' | 'image/jpeg'
-  /**
-   * Model
-   */
-  model?: 'lfm3-vl-2b-bf16'
-  /**
-   * Question
-   */
-  question: string
-}
-
-/**
- * DescribeResponse
- */
-export type DescribeResponse = {
-  /**
-   * Model
-   */
-  model: 'lfm3-vl-2b-bf16' | 'claude-haiku-5-5' | 'gpt-6.1-terra'
-  /**
-   * Text
-   */
-  text: string
 }
 
 /**
@@ -671,100 +700,6 @@ export type InferenceProgress = {
 export type JsonValue = unknown
 
 /**
- * Lfm3CallFunction
- */
-export type Lfm3CallFunction = {
-  /**
-   * Arguments
-   */
-  arguments: {
-    [key: string]: JsonValue
-  }
-  /**
-   * Name
-   */
-  name: string
-}
-
-/**
- * Lfm3Function
- */
-export type Lfm3Function = {
-  /**
-   * Description
-   */
-  description?: string
-  /**
-   * Name
-   */
-  name: string
-  /**
-   * Parameters
-   */
-  parameters?: {
-    [key: string]: JsonValue
-  }
-  /**
-   * Strict
-   */
-  strict?: boolean | null
-}
-
-/**
- * Lfm3Message
- *
- * Structured history consumed by the fixed LFM3 language checkpoint.
- */
-export type Lfm3Message = {
-  /**
-   * Meta
-   */
-  meta?: string | null
-  /**
-   * Role
-   */
-  role: 'system' | 'user' | 'assistant' | 'tool'
-  /**
-   * Text
-   */
-  text?: string
-  /**
-   * Tool Call Id
-   */
-  tool_call_id?: string | null
-  /**
-   * Tool Calls
-   */
-  tool_calls?: Array<Lfm3ToolCall> | null
-}
-
-/**
- * Lfm3Tool
- */
-export type Lfm3Tool = {
-  function: Lfm3Function
-  /**
-   * Type
-   */
-  type?: 'function'
-}
-
-/**
- * Lfm3ToolCall
- */
-export type Lfm3ToolCall = {
-  function: Lfm3CallFunction
-  /**
-   * Id
-   */
-  id: string
-  /**
-   * Type
-   */
-  type?: 'function'
-}
-
-/**
  * MemoryReservation
  */
 export type MemoryReservation = {
@@ -892,7 +827,7 @@ export type ModelAssignments = {
   /**
    * Llm
    */
-  llm?: 'lfm3-1.7b-bf16'
+  llm?: 'inkling-2-mini-iq4-nl' | 'inkling-2-mini-q8-0'
   /**
    * Speech
    */
@@ -905,10 +840,6 @@ export type ModelAssignments = {
    * Video
    */
   video?: 'h3-fl2va-int8-turbo'
-  /**
-   * Vision
-   */
-  vision?: 'lfm3-vl-2b-bf16'
 }
 
 /**
@@ -1077,12 +1008,7 @@ export type RequestRecord = {
   /**
    * Model
    */
-  model?:
-    | 'qwen3.6-35b-a3b-q4-k-m'
-    | 'qwen3.8-flash-next-ud-iq3-xxs'
-    | 'qwen3.8-flash-next-q3-k-xl'
-    | 'lfm3-1.7b-bf16'
-    | null
+  model?: 'inkling-2-mini-iq4-nl' | 'inkling-2-mini-q8-0' | null
   /**
    * Output
    */
@@ -2406,7 +2332,7 @@ export type ChooseCapabilityProviderData = {
     /**
      * Capability
      */
-    capability: 'language' | 'image' | 'vision'
+    capability: 'language' | 'image'
   }
   query?: never
   url: '/v1/subscriptions/capabilities/{capability}'
@@ -2731,30 +2657,3 @@ export type GetVideoContentResponses = {
    */
   200: unknown
 }
-
-export type DescribeScreenshotData = {
-  body: DescribeRequest
-  path?: never
-  query?: never
-  url: '/v1/vision/describe'
-}
-
-export type DescribeScreenshotErrors = {
-  /**
-   * Validation Error
-   */
-  422: HttpValidationError
-}
-
-export type DescribeScreenshotError =
-  DescribeScreenshotErrors[keyof DescribeScreenshotErrors]
-
-export type DescribeScreenshotResponses = {
-  /**
-   * Successful Response
-   */
-  200: DescribeResponse
-}
-
-export type DescribeScreenshotResponse =
-  DescribeScreenshotResponses[keyof DescribeScreenshotResponses]

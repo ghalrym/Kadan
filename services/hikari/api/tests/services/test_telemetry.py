@@ -77,8 +77,14 @@ class RequestSummaryTests(unittest.TestCase):
         )
 
     def test_summary_keeps_curated_models_but_never_private_fields(self):
-        public_models = (*get_args(LlmModel), "lfm3-1.7b-bf16")
-        for model in (*public_models, "Private model", "lfm3-unreleased", None, 123):
+        public_models = tuple(get_args(LlmModel))
+        for model in (
+            *public_models,
+            "Private model",
+            "lfm3-1.7b-bf16",
+            None,
+            123,
+        ):
             with self.subTest(model=model):
                 summary, saved_model = self.summary(
                     {
@@ -92,8 +98,8 @@ class RequestSummaryTests(unittest.TestCase):
                 self.assertNotIn("Private", summary)
                 self.assertEqual(saved_model, model if model in public_models else None)
 
-    def test_unconsumed_or_oversized_lfm_request_keeps_model_unknown(self):
-        body = b'{"model":"lfm3-1.7b-bf16"}'
+    def test_unconsumed_or_oversized_request_keeps_model_unknown(self):
+        body = b'{"model":"inkling-2-mini-iq4-nl"}'
         for size, complete in (
             (len(body), False),
             (MAX_BODY_SUMMARY_BYTES + 1, True),
@@ -104,10 +110,11 @@ class RequestSummaryTests(unittest.TestCase):
 
     def test_unsupported_completion_model_id_alias_is_not_reported_as_routing(self):
         from pydantic import ValidationError
+
         from api.routes.v1.chat.completions import CompletionRequest
 
         body = {
-            "model_id": "lfm3-1.7b-bf16",
+            "model_id": "inkling-2-mini-iq4-nl",
             "messages": [{"role": "user", "content": "Private message"}],
         }
         with self.assertRaises(ValidationError):
@@ -137,7 +144,7 @@ class RequestSummaryTests(unittest.TestCase):
 
 class CompletedRequestTests(unittest.IsolatedAsyncioTestCase):
     async def test_completion_records_curated_model_without_retaining_payloads(self):
-        for model in (*get_args(LlmModel), "lfm3-1.7b-bf16", "Private model"):
+        for model in (*get_args(LlmModel), "Private model"):
             with self.subTest(model=model):
                 body = json.dumps(
                     {

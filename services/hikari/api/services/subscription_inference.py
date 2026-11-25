@@ -6,6 +6,7 @@ definitions and tool history are rendered into the prompt in the same
 """
 
 import asyncio
+import base64
 import json
 import os
 import shutil
@@ -20,6 +21,7 @@ from api.services.inference_errors import InferenceFailure
 
 OUTPUT_LINE_LIMIT = 16 * 1024 * 1024
 ERROR_CHARACTERS = 2000
+PNG_DATA_URL_PREFIX = "data:image/png;base64,"
 
 TOOLS_HEADER = "# Tools\n\nYou have access to the following functions:\n\n<tools>"
 TOOLS_FOOTER = (
@@ -53,6 +55,16 @@ def render_tool_call(name: str, arguments: dict) -> str:
     return f"<tool_call>\n<function={name}>\n{parameters}</function>\n</tool_call>"
 
 
+def extract_images(body) -> list[str]:
+    """Return raw base64 PNG payloads attached to messages in order."""
+    images: list[str] = []
+    for message in body.messages:
+        for url in getattr(message, "images", None) or ():
+            if isinstance(url, str) and url.startswith(PNG_DATA_URL_PREFIX):
+                images.append(url[len(PNG_DATA_URL_PREFIX) :])
+    return images
+
+
 def render_prompt(body) -> tuple[str, str]:
     """Split a completion request into system instructions and a transcript prompt."""
     system = [message.text for message in body.messages if message.role == "system"]
@@ -76,6 +88,8 @@ def render_prompt(body) -> tuple[str, str]:
             )
             continue
         parts = [message.text.strip()] if message.text.strip() else []
+        if not parts and (getattr(message, "images", None) or ()):
+            parts.append("[Image attached]")
         parts += [
             render_tool_call(call.function.name, call.function.arguments)
             for call in getattr(message, "tool_calls", None) or ()
@@ -98,6 +112,7 @@ class SubscriptionStream:
     def __init__(self, subscription: ActiveSubscription, body):
         self.subscription = subscription
         self.model = SUBSCRIPTION_MODELS[subscription.provider]
+        self.images = extract_images(body)
         self.system, self.prompt = render_prompt(body)
         if subscription.provider == "codex" and self.system:
             # Codex exec has no system prompt option; instructions lead the prompt.
@@ -111,7 +126,7 @@ class SubscriptionStream:
         if self.subscription.provider == "claude":
             env["CLAUDE_CODE_OAUTH_TOKEN"] = self.subscription.credential
             env.pop("ANTHROPIC_API_KEY", None)
-            return [
+            command = [
                 "claude",
                 "-p",
                 "--model",
@@ -126,10 +141,18 @@ class SubscriptionStream:
                 "--no-session-persistence",
                 "--system-prompt",
                 self.system or "You are a helpful assistant.",
-            ], env
+            ]
+            if self.images:
+                command.extend(["--input-format", "stream-json"])
+            return command, env
         env["CODEX_HOME"] = str(self.home)
         env.pop("OPENAI_API_KEY", None)
         (self.home / "auth.json").write_text(self.subscription.credential)
+        image_args: list[str] = []
+        for index, payload in enumerate(self.images):
+            image_path = self.home / f"image_{index}.png"
+            image_path.write_bytes(base64.b64decode(payload))
+            image_args.extend(["--image", str(image_path)])
         return [
             "codex",
             "exec",
@@ -146,8 +169,33 @@ class SubscriptionStream:
             self.model,
             "--cd",
             str(self.home),
+            *image_args,
             "-",
         ], env
+
+    def _stdin_payload(self) -> bytes:
+        if self.subscription.provider == "claude" and self.images:
+            content = [
+                *[
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": payload,
+                        },
+                    }
+                    for payload in self.images
+                ],
+                {"type": "text", "text": self.prompt},
+            ]
+            event = {
+                "type": "user",
+                "message": {"role": "user", "content": content},
+                "parent_tool_use_id": None,
+            }
+            return (json.dumps(event) + "\n").encode()
+        return self.prompt.encode()
 
     async def start(self) -> None:
         try:
@@ -165,7 +213,7 @@ class SubscriptionStream:
                 limit=OUTPUT_LINE_LIMIT,
             )
             self.stderr = asyncio.create_task(self.process.stderr.read())
-            self.process.stdin.write(self.prompt.encode())
+            self.process.stdin.write(self._stdin_payload())
             await self.process.stdin.drain()
             self.process.stdin.close()
         except FileNotFoundError as error:

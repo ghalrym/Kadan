@@ -25,8 +25,11 @@ class CompletionRequestTests(unittest.TestCase):
                             "role": "user",
                             "text": "Hello",
                             "meta": "context",
+                            "images": None,
                             "tool_calls": None,
                             "tool_call_id": None,
+                            "name": None,
+                            "reasoning_content": None,
                         }
                     ],
                 )
@@ -65,10 +68,15 @@ class CompletionRequestTests(unittest.TestCase):
                 ]
             )
 
-    def test_unsupported_top_level_controls_are_rejected(self):
+    def test_reasoning_effort_accepts_valid_levels_and_rejects_unknown_controls(self):
+        for level in ("low", "medium", "high"):
+            body = CompletionRequest(
+                messages=[{"role": "user", "content": "Hello"}],
+                reasoning_effort=level,
+            )
+            self.assertEqual(body.reasoning_effort, level)
         for field, value in (
             ("tool_choice", "auto"),
-            ("reasoning_effort", "high"),
             ("stream_options", {"include_usage": True}),
         ):
             with self.subTest(field=field):

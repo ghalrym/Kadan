@@ -1,10 +1,10 @@
 # Subscription providers
 
-A capability can be served by the user's own subscription instead of its fixed local checkpoint. Language is wired in the current interface; this branch also wires Vision in Settings and the backend. The design keeps the provider choice per capability so other capabilities can be added without changing how subscriptions are stored. See [subscription expectations](../../user-expectations/hikari/subscriptions.md).
+A capability can be served by the user's own subscription instead of its local checkpoint. Language (including multimodal screenshot vision) and Image generation are wired in Settings and the backend. The design keeps the provider choice per capability so other capabilities can be added without changing how subscriptions are stored. See [subscription expectations](../../user-expectations/hikari/subscriptions.md).
 
 ## Data ownership
 
-Hikari's Postgres database owns two tables. `subscriptions` keeps one credential per provider (`claude`, `codex`): Claude's long-lived OAuth token or Codex's `auth.json`. `capability_providers` maps a capability to `local`, `claude` or `codex`; a capability without a row is local. Adding a capability means widening the `capability` check constraint, adding a field to `CapabilityProviders` and routing its endpoint; credentials are reused.
+Hikari's Postgres database owns two tables. `subscriptions` keeps one credential per provider (`claude`, `codex`): Claude's long-lived OAuth token or Codex's `auth.json`. `capability_providers` maps a capability (`language`, `image`) to `local`, `claude` or `codex`; a capability without a row is local. Migration 0005 drops the retired `vision` capability row and narrows the check constraint back to `language` and `image`, since multimodal images now flow through `POST /v1/chat/completions`. Adding a capability means widening the `capability` check constraint, adding a field to `CapabilityProviders` and routing its endpoint; credentials are reused.
 
 Signing out of a provider deletes its credential and resets every capability it served to `local` in the same transaction, so a request never finds a selection without a sign-in. Selecting a provider without a credential is a conflict.
 
@@ -26,35 +26,26 @@ Users are not expected to use a terminal, so Hikari drives each CLI's own login 
 
 Output is stripped of terminal escapes before parsing. Sign-ins expire after 15 minutes, matching Codex's code lifetime. Cancellation, failure and completion all kill the process and delete its temporary home.
 
-## Language routing
+## Language routing (including multimodal vision)
 
-`POST /v1/chat/completions` reads the language provider before queueing. With `local` it follows the existing worker path. Otherwise `SubscriptionStream` serves the turn and the queue, memory scheduler and LFM worker are never involved. The request model stays `lfm3-1.7b-bf16`, so Kadan, Hikari Chat and API clients need no change; responses report the subscription model instead.
+`POST /v1/chat/completions` reads the language provider before queueing. With `local` it routes to `hikari-worker-llm` (Inkling 2 Mini on Strata, with built-in vision projection). Otherwise `SubscriptionStream` serves the turn (including multimodal `image_url` screenshot turns) and the queue, memory scheduler and local LLM worker are never involved. Callers may omit `model` or send the configured local Inkling 2 Mini checkpoint ID; responses report the subscription model instead.
 
 Hikari drives each provider's own CLI rather than calling provider APIs directly, because subscription sign-ins are issued to those CLIs:
 
-- Claude runs `claude -p` with `claude-haiku-5-5`, `CLAUDE_CODE_OAUTH_TOKEN`, all built-in tools disabled and stream JSON output, so text deltas stream through.
-- Codex runs `codex exec --json` with `gpt-6.1-terra` in a read-only sandbox. Its final agent message arrives at the end of the turn.
+- Claude runs `claude -p` with `claude-haiku-5-5`, `CLAUDE_CODE_OAUTH_TOKEN`, all built-in tools disabled and stream JSON output, so text deltas stream through. Multimodal requests pass validated base64 image blocks over `--input-format stream-json`.
+- Codex runs `codex exec --json` with `gpt-6.1-terra` in a read-only sandbox. Its final agent message arrives at the end of the turn. Multimodal requests pass validated PNG/JPEG image files via `exec --image` inside the isolated temporary home.
 
 Each run gets a fresh temporary home. Codex rotates its tokens inside `auth.json`; after a run Hikari saves the refreshed file only if the stored credential is unchanged, so a user's replacement or disconnect wins over a concurrent refresh. The temporary home is deleted afterwards.
 
-The CLIs never see Hikari's tool schemas as native tools. The request's system messages and tool definitions become instructions in the local checkpoint's `<tool_call>` format, and history is rendered as a tagged transcript with earlier tool calls and `<tool_response>` results. Replies therefore parse through Kadan's existing tool-call parser. Output is returned in the same JSON and SSE shapes as local completions, always finishing with `stop`; `max_tokens`, `reasoning_tokens` and prefix reuse do not apply.
+The CLIs never see Hikari's tool schemas as native tools. The request's system messages and tool definitions become instructions in the `<tool_call>` format, and history is rendered as a tagged transcript with earlier tool calls and `<tool_response>` results. Replies therefore parse through Kadan's existing tool-call parser. Output is returned in the same JSON and SSE shapes as local completions, always finishing with `stop`; `max_tokens`, `reasoning_tokens` and prefix reuse do not apply.
 
 Client disconnects and stream closure kill and reap the CLI process. A non-zero exit, a provider error event or a missing CLI fails the turn with the provider's message; there is no fallback to local.
 
-Kadan's readiness check reads `/v1/subscriptions` first and reports language as ready while a subscription serves it, without requiring the LFM3 download. The API image installs pinned `@anthropic-ai/claude-code` and `@openai/codex` packages.
+Kadan's readiness check reads `/v1/subscriptions` first and reports language as ready while a subscription serves it, without requiring the Inkling 2 Mini download. The API image installs pinned `@anthropic-ai/claude-code` and `@openai/codex` packages.
 
-## Vision routing on this branch
+## Image generation backend
 
-`capabilities.vision` and `PUT /v1/subscriptions/capabilities/vision` use the existing `local`, `claude`, `codex` values. UI copy can call `codex` ChatGPT without changing the stored provider identifier. Migration 0004 widens the capability constraint; existing credentials and language selections remain intact. Connection state in the subscription snapshot is the readiness signal for subscription Vision, independent of local worker/download state. It is not proof that the provider will accept a request.
-
-The existing `/v1/vision/describe` request remains unchanged. A subscription selection bypasses the queue and local memory scheduler; `{model, text}` reports the actual provider model. `max_new_tokens` is rejected for subscriptions because these adapters cannot enforce that budget. Local worker result validation retains the fixed local model requirement.
-
-`SubscriptionVision` reuses the CLI lifecycle, event readers and conditional Codex credential refresh from `SubscriptionStream`. Each observation has its own temporary home and process, independent of language. Disconnect and cancellation kill and reap that process before deleting its screenshot and credentials. A concurrent sign-out or replacement wins over refresh. Provider changes affect new requests; active work is neither replayed nor silently rerouted.
-
-Claude receives an `--input-format stream-json` user message with a base64 image source and text question. Codex receives an actual PNG/JPEG file through `exec --image`; a textual filename is never used as image input. Both paths validate image encoding, format and dimensions before starting a process. The installed pinned CLI help and official [Claude streaming image documentation](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode) and [Codex CLI documentation](https://developers.openai.com/codex/cli/features) support these transports. Unit validation mocks processes; account permissions, model availability and visual quality still require owner validation. No paid inference was used. This is branch implementation, not verified master behavior.
-## Image generation backend on this branch
-
-This branch adds `image` to `CapabilityProviders` and the capability constraint, with only `local` and `codex` allowed for images. Migration 0003 widens the existing constraint without recreating credentials or rewriting language settings. Migration 0004 adds Vision while preserving the Image capability and its provider constraint. No behavior here is asserted as verified on master; UI integration and owner validation remain pending.
+`CapabilityProviders` includes `image`, with only `local` and `codex` allowed for images. Migration 0003 widens the existing constraint without recreating credentials or rewriting language settings, and Migration 0005 preserves `image` while dropping the retired `vision` capability.
 
 `PUT /v1/subscriptions/capabilities/image` accepts the existing provider request. Claude is rejected with a conflict. `GET /v1/subscriptions` includes `capabilities.image`; a selected Codex connection means generation is eligible without local readiness, not that account entitlement or remaining quota was verified. Disconnect resets every served capability in one transaction. Running requests retain their credential snapshot. Token refresh uses the existing conditional credential update so disconnect or replacement wins.
 

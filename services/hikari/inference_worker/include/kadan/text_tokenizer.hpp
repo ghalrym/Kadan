@@ -1,8 +1,10 @@
 #pragma once
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 
 #include "kadan/resources.hpp"
 
@@ -27,6 +29,7 @@ public:
     void load(const std::string& tokenizer_json, const std::atomic_bool&);
     void unload();
     std::string decode(std::uint32_t token) const;
+    std::optional<std::uint32_t> added_token_id(std::string_view token) const;
     // Verbatim prompt presentation, NFC/regex/byte-level BPE, no template or
     // inserted special tokens. Caller owns/admitted output storage.
     std::size_t encode(

@@ -17,9 +17,17 @@ class LookArguments(Arguments):
     )
 
 
+ALLOWED_VISION_MODELS = (
+    "inkling-2-mini-iq4-nl",
+    "inkling-2-mini-q8-0",
+    "claude-haiku-5-5",
+    "gpt-6.1-terra",
+)
+
+
 @computer_tool("GET")
 async def computer_look(args: LookArguments, computer: SandboxClient) -> dict:
-    """Inspect the current computer screenshot with the selected vision provider.
+    """Inspect the current computer screenshot with the active language model.
 
     Ask about visible text, controls, positions or the current app state. The
     observation can be wrong; it does not execute actions or confirm later state.
@@ -29,14 +37,21 @@ async def computer_look(args: LookArguments, computer: SandboxClient) -> dict:
     image, media_type = await computer.screenshot()
     if len(image) > 2 * 1024**2 or media_type not in ("image/png", "image/jpeg"):
         raise ServiceError("Vision requires a PNG or JPEG screenshot up to 2 MiB.", 422)
+    image_url = f"data:{media_type};base64,{base64.b64encode(image).decode('ascii')}"
     try:
         response = await computer.services.client.post(
-            computer.services.settings.hikari_url + "/v1/vision/describe",
+            computer.services.settings.hikari_url + "/v1/chat/completions",
             json={
-                "model": "lfm3-vl-2b-bf16",
-                "image_base64": base64.b64encode(image).decode("ascii"),
-                "media_type": media_type,
-                "question": args.question,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": args.question},
+                            {"type": "image_url", "image_url": {"url": image_url}},
+                        ],
+                    }
+                ],
+                "stream": False,
             },
             timeout=httpx.Timeout(None, connect=3),
         )
@@ -50,19 +65,19 @@ async def computer_look(args: LookArguments, computer: SandboxClient) -> dict:
         )
     try:
         result = response.json()
-        text = result["text"]
+        model = result["model"]
+        text = result["choices"][0]["message"]["content"]
         if (
-            result["model"]
-            not in ("lfm3-vl-2b-bf16", "claude-haiku-5-5", "gpt-6.1-terra")
+            model not in ALLOWED_VISION_MODELS
             or not isinstance(text, str)
             or not text.strip()
         ):
             raise ValueError("Invalid description")
-    except (ValueError, KeyError, TypeError) as error:
+    except (ValueError, KeyError, TypeError, IndexError) as error:
         raise ServiceError(
             "Hikari returned an invalid screenshot description.", 502
         ) from error
-    return {"model": result["model"], **truncated(text, MAX_RESULT_CHARACTERS)}
+    return {"model": model, **truncated(text, MAX_RESULT_CHARACTERS)}
 
 
 TOOLS = [computer_look]

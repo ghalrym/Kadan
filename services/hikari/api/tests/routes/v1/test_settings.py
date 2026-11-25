@@ -35,7 +35,7 @@ def snapshot():
     return ModelStoreStatus.model_validate(
         {
             "models": [
-                checkpoint("lfm3-1.7b-bf16", "llm", "downloading"),
+                checkpoint("inkling-2-mini-iq4-nl", "llm", "downloading"),
                 checkpoint("superwhisper-s1-mini", "formatting", "complete"),
                 checkpoint("qwen-image-2.1-turbo", "image"),
                 checkpoint("qwen-tts-1.7b-custom", "speech"),
@@ -50,7 +50,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
     def test_fixed_assignments_report_progress_without_selection(self):
         with patch.object(settings.inference, "models_status", return_value=snapshot()):
             result = settings.get_settings()
-        self.assertEqual(result.defaults.llm, "lfm3-1.7b-bf16")
+        self.assertEqual(result.defaults.llm, "inkling-2-mini-iq4-nl")
         self.assertEqual(result.defaults.speech, "qwen-tts-1.7b-custom")
         self.assertEqual(result.defaults.formatting, "superwhisper-s1-mini")
         self.assertEqual(result.models[0].downloaded_bytes, 5)
@@ -62,7 +62,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValidationError):
             settings.SettingsRequest(tier="go")
         for models in (
-            {"LLM": "lfm3-1.7b-bf16"},
+            {"LLM": "inkling-2-mini-iq4-nl"},
             {"Image": "qwen-image-2.1-turbo"},
         ):
             with self.assertRaises(ValidationError):

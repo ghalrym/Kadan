@@ -2,15 +2,13 @@
 
 Hikari manages model loading and memory allocations across inference workers so users can switch inference types without manually unloading models. The user expectations for [inference operations](../../user-expectations/hikari/inference.md) describe the user-visible contract.
 
-## Mixture-of-experts language models
+## Language model execution
 
-Public conversations use the fixed separate LFM3 worker. The retained native mixture-of-experts (MoE) engine accepts explicit internal checkpoints; it is designed to run checkpoints larger than GPU memory by keeping routed experts across GPU memory (VRAM), system memory (RAM) and disk. The complete checkpoint does not have to fit in VRAM.
+Public conversations, agent runs, and screenshot vision use Thinking Machines Lab's Inkling 2 Mini (`inkling-2-mini-iq4-nl` by default, or `inkling-2-mini-q8-0` via `HIKARI_LLM_QUANT`) running natively on Hikari's C++ Strata engine (`hikari-worker-llm`). The checkpoint is a dense GGUF multimodal model with a bundled vision projector (`mmproj`) and shares host RAM and GPU VRAM with other workers (such as Qwen-Image, H3 video, Qwen3-TTS, and LFM3-Audio) through the memory scheduler.
 
-Frequently used routed experts should stay in VRAM where capacity permits. Other routed experts can remain in RAM, with disk holding those that do not fit in either memory tier. Placement adapts to expert use within the memory available to the language model. Only routed experts move between these tiers. Non-expert matrices, including shared experts, remain pinned in VRAM while the language model is loaded, so sufficient VRAM for those weights and execution state is still required.
+The engine keeps model weights, vision projector, and KV cache within the memory budget granted by the API. Offloading and admission preserve the configured checkpoint rather than substituting another model or silently truncating context.
 
-Experts held in RAM execute on the CPU alongside GPU work. Hikari balances that work against streaming experts to the GPU using measured execution and transfer rates. It should not send every RAM-resident expert across the GPU connection by default.
-
-Offloading preserves the selected checkpoint rather than substituting a smaller or dense language model. This allows models larger than VRAM to run, with performance depending on the memory available and the execution and transfer rates of the hardware.
+When a user connects a Claude or Codex subscription and switches the Language capability to it, chat and screenshot requests bypass the local worker and memory scheduler entirely without requiring the Inkling 2 Mini checkpoint to be downloaded.
 
 ## Memory accounting
 
@@ -58,13 +56,13 @@ Cancellation records an unsuccessful outcome independently of recipient retireme
 
 ## Reusable conversation state
 
-Each resident chat engine keeps one completed conversation prefix, its exact committed token sequence and the corresponding attention and recurrent state. Both supported GGUF architectures are recurrent, so a hit requires the entire retained sequence to match the start of a longer prompt; an arbitrary common prefix cannot safely rewind recurrence. Selected output tokens not yet fed through the engine are excluded. On a hit, only the remaining prompt suffix executes, at the retained absolute position.
+Each resident chat engine keeps one completed conversation prefix, its exact committed token sequence and the corresponding KV cache state. A prefix hit requires the retained sequence to match the start of a longer prompt (with no image changes invalidating earlier embeddings). Selected output tokens not yet fed through the engine are excluded. On a hit, only the remaining prompt suffix executes, at the retained absolute position.
 
 Callers such as Kadan's runner end each prompt with an instruction that the next turn replaces, so the live state rarely matches the next prompt. Prefill therefore also keeps one conversation checkpoint: a host copy of the state at the start of the prompt's last message. When the live state misses, a prompt in the same conversation that extends the checkpoint's tokens restores it and executes only the rest. Copies cover only the positions in use; the plan's host bytes count a second full state for it. A restored checkpoint is reported as `checkpoint_hit`.
 
 Request cleanup releases transient scratch while keeping prefix allocations charged to the worker's existing RAM and per-GPU budgets. Missing conversation IDs and disabled reuse retain no entry. A miss resets state, and cancellation discards incomplete state. Cache response counts describe actual reuse, and prefill timing counts only tokens that executed.
 
-The inference owner can detach one completed prefix before model eviction or budget changes. That RAM snapshot survives destruction of the engine and contains no weights, open checkpoint files or device allocations. Attention keys/values already have complete host copies. Device recurrence is copied back synchronously, including convolution history; host recurrence keeps its execution mode. Qwen4Exp additionally retains QSA index keys/pools, PLE convolution history and recent tokens. On restoration, device recurrence is uploaded lazily on its newly selected device. If it cannot be admitted before the first restored step, the complete host state remains available for the host path. KV device mirrors can be rebuilt from the host copy.
+The inference owner can detach one completed prefix before model eviction or budget changes. That RAM snapshot survives destruction of the engine and contains no weights, open checkpoint files or device allocations. Attention keys/values already have complete host copies, and KV device mirrors can be rebuilt from the host copy on restoration.
 
 Restoration requires the same model ID, workload, checkpoint path, context, tokenizer file identity and every GGUF tensor's immutable shard identity. The exact committed token/conversation match still decides whether any prefix is reused. An incompatible request replaces the one retained entry. There is no cross-worker affinity or disk-cache layer.
 

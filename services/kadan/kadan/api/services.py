@@ -210,10 +210,10 @@ class LocalServices:
                 await self.json_request("Hikari", "GET", "/v1/subscriptions")
             )
             if providers.capabilities.language != "local":
-                # Hikari routes the fixed language ID to the user's subscription.
+                # Hikari routes omitted-model chat requests to the user's subscription.
                 return InferenceState(
                     state="ready",
-                    model_id="lfm3-1.7b-bf16",
+                    model_id=None,
                     settings_url=settings_url,
                     message=f"Language uses your {providers.capabilities.language.title()} subscription in Hikari.",
                 )
@@ -221,15 +221,29 @@ class LocalServices:
                 await self.json_request("Hikari", "GET", "/v1/models")
             )
             model = next(
-                (item for item in catalog.models if item.id == "lfm3-1.7b-bf16"),
+                (
+                    item
+                    for item in catalog.models
+                    if catalog.selected_model_id
+                    and item.id == catalog.selected_model_id
+                ),
+                None,
+            ) or next(
+                (
+                    item
+                    for item in catalog.models
+                    if item.kind == "llm" or item.id.startswith("inkling-2-mini-")
+                ),
                 None,
             )
             if model is None or not model.inference_available:
                 return InferenceState(
                     state="unavailable",
-                    model_id="lfm3-1.7b-bf16",
+                    model_id=model.id
+                    if model is not None
+                    else catalog.selected_model_id,
                     settings_url=settings_url,
-                    message="The LFM3 conversation worker is unavailable. Check Hikari Settings.",
+                    message="The Inkling 2 Mini language worker is unavailable. Check Hikari Settings.",
                 )
             return InferenceState(
                 state="ready" if model.status == "complete" else "model_required",
@@ -238,9 +252,9 @@ class LocalServices:
                 context_limit=model.context_limit or model.architecture_context_limit,
                 settings_url=settings_url,
                 message=(
-                    "LFM3 is downloaded. Hikari loads it when chat starts."
+                    "Inkling 2 Mini is downloaded. Hikari loads it when chat starts."
                     if model.status == "complete"
-                    else "LFM3 requires a user-approved download in Hikari Settings before chat."
+                    else "Inkling 2 Mini requires a user-approved download in Hikari Settings before chat."
                 ),
             )
         except (ServiceError, ValidationError) as error:
@@ -284,7 +298,7 @@ class LocalServices:
         storage, inference = await asyncio.gather(
             self.storage_status(), self.inference_status()
         )
-        if inference.state == "ready":
+        if inference.state == "ready" and inference.model_id is not None:
             inference.model_state = await self.model_state(inference.model_id)
         return Status(tsuchi=storage, hikari=inference)
 

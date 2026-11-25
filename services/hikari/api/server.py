@@ -14,7 +14,6 @@ from api.routes.v1 import (
     settings,
     subscriptions,
     videos,
-    vision,
     workers,
 )
 from api.routes.v1.audio import calls, speech, transcriptions
@@ -80,6 +79,5 @@ for router in (
     models.router,
     model_lifecycle.router,
     workers.router,
-    vision.router,
 ):
     app.include_router(router)

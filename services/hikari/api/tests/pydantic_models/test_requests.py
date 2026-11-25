@@ -24,18 +24,24 @@ class ObservedModelTests(unittest.TestCase):
             response_bytes=1,
         )
 
-    def test_records_preserve_native_lfm_and_unknown_observations(self):
-        for model in (*get_args(LlmModel), "lfm3-1.7b-bf16", None):
+    def test_records_preserve_native_inkling_and_unknown_observations(self):
+        for model in (*get_args(LlmModel), None):
             with self.subTest(model=model):
                 record = self.record(model)
                 restored = RequestRecord.model_validate_json(record.model_dump_json())
                 self.assertEqual(restored.model, model)
 
-    def test_private_and_unreleased_model_ids_cannot_enter_a_record(self):
-        for model in ("Private prompt used as model", "lfm3-unreleased", ""):
+    def test_private_and_retired_model_ids_cannot_enter_a_record(self):
+        for model in (
+            "Private prompt used as model",
+            "lfm3-1.7b-bf16",
+            "qwen3.6-35b-a3b-q4-k-m",
+            "",
+        ):
             with self.subTest(model=model), self.assertRaises(ValidationError):
                 self.record(model)
 
-    def test_observing_lfm_does_not_admit_it_as_a_native_language_checkpoint(self):
-        with self.assertRaises(ValidationError):
-            TypeAdapter(LlmModel).validate_python("lfm3-1.7b-bf16")
+    def test_retired_models_are_not_admitted_as_language_checkpoints(self):
+        for model in ("lfm3-1.7b-bf16", "qwen3.6-35b-a3b-q4-k-m"):
+            with self.subTest(model=model), self.assertRaises(ValidationError):
+                TypeAdapter(LlmModel).validate_python(model)

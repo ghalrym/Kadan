@@ -47,8 +47,164 @@ InferenceRequest parse_request(const Json& envelope) {
         input.reuse_prefix = body.value("reuse_prefix", true);
         input.context_supplied = body.contains("context_limit");
         input.context_limit = optional<std::size_t>(body, "context_limit");
-        for (const auto& message : body.value("messages", Json::array()))
-            input.messages.push_back({message.at("role"), message.at("text")});
+        input.max_output_tokens = optional<std::size_t>(body, "max_tokens");
+        if (!input.max_output_tokens)
+            input.max_output_tokens = optional<std::size_t>(body, "max_output_tokens");
+        input.reasoning_tokens = optional<std::size_t>(body, "reasoning_tokens");
+        input.reasoning_effort = optional<std::string>(body, "reasoning_effort");
+
+        if (body.contains("tools") && !body.at("tools").is_null()) {
+            preparation_check(
+                body.at("tools").is_array() && body.at("tools").size() <= 256,
+                "Invalid chat tools list",
+                422
+            );
+            for (const auto& item : body.at("tools")) {
+                preparation_check(item.is_object(), "Invalid chat tool", 422);
+                const auto& fn = item.contains("function") ? item.at("function") : item;
+                preparation_check(
+                    fn.is_object() && fn.contains("name") && fn.at("name").is_string(),
+                    "Invalid chat tool function",
+                    422
+                );
+                ChatTool tool;
+                tool.type = item.value("type", std::string("function"));
+                tool.name = fn.at("name").get<std::string>();
+                tool.description = fn.value("description", std::string());
+                tool.parameters =
+                    fn.contains("parameters") && fn.at("parameters").is_object()
+                        ? fn.at("parameters")
+                        : Json::object();
+                input.tools.push_back(std::move(tool));
+            }
+        }
+
+        for (const auto& message : body.value("messages", Json::array())) {
+            ChatMessage msg;
+            msg.role = message.at("role").get<std::string>();
+            msg.tool_call_id = optional<std::string>(message, "tool_call_id");
+            msg.name = optional<std::string>(message, "name");
+            msg.reasoning_content = optional<std::string>(message, "reasoning_content");
+
+            const Json* content_field = nullptr;
+            if (message.contains("content") && !message.at("content").is_null())
+                content_field = &message.at("content");
+            else if (message.contains("text") && !message.at("text").is_null())
+                content_field = &message.at("text");
+
+            if (content_field) {
+                if (content_field->is_string()) {
+                    msg.text = content_field->get<std::string>();
+                } else if (content_field->is_array()) {
+                    for (const auto& part : *content_field) {
+                        if (part.is_string()) {
+                            if (!msg.text.empty())
+                                msg.text += '\n';
+                            msg.text += part.get<std::string>();
+                            continue;
+                        }
+                        preparation_check(
+                            part.is_object(), "Invalid chat content part", 422
+                        );
+                        const auto ptype = part.value("type", std::string("text"));
+                        if (ptype == "text" || ptype == "input_text") {
+                            const auto piece = part.value("text", std::string());
+                            if (!piece.empty()) {
+                                if (!msg.text.empty())
+                                    msg.text += '\n';
+                                msg.text += piece;
+                            }
+                        } else if (
+                            ptype == "image_url" || ptype == "image"
+                            || ptype == "input_image"
+                        ) {
+                            preparation_check(
+                                msg.role == "user" || msg.role == "tool",
+                                "Images are only supported on user and tool messages",
+                                422
+                            );
+                            std::string url;
+                            if (part.contains("image_url")) {
+                                const auto& iu = part.at("image_url");
+                                if (iu.is_string())
+                                    url = iu.get<std::string>();
+                                else if (iu.is_object() && iu.contains("url"))
+                                    url = iu.at("url").get<std::string>();
+                            } else if (part.contains("url") && part.at("url").is_string()) {
+                                url = part.at("url").get<std::string>();
+                            }
+                            preparation_check(
+                                !url.empty(), "Image content part requires a URL", 422
+                            );
+                            msg.images.push_back(std::move(url));
+                        } else {
+                            throw RequestError("Unsupported chat content part type", 422);
+                        }
+                    }
+                } else {
+                    throw RequestError("Invalid chat message content", 422);
+                }
+            }
+
+            if (message.contains("images") && message.at("images").is_array()) {
+                preparation_check(
+                    msg.role == "user" || msg.role == "tool",
+                    "Images are only supported on user and tool messages",
+                    422
+                );
+                for (const auto& img : message.at("images")) {
+                    preparation_check(img.is_string(), "Invalid image entry", 422);
+                    msg.images.push_back(img.get<std::string>());
+                }
+            }
+
+            if (message.contains("tool_calls") && !message.at("tool_calls").is_null()) {
+                preparation_check(
+                    msg.role == "assistant" && message.at("tool_calls").is_array(),
+                    "Only assistant messages may contain tool calls",
+                    422
+                );
+                for (const auto& tc : message.at("tool_calls")) {
+                    preparation_check(
+                        tc.is_object() && tc.contains("function")
+                            && tc.at("function").is_object(),
+                        "Invalid assistant tool call",
+                        422
+                    );
+                    const auto& fn = tc.at("function");
+                    ChatToolCall call;
+                    call.id = tc.value("id", std::string());
+                    call.name = fn.at("name").get<std::string>();
+                    if (fn.contains("arguments") && !fn.at("arguments").is_null()) {
+                        const auto& raw_args = fn.at("arguments");
+                        if (raw_args.is_object()) {
+                            call.arguments = raw_args;
+                        } else if (raw_args.is_string()) {
+                            try {
+                                call.arguments =
+                                    Json::parse(raw_args.get<std::string>());
+                            } catch (...) {
+                                throw RequestError(
+                                    "Tool call arguments must be valid JSON object", 422
+                                );
+                            }
+                            preparation_check(
+                                call.arguments.is_object(),
+                                "Tool call arguments must be a JSON object",
+                                422
+                            );
+                        } else {
+                            throw RequestError(
+                                "Tool call arguments must be a JSON object", 422
+                            );
+                        }
+                    }
+                    msg.tool_calls.push_back(std::move(call));
+                }
+            }
+
+            input.messages.push_back(std::move(msg));
+        }
         request.input = std::move(input);
         request.workload = Workload::llm;
     } else if (feature == "image") {

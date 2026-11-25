@@ -241,3 +241,105 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             await stream.start()
         self.assertTrue(process.killed)
         self.assertFalse(Path(spawn.call_args.kwargs["cwd"]).exists())
+
+    async def test_claude_sends_multimodal_images_as_stream_json(self):
+        import base64
+        from io import BytesIO
+
+        from PIL import Image
+
+        buf = BytesIO()
+        Image.new("RGB", (4, 4), color=(255, 0, 0)).save(buf, format="JPEG")
+        jpeg_url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+        body = CompletionRequest(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What color?"},
+                        {"type": "image_url", "image_url": {"url": jpeg_url}},
+                    ],
+                }
+            ]
+        )
+        self.assertEqual(body.messages[0].text, "What color?")
+        self.assertEqual(len(body.messages[0].images), 1)
+        self.assertTrue(body.messages[0].images[0].startswith("data:image/png;base64,"))
+        delta = json.dumps(
+            {
+                "type": "stream_event",
+                "event": {"delta": {"type": "text_delta", "text": "Red"}},
+            }
+        )
+        process = FakeProcess(
+            [delta, json.dumps({"type": "result", "is_error": False})]
+        )
+        with patch(
+            "api.services.subscription_inference.asyncio.create_subprocess_exec",
+            return_value=process,
+        ) as spawn:
+            stream = SubscriptionStream(
+                ActiveSubscription(provider="claude", credential="tok"), body
+            )
+            events = [event async for event in stream]
+        self.assertEqual(events, [{"content": "Red"}, {"finish_reason": "stop"}])
+        command = spawn.call_args.args
+        self.assertEqual(command[command.index("--input-format") + 1], "stream-json")
+        sent = json.loads(process.stdin.data.decode())
+        self.assertEqual(sent["type"], "user")
+        content = sent["message"]["content"]
+        self.assertEqual(content[0]["type"], "image")
+        self.assertEqual(content[0]["source"]["media_type"], "image/png")
+        self.assertEqual(content[1]["type"], "text")
+        self.assertIn("What color?", content[1]["text"])
+
+    async def test_codex_writes_multimodal_images_to_temp_files(self):
+        import base64
+        from io import BytesIO
+
+        from PIL import Image
+
+        buf = BytesIO()
+        Image.new("RGB", (4, 4), color=(0, 255, 0)).save(buf, format="PNG")
+        png_url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+        body = CompletionRequest(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": png_url}},
+                        {"type": "text", "text": "Describe"},
+                    ],
+                }
+            ]
+        )
+        seen_image_bytes = {}
+
+        def capture_image(*args, **kwargs):
+            idx = args.index("--image")
+            seen_image_bytes["bytes"] = Path(args[idx + 1]).read_bytes()
+            return FakeProcess(
+                [
+                    json.dumps(
+                        {
+                            "type": "item.completed",
+                            "item": {"type": "agent_message", "text": "Green"},
+                        }
+                    ),
+                    json.dumps({"type": "turn.completed"}),
+                ]
+            )
+
+        with patch(
+            "api.services.subscription_inference.asyncio.create_subprocess_exec",
+            side_effect=capture_image,
+        ) as spawn:
+            stream = SubscriptionStream(
+                ActiveSubscription(provider="codex", credential='{"tokens": {}}'), body
+            )
+            events = [event async for event in stream]
+        self.assertEqual(events, [{"content": "Green"}, {"finish_reason": "stop"}])
+        command = spawn.call_args.args
+        self.assertEqual(command[-1], "-")
+        self.assertIn("--image", command)
+        self.assertEqual(seen_image_bytes["bytes"], buf.getvalue())

@@ -108,12 +108,12 @@ target_link_libraries(kadan_layer_math PUBLIC kadan_resources)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_layer_math PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
-# Retained native GGUF text models.
+# Retained native GGUF text + vision model (Inkling 2 Mini).
 add_library(kadan_gguf_text src/models/text/gguf_engine.cpp src/models/text/gguf_weights.cpp
   src/models/text/gguf_placement.cpp src/models/text/cpu_matvec.cpp
-  src/models/text/qwen_layers.cpp src/models/text/qwen35moe.cpp src/models/text/qwen4exp.cpp)
+  src/models/text/inkling2_loop.cpp src/models/text/inkling2_vision.cpp)
 target_link_libraries(kadan_gguf_text PUBLIC kadan_gguf_checkpoint kadan_metadata kadan_resources
-  PRIVATE ggml-base ggml-cpu)
+  PRIVATE ggml-base ggml-cpu PNG::PNG)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_gguf_text PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 endif()

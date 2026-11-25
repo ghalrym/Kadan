@@ -1,10 +1,12 @@
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <type_traits>
 #include <variant>
 
 #include "../../weights/metadata_json.hpp"
 #include "gguf_model.hpp"
+#include "inkling2_vision.hpp"
 #include "kadan/gguf_text.hpp"
 #include "kadan/text_prefix.hpp"
 
@@ -22,10 +24,8 @@ struct Architecture {
 };
 
 Architecture architecture(const std::string& name) {
-    if (name == "qwen35moe")
-        return {bind_qwen35moe, qwen35moe_state_bytes, qwen35moe_model};
-    if (name == "qwen4exp")
-        return {bind_qwen4exp, qwen4exp_state_bytes, qwen4exp_model};
+    if (name == "inkling2_loop")
+        return {bind_inkling2_loop, inkling2_loop_state_bytes, inkling2_loop_model};
     throw std::runtime_error("gguf_text_architecture");
 }
 
@@ -45,9 +45,9 @@ std::size_t host_bytes(const std::string& name, std::size_t context) {
 }
 }  // namespace
 
-// Copies the leading `positions` of every context-sized buffer (KV and
-// indexer keys); pooled keys, recurrent state and n-gram history are copied whole. An
-// empty target takes a whole copy, which sizes it for later partial copies.
+// Copies the leading `positions` of every full-context KV buffer; sliding-window
+// ring buffers and short-convolution histories are copied whole. An empty target
+// takes a whole copy, which sizes it for later partial copies.
 void copy_state(
     const ModelState& from, ModelState& to, std::size_t positions, std::size_t context
 ) {
@@ -75,33 +75,37 @@ void copy_state(
                 if constexpr (std::is_same_v<T, AttentionState>) {
                     leading(source.keys, target.keys);
                     leading(source.values, target.values);
-                } else if constexpr (std::is_same_v<T, RecurrentState>)
-                    target = source;
-                else {
-                    leading(source.attention.keys, target.attention.keys);
-                    leading(source.attention.values, target.attention.values);
-                    leading(source.raw_keys, target.raw_keys);
-                    // Pooled keys have floor(context / pool) rows, so their
-                    // prefix cannot be scaled by the unpooled context length.
-                    target.pooled = source.pooled;
+                } else {
+                    need(
+                        source.sliding_window == target.sliding_window,
+                        "gguf_text_checkpoint_shape"
+                    );
+                    if (source.sliding_window) {
+                        need(
+                            source.attention.keys.size() == target.attention.keys.size()
+                                && source.attention.values.size()
+                                       == target.attention.values.size(),
+                            "gguf_text_checkpoint_shape"
+                        );
+                        target.attention.keys = source.attention.keys;
+                        target.attention.values = source.attention.values;
+                    } else {
+                        leading(source.attention.keys, target.attention.keys);
+                        leading(source.attention.values, target.attention.values);
+                    }
+                    target.conv = source.conv;
                 }
             },
             from.layers[i]
         );
     }
-    to.ple = from.ple;
-    to.recent = from.recent;
 }
 
 std::string validate_metadata(const checkpoint::GgufMetadata& m) {
     const auto name = m.string("general.architecture");
-    if (name == "qwen35moe") {
-        validate_qwen35moe(m);
-        return "qwen35moe";
-    }
-    if (name == "qwen4exp") {
-        validate_qwen4exp(m);
-        return "qwen4exp";
+    if (name == "inkling2_loop") {
+        validate_inkling2_loop(m);
+        return "inkling2_loop";
     }
     throw std::runtime_error("gguf_text_architecture");
 }
@@ -114,7 +118,7 @@ void validate_config(
     const auto maximum = config.at("max_position_embeddings").integer();
     need(
         config.at("kadan_checkpoint_format").string() == "gguf"
-            && (type == "qwen35moe" || type == "qwen4exp") && maximum == 262144,
+            && type == "inkling2_loop" && maximum == 1048576,
         "gguf_text_config"
     );
 }
@@ -131,11 +135,14 @@ Plan plan(const char* root, std::size_t context, const std::atomic_bool* cancel)
 }
 
 struct Engine::Impl {
+    std::string root_dir;
     Plan p;
     WorkerCompute execution;
     Handle memory = 0;
     std::unique_ptr<GgufWeights> weights;
     std::unique_ptr<Model> model;
+    std::unique_ptr<InklingVision> vision;
+    const std::atomic_bool* cancel = nullptr;
     Prefix prefix;
     Footprint retained_state;
     std::size_t tokens = 0, boundary = 0;
@@ -178,9 +185,12 @@ struct Engine::Impl {
         Plan selected,
         const ComputePlan& compute_plan,
         std::shared_ptr<Resources> owner,
-        const std::atomic_bool* cancel
+        const std::atomic_bool* cancel_flag
     )
-        : p(selected), execution(compute_plan, Workload::llm, std::move(owner)) {
+        : root_dir(root ? root : ""),
+          p(selected),
+          execution(compute_plan, Workload::llm, std::move(owner)),
+          cancel(cancel_flag) {
         need(bool(execution.compute), "gguf_text_cuda_required");
         memory = execution.resources->reserve(
             Workload::llm, host_footprint(*execution.resources, p.host + p.cache)
@@ -200,10 +210,19 @@ struct Engine::Impl {
             model = architecture(name).model(*weights, *execution.compute, p.context);
             // KV mirrors stay out of the weight bank's reservation.
             execution.compute->reserve_device_state(model->device_state_bytes());
-            // False selects the bounded disk-source projection path.
-            execution.compute->prepare_weights(p.execution_weights);
+            // GGUF weight banks retain packed tensor bytes rather than decoded
+            // F32 tensors; +12.5% slack keeps Placement's 90% device residency
+            // threshold above the full packed footprint without locking away
+            // spare VRAM needed by KV mirrors.
+            const Bytes slack = p.packed / 8;
+            const Bytes packed_target =
+                p.packed > std::numeric_limits<Bytes>::max() - slack
+                    ? std::numeric_limits<Bytes>::max()
+                    : p.packed + slack;
+            execution.compute->prepare_weights(packed_target);
             execution.resources->loaded(memory);
         } catch (...) {
+            vision.reset();
             model.reset();
             weights.reset();
             prefix = Prefix{};
@@ -214,6 +233,7 @@ struct Engine::Impl {
     }
 
     ~Impl() {
+        vision.reset();
         model.reset();
         weights.reset();
         prefix = Prefix{};
@@ -244,7 +264,10 @@ Engine::Engine(
 Engine::~Engine() = default;
 
 void Engine::set_cancel(const std::atomic_bool& cancel) {
+    impl_->cancel = &cancel;
     impl_->weights->set_cancel(cancel);
+    if (impl_->vision)
+        impl_->vision->set_cancel(cancel);
 }
 
 std::shared_ptr<Resources> Engine::resources() const {
@@ -318,9 +341,7 @@ void Engine::end_request() {
 Bytes PrefixSnapshot::bytes() const {
     Bytes bytes = sizeof(*this) + prefix.memory_bytes()
                   + weights.capacity() * sizeof(WeightIdentity)
-                  + state.layers.capacity() * sizeof(decltype(state.layers)::value_type)
-                  + state.ple.capacity() * sizeof(float)
-                  + state.recent.capacity() * sizeof(unsigned);
+                  + state.layers.capacity() * sizeof(decltype(state.layers)::value_type);
     const auto attention_bytes = [](const AttentionState& s) {
         return (s.keys.capacity() + s.values.capacity()) * sizeof(float);
     };
@@ -330,13 +351,9 @@ Bytes PrefixSnapshot::bytes() const {
                 using T = std::decay_t<decltype(s)>;
                 if constexpr (std::is_same_v<T, AttentionState>)
                     bytes += attention_bytes(s);
-                else if constexpr (std::is_same_v<T, RecurrentState>)
-                    bytes += (s.convolution.capacity() + s.recurrent.capacity())
-                             * sizeof(float);
                 else
-                    bytes +=
-                        attention_bytes(s.attention)
-                        + (s.raw_keys.capacity() + s.pooled.capacity()) * sizeof(float);
+                    bytes += attention_bytes(s.attention)
+                             + s.conv.capacity() * sizeof(float);
             },
             layer
         );
@@ -397,9 +414,21 @@ std::string_view Engine::prefix_reason() const {
 
 void Engine::park() {
     need(!impl_->active, "gguf_text_active_park");
+    impl_->vision.reset();
     impl_->execution.park();
     impl_->prefix.clear();
     impl_->retained_state.clear();
+}
+
+ImageSpan Engine::encode_image(std::span<const std::uint8_t> png_bytes) {
+    auto& m = *impl_;
+    m.execution.resume();
+    if (!m.vision) {
+        const auto mmproj = InklingVision::find_mmproj(m.root_dir.c_str());
+        need(!mmproj.empty(), "inkling2v_missing_mmproj");
+        m.vision = std::make_unique<InklingVision>(mmproj, m.cancel);
+    }
+    return m.vision->encode(png_bytes, *m.execution.compute);
 }
 
 serving::Token Engine::step(unsigned token, bool logits) {
@@ -425,6 +454,14 @@ serving::Token Engine::prefill(
     std::span<const unsigned> prompt,
     const std::function<void(const char*, std::size_t)>& progress
 ) {
+    return prefill(prompt, {}, progress);
+}
+
+serving::Token Engine::prefill(
+    std::span<const unsigned> prompt,
+    std::span<const ImageSpan> images,
+    const std::function<void(const char*, std::size_t)>& progress
+) {
     auto& m = *impl_;
     need(
         m.active && !m.poisoned && !prompt.empty() && m.tokens <= m.p.context
@@ -445,7 +482,7 @@ serving::Token Engine::prefill(
                 count = m.boundary - m.tokens;
             const bool last = done + count == prompt.size();
             logits = m.model->forward(
-                prompt.subspan(done, count), m.tokens, last, layer_progress
+                prompt.subspan(done, count), m.tokens, last, layer_progress, images
             );
             m.weights->advance(count);
             m.tokens += count;
@@ -498,6 +535,7 @@ Engine::Timing Engine::take_timing() {
 void Engine::close() {
     auto owner = resources();
     impl_->active = false;
+    impl_->vision.reset();
     impl_->execution.park();
     impl_.reset();
     for (auto bytes : owner->snapshot().used)

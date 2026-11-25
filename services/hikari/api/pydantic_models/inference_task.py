@@ -5,15 +5,16 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
-from api.pydantic_models.chat import (
-    ChatMessage,
-    Lfm3Message,
-    Lfm3Tool,
-    lfm3_messages,
-    require_lfm3_tools,
-)
+from api.pydantic_models.chat import ChatMessage, ChatTool
 from api.pydantic_models.decisions import DecisionQuestion
 from api.pydantic_models.inference import Operation
+
+LlmModel = Literal[
+    "inkling-2-mini-iq4-nl",
+    "inkling-2-mini-q8-0",
+]
+# Image inference uses Turbo.
+ImageModel = Literal["qwen-image-2.1-turbo"]
 
 
 class TaskInput(BaseModel):
@@ -22,36 +23,17 @@ class TaskInput(BaseModel):
 
 class ChatTask(TaskInput):
     feature: Literal["llm"] = "llm"
-    messages: list[ChatMessage | Lfm3Message] = Field(default_factory=list)
-    tools: list[Lfm3Tool] | None = Field(default=None, max_length=256)
-    model: str | None = None
-    model_id: str | None = None
+    messages: list[ChatMessage] = Field(default_factory=list)
+    tools: list[ChatTool] | None = Field(default=None, max_length=256)
+    model: LlmModel | None = None
+    model_id: LlmModel | None = None
     context_limit: int | None = None
     stream: bool = False
     conversation_id: str | None = None
     reuse_prefix: bool = True
     max_tokens: int | None = Field(default=None, ge=1, strict=True)
     reasoning_tokens: int | None = Field(default=None, ge=1, strict=True)
-
-    @model_validator(mode="before")
-    @classmethod
-    def experimental_messages(cls, values):
-        return lfm3_messages(values)
-
-    @model_validator(mode="after")
-    def experimental_tools_only(self):
-        require_lfm3_tools(self.model_id or self.model, self.messages, self.tools)
-        return self
-
-
-# Retained native checkpoints may appear in historical request observations.
-LlmModel = Literal[
-    "qwen3.6-35b-a3b-q4-k-m",
-    "qwen3.8-flash-next-ud-iq3-xxs",
-    "qwen3.8-flash-next-q3-k-xl",
-]
-# Image inference uses Turbo.
-ImageModel = Literal["qwen-image-2.1-turbo"]
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
 
 
 class ImageTask(TaskInput):
@@ -101,15 +83,6 @@ class DecisionTask(TaskInput):
     model_id: Literal["d1-2b-cpu-f32"] = "d1-2b-cpu-f32"
     state: str
     questions: list[DecisionQuestion]
-
-
-class VisionTask(TaskInput):
-    feature: Literal["vision"] = "vision"
-    model: Literal["lfm3-vl-2b-bf16"] = "lfm3-vl-2b-bf16"
-    image_base64: str = Field(min_length=1, max_length=2_796_204)
-    media_type: Literal["image/png", "image/jpeg"]
-    question: str = Field(min_length=1)
-    max_new_tokens: int | None = Field(default=None, ge=1, lt=128000, strict=True)
 
 
 class SpeechVoice(TaskInput):
@@ -206,7 +179,6 @@ InferenceInput = Annotated[
     ChatTask
     | ImageTask
     | DecisionTask
-    | VisionTask
     | SpeechTask
     | TranscriptionTask
     | TranscriptionFormattingTask

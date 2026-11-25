@@ -214,7 +214,7 @@ public:
                 "gguf_duplicate_tensor"
             );
             tensor.rank = u32();
-            require(tensor.rank >= 1 && tensor.rank <= 3, "gguf_tensor_rank");
+            require(tensor.rank >= 1 && tensor.rank <= 4, "gguf_tensor_rank");
             std::uint64_t rows = 1;
             for (std::size_t d = 0; d < tensor.rank; ++d) {
                 tensor.shape[d] = integer();
@@ -439,21 +439,35 @@ GgufCheckpoint::GgufCheckpoint(const std::string& root, const std::atomic_bool& 
     require(std::endian::native == std::endian::little, "gguf_host_endian");
     const std::regex pattern(R"((.+)-([0-9]{5})-of-([0-9]{5})\.gguf)");
     std::vector<std::string> names;
-    for (const auto& entry : std::filesystem::directory_iterator(root)) {
-        stop(cancel);
-        if (entry.path().extension() == ".gguf")
-            names.push_back(entry.path().filename().string());
-        require(names.size() <= 512, "gguf_split_count");
+    const std::filesystem::path root_path(root);
+    const bool direct_file =
+        std::filesystem::is_regular_file(root_path)
+        && root_path.extension() == ".gguf";
+    std::unique_ptr<File> directory;
+    if (direct_file) {
+        names.push_back(root_path.filename().string());
+    } else {
+        for (const auto& entry : std::filesystem::directory_iterator(root)) {
+            stop(cancel);
+            if (entry.path().extension() == ".gguf") {
+                auto name = entry.path().filename().string();
+                if (name.starts_with("mmproj-"))
+                    continue;
+                names.push_back(std::move(name));
+            }
+            require(names.size() <= 512, "gguf_split_count");
+        }
+        require(!names.empty(), "gguf_missing_files");
+        std::sort(names.begin(), names.end());
+        directory = std::make_unique<File>(
+            ::open(root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC), true
+        );
     }
-    require(!names.empty(), "gguf_missing_files");
-    std::sort(names.begin(), names.end());
     std::string prefix;
     std::uint64_t total_tensors = 0, metadata_bytes = 0;
-    File directory(
-        ::open(root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC), true
-    );
     // One unsplit file carries no split metadata; split sets are numbered.
-    const bool single = names.size() == 1 && !std::regex_match(names[0], pattern);
+    const bool single =
+        direct_file || (names.size() == 1 && !std::regex_match(names[0], pattern));
     for (std::size_t i = 0; i < names.size(); ++i) {
         std::smatch match;
         require(
@@ -470,7 +484,11 @@ GgufCheckpoint::GgufCheckpoint(const std::string& root, const std::atomic_bool& 
             "gguf_split_name"
         );
         File opened(
-            ::openat(directory.fd, names[i].c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            direct_file
+                ? ::open(root.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+                : ::openat(
+                      directory->fd, names[i].c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC
+                  )
         );
         impl_->files.push_back(std::move(opened));
         const auto& file = impl_->files.back();
@@ -680,7 +698,8 @@ void GgufCheckpoint::read_vector(
     const auto& entry = impl_->find(name);
     const auto& t = entry.tensor;
     require(
-        t.type == GGML_TYPE_F32 && output.size() == t.shape[0] * t.shape[1] * t.shape[2]
+        t.type == GGML_TYPE_F32
+            && output.size() == t.shape[0] * t.shape[1] * t.shape[2] * t.shape[3]
             && output.size_bytes() == t.bytes,
         "gguf_vector_shape"
     );

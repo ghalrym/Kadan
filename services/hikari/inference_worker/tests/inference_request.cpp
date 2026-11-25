@@ -68,6 +68,59 @@ int main() {
     assert(
         std::get<ChatRequest>(parse_request(chat).input).conversation_id == unicode_id
     );
+    chat["input"] = {
+        {"feature", "llm"},
+        {"max_tokens", 2048},
+        {"reasoning_tokens", 128},
+        {"reasoning_effort", "medium"},
+        {"tools",
+         Json::array(
+             {{{"type", "function"},
+               {"function",
+                {{"name", "bash"},
+                 {"description", "Run shell"},
+                 {"parameters", {{"type", "object"}}}}}}}
+         )},
+        {"messages",
+         Json::array(
+             {{{"role", "user"},
+               {"content",
+                Json::array(
+                    {{{"type", "text"}, {"text", "Look at this"}},
+                     {{"type", "image_url"},
+                      {"image_url", {{"url", "data:image/png;base64,iVBORw0KGgo="}}}}}
+                )}},
+              {{"role", "assistant"},
+               {"content", ""},
+               {"reasoning_content", "checking"},
+               {"tool_calls",
+                Json::array(
+                    {{{"id", "call_1"},
+                      {"type", "function"},
+                      {"function", {{"name", "bash"}, {"arguments", "{\"cmd\":\"ls\"}"}}}}}
+                )}},
+              {{"role", "tool"},
+               {"tool_call_id", "call_1"},
+               {"name", "bash"},
+               {"content", "ok"}}}
+         )}
+    };
+    {
+        const auto parsed_chat = parse_request(chat);
+        const auto& req = std::get<ChatRequest>(parsed_chat.input);
+        assert(req.max_output_tokens == 2048);
+        assert(req.reasoning_tokens == 128);
+        assert(req.reasoning_effort == "medium");
+        assert(req.tools.size() == 1 && req.tools[0].name == "bash");
+        assert(req.messages.size() == 3);
+        assert(req.messages[0].text == "Look at this");
+        assert(req.messages[0].images.size() == 1);
+        assert(req.messages[1].reasoning_content == "checking");
+        assert(req.messages[1].tool_calls.size() == 1);
+        assert(req.messages[1].tool_calls[0].id == "call_1");
+        assert(req.messages[2].tool_call_id == "call_1");
+        assert(req.messages[2].name == "bash");
+    }
     auto decisions = envelope;
     decisions["input"] = {
         {"feature", "decisions"}, {"state", "text"}, {"questions", Json::array()}

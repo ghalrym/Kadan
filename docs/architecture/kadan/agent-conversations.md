@@ -54,7 +54,7 @@ An enabled tool's schema-validation failure is saved as a user-role rejection di
 
 Only the `send_message` tool delivers an agent message to the conversation. Completing inference, returning a tool result or finishing a run does not itself deliver a reply. This distinction prevents internal reasoning and command output from becoming user messages, and lets a run end silently when it has nothing further to communicate.
 
-For the LFM3 text model selected by default in the normal Compose deployment, a completed nonempty plain answer becomes a `send_message` command with `end_run=true`, only when that tool is bound. The existing run owner validates, records and delivers it through the ordinary action path. Empty output and an explicit `finish` call remain silent; malformed tool markup fails instead of being published as an answer. Native model behavior is unchanged.
+A completed nonempty plain answer becomes a `send_message` command with `end_run=true` only when that tool is bound. The existing run owner validates, records and delivers it through the ordinary action path. Empty output and an explicit `finish` call remain silent; malformed tool markup fails instead of being published as an answer.
 
 ## Conversation work snapshots
 

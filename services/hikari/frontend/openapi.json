@@ -128,23 +128,95 @@
             ],
             "title": "Language",
             "type": "string"
-          },
-          "vision": {
-            "default": "local",
-            "enum": [
-              "local",
-              "claude",
-              "codex"
-            ],
-            "title": "Vision",
-            "type": "string"
           }
         },
         "title": "CapabilityProviders",
         "type": "object"
       },
-      "ChatMessage": {
+      "ChatCallFunction": {
+        "additionalProperties": false,
         "properties": {
+          "arguments": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Arguments",
+            "type": "object"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_]+$",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "arguments"
+        ],
+        "title": "ChatCallFunction",
+        "type": "object"
+      },
+      "ChatFunction": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_]+$",
+            "title": "Name",
+            "type": "string"
+          },
+          "parameters": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Parameters",
+            "type": "object"
+          },
+          "strict": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strict"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ChatFunction",
+        "type": "object"
+      },
+      "ChatMessage": {
+        "additionalProperties": false,
+        "description": "Unified chat message supporting text, images, reasoning, and tool calls.",
+        "properties": {
+          "images": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Images"
+          },
           "meta": {
             "anyOf": [
               {
@@ -156,26 +228,122 @@
             ],
             "title": "Meta"
           },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "reasoning_content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Content"
+          },
           "role": {
             "enum": [
               "system",
               "user",
-              "assistant"
+              "assistant",
+              "tool"
             ],
             "title": "Role",
             "type": "string"
           },
           "text": {
-            "minLength": 1,
+            "default": "",
             "title": "Text",
+            "type": "string"
+          },
+          "tool_call_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Call Id"
+          },
+          "tool_calls": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChatToolCall"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Calls"
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "title": "ChatMessage",
+        "type": "object"
+      },
+      "ChatTool": {
+        "additionalProperties": false,
+        "properties": {
+          "function": {
+            "$ref": "#/components/schemas/ChatFunction"
+          },
+          "type": {
+            "const": "function",
+            "default": "function",
+            "title": "Type",
             "type": "string"
           }
         },
         "required": [
-          "role",
-          "text"
+          "function"
         ],
-        "title": "ChatMessage",
+        "title": "ChatTool",
+        "type": "object"
+      },
+      "ChatToolCall": {
+        "additionalProperties": false,
+        "properties": {
+          "function": {
+            "$ref": "#/components/schemas/ChatCallFunction"
+          },
+          "id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "function",
+            "default": "function",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "function"
+        ],
+        "title": "ChatToolCall",
         "type": "object"
       },
       "CheckpointStatus": {
@@ -249,7 +417,6 @@
               "formatting",
               "image",
               "decision",
-              "vision",
               "audio"
             ],
             "title": "Kind",
@@ -469,42 +636,6 @@
         "title": "CompletionChoice",
         "type": "object"
       },
-      "CompletionMessage": {
-        "additionalProperties": false,
-        "properties": {
-          "meta": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Meta"
-          },
-          "role": {
-            "enum": [
-              "system",
-              "user",
-              "assistant"
-            ],
-            "title": "Role",
-            "type": "string"
-          },
-          "text": {
-            "minLength": 1,
-            "title": "Text",
-            "type": "string"
-          }
-        },
-        "required": [
-          "role",
-          "text"
-        ],
-        "title": "CompletionMessage",
-        "type": "object"
-      },
       "CompletionOutputMessage": {
         "properties": {
           "meta": {
@@ -567,24 +698,42 @@
           },
           "messages": {
             "items": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/CompletionMessage"
-                },
-                {
-                  "$ref": "#/components/schemas/Lfm3Message"
-                }
-              ]
+              "$ref": "#/components/schemas/ChatMessage"
             },
             "minItems": 1,
             "title": "Messages",
             "type": "array"
           },
           "model": {
-            "const": "lfm3-1.7b-bf16",
-            "default": "lfm3-1.7b-bf16",
-            "title": "Model",
-            "type": "string"
+            "anyOf": [
+              {
+                "enum": [
+                  "inkling-2-mini-iq4-nl",
+                  "inkling-2-mini-q8-0"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Effort"
           },
           "reasoning_tokens": {
             "anyOf": [
@@ -614,7 +763,7 @@
             "anyOf": [
               {
                 "items": {
-                  "$ref": "#/components/schemas/Lfm3Tool"
+                  "$ref": "#/components/schemas/ChatTool"
                 },
                 "maxItems": 256,
                 "type": "array"
@@ -850,80 +999,6 @@
           "answers"
         ],
         "title": "DecisionResponse",
-        "type": "object"
-      },
-      "DescribeRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "image_base64": {
-            "maxLength": 2796204,
-            "minLength": 1,
-            "title": "Image Base64",
-            "type": "string"
-          },
-          "max_new_tokens": {
-            "anyOf": [
-              {
-                "exclusiveMaximum": 128000.0,
-                "minimum": 1.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max New Tokens"
-          },
-          "media_type": {
-            "enum": [
-              "image/png",
-              "image/jpeg"
-            ],
-            "title": "Media Type",
-            "type": "string"
-          },
-          "model": {
-            "const": "lfm3-vl-2b-bf16",
-            "default": "lfm3-vl-2b-bf16",
-            "title": "Model",
-            "type": "string"
-          },
-          "question": {
-            "minLength": 1,
-            "title": "Question",
-            "type": "string"
-          }
-        },
-        "required": [
-          "image_base64",
-          "media_type",
-          "question"
-        ],
-        "title": "DescribeRequest",
-        "type": "object"
-      },
-      "DescribeResponse": {
-        "properties": {
-          "model": {
-            "enum": [
-              "lfm3-vl-2b-bf16",
-              "claude-haiku-5-5",
-              "gpt-6.1-terra"
-            ],
-            "title": "Model",
-            "type": "string"
-          },
-          "text": {
-            "minLength": 1,
-            "title": "Text",
-            "type": "string"
-          }
-        },
-        "required": [
-          "model",
-          "text"
-        ],
-        "title": "DescribeResponse",
         "type": "object"
       },
       "DownloadRequest": {
@@ -1214,180 +1289,6 @@
         "type": "object"
       },
       "JsonValue": {},
-      "Lfm3CallFunction": {
-        "additionalProperties": false,
-        "properties": {
-          "arguments": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/JsonValue"
-            },
-            "title": "Arguments",
-            "type": "object"
-          },
-          "name": {
-            "maxLength": 120,
-            "minLength": 1,
-            "pattern": "^[A-Za-z0-9_]+$",
-            "title": "Name",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "arguments"
-        ],
-        "title": "Lfm3CallFunction",
-        "type": "object"
-      },
-      "Lfm3Function": {
-        "additionalProperties": false,
-        "properties": {
-          "description": {
-            "default": "",
-            "title": "Description",
-            "type": "string"
-          },
-          "name": {
-            "maxLength": 120,
-            "minLength": 1,
-            "pattern": "^[A-Za-z0-9_]+$",
-            "title": "Name",
-            "type": "string"
-          },
-          "parameters": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/JsonValue"
-            },
-            "title": "Parameters",
-            "type": "object"
-          },
-          "strict": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Strict"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "title": "Lfm3Function",
-        "type": "object"
-      },
-      "Lfm3Message": {
-        "additionalProperties": false,
-        "description": "Structured history consumed by the fixed LFM3 language checkpoint.",
-        "properties": {
-          "meta": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Meta"
-          },
-          "role": {
-            "enum": [
-              "system",
-              "user",
-              "assistant",
-              "tool"
-            ],
-            "title": "Role",
-            "type": "string"
-          },
-          "text": {
-            "default": "",
-            "title": "Text",
-            "type": "string"
-          },
-          "tool_call_id": {
-            "anyOf": [
-              {
-                "maxLength": 120,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Tool Call Id"
-          },
-          "tool_calls": {
-            "anyOf": [
-              {
-                "items": {
-                  "$ref": "#/components/schemas/Lfm3ToolCall"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Tool Calls"
-          }
-        },
-        "required": [
-          "role"
-        ],
-        "title": "Lfm3Message",
-        "type": "object"
-      },
-      "Lfm3Tool": {
-        "additionalProperties": false,
-        "properties": {
-          "function": {
-            "$ref": "#/components/schemas/Lfm3Function"
-          },
-          "type": {
-            "const": "function",
-            "default": "function",
-            "title": "Type",
-            "type": "string"
-          }
-        },
-        "required": [
-          "function"
-        ],
-        "title": "Lfm3Tool",
-        "type": "object"
-      },
-      "Lfm3ToolCall": {
-        "additionalProperties": false,
-        "properties": {
-          "function": {
-            "$ref": "#/components/schemas/Lfm3CallFunction"
-          },
-          "id": {
-            "maxLength": 120,
-            "minLength": 1,
-            "title": "Id",
-            "type": "string"
-          },
-          "type": {
-            "const": "function",
-            "default": "function",
-            "title": "Type",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "function"
-        ],
-        "title": "Lfm3ToolCall",
-        "type": "object"
-      },
       "MemoryReservation": {
         "properties": {
           "label": {
@@ -1581,8 +1482,11 @@
             "type": "string"
           },
           "llm": {
-            "const": "lfm3-1.7b-bf16",
-            "default": "lfm3-1.7b-bf16",
+            "default": "inkling-2-mini-iq4-nl",
+            "enum": [
+              "inkling-2-mini-iq4-nl",
+              "inkling-2-mini-q8-0"
+            ],
             "title": "Llm",
             "type": "string"
           },
@@ -1602,12 +1506,6 @@
             "const": "h3-fl2va-int8-turbo",
             "default": "h3-fl2va-int8-turbo",
             "title": "Video",
-            "type": "string"
-          },
-          "vision": {
-            "const": "lfm3-vl-2b-bf16",
-            "default": "lfm3-vl-2b-bf16",
-            "title": "Vision",
             "type": "string"
           }
         },
@@ -1920,10 +1818,8 @@
             "anyOf": [
               {
                 "enum": [
-                  "qwen3.6-35b-a3b-q4-k-m",
-                  "qwen3.8-flash-next-ud-iq3-xxs",
-                  "qwen3.8-flash-next-q3-k-xl",
-                  "lfm3-1.7b-bf16"
+                  "inkling-2-mini-iq4-nl",
+                  "inkling-2-mini-q8-0"
                 ],
                 "type": "string"
               },
@@ -4200,8 +4096,7 @@
             "schema": {
               "enum": [
                 "language",
-                "image",
-                "vision"
+                "image"
               ],
               "title": "Capability",
               "type": "string"
@@ -4665,47 +4560,6 @@
         "summary": "Get Video Content",
         "tags": [
           "Videos"
-        ]
-      }
-    },
-    "/v1/vision/describe": {
-      "post": {
-        "operationId": "describeScreenshot",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DescribeRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DescribeResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Describe Screenshot",
-        "tags": [
-          "Vision"
         ]
       }
     }

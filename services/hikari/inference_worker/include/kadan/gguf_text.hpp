@@ -15,15 +15,26 @@
 #include "kadan/worker_compute.hpp"
 
 namespace kadan::text {
-// Native text engine for the tier GGUF checkpoints: qwen35moe and qwen4exp.
+// Native text + vision engine for the GGUF checkpoint: inkling2_loop + inkling2v.
 // Checkpoint data stays on disk; projections stream packed rows through the
 // worker's bounded device banks and layer math is F32 on the host.
 
 // Validates the exact metadata contract of a supported architecture and
-// returns its config model type ("qwen35moe" or "qwen4exp").
+// returns its config model type ("inkling2_loop").
 std::string validate_metadata(const checkpoint::GgufMetadata&);
 // Validates the config.json derived from that metadata.
 void validate_config(const char* root, std::shared_ptr<checkpoint::MemoryBudget>);
+
+// Pre-projected image embeddings that replace prompt tokens starting at `offset`
+// (absolute prompt position) without applying token_embd_norm.
+struct ImageSpan {
+    std::size_t offset = 0;
+    std::size_t tokens = 0;
+    std::vector<float> embeddings;
+};
+
+// Returns the exact number of Inkling 2 vision tokens a PNG image produces.
+std::size_t image_token_count(std::span<const std::uint8_t> png_bytes);
 
 // host covers metadata, parameters, state and scratch. cache is host RAM for
 // weight slices that do not win VRAM residency; zero streams them from disk.
@@ -74,12 +85,20 @@ public:
     std::string_view prefix_reason() const;
     void park() override;
     void reset() override;
+    // Encodes a PNG image through the companion mmproj vision encoder into
+    // [tokens * n_embd] projected embeddings ready for prefill().
+    ImageSpan encode_image(std::span<const std::uint8_t> png_bytes);
     // false commits a token without computing the vocabulary projection.
     serving::Token step(unsigned token, bool logits) override;
     // Layer-major bounded prefill. Progress token counts commit only after all
     // layers of a chunk; failures poison the request state until reset.
     serving::Token prefill(
         std::span<const unsigned>,
+        const std::function<void(const char*, std::size_t)>& progress
+    );
+    serving::Token prefill(
+        std::span<const unsigned>,
+        std::span<const ImageSpan> images,
         const std::function<void(const char*, std::size_t)>& progress
     );
     void close() override;

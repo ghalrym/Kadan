@@ -13,5 +13,5 @@ class ModelListingTests(unittest.TestCase):
             patch.object(models.inference, "submit", new=AsyncMock()) as submit,
         ):
             result = models.list_models()
-        self.assertEqual(result.selected_model_id, "lfm3-1.7b-bf16")
+        self.assertEqual(result.selected_model_id, "inkling-2-mini-iq4-nl")
         submit.assert_not_awaited()

@@ -12,7 +12,7 @@ const source = await readFile(
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX },
 })
-const conversationModel = 'lfm3-1.7b-bf16'
+const conversationModel = 'inkling-2-mini-iq4-nl'
 function elements(node) {
   return !node || typeof node !== 'object'
     ? []
@@ -155,34 +155,34 @@ async function page() {
     },
   }
 }
-test('Chat sends the released BF16 LFM3 model without waiting for Settings', async () => {
+test('Chat lets the server select the active Inkling 2 Mini model without waiting for Settings', async () => {
   const view = await page()
-  assert.match(content(view.tree), /LFM3 1\.7B BF16/)
+  assert.match(content(view.tree), /Inkling 2 Mini/)
   await view.send('Hello')
-  assert.equal(view.calls[0].args[4], conversationModel)
+  assert.equal(view.calls[0].args[4], undefined)
   view.unmount()
 })
-test('a missing LFM3 model fails visibly; retry and New chat keep LFM3', async () => {
+test('a missing language model fails visibly; retry and New chat reuse the API default', async () => {
   const view = await page()
   await view.send('Hello')
   const first = view.calls[0].args[3]
   view.calls[0].reject(
-    new Error('Download LFM3 explicitly in Settings before chat.'),
+    new Error('Download Inkling 2 Mini explicitly in Settings before chat.'),
   )
   await view.flush()
   assert.match(
     content(view.tree),
-    /Download LFM3 explicitly in Settings before chat\./,
+    /Download Inkling 2 Mini explicitly in Settings before chat\./,
   )
   await view.click('Retry last message')
-  assert.equal(view.calls[1].args[4], conversationModel)
+  assert.equal(view.calls[1].args[4], undefined)
   assert.equal(view.calls[1].args[3], first)
   assert.deepEqual(view.calls[1].args[0], view.calls[0].args[0])
   view.calls[1].resolve({ role: 'assistant', text: 'Hello' })
   await view.flush()
   await view.click('New chat')
   await view.send('A fresh conversation')
-  assert.equal(view.calls[2].args[4], conversationModel)
+  assert.equal(view.calls[2].args[4], undefined)
   assert.notEqual(view.calls[2].args[3], first)
   view.unmount()
 })
@@ -195,7 +195,7 @@ test('unmount aborts the chat request and ignores its late response', async () =
   await view.flush()
   assert.equal(view.lateUpdates, 0)
 })
-test('request builder preserves explicit LFM3 and omitted-model API requests', async () => {
+test('request builder preserves explicit Inkling 2 Mini and omitted-model API requests', async () => {
   const source = await readFile(
     new URL('../src/api/chat.ts', import.meta.url),
     'utf8',

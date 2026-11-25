@@ -1,8 +1,7 @@
 /** Hikari runs one fixed model per capability; the API owns names, sizes and licenses. */
 export const capabilities = [
-  { id: 'lfm3-1.7b-bf16', label: 'Language', short: 'Language', tone: 'llm' },
+  { id: 'inkling-2-mini', kind: 'llm', label: 'Language', short: 'Language', tone: 'llm' },
   { id: 'd1-2b-cpu-f32', label: 'Decisions', short: 'Decisions', tone: 'decision' },
-  { id: 'lfm3-vl-2b-bf16', label: 'Vision', short: 'Vision', tone: 'vision' },
   { id: 'lfm3-audio-2b-bf16', label: 'Voice calls', short: 'Calls', tone: 'tts' },
   { id: 'qwen-image-2.1-turbo', label: 'Image', short: 'Image', tone: 'image' },
   { id: 'whisper-medium', label: 'Speech to text', short: 'STT', tone: 'stt' },
@@ -19,11 +18,7 @@ export const videoDefaults = { duration: 5, resolution: '480p' } as const
 /** Capabilities a subscription can serve instead of the model on this computer. */
 export const subscriptionCapabilities = [
   {
-    id: 'language', label: 'Language', tone: 'llm', local: 'LFM3 1.7B on this computer',
+    id: 'language', label: 'Language', tone: 'llm', local: 'Inkling 2 Mini on this computer',
     providers: { local: 'Local', claude: 'Claude', codex: 'Codex' },
-  },
-  {
-    id: 'vision', label: 'Vision', tone: 'vision', local: 'LFM3-VL 2B on this computer',
-    providers: { local: 'Local', claude: 'Claude', codex: 'ChatGPT' },
   },
 ] as const

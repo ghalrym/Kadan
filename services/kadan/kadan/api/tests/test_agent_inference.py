@@ -12,8 +12,6 @@ from kadan.runner.agent_inference import (
     MAX_COMMAND_CHARACTERS,
     REASONING_TOKENS,
     REPLY_TOKENS,
-    TOOLS_FOOTER,
-    TOOLS_HEADER,
     AgentInference,
     HikariChatModel,
     ToolCommand,
@@ -51,7 +49,7 @@ def invoke(
     status=200,
     media_type="text/event-stream",
     seen=None,
-    model_id="selected-model",
+    model_id="inkling-2-mini-iq4-nl",
     bound_tools=TOOLS,
     history=None,
 ):
@@ -60,7 +58,10 @@ def invoke(
             body = json.loads(request.content)
             if seen is not None:
                 seen.append(body)
-            assert body["model"] == model_id
+            if model_id is None:
+                assert "model" not in body
+            else:
+                assert body["model"] == model_id
             assert body["stream"] is True
             assert body["conversation_id"] == "kadan:test:conversation"
             assert request.extensions["timeout"]["read"] is None
@@ -84,7 +85,7 @@ def invoke(
     return asyncio.run(run())
 
 
-def test_lfm3_plain_answer_after_tool_uses_existing_reply_action():
+def test_plain_answer_after_tool_uses_existing_reply_action():
     history = [
         SystemMessage(content="Instructions"),
         HumanMessage(content="What is on the screen?"),
@@ -101,37 +102,31 @@ def test_lfm3_plain_answer_after_tool_uses_existing_reply_action():
         ToolMessage(content="Google search page", tool_call_id="call_0"),
     ]
     answer = 'One clearly visible word is **"Google"**.'
-    assert invoke(
-        completed(answer), model_id="lfm3-1.7b-bf16", history=history
-    ) == ToolCommand(
+    assert invoke(completed(answer), history=history) == ToolCommand(
         tool="send_message",
         arguments={"content": answer, "end_run": True},
     )
 
 
-def test_lfm3_requests_cap_reasoning_and_reply_tokens():
+@pytest.mark.parametrize(
+    "model_id", ["inkling-2-mini-iq4-nl", "inkling-2-mini-q8-0", None]
+)
+def test_requests_cap_reasoning_and_reply_tokens(model_id):
     seen = []
-    invoke(completed("Hello"), model_id="lfm3-1.7b-bf16", seen=seen)
+    invoke(completed("Hello"), model_id=model_id, seen=seen)
     assert seen[0]["max_tokens"] == REASONING_TOKENS + REPLY_TOKENS
     assert seen[0]["reasoning_tokens"] == REASONING_TOKENS
     assert REPLY_TOKENS * 3 >= MAX_COMMAND_CHARACTERS
 
 
-def test_native_plain_answer_still_finishes_without_delivery():
-    assert invoke(completed("A plain answer")) == ToolCommand(tool="finish")
-
-
 @pytest.mark.parametrize("answer", ["", "   ", call("finish")])
-def test_lfm3_empty_answer_and_explicit_finish_remain_silent(answer):
-    assert invoke(completed(answer), model_id="lfm3-1.7b-bf16") == ToolCommand(
-        tool="finish"
-    )
+def test_empty_answer_and_explicit_finish_remain_silent(answer):
+    assert invoke(completed(answer)) == ToolCommand(tool="finish")
 
 
-def test_lfm3_plain_answer_cannot_create_unbound_reply_action():
+def test_plain_answer_cannot_create_unbound_reply_action():
     assert invoke(
         completed("A plain answer"),
-        model_id="lfm3-1.7b-bf16",
         bound_tools=[shell_exec_command],
     ) == ToolCommand(tool="finish")
 
@@ -146,29 +141,13 @@ def test_lfm3_plain_answer_cannot_create_unbound_reply_action():
         "<FUNCTION send_message>",
     ],
 )
-def test_lfm3_malformed_tool_output_is_not_published_as_plain_answer(answer):
+def test_malformed_tool_output_is_not_published_as_plain_answer(answer):
     with pytest.raises(ServiceError) as error:
-        invoke(completed(answer), model_id="lfm3-1.7b-bf16")
+        invoke(completed(answer))
     assert error.value.code == "invalid_command"
 
 
-def test_every_bound_tool_is_rendered_in_the_checkpoint_tool_format():
-    seen = []
-    invoke(completed(call("finish")), seen=seen)
-    system = seen[0]["messages"][0]
-    assert system["role"] == "system"
-    assert system["content"].startswith(TOOLS_HEADER)
-    assert TOOLS_FOOTER + "\n\nInstructions" in system["content"]
-    rendered = [
-        json.loads(line)["function"]["name"]
-        for line in system["content"].split("\n")
-        if line.startswith('{"type": "function"')
-    ]
-    assert rendered == [tool.name for tool in TOOLS]
-    assert seen[0]["messages"][1] == {"role": "user", "content": "Hello"}
-
-
-def test_lfm3_sends_structured_tools_and_true_tool_result_roles():
+def test_sends_structured_tools_and_true_tool_result_roles():
     seen = []
 
     async def run():
@@ -197,7 +176,7 @@ def test_lfm3_sends_structured_tools_and_true_tool_result_roles():
                     ),
                     ToolMessage(content="Result", tool_call_id="call_0"),
                 ],
-                "lfm3-1.7b-bf16",
+                "inkling-2-mini-iq4-nl",
                 "test-conversation",
                 TOOLS,
             )
@@ -214,7 +193,6 @@ def test_lfm3_sends_structured_tools_and_true_tool_result_roles():
         "file": "/tmp/a"
     }
     assert body["tools"] == [convert_to_openai_tool(tool) for tool in TOOLS]
-    assert not body["messages"][0]["content"].startswith(TOOLS_HEADER)
 
 
 @pytest.mark.parametrize(
@@ -372,13 +350,26 @@ def test_only_the_first_of_several_calls_is_taken():
     [
         "Hello there",
         '{"tool":"finish"}',
-        "<tool_call>\n<function=finish>\n</tool_call>",
-        "<tool_call>\n<function=bad name!>\n</function>\n</tool_call>",
         "",
     ],
 )
-def test_replies_without_a_tool_call_finish_the_run(reply):
-    assert invoke(completed(reply)) == ToolCommand(tool="finish")
+def test_replies_without_a_tool_call_finish_the_run_when_unbound(reply):
+    assert invoke(completed(reply), bound_tools=[shell_exec_command]) == ToolCommand(
+        tool="finish"
+    )
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "<tool_call>\n<function=finish>\n</tool_call>",
+        "<tool_call>\n<function=bad name!>\n</function>\n</tool_call>",
+    ],
+)
+def test_malformed_tool_calls_are_rejected(reply):
+    with pytest.raises(ServiceError) as error:
+        invoke(completed(reply))
+    assert error.value.code == "invalid_command"
 
 
 def test_saved_commands_round_trip_and_accept_older_formats():
@@ -459,7 +450,9 @@ def test_incomplete_or_invalid_stream_cannot_execute_even_a_valid_command(ending
     assert error.value.code in {"incomplete_stream", "invalid_stream"}
 
 
-@pytest.mark.parametrize("model_id", ["selected-model", "lfm3-1.7b-bf16"])
+@pytest.mark.parametrize(
+    "model_id", ["inkling-2-mini-iq4-nl", "inkling-2-mini-q8-0", None]
+)
 @pytest.mark.parametrize(
     "reply", [call("finish"), "42", "<tool_call>\n<function=send_message>"]
 )
@@ -525,7 +518,7 @@ def test_cancel_closes_silent_hikari_stream():
     asyncio.run(check())
 
 
-def test_tool_calls_and_results_replay_as_checkpoint_text():
+def test_tool_calls_and_results_replay_as_structured_messages():
     wire = HikariChatModel._wire_messages(
         [
             SystemMessage(content="Instructions"),
@@ -538,20 +531,29 @@ def test_tool_calls_and_results_replay_as_checkpoint_text():
             ),
             ToolMessage(content='{"output": "a.txt"}', tool_call_id="1"),
             HumanMessage(content="Thanks"),
-        ],
-        [],
+        ]
     )
     assert wire == [
         {"role": "system", "content": "Instructions"},
         {"role": "user", "content": "Hello"},
         {
             "role": "assistant",
-            "content": "<tool_call>\n<function=shell_exec_command>\n"
-            "<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {
+                        "name": "shell_exec_command",
+                        "arguments": {"command": "ls"},
+                    },
+                }
+            ],
         },
         {
-            "role": "user",
-            "content": '<tool_response>\n{"output": "a.txt"}\n</tool_response>',
+            "role": "tool",
+            "content": '{"output": "a.txt"}',
+            "tool_call_id": "1",
         },
         {"role": "user", "content": "Thanks"},
     ]
@@ -563,7 +565,7 @@ def test_hikari_chat_model_rejects_stop_sequences():
             model = HikariChatModel(
                 client=client,
                 hikari_url="http://hikari",
-                model_id="model",
+                model_id="inkling-2-mini-iq4-nl",
                 conversation_key="conversation",
             )
             with pytest.raises(ValueError, match="does not support"):
@@ -575,5 +577,5 @@ def test_hikari_chat_model_rejects_stop_sequences():
 def test_hikari_chat_model_rejects_non_text_messages():
     with pytest.raises(TypeError):
         HikariChatModel._wire_messages(
-            [HumanMessage(content=[{"type": "text", "text": "Hello"}])], []
+            [HumanMessage(content=[{"type": "text", "text": "Hello"}])]
         )

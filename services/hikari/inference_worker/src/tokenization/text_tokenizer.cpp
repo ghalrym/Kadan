@@ -576,4 +576,12 @@ std::string Tokenizer::decode(std::uint32_t token) const {
     check(bool(impl_) && token < impl_->decoded.size(), "text_tokenizer_decode_id");
     return impl_->decoded[token];
 }
+
+std::optional<std::uint32_t> Tokenizer::added_token_id(std::string_view token) const {
+    check(bool(impl_), "text_tokenizer_not_loaded");
+    for (const auto& entry : impl_->added)
+        if (entry.first == token)
+            return entry.second;
+    return std::nullopt;
+}
 }  // namespace kadan::text

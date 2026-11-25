@@ -15,8 +15,8 @@
 namespace kadan::checkpoint {
 struct GgufTensor {
     std::string name;
-    // GGML order: columns, rows, experts; omitted dimensions are one.
-    std::array<std::uint64_t, 3> shape{1, 1, 1};
+    // GGML order: columns, rows, experts/channels, fourth; omitted dimensions are one.
+    std::array<std::uint64_t, 4> shape{1, 1, 1, 1};
     std::size_t rank;
     std::uint32_t type;
     std::uint64_t bytes;

@@ -36,8 +36,8 @@ loader.deregister();
 const status = {
   tsuchi: { state: "ready", message: "Connected", browser_url: "http://localhost:8620" },
   hikari: {
-    state: "model_required", model_id: "lfm3-1.7b-bf16",
-    message: "Download the LFM3 model", settings_url: "http://localhost:8088/settings",
+    state: "model_required", model_id: "inkling-2-mini-iq4-nl",
+    message: "Download the Inkling 2 Mini model", settings_url: "http://localhost:8088/settings",
   },
 };
 function compose(overrides = {}) {

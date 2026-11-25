@@ -20,8 +20,6 @@ from experimental_worker.store import ModelStore
 GIB = 1024**3
 log = logging.getLogger(__name__)
 BACKENDS = {
-    "text": ("lfm3_llm", "HIKARI_ENABLE_LFM3_TEXT"),
-    "vision": ("lfm3_vision", "HIKARI_ENABLE_LFM3_VISION"),
     "audio": ("lfm3_audio", None),
     "d1": ("lfm3_decision", None),
 }
@@ -373,7 +371,7 @@ class Runtime:
                 executor_started = time.monotonic()
                 writer.close()
                 await event(
-                    "loading" if self.backend_name == "text" else "running",
+                    "running",
                     model=self.backend.MODEL["id"],
                 )
                 received_result = False

@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <curl/curl.h>
 #include <fcntl.h>
 #include <fstream>
@@ -485,12 +487,16 @@ void ModelStore::validate_files(
             preparation_check(
                 names.contains(model.asset_name), "Invalid GGUF split manifest"
             );
+            std::size_t primary_files = 0;
+            for (const auto& file : files)
+                if (!file.name.starts_with("mmproj-"))
+                    ++primary_files;
             for (const auto& file : files)
                 preparation_check(
                     file.name.ends_with(".gguf")
                         && !fs::path(file.name).has_parent_path()
                         && file.url.starts_with("https://")
-                        && (files.size() == 1 || file.name != model.asset_name
+                        && (primary_files == 1 || file.name != model.asset_name
                             || file.size <= 32 * 1024 * 1024),
                     "Invalid GGUF split asset"
                 );
@@ -819,6 +825,49 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
     return destination;
 }
 
+std::string ModelStore::selected_llm_id() const {
+    const char* raw = std::getenv("HIKARI_LLM_QUANT");
+    std::string value = raw ? raw : "";
+    std::transform(
+        value.begin(), value.end(), value.begin(), [](unsigned char c) {
+            return char(std::tolower(c));
+        }
+    );
+    if (value.empty() || value == "iq4_nl" || value == "iq4-nl" || value == "q4")
+        return "inkling-2-mini-iq4-nl";
+    if (value == "q8_0" || value == "q8-0" || value == "q8")
+        return "inkling-2-mini-q8-0";
+    throw RequestError(
+        "Unsupported HIKARI_LLM_QUANT; expected IQ4_NL or Q8_0.", 422
+    );
+}
+
+std::size_t ModelStore::default_llm_context() const {
+    const char* raw = std::getenv("HIKARI_LLM_CONTEXT_LIMIT");
+    if (!raw || !*raw)
+        return 65536;
+    std::size_t parsed = 0;
+    try {
+        std::size_t consumed = 0;
+        const std::string text(raw);
+        const auto value = std::stoull(text, &consumed, 10);
+        preparation_check(
+            consumed == text.size() && value >= 4096 && value <= 1048576,
+            "Invalid HIKARI_LLM_CONTEXT_LIMIT; expected integer between 4096 and 1048576.",
+            422
+        );
+        parsed = std::size_t(value);
+    } catch (const RequestError&) {
+        throw;
+    } catch (const std::exception&) {
+        throw RequestError(
+            "Invalid HIKARI_LLM_CONTEXT_LIMIT; expected integer between 4096 and 1048576.",
+            422
+        );
+    }
+    return parsed;
+}
+
 std::string ModelStore::whisper_model(const std::string& name) const {
     preparation_check(name == "medium", "Hikari uses Whisper medium.", 422);
     return "medium";
@@ -829,9 +878,10 @@ std::string ModelStore::whisper_selected() const {
 }
 
 Json ModelStore::context(const std::string& model) const {
+    const auto fallback = Json(default_llm_context());
     if (!fs::exists(root_ / "context.json"))
-        return 65536;
-    return read_document(root_ / "context.json").value(model, Json(65536));
+        return fallback;
+    return read_document(root_ / "context.json").value(model, fallback);
 }
 
 void ModelStore::set_context(const std::string& model, const Json& value) {
@@ -883,8 +933,16 @@ Json ModelStore::architecture_context(const std::string& model) const {
 }
 
 Json ModelStore::status() const {
+    const auto active_llm = selected_llm_id();
+    const bool has_active_llm = std::any_of(
+        catalog_.begin(),
+        catalog_.end(),
+        [&](const auto& item) { return item.kind == "llm" && item.id == active_llm; }
+    );
     Json models = Json::array();
     for (const auto& item : catalog_) {
+        if (has_active_llm && item.kind == "llm" && item.id != active_llm)
+            continue;
         const auto id = item.id;
         const auto text = [](const std::optional<std::string>& value) -> Json {
             return value ? Json(*value) : Json(nullptr);
@@ -920,7 +978,7 @@ Json ModelStore::status() const {
     }
     return {
         {"models", models},
-        {"selected_model_id", "lfm3-1.7b-bf16"},
+        {"selected_model_id", active_llm},
         {"whisper_formatting", whisper_formatting()}
     };
 }

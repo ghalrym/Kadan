@@ -23,71 +23,65 @@ void check(bool condition, const char* message) {
 class Parameters {
 public:
     std::filesystem::path root;
-    std::vector<std::string> names;
+    std::vector<std::string> vectors;
+    std::vector<std::string> tables;
 
-    explicit Parameters(bool qwen4) {
+    Parameters() {
         char pattern[] = "/tmp/kadan-text-state-XXXXXX";
         const auto* directory = mkdtemp(pattern);
         check(directory, "state_parameters_directory");
         root = directory;
         const std::unique_ptr<ggml_context, decltype(&ggml_free)> tensors(
-            ggml_init({1 << 20, nullptr, false}), ggml_free
+            ggml_init({4 << 20, nullptr, false}), ggml_free
         );
         const std::unique_ptr<gguf_context, decltype(&gguf_free)> metadata(
             gguf_init_empty(), gguf_free
         );
-        const auto add = [&](const std::string& name) {
+        const auto add_vec = [&](const std::string& name) {
             auto* tensor = ggml_new_tensor_1d(tensors.get(), GGML_TYPE_F32, 1);
             ggml_set_name(tensor, name.c_str());
             *static_cast<float*>(tensor->data) = 0;
             gguf_add_tensor(metadata.get(), tensor);
-            names.push_back(name);
+            vectors.push_back(name);
         };
-        add(qwen4 ? "output_hc_norm.weight" : "output_norm.weight");
-        for (std::size_t i = 0; i < (qwen4 ? 48 : 40); ++i) {
+        const auto add_table = [&](const std::string& name) {
+            auto* tensor = ggml_new_tensor_2d(tensors.get(), GGML_TYPE_F32, 2, 2);
+            ggml_set_name(tensor, name.c_str());
+            std::fill_n(static_cast<float*>(tensor->data), 4, 0.f);
+            gguf_add_tensor(metadata.get(), tensor);
+            tables.push_back(name);
+        };
+        add_vec("token_embd_norm.weight");
+        add_vec("output_norm.weight");
+        add_vec("output_res_query.weight");
+        for (std::size_t i = 0; i < 24; ++i) {
             const auto prefix = "blk." + std::to_string(i) + ".";
-            add(prefix + "ffn_gate_inp_shexp.weight");
-            if (qwen4) {
-                for (const auto* suffix : {"hc_attn_", "hc_ffn_"}) {
-                    add(prefix + suffix + "norm.weight");
-                    add(prefix + suffix + "inject.weight");
-                }
+            const bool is_swa = (i % 6) != 5;
+            if (is_swa) {
+                add_vec(prefix + "attn_norm.weight");
             } else {
-                add(prefix + "attn_norm.weight");
-                add(prefix + "post_attention_norm.weight");
+                add_vec(prefix + "attn_q_inp_norm.weight");
+                add_vec(prefix + "attn_k_inp_norm.weight");
+                add_vec(prefix + "attn_v_inp_norm.weight");
             }
-            if ((i + 1) % 4 == 0) {
-                add(prefix + "attn_q_norm.weight");
-                add(prefix + "attn_k_norm.weight");
-                if (qwen4) {
-                    add(prefix + "indexer.q_norm.weight");
-                    add(prefix + "indexer.k_norm.weight");
-                }
-            } else {
-                for (const auto* name :
-                     {"ssm_conv1d.weight", "ssm_dt.bias", "ssm_a", "ssm_norm.weight"})
-                    add(prefix + name);
+            add_table(prefix + "attn_q_clip.weight");
+            add_table(prefix + "attn_rel_bias.weight");
+            add_table(prefix + "attn_rel_clip.weight");
+            add_table(prefix + "attn_k_conv.weight");
+            add_table(prefix + "attn_v_conv.weight");
+            add_table(prefix + "attn_post_conv.weight");
+            add_table(prefix + "ffn_post_conv.weight");
+            if (i > 0) {
+                if (is_swa)
+                    add_vec(prefix + "attn_res_query.weight");
+                else
+                    add_table(prefix + "attn_res_query.weight");
             }
-        }
-        if (qwen4) {
-            for (const auto* name :
-                 {"ple_norm_key.weight",
-                  "ple_norm_query.weight",
-                  "ple_norm_conv.weight",
-                  "ple_conv1d.weight"})
-                add(std::string("blk.1.") + name);
-            const std::array<std::int64_t, 3> multipliers{1, 2, 3};
-            const std::array<std::int64_t, 16> offsets{},
-                sizes{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
-            for (const auto& [name, values] : std::initializer_list<
-                     std::pair<const char*, std::span<const std::int64_t>>>{
-                     {"qwen4exp.ple.layer_multipliers", multipliers},
-                     {"qwen4exp.ple.head_offsets", offsets},
-                     {"qwen4exp.ple.head_vocab_sizes", sizes}
-                 })
-                gguf_set_arr_data(
-                    metadata.get(), name, GGUF_TYPE_INT64, values.data(), values.size()
-                );
+            add_vec(prefix + "ffn_res_query.weight");
+            add_vec(prefix + "ffn_norm.weight");
+            add_vec(prefix + "exp_probs_b.bias");
+            if (i >= 6 && i < 18)
+                add_table(prefix + "loop_msg_query.weight");
         }
         check(
             gguf_write_to_file(metadata.get(), (root / "state.gguf").c_str(), false),
@@ -126,112 +120,111 @@ template <class F> void buffers(ModelState& state, F fn) {
         std::visit(
             [&](auto& saved) {
                 using T = std::decay_t<decltype(saved)>;
-                if constexpr (std::is_same_v<T, RecurrentState>) {
-                    fn(saved.convolution);
-                    fn(saved.recurrent);
-                } else if constexpr (std::is_same_v<T, AttentionState>) {
+                if constexpr (std::is_same_v<T, AttentionState>) {
                     fn(saved.keys);
                     fn(saved.values);
                 } else {
                     fn(saved.attention.keys);
                     fn(saved.attention.values);
-                    fn(saved.raw_keys);
-                    fn(saved.pooled);
+                    fn(saved.conv);
                 }
             },
             layer
         );
-    fn(state.ple);
 }
 
-void round_trip(bool qwen4) {
-    Parameters parameters(qwen4);
+void round_trip() {
+    Parameters parameters;
     GgufWeights weights(parameters.root.c_str(), nullptr);
-    for (const auto& name : parameters.names)
+    for (const auto& name : parameters.vectors)
         weights.vector(name, {1});
+    for (const auto& name : parameters.tables)
+        weights.table(name, 2, 2);
     NoCompute compute;
-    auto model = qwen4 ? qwen4exp_model(weights, compute, 9)
-                       : qwen35moe_model(weights, compute, 9);
+    // Context 2048 > SWA window 1024 verifies 40 ring-buffered SWA slots and
+    // 8 full-context slots across the 48 logical Inkling 2 passes.
+    auto model = inkling2_loop_model(weights, compute, 2048);
+    const std::size_t expected_device_state =
+        (40ULL * 2 * (2 * 1024) + 8ULL * 2 * 2048) * 1024 * sizeof(float)
+        + 24ULL * 1024 * 16 * sizeof(float);
+    check(model->device_state_bytes() == expected_device_state, "inkling_device_state_bytes");
     auto state = model->take_state();
+    check(state.layers.size() == 48, "inkling_slot_count");
+    std::size_t swa_slots = 0, full_slots = 0;
+    for (const auto& layer : state.layers) {
+        const auto& slot = std::get<InklingLayerState>(layer);
+        if (slot.sliding_window) {
+            ++swa_slots;
+            check(slot.attention.keys.size() == 1024 * 1024, "swa_kv_capacity");
+            check(slot.attention.values.size() == 1024 * 1024, "swa_v_capacity");
+        } else {
+            ++full_slots;
+            check(slot.attention.keys.size() == 2048 * 1024, "full_kv_capacity");
+            check(slot.attention.values.size() == 2048 * 1024, "full_v_capacity");
+        }
+        check(slot.conv.size() == 6656 * 3, "conv_state_size");
+    }
+    check(swa_slots == 40 && full_slots == 8, "swa_full_partition");
+
     std::vector<std::size_t> sizes;
     float value = 0;
     buffers(state, [&](Vec& buffer) {
         sizes.push_back(buffer.size());
         std::fill(buffer.begin(), buffer.end(), ++value);
     });
-    if (qwen4)
-        state.recent = {17, 29};
-    for (const bool device : {false, true}) {
-        for (auto& layer : state.layers)
-            if (auto* recurrent = std::get_if<RecurrentState>(&layer))
-                recurrent->device = device;
-        // Repeat on the same emptied instance, as checkpoint save/restore do.
-        for (int round = 0; round < 2; ++round) {
-            model->restore_state(std::move(state));
-            state = model->take_state();
-            check(state.layers.size() == (qwen4 ? 48 : 40), "state_layer_count");
-            std::size_t index = 0;
-            buffers(state, [&](Vec& buffer) {
-                check(buffer.size() == sizes.at(index++), "state_buffer_size");
-                check(
-                    std::all_of(
-                        buffer.begin(),
-                        buffer.end(),
-                        [&](float v) { return v == float(index); }
-                    ),
-                    "state_buffer_values"
-                );
-            });
-            check(index == sizes.size(), "state_buffer_count");
+    // Repeat on the same emptied instance, as checkpoint save/restore do.
+    for (int round = 0; round < 2; ++round) {
+        model->restore_state(std::move(state));
+        state = model->take_state();
+        check(state.layers.size() == 48, "state_layer_count");
+        std::size_t index = 0;
+        buffers(state, [&](Vec& buffer) {
+            check(buffer.size() == sizes.at(index++), "state_buffer_size");
             check(
-                state.recent
-                    == (qwen4 ? std::vector<unsigned>{17, 29}
-                              : std::vector<unsigned>{}),
-                "state_recent"
+                std::all_of(
+                    buffer.begin(),
+                    buffer.end(),
+                    [&](float v) { return v == float(index); }
+                ),
+                "state_buffer_values"
             );
-            for (const auto& layer : state.layers)
-                if (const auto* recurrent = std::get_if<RecurrentState>(&layer))
-                    check(recurrent->device == device, "state_device_flag");
-        }
+        });
+        check(index == sizes.size(), "state_buffer_count");
     }
 }
 
 void checkpoint_copy() {
-    // Nine context positions hold two complete pools of four. All sixteen
-    // pooled values belong to the eight-token prefix, including the last one.
     ModelState state;
-    state.layers.emplace_back(QsaState{{Vec(18, 1), Vec(18, 2)}, Vec(72, 3), Vec(16)});
-    state.layers.emplace_back(RecurrentState{{10, 11}, {12, 13}, true});
-    auto& source = std::get<QsaState>(state.layers[0]);
-    std::iota(source.pooled.begin(), source.pooled.end(), 4.f);
-    state.ple = {14, 15};
-    state.recent = {17, 29};
+    // Full-attention slot: 9 positions, 2 floats/position -> prefix 8 copies 16 floats.
+    state.layers.emplace_back(
+        InklingLayerState{{Vec(18, 1.f), Vec(18, 2.f)}, Vec{10.f, 11.f}, false}
+    );
+    // Sliding-window slot: ring-buffered, copies whole KV + conv.
+    state.layers.emplace_back(
+        InklingLayerState{{Vec(8, 3.f), Vec(8, 4.f)}, Vec{12.f, 13.f}, true}
+    );
     ModelState checkpoint;
     copy_state(state, checkpoint, 8, 9);
     // Exercise reuse of an already allocated checkpoint as well as first save.
     for (int round = 0; round < 2; ++round) {
-        auto& qsa = std::get<QsaState>(checkpoint.layers[0]);
-        check(qsa.pooled == source.pooled, "checkpoint_complete_pools");
-        check(qsa.attention.keys[15] == 1, "checkpoint_key_prefix");
-        check(qsa.attention.values[15] == 2, "checkpoint_value_prefix");
-        check(qsa.raw_keys[63] == 3, "checkpoint_index_prefix");
-        const auto& recurrent = std::get<RecurrentState>(checkpoint.layers[1]);
-        check(
-            recurrent.convolution == Vec({10, 11})
-                && recurrent.recurrent == Vec({12, 13}) && recurrent.device,
-            "checkpoint_recurrence"
-        );
-        check(
-            checkpoint.ple == state.ple && checkpoint.recent == state.recent,
-            "checkpoint_ngram"
-        );
+        const auto& full = std::get<InklingLayerState>(checkpoint.layers[0]);
+        check(!full.sliding_window, "checkpoint_full_flag");
+        check(full.attention.keys[15] == 1.f, "checkpoint_full_key_prefix");
+        check(full.attention.values[15] == 2.f, "checkpoint_full_value_prefix");
+        check(full.conv == Vec({10.f, 11.f}), "checkpoint_full_conv");
+        const auto& swa = std::get<InklingLayerState>(checkpoint.layers[1]);
+        check(swa.sliding_window, "checkpoint_swa_flag");
+        check(swa.attention.keys == Vec(8, 3.f), "checkpoint_swa_keys");
+        check(swa.attention.values == Vec(8, 4.f), "checkpoint_swa_values");
+        check(swa.conv == Vec({12.f, 13.f}), "checkpoint_swa_conv");
         buffers(checkpoint, [](Vec& buffer) {
-            std::fill(buffer.begin(), buffer.end(), -1);
+            std::fill(buffer.begin(), buffer.end(), -1.f);
         });
         copy_state(state, checkpoint, 8, 9);
+        const auto& reused_full = std::get<InklingLayerState>(checkpoint.layers[0]);
         check(
-            qsa.attention.keys.back() == -1 && qsa.attention.values.back() == -1
-                && qsa.raw_keys.back() == -1,
+            reused_full.attention.keys.back() == -1.f
+                && reused_full.attention.values.back() == -1.f,
             "checkpoint_suffix_not_copied"
         );
     }
@@ -241,8 +234,7 @@ void checkpoint_copy() {
 int main() {
     try {
         checkpoint_copy();
-        round_trip(false);
-        round_trip(true);
+        round_trip();
         std::cout << "Same-instance text state round trips passed; no inference\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

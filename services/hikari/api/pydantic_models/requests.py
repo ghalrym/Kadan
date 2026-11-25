@@ -1,11 +1,12 @@
 from typing import Annotated, Literal
+
 from pydantic import BaseModel, Field
 
 from api.pydantic_models.inference_task import LlmModel
 
 RequestType = Literal["LLM", "Image", "Video", "TTS", "STT", "Decision"]
 RequestStatus = Annotated[int, Field(ge=100, le=599)]
-ObservedLanguageModel = Literal[LlmModel, "lfm3-1.7b-bf16"]
+ObservedLanguageModel = LlmModel
 
 
 class RequestRecord(BaseModel):

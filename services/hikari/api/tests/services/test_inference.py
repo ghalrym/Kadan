@@ -1,5 +1,5 @@
-import base64
 import asyncio
+import base64
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -8,9 +8,9 @@ from api.pydantic_models.model_store import ModelStoreStatus
 from api.routes.v1.chat.completions import CompletionRequest
 from api.routes.v1.images.generations import ImageRequest
 from api.routes.v1.videos.generations import VideoGenerationRequest
-from api.services.video_jobs import VideoJobs
 from api.services.inference import InferenceService
 from api.services.inference_worker import InferenceJob, InferenceTask, WorkerEvent
+from api.services.video_jobs import VideoJobs
 
 
 class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
@@ -478,7 +478,7 @@ class UnloadTests(unittest.IsolatedAsyncioTestCase):
         service = InferenceService()
         with patch.object(service.worker, "offload", new=AsyncMock()) as offload:
             await self.unload(service)
-        offload.assert_awaited_once_with("lfm3_llm")
+        offload.assert_awaited_once_with("llm")
 
     async def test_unload_cancels_running_chats_by_default(self):
         service = InferenceService()

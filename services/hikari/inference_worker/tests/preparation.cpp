@@ -102,7 +102,7 @@ Json entry(const std::string& id, const Json& manifest) {
         {"id", id},
         {"revision", "revision"},
         {"repo_id", "test/model"},
-        {"kind", id == "small" ? "llm" : "image"},
+        {"kind", (id == "small" || id.starts_with("inkling-")) ? "llm" : "image"},
         {"layout", "composite"},
         {"inference_available", true},
         {"required_files", required},
@@ -422,7 +422,7 @@ void pinned_catalog_units() {
         rejects([&] { store.validate_files(speech, parse_manifest(incomplete)); });
     }
     for (const auto* model :
-         {"qwen3.6-35b-a3b-q4-k-m",
+         {"inkling-2-mini-iq4-nl",
           "qwen-tts-1.7b-custom",
           "h3-fl2va",
           "h3-fl2va-int8-turbo"})
@@ -437,10 +437,8 @@ void pinned_catalog_units() {
 void shared_settings_units() {
     Directory tmp;
     ModelStore store(tmp.path, worker_data_directory());
-    const std::array<std::string, 3> models{
-        "qwen3.6-35b-a3b-q4-k-m",
-        "qwen3.8-flash-next-ud-iq3-xxs",
-        "qwen3.8-flash-next-q3-k-xl"
+    const std::array<std::string, 2> models{
+        "inkling-2-mini-iq4-nl", "inkling-2-mini-q8-0"
     };
     int start[2];
     assert(pipe(start) == 0);
@@ -469,7 +467,7 @@ void shared_settings_units() {
         children.push_back(child);
     }
     close(start[0]);
-    assert(write(start[1], "xxx", models.size()) == ssize_t(models.size()));
+    assert(write(start[1], "xx", models.size()) == ssize_t(models.size()));
     close(start[1]);
     bool succeeded = true;
     for (const auto child : children) {
@@ -623,16 +621,16 @@ void checkpoint_catalog_units() {
         )
         == turbo.required_files.end()
     );
-    // Native MoE metadata remains available for explicit internal requests.
-    for (const auto* id :
-         {"qwen3.6-35b-a3b-q4-k-m",
-          "qwen3.8-flash-next-ud-iq3-xxs",
-          "qwen3.8-flash-next-q3-k-xl"}) {
+    // Inkling 2 Mini is the sole local language + vision model family.
+    for (const auto* id : {"inkling-2-mini-iq4-nl", "inkling-2-mini-q8-0"}) {
         const auto& model = store.entry(id);
         assert(
             model.kind == "llm" && model.layout == "gguf" && model.inference_available
         );
+        assert(model.license == "apache-2.0");
+        assert(model.manifest.size() == 2);
         assert(model.manifest.front().name == model.asset_name);
+        assert(model.manifest.back().name.starts_with("mmproj-"));
         store.validate_files(model, model.manifest);
         std::uint64_t bytes = 0;
         for (const auto& file : model.manifest) {
@@ -646,19 +644,36 @@ void checkpoint_catalog_units() {
         assert(!store.allowed("config.json", model));
         assert(!store.allowed("model.safetensors", model));
     }
-    assert(store.entry("qwen3.8-flash-next-q3-k-xl").license_notice);
     for (const auto* removed :
          {"small",
           "gpt-oss-20b",
           "medium",
           "large",
           "muse-spark-open-q3-xl",
-          "qwen-image-2.1"})
+          "qwen-image-2.1",
+          "qwen3.6-35b-a3b-q4-k-m",
+          "qwen3.8-flash-next-ud-iq3-xxs",
+          "qwen3.8-flash-next-q3-k-xl"})
         rejects([&] { store.entry(removed); });
     assert(!store.status().contains("tiers"));
     assert(!store.status().contains("selected_tier"));
     assert(transfers == 0);
-    assert(store.status().at("selected_model_id") == "lfm3-1.7b-bf16");
+    unsetenv("HIKARI_LLM_QUANT");
+    unsetenv("HIKARI_LLM_CONTEXT_LIMIT");
+    assert(store.selected_llm_id() == "inkling-2-mini-iq4-nl");
+    assert(store.default_llm_context() == 65536);
+    assert(store.status().at("selected_model_id") == "inkling-2-mini-iq4-nl");
+    setenv("HIKARI_LLM_QUANT", "Q8_0", 1);
+    setenv("HIKARI_LLM_CONTEXT_LIMIT", "131072", 1);
+    assert(store.selected_llm_id() == "inkling-2-mini-q8-0");
+    assert(store.default_llm_context() == 131072);
+    assert(store.status().at("selected_model_id") == "inkling-2-mini-q8-0");
+    setenv("HIKARI_LLM_QUANT", "invalid", 1);
+    rejects([&] { (void)store.selected_llm_id(); });
+    setenv("HIKARI_LLM_CONTEXT_LIMIT", "1024", 1);
+    rejects([&] { (void)store.default_llm_context(); });
+    unsetenv("HIKARI_LLM_QUANT");
+    unsetenv("HIKARI_LLM_CONTEXT_LIMIT");
 }
 
 void manifest_model_units() {
@@ -694,7 +709,7 @@ void typed_request_units() {
     auto chat = request(
         "chat",
         {{"feature", "llm"},
-         {"model_id", "small"},
+         {"model_id", "inkling-2-mini-iq4-nl"},
          {"messages", Json::array({{{"role", "user"}, {"text", "Hello"}}})}},
         "completion"
     );
@@ -707,8 +722,38 @@ void typed_request_units() {
     };
     const auto whole = chat_prompt(turns, 4096);
     const auto earlier = chat_messages(std::span(turns).first(3), 4096);
-    assert(whole.starts_with(earlier) && earlier.ends_with("<|im_end|>\n"));
-    auto load = request("load", {{"feature", "llm"}, {"model_id", "small"}}, "load");
+    assert(
+        whole.starts_with(earlier)
+        && earlier.ends_with("<|end_message|><|content_model_end_sampling|>")
+    );
+    assert(whole.find("Thinking effort level: 0.9") != std::string::npos);
+    assert(whole.ends_with("<|end_message|>"));
+    // InklingStreamParser hides thinking, emits text, and converts tool calls.
+    {
+        using S = InklingStreamParser::Special;
+        InklingStreamParser parser;
+        std::string emitted;
+        emitted += parser.on_special(S::content_thinking);
+        emitted += parser.on_text("secret plan");
+        emitted += parser.on_special(S::end_message);
+        emitted += parser.on_special(S::message_model);
+        emitted += parser.on_special(S::content_text);
+        emitted += parser.on_text("Hello");
+        emitted += parser.on_special(S::end_message);
+        emitted += parser.on_special(S::message_model);
+        emitted += parser.on_text("bash");
+        emitted += parser.on_special(S::content_invoke_tool_json);
+        emitted += parser.on_text("{\"name\":\"bash\",\"args\":{\"cmd\":\"ls\",\"n\":2}}");
+        emitted += parser.on_special(S::end_message);
+        emitted += parser.finish();
+        assert(emitted.find("secret plan") == std::string::npos);
+        assert(emitted.find("Hello") != std::string::npos);
+        assert(emitted.find("<tool_call>\n<function=bash>\n") != std::string::npos);
+        assert(emitted.find("<parameter=cmd>\nls\n</parameter>\n") != std::string::npos);
+        assert(emitted.find("<parameter=n>\n2\n</parameter>\n") != std::string::npos);
+        assert(emitted.find("</function>\n</tool_call>") != std::string::npos);
+    }
+    auto load = request("load", {{"feature", "llm"}, {"model_id", "inkling-2-mini-iq4-nl"}}, "load");
     assert(!std::get<ChatRequest>(load.input).context_supplied);
     load = request("load", {{"feature", "llm"}, {"context_limit", nullptr}}, "load");
     assert(
@@ -1389,41 +1434,56 @@ private:
     }
 };
 
-// The qwen35moe metadata contract with a tiny tokenizer: three normal tokens,
+// The inkling2_loop metadata contract with a tiny tokenizer: three normal tokens,
 // one control token and one unused slot.
-std::string qwen35moe_metadata(bool valid) {
+std::string inkling2_loop_metadata(bool valid) {
     GgufWriter w;
-    w.string("general.architecture", "qwen35moe");
+    w.string("general.architecture", "inkling2_loop");
     for (const auto& [key, value] :
          std::initializer_list<std::pair<const char*, std::uint32_t>>{
-             {"qwen35moe.block_count", valid ? 40 : 39},
-             {"qwen35moe.context_length", 262144},
-             {"qwen35moe.embedding_length", 2048},
-             {"qwen35moe.attention.head_count", 16},
-             {"qwen35moe.attention.head_count_kv", 2},
-             {"qwen35moe.attention.key_length", 256},
-             {"qwen35moe.attention.value_length", 256},
-             {"qwen35moe.rope.dimension_count", 64},
-             {"qwen35moe.expert_count", 256},
-             {"qwen35moe.expert_used_count", 8},
-             {"qwen35moe.expert_feed_forward_length", 512},
-             {"qwen35moe.expert_shared_feed_forward_length", 512},
-             {"qwen35moe.ssm.conv_kernel", 4},
-             {"qwen35moe.ssm.state_size", 128},
-             {"qwen35moe.ssm.group_count", 16},
-             {"qwen35moe.ssm.time_step_rank", 32},
-             {"qwen35moe.ssm.inner_size", 4096},
-             {"qwen35moe.full_attention_interval", 4},
-             {"tokenizer.ggml.eos_token_id", 248046},
-             {"tokenizer.ggml.padding_token_id", 248044}
+             {"inkling2_loop.block_count", valid ? 24 : 23},
+             {"inkling2_loop.context_length", 1048576},
+             {"inkling2_loop.embedding_length", 2304},
+             {"inkling2_loop.attention.key_length", 128},
+             {"inkling2_loop.attention.value_length", 128},
+             {"inkling2_loop.attention.relative_length", 16},
+             {"inkling2_loop.attention.relative_extent", 1024},
+             {"inkling2_loop.attention.log_scale_floor", 8192},
+             {"inkling2_loop.attention.sliding_window", 1024},
+             {"inkling2_loop.attn_res.block_size", 6},
+             {"inkling2_loop.shortconv.l_cache", 4},
+             {"inkling2_loop.vocab_size", 201024},
+             {"inkling2_loop.vocab_size_unpadded", 200058},
+             {"inkling2_loop.expert_count", 128},
+             {"inkling2_loop.expert_used_count", 8},
+             {"inkling2_loop.expert_feed_forward_length", 1152},
+             {"inkling2_loop.loop.start", 6},
+             {"inkling2_loop.loop.end", 18},
+             {"inkling2_loop.loop.count", 3},
+             {"inkling2_loop.loop.gate_rank", 64},
+             {"tokenizer.ggml.eos_token_id", 200006}
          })
         w.u32(key, value);
-    w.f32("qwen35moe.rope.freq_base", 1e7f);
-    w.f32("qwen35moe.attention.layer_norm_rms_epsilon", 1e-6f);
-    w.integers("qwen35moe.rope.dimension_sections", {11, 11, 10, 0});
+    w.integers("inkling2_loop.attention.head_count", std::vector<std::int32_t>(24, 24));
+    w.integers("inkling2_loop.attention.head_count_kv", std::vector<std::int32_t>(24, 8));
+    std::vector<bool> swa(24, true);
+    for (std::size_t i = 0; i < 24; ++i)
+        swa[i] = (i % 6) != 5;
+    w.booleans("inkling2_loop.attention.sliding_window_pattern", swa);
+    w.f32("inkling2_loop.attention.layer_norm_rms_epsilon", 1e-6f);
+    w.f32("inkling2_loop.attention.qk_clip", 22.627417f);
+    w.f32("inkling2_loop.attention.relative_clip", 8.0f);
+    w.f32("inkling2_loop.attention.log_scale_alpha", 0.1f);
+    w.f32("inkling2_loop.expert_weights_scale", 8.0f);
+    w.f32("inkling2_loop.activation.situ_beta", 4.0f);
+    w.f32("inkling2_loop.activation.situ_linear_beta", 25.0f);
+    w.f32("inkling2_loop.final_logit_softcapping", 30.0f);
     w.string("tokenizer.ggml.model", "gpt2");
-    w.string("tokenizer.ggml.pre", "qwen35");
-    w.strings("tokenizer.ggml.tokens", {"a", "b", "ab", "<|im_end|>", "<|unused|>"});
+    w.string("tokenizer.ggml.pre", "inkling2");
+    w.strings(
+        "tokenizer.ggml.tokens",
+        {"a", "b", "ab", "<|content_model_end_sampling|>", "<|unused|>"}
+    );
     w.integers("tokenizer.ggml.token_type", {1, 1, 1, 3, 5});
     w.strings("tokenizer.ggml.merges", {"a b"});
     return w.finish();
@@ -1433,7 +1493,7 @@ struct GgufAcquisitionFixture {
     Directory temporary;
     const fs::path root = temporary.path / "models/text-revision";
     const fs::path metadata = root / "model.gguf";
-    const std::string valid_metadata = qwen35moe_metadata(true);
+    const std::string valid_metadata = inkling2_loop_metadata(true);
     std::unique_ptr<ModelStore> store;
 
     GgufAcquisitionFixture() {
@@ -1475,7 +1535,7 @@ void gguf_validation_changed_metadata_unit() {
     const auto modified = fs::last_write_time(fixture.metadata);
     struct stat before{};
     assert(::stat(fixture.metadata.c_str(), &before) == 0);
-    const auto invalid = qwen35moe_metadata(false);
+    const auto invalid = inkling2_loop_metadata(false);
     assert(invalid.size() == fixture.valid_metadata.size());
     bytes(fixture.metadata, invalid);
     fs::last_write_time(fixture.metadata, modified);
@@ -1598,10 +1658,12 @@ void gguf_acquisition_units() {
             const std::string first =
                 split ? "model-00001-of-00002.gguf" : "model.gguf";
             std::map<std::string, std::string> content{
-                {first, qwen35moe_metadata(valid)}
+                {first, inkling2_loop_metadata(valid)}
             };
             if (split)
                 content["model-00002-of-00002.gguf"] = "unread tensor placeholder";
+            else
+                content["mmproj-model.gguf"] = "unread vision projector placeholder";
             auto files = local_manifest(tmp.path / "source", content);
             std::stable_partition(files.begin(), files.end(), [&](const auto& file) {
                 return file.at("name") == first;
@@ -1637,7 +1699,7 @@ void gguf_acquisition_units() {
                 } catch (const RequestError& error) {
                     assert(error.status == 422);
                     assert(
-                        std::string(error.what()).find("qwen35moe_dimensions")
+                        std::string(error.what()).find("gguf_text_metadata")
                         != std::string::npos
                     );
                 }
@@ -1652,22 +1714,25 @@ void gguf_acquisition_units() {
             assert(
                 read_document(root / "config.json")
                 == Json(
-                    {{"model_type", "qwen35moe"},
+                    {{"model_type", "inkling2_loop"},
                      {"kadan_checkpoint_format", "gguf"},
-                     {"max_position_embeddings", 262144}}
+                     {"max_position_embeddings", 1048576}}
                 )
             );
             const auto tokenizer = read_document(root / "tokenizer.json");
-            assert(tokenizer.at("normalizer").at("type") == "NFC");
+            assert(tokenizer.at("normalizer").is_null());
             assert(
                 tokenizer.at("model").at("vocab")
                 == Json({{"a", 0}, {"b", 1}, {"ab", 2}})
             );
             assert(tokenizer.at("model").at("merges") == Json::array({"a b"}));
-            assert(!tokenizer.at("model").at("ignore_merges").get<bool>());
+            assert(tokenizer.at("model").at("ignore_merges").get<bool>());
             const auto& added = tokenizer.at("added_tokens");
             assert(added.size() == 1 && added[0].at("id") == 3);
-            assert(added[0].at("content") == "<|im_end|>" && added[0].at("special"));
+            assert(
+                added[0].at("content") == "<|content_model_end_sampling|>"
+                && added[0].at("special")
+            );
             fetched.clear();
             store.acquire("text", running);
             assert(fetched.empty());
@@ -1690,13 +1755,14 @@ void job_units() {
                jobs = tmp.path / "jobs";
     const auto config =
         Json{
-            {"model_type", "qwen35moe"},
+            {"model_type", "inkling2_loop"},
             {"kadan_checkpoint_format", "gguf"},
-            {"max_position_embeddings", 262144}
+            {"max_position_embeddings", 1048576}
         }
             .dump();
     Json models = Json::array();
-    for (const auto* id : {"small", "qwen-image-2.1-turbo", "h3-fl2va-int8-turbo"}) {
+    for (const auto* id :
+         {"inkling-2-mini-iq4-nl", "qwen-image-2.1-turbo", "h3-fl2va-int8-turbo"}) {
         const auto dir = root / (std::string(id) + "-revision");
         const auto manifest = local_manifest(dir, {{"config.json", config}});
         models.push_back(entry(id, manifest));
@@ -1705,7 +1771,7 @@ void job_units() {
         );
     }
     catalog(data, models);
-    write_document(root / "context.json", {{"small", 4096}});
+    write_document(root / "context.json", {{"inkling-2-mini-iq4-nl", 4096}});
     JobWorkspace files(jobs);
     ModelStore store(
         root,
@@ -1715,20 +1781,20 @@ void job_units() {
         }
     );
     const auto initial = store.status();
-    assert(initial.at("selected_model_id") == "lfm3-1.7b-bf16");
+    assert(initial.at("selected_model_id") == "inkling-2-mini-iq4-nl");
     assert(!initial.contains("selected_image"));
     auto context = request(
         "context",
         {{"feature", "model_context"},
-         {"model_id", "small"},
+         {"model_id", "inkling-2-mini-iq4-nl"},
          {"context_limit", nullptr}},
         "configure"
     );
     prepare_task(context, store, files, running);
-    assert(store.context("small").is_null());
+    assert(store.context("inkling-2-mini-iq4-nl").is_null());
     files.cleanup(context.id);
-    store.set_context("small", 4096);
-    rejects([&] { store.set_context("small", 300000); });
+    store.set_context("inkling-2-mini-iq4-nl", 4096);
+    rejects([&] { store.set_context("inkling-2-mini-iq4-nl", 2000000); });
     for (const auto* removed : {"tier_selection", "whisper_selection"})
         rejects([&] {
             request("removed-selection", {{"feature", removed}}, "configure");
@@ -1925,13 +1991,15 @@ void job_units() {
     });
     auto unsupported = request(
         "unsupported-image",
-        {{"feature", "image"}, {"model_id", "small"}, {"prompt", "mountain"}}
+        {{"feature", "image"},
+         {"model_id", "inkling-2-mini-iq4-nl"},
+         {"prompt", "mountain"}}
     );
     rejects([&] { prepare_task(unsupported, store, files, running); });
     auto chat = request(
         "chat",
         {{"feature", "llm"},
-         {"model_id", "small"},
+         {"model_id", "inkling-2-mini-iq4-nl"},
          {"messages", Json::array({{{"role", "user"}, {"text", "Hello"}}})}},
         "completion"
     );
@@ -1939,22 +2007,28 @@ void job_units() {
     assert(fs::is_empty(chat.workspace));
     assert(std::get<ChatRequest>(chat.input).messages[0].text == "Hello");
     files.cleanup(chat.id);
-    auto load = request("load", {{"feature", "llm"}, {"model_id", "small"}}, "load");
+    auto load = request(
+        "load", {{"feature", "llm"}, {"model_id", "inkling-2-mini-iq4-nl"}}, "load"
+    );
     prepare_task(load, store, files, running);
     assert(load.context->effective == 4096);
     files.cleanup("load");
     load = request(
         "maximum",
-        {{"feature", "llm"}, {"model_id", "small"}, {"context_limit", nullptr}},
+        {{"feature", "llm"},
+         {"model_id", "inkling-2-mini-iq4-nl"},
+         {"context_limit", nullptr}},
         "load"
     );
     prepare_task(load, store, files, running);
-    assert(load.context->effective == 262144);
+    assert(load.context->effective == 65536);
     assert(!load.context->configured);
     files.cleanup("maximum");
     load = request(
         "bad",
-        {{"feature", "llm"}, {"model_id", "small"}, {"context_limit", 999999}},
+        {{"feature", "llm"},
+         {"model_id", "inkling-2-mini-iq4-nl"},
+         {"context_limit", 2000000}},
         "load"
     );
     rejects([&] { prepare_task(load, store, files, running); });

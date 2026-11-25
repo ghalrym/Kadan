@@ -25,9 +25,14 @@ from pydantic import (
 def encode_request(message: dict) -> bytes:
     encoded = json.dumps(message, allow_nan=False, ensure_ascii=False).encode()
     task = message.get("input", {})
-    maximum = (
-        64 if task.get("feature") == "image" and task.get("image") is not None else 3
+    has_media = (task.get("feature") == "image" and task.get("image") is not None) or (
+        task.get("feature") == "llm"
+        and any(
+            isinstance(msg, dict) and bool(msg.get("images"))
+            for msg in task.get("messages", [])
+        )
     )
+    maximum = 64 if has_media else 3
     if len(encoded) > maximum * 1024 * 1024:
         raise InferenceFailure("Inference request exceeds its transport limit.", 413)
     return encoded

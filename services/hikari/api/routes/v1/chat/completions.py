@@ -7,39 +7,24 @@ from uuid import uuid4
 import anyio
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import (
-    AliasChoices,
-    BaseModel,
-    ConfigDict,
-    Field,
-    model_validator,
-)
-from api.pydantic_models.chat import (
-    ChatMessage,
-    Lfm3Message,
-    Lfm3Tool,
-    lfm3_messages,
-    require_lfm3_tools,
-)
+from pydantic import BaseModel, ConfigDict, Field
+
+from api.pydantic_models.chat import ChatMessage, ChatTool
+from api.pydantic_models.inference_task import LlmModel
 from api.repositories import subscriptions
 from api.services.inference import inference
-from api.services.inference_http import infer
 from api.services.inference_errors import InferenceFailure
+from api.services.inference_http import infer
 from api.services.subscription_inference import SubscriptionStream
 
 router = APIRouter(prefix="/v1/chat/completions", tags=["Chat"])
 
 
-class CompletionMessage(ChatMessage):
-    model_config = ConfigDict(extra="forbid")
-    text: str = Field(min_length=1, validation_alias=AliasChoices("text", "content"))
-
-
 class CompletionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    messages: list[CompletionMessage | Lfm3Message] = Field(min_length=1)
-    tools: list[Lfm3Tool] | None = Field(default=None, max_length=256)
-    model: Literal["lfm3-1.7b-bf16"] = "lfm3-1.7b-bf16"
+    messages: list[ChatMessage] = Field(min_length=1)
+    tools: list[ChatTool] | None = Field(default=None, max_length=256)
+    model: LlmModel | None = None
     stream: bool = False
     conversation_id: str | None = Field(
         default=None,
@@ -62,16 +47,7 @@ class CompletionRequest(BaseModel):
         strict=True,
         description="Reasoning is closed after this many tokens so the reply keeps its share of max_tokens.",
     )
-
-    @model_validator(mode="before")
-    @classmethod
-    def experimental_messages(cls, values):
-        return lfm3_messages(values)
-
-    @model_validator(mode="after")
-    def experimental_tools_only(self):
-        require_lfm3_tools(self.model, self.messages, self.tools)
-        return self
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
 
 
 class AssistantMessage(BaseModel):

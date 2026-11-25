@@ -1,9 +1,9 @@
 # Language-model lifecycle and context
 
-The public lifecycle describes the fixed LFM3 worker, whose executor loads and exits per request. It does not describe a reusable native engine. See [language lifecycle expectations](../../user-expectations/hikari/model-lifecycle.md).
+The public lifecycle describes the native `hikari-worker-llm` Strata worker running Inkling 2 Mini (`inkling-2-mini-iq4-nl` by default, or `inkling-2-mini-q8-0` via `HIKARI_LLM_QUANT`). See [language lifecycle expectations](../../user-expectations/hikari/model-lifecycle.md).
 
-`GET /model-lifecycle` reports `loading` while LFM language work is outstanding and `unloaded` while the connected worker is idle with a complete checkpoint. Missing workers, incomplete checkpoints and unconfirmed cleanup report an error. The fixed context comes from the worker catalog; an idle worker has no effective resident context or independent output-token cap. A download does not establish successful inference.
+`GET /model-lifecycle` reports the current residency state (`unloaded`, `loading`, or `ready`) of the connected `llm` worker alongside the active Inkling 2 Mini checkpoint and effective context limit (`HIKARI_LLM_CONTEXT_LIMIT`, default `65536`). Missing workers, incomplete checkpoints and unconfirmed cleanup report an error. A download does not establish successful inference.
 
-`POST /model-lifecycle/unload` cancels owned language jobs, joins cleanup, and requests confirmed LFM offload before returning status. Physical charges remain until release is confirmed. It neither removes checkpoint files nor cancels media work. Public manual loading and saved-context endpoints are removed because the per-request LFM executor cannot honor them.
+`POST /model-lifecycle/unload` cancels owned language jobs, joins cleanup, and requests confirmed native offload before returning status. Physical charges remain until release is confirmed. It neither removes checkpoint files nor cancels media work. Public manual loading and saved-context endpoints remain retired; context size is configured via `HIKARI_LLM_CONTEXT_LIMIT` on `hikari-worker-llm`.
 
-The retained native MoE implementation still supports explicit internal checkpoint/context requests and its existing prefix cache, admission, cancellation and cleanup rules. It has no hardware tiers or saved model selection and is not a public alternative to LFM. Its placement and execution are described in [Language worker](worker-llm.md) and [Inference architecture](inference.md).
+Placement, memory admission, prefix-cache reuse, and GPU sharing with other workers (such as Qwen-Image and H3 video) are described in [Language worker](worker-llm.md) and [Inference architecture](inference.md).

@@ -13,7 +13,6 @@ Feature = Literal[
     "stt_formatting",
     "tts",
     "decisions",
-    "vision",
     "models",
     "model_context",
     "whisper_formatting",

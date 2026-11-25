@@ -299,6 +299,42 @@ public:
         return false;
     }
 
+    // Inkling 2 causal attention over a mirrored KV cache with relative-position
+    // bias, learned virtual sink logits, and optional sliding-window ring buffer.
+    // When window == 0 (full attention), past_keys/past_values hold [>= position + rows,
+    // kv_heads * dim] with the current chunk already written at position..position+rows.
+    // When window > 0 (sliding window), past_keys/past_values hold the host ring
+    // [window, kv_heads * dim] indexed by pos % window BEFORE committing new_keys/new_values,
+    // and new_keys/new_values hold the [rows, kv_heads * dim] entries for position..position+rows.
+    // False precedes any output write and leaves the caller's host path responsible.
+    struct InklingAttention {
+        std::uint64_t layer = 0;
+        std::uint64_t rel_layer = 0;
+        std::span<const float> q;
+        std::span<const float> rel_q;
+        std::span<const float> sinks;
+        std::span<const float> rel_bias;
+        std::span<const float> past_keys;
+        std::span<const float> past_values;
+        std::span<const float> new_keys;
+        std::span<const float> new_values;
+        std::size_t rows = 0;
+        std::size_t position = 0;
+        std::size_t heads = 0;
+        std::size_t kv_heads = 0;
+        std::size_t dim = 0;
+        std::size_t rel_dim = 0;
+        std::size_t rel_extent = 0;
+        std::size_t window = 0;
+        float scale = 0.0f;
+        std::span<float> output;
+    };
+
+    virtual bool
+    attend_inkling_cached(const InklingAttention&, const std::atomic_bool&) {
+        return false;
+    }
+
     // One gated delta-net step over `rows` in order (llama.cpp delta-net-base):
     // causal depthwise convolution with SiLU over qkv, L2-normalized q and k,
     // then per value head the decayed delta rule, RMSNorm by `norm` and the

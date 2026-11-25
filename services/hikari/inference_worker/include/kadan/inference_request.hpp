@@ -33,17 +33,39 @@ enum class Operation {
     configure
 };
 
+struct ChatTool {
+    std::string name;
+    std::string description;
+    Json parameters = Json::object();
+    std::string type = "function";
+};
+
+struct ChatToolCall {
+    std::string id;
+    std::string name;
+    Json arguments = Json::object();
+};
+
 struct ChatMessage {
     std::string role, text;
+    std::vector<std::string> images = {};
+    std::vector<std::vector<std::uint8_t>> decoded_images = {};
+    std::vector<ChatToolCall> tool_calls = {};
+    std::optional<std::string> tool_call_id = std::nullopt;
+    std::optional<std::string> name = std::nullopt;
+    std::optional<std::string> reasoning_content = std::nullopt;
 };
 
 struct ChatRequest {
     std::vector<ChatMessage> messages;
+    std::vector<ChatTool> tools;
     std::optional<std::string> model, conversation_id;
     bool reuse_prefix = true;
     bool context_supplied = false;
     std::optional<std::size_t> context_limit;
-    std::size_t max_output_tokens = 256;
+    std::optional<std::size_t> max_output_tokens;
+    std::optional<std::size_t> reasoning_tokens;
+    std::optional<std::string> reasoning_effort;
 };
 
 struct ImageRequest {

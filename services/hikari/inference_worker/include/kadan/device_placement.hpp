@@ -355,4 +355,95 @@ inline std::size_t weight_boundary(
                    )
                  : units * index / capacities.size();
 }
+
+struct DeviceWeightPlan {
+    std::size_t state_device = 0;
+    std::vector<Bytes> weight_capacities;
+    std::vector<Bytes> bank_bounds;
+    bool fits = false;
+};
+
+// Plans per-device weight partition capacities, bank reservation bounds, and
+// the single device holding KV/recurrent mirrors. Reserving state headroom only
+// on the roomiest device avoids starving mirrors on a smaller secondary GPU,
+// and water-filling balances multi-GPU compute when total capacity exceeds the
+// model's weight footprint.
+inline DeviceWeightPlan plan_device_weights(
+    std::span<const Bytes> capacities,
+    Bytes inventory_bytes,
+    Bytes state_reserve,
+    std::optional<std::size_t> locked_state_device = std::nullopt
+) {
+    DeviceWeightPlan plan;
+    const auto n = capacities.size();
+    if (!n) {
+        plan.fits = inventory_bytes == 0;
+        return plan;
+    }
+
+    auto sat_add = [](Bytes a, Bytes b) {
+        return a > std::numeric_limits<Bytes>::max() - b
+                   ? std::numeric_limits<Bytes>::max()
+                   : a + b;
+    };
+
+    if (locked_state_device && *locked_state_device < n) {
+        plan.state_device = *locked_state_device;
+    } else {
+        plan.state_device = 0;
+        for (std::size_t i = 1; i < n; ++i)
+            if (capacities[i] > capacities[plan.state_device])
+                plan.state_device = i;
+    }
+
+    Bytes total_cap = 0;
+    for (Bytes cap : capacities)
+        total_cap = sat_add(total_cap, cap);
+
+    const Bytes state_cap = capacities[plan.state_device];
+    const Bytes min_reserve = std::min(state_reserve, state_cap / 8);
+    const Bytes spare = total_cap > inventory_bytes ? total_cap - inventory_bytes : 0;
+    const Bytes reserve =
+        std::min({state_reserve, state_cap, std::max(min_reserve, spare)});
+
+    std::vector<Bytes> avail(capacities.begin(), capacities.end());
+    avail[plan.state_device] -= reserve;
+
+    Bytes total_avail = 0;
+    for (Bytes a : avail)
+        total_avail = sat_add(total_avail, a);
+
+    plan.weight_capacities = avail;
+    if (inventory_bytes > 0 && total_avail > inventory_bytes) {
+        std::vector<std::size_t> order(n);
+        for (std::size_t i = 0; i < n; ++i)
+            order[i] = i;
+        std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+            return avail[a] < avail[b];
+        });
+        Bytes remaining = inventory_bytes;
+        std::size_t left = n;
+        for (std::size_t idx : order) {
+            const Bytes fair = (remaining + left - 1) / left;
+            const Bytes assigned = std::min(avail[idx], fair);
+            plan.weight_capacities[idx] = assigned;
+            remaining = remaining > assigned ? remaining - assigned : 0;
+            --left;
+        }
+    }
+
+    plan.bank_bounds.resize(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const Bytes share =
+            weight_boundary(inventory_bytes, plan.weight_capacities, i + 1)
+            - weight_boundary(inventory_bytes, plan.weight_capacities, i);
+        // A 16MiB ceiling per bank leaves room for tensor channel rounding.
+        plan.bank_bounds[i] = std::min(
+            avail[i],
+            sat_add(share, Bytes(16) * 1024 * 1024)
+        );
+    }
+    plan.fits = total_avail >= inventory_bytes;
+    return plan;
+}
 }  // namespace kadan

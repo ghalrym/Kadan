@@ -35,10 +35,18 @@ function settingsError(response: Response | undefined, error: unknown): Error {
 }
 
 /** Pair each capability with its checkpoint from a model snapshot. */
-export function capabilityModels(models: CheckpointStatus[]): CapabilityModel[] {
+export function capabilityModels(
+  models: CheckpointStatus[],
+  selectedModelId?: string | null,
+): CapabilityModel[] {
   return capabilities.map((capability) => ({
     capability,
-    model: models.find((model) => model.id === capability.id) ?? null,
+    model:
+      'kind' in capability
+        ? (models.find((model) => model.id === selectedModelId) ??
+          models.find((model) => model.kind === capability.kind) ??
+          null)
+        : (models.find((model) => model.id === capability.id) ?? null),
   }))
 }
 
@@ -46,7 +54,7 @@ export function capabilityModels(models: CheckpointStatus[]): CapabilityModel[] 
 export async function fetchModels(signal: AbortSignal): Promise<CapabilityModel[]> {
   const result = await listModelsV1ModelsGet({ signal })
   if (!result.response?.ok || !result.data) throw settingsError(result.response, result.error)
-  return capabilityModels(result.data.models)
+  return capabilityModels(result.data.models, result.data.selected_model_id)
 }
 
 /**
@@ -66,7 +74,7 @@ export async function downloadModels(
       path: { model_id: model.id }, body: { license_acknowledged: true }, signal,
     })
     if (!result.response?.ok || !result.data) throw settingsError(result.response, result.error)
-    current = capabilityModels(result.data.models)
+    current = capabilityModels(result.data.models, result.data.selected_model_id)
   }
   return current
 }

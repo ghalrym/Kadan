@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from api.pydantic_models.inference_task import LlmModel
+
 DownloadStatus = Literal[
     "not_downloaded", "downloading", "cancelling", "cancelled", "failed", "complete"
 ]
@@ -34,7 +36,6 @@ class CheckpointStatus(BaseModel):
         "formatting",
         "image",
         "decision",
-        "vision",
         "audio",
     ]
     display_name: str | None
@@ -49,9 +50,8 @@ class CheckpointStatus(BaseModel):
 class ModelAssignments(BaseModel):
     """Fixed capability assignments, independent of machine resources."""
 
-    llm: Literal["lfm3-1.7b-bf16"] = "lfm3-1.7b-bf16"
+    llm: LlmModel = "inkling-2-mini-iq4-nl"
     audio_call: Literal["lfm3-audio-2b-bf16"] = "lfm3-audio-2b-bf16"
-    vision: Literal["lfm3-vl-2b-bf16"] = "lfm3-vl-2b-bf16"
     image: Literal["qwen-image-2.1-turbo"] = "qwen-image-2.1-turbo"
     video: Literal["h3-fl2va-int8-turbo"] = "h3-fl2va-int8-turbo"
     speech: Literal["qwen-tts-1.7b-custom"] = "qwen-tts-1.7b-custom"
@@ -71,5 +71,5 @@ class ModelStoreStatus(BaseModel):
     models: list[CheckpointStatus]
     defaults: ModelAssignments = Field(default_factory=ModelAssignments)
     video_defaults: VideoDefaults = Field(default_factory=VideoDefaults)
-    selected_model_id: Literal["lfm3-1.7b-bf16"] = "lfm3-1.7b-bf16"
+    selected_model_id: LlmModel = "inkling-2-mini-iq4-nl"
     whisper_formatting: bool = True

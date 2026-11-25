@@ -1,9 +1,7 @@
 import type { CacheUsage, ChatMessage } from './generated/types.gen'
 
-export type ConversationMessage = Pick<
-  ChatMessage,
-  'role' | 'text' | 'meta'
-> & {
+export type ConversationMessage = Pick<ChatMessage, 'role' | 'meta'> & {
+  text: string
   cache?: CacheUsage
 }
 

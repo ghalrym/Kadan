@@ -22,6 +22,7 @@
 #include "gguf_placement.hpp"
 #include "kadan/dense_compute.hpp"
 #include "kadan/gguf_checkpoint.hpp"
+#include "kadan/gguf_text.hpp"
 
 namespace kadan::text {
 using Vec = std::vector<float>;
@@ -205,7 +206,7 @@ private:
     // Measured bytes times input rows per second of host-executed experts, and
     // bytes per second of slices the device streams over PCIe; they split
     // misses so both sides finish together.
-    mutable double host_rate_ = 20e9, stream_rate_ = 10e9;
+    mutable double host_rate_ = 3e9, stream_rate_ = 10e9;
 
     void place(DenseCompute&, const SliceKey&, Bytes bytes, Placement::Decision&) const;
 
@@ -285,32 +286,29 @@ public:
     virtual void reset() = 0;
     virtual ModelState take_state() = 0;
     virtual void restore_state(ModelState) = 0;
-    // Rows at positions position..position+tokens.size()-1. Returns the last
+    // Rows at positions position..position+tokens.size()-1. Image spans whose
+    // offset falls within [position, position+tokens.size()) override those
+    // rows' input embeddings without applying token_embd_norm. Returns the last
     // row's logits when requested, else an empty vector.
     virtual Vec forward(
         std::span<const unsigned> tokens,
         std::size_t position,
         bool logits,
-        const Progress& progress
+        const Progress& progress,
+        std::span<const ImageSpan> images = {}
     ) = 0;
 };
 
-// Exact metadata contracts, shared by acquisition and loading.
-void validate_qwen35moe(const checkpoint::GgufMetadata&);
-void validate_qwen35moe(const checkpoint::GgufCheckpoint&);
-void validate_qwen4exp(const checkpoint::GgufMetadata&);
-void validate_qwen4exp(const checkpoint::GgufCheckpoint&);
+// Exact metadata contract for inkling2_loop, shared by acquisition and loading.
+void validate_inkling2_loop(const checkpoint::GgufMetadata&);
+void validate_inkling2_loop(const checkpoint::GgufCheckpoint&);
 
 // Binds every tensor; the model is constructed only after finish().
-void bind_qwen35moe(GgufWeights&);
-void bind_qwen4exp(GgufWeights&);
+void bind_inkling2_loop(GgufWeights&);
 
-// Host bytes of KV/recurrent state for a context.
-std::size_t qwen35moe_state_bytes(std::size_t context);
-std::size_t qwen4exp_state_bytes(std::size_t context);
+// Host bytes of KV and short-conv state for a context across all logical slots.
+std::size_t inkling2_loop_state_bytes(std::size_t context);
 
 std::unique_ptr<Model>
-qwen35moe_model(const GgufWeights&, DenseCompute&, std::size_t context);
-std::unique_ptr<Model>
-qwen4exp_model(const GgufWeights&, DenseCompute&, std::size_t context);
+inkling2_loop_model(const GgufWeights&, DenseCompute&, std::size_t context);
 }  // namespace kadan::text

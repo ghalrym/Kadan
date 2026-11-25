@@ -86,7 +86,7 @@ function LoginSteps({ login, submitting, onCode, onCancel }: {
 
 /**
  * Sign in to the user's own Claude or Codex subscription and choose which provider
- * serves language, vision and image generation. Local keeps Hikari's downloaded models.
+ * serves language (including images) and image generation. Local keeps Hikari's downloaded models.
  */
 export default function SubscriptionsPanel() {
   const [state, setState] = useState<SubscriptionsResponse | null>(null)
@@ -197,11 +197,6 @@ export default function SubscriptionsPanel() {
                   <span className="model-row-name">
                     {selected === 'local' ? capability.local : subscriptionModel(selected)}
                   </span>
-                  {capability.id === 'vision' && selected !== 'local' && (
-                    <span className="muted subscription-note">
-                      Uses your {accountNames[selected]} subscription, so the Vision model does not need to be downloaded.
-                    </span>
-                  )}
                 </span>
                 <div className="segments" role="group" aria-label={`${capability.label} provider`}>
                   {providers.map((provider) => (

@@ -9,6 +9,7 @@ DownloadState = Literal[
 
 class Checkpoint(BaseModel):
     id: str
+    kind: str | None = None
     status: DownloadState
     inference_available: bool
     # Tokens. The configured window, else the checkpoint's own.
@@ -18,6 +19,7 @@ class Checkpoint(BaseModel):
 
 class HikariModels(BaseModel):
     models: list[Checkpoint]
+    selected_model_id: str | None = None
 
 
 class HikariCapabilityProviders(BaseModel):

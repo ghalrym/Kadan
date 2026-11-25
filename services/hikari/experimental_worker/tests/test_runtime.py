@@ -161,12 +161,12 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.directory.cleanup)
         env = patch.dict(
             "os.environ",
-            {"HIKARI_ENABLE_LFM3_TEXT": "true", "KADAN_MODEL_DIR": self.directory.name},
+            {"KADAN_MODEL_DIR": self.directory.name},
         )
         env.start()
         self.addCleanup(env.stop)
         self.runtime = Runtime(
-            "text", {"devices": [{"uuid": "GPU-test", "vram_total": 24 * 1024**3}]}
+            "audio", {"devices": [{"uuid": "GPU-test", "vram_total": 24 * 1024**3}]}
         )
         self.runtime.socket = Socket()
 
@@ -175,7 +175,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             "id": "a" * 32,
             "command": "submit",
             "operation": "completion",
-            "input": {"feature": "llm", "model": "lfm3-1.7b-bf16"},
+            "input": {"feature": "audio_call", "model": "lfm3-audio-2b-bf16"},
             **fields,
         }
 
@@ -219,7 +219,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             download.assert_not_called()
 
     async def test_unselected_model_does_not_enter_queue(self):
-        await self.runtime.handle(self.request(input={"feature": "llm"}))
+        await self.runtime.handle(self.request(input={"feature": "audio_call"}))
         self.assertTrue(self.runtime.queue.empty())
         self.assertEqual(self.runtime.socket.messages[-1]["state"], "rejected")
 
@@ -258,46 +258,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             "cancelled", [message["state"] for message in runtime.socket.messages]
         )
-
-    async def test_text_startup_waits_for_executor_running_event(self):
-        runtime = self.runtime
-        runtime.budget = list(runtime.backend.REQUIREMENT)
-        runtime.store.complete = lambda: True
-        messages = iter(
-            [
-                {"state": "loading"},
-                {"state": "running"},
-                {"state": "result", "result": {"text": "answer"}},
-            ]
-        )
-        pending = 3
-
-        def receive():
-            nonlocal pending
-            pending -= 1
-            return next(messages)
-
-        pipe = SimpleNamespace(
-            poll=lambda: pending > 0, recv=receive, close=lambda: None
-        )
-        process = SimpleNamespace(
-            start=lambda: None, is_alive=lambda: False, join=lambda: None
-        )
-        context = SimpleNamespace(
-            Pipe=lambda **kwargs: (pipe, pipe), Process=lambda **kwargs: process
-        )
-
-        def observe(message):
-            if message["state"] == "running":
-                self.assertEqual(pending, 1)
-
-        runtime.socket.on_send = observe
-        with patch("multiprocessing.get_context", return_value=context):
-            await runtime.run_job(self.request())
-        states = [message["state"] for message in runtime.socket.messages]
-        self.assertEqual(states[:4], ["preparing", "loading", "loading", "running"])
-        self.assertEqual(states.count("running"), 1)
-        self.assertIn("succeeded", states)
 
     async def test_requirement_keeps_whole_model_on_one_gpu(self):
         await self.runtime.handle({"id": "req", "command": "requirement"})
@@ -431,11 +391,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "grant observed"):
                 await asyncio.wait_for(runtime.run_job(self.request()), 0.1)
-
-    def test_disabled_worker_fails_before_probe_or_connection(self):
-        with patch.dict("os.environ", {"HIKARI_ENABLE_LFM3_TEXT": "false"}):
-            with self.assertRaisesRegex(ValueError, "requires HIKARI_ENABLE_LFM3_TEXT"):
-                Runtime("text")
 
     async def test_reconnect_discards_stale_work_and_requires_a_fresh_grant(self):
         runtime = self.runtime
