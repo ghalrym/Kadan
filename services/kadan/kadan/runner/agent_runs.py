@@ -31,6 +31,7 @@ from ..api.pydantic_models.agent_runs import (
     UnrecoveredRecord,
 )
 from ..api.pydantic_models.computer import ComputerTask
+from ..api.pydantic_models.mcp import McpServerRecord
 from ..api.pydantic_models.resources import Message, Resource, ResourceKind
 from ..api.run_client import RunClient
 from ..api.services import parse_resource
@@ -46,6 +47,14 @@ from .conversation_history import (
     SearchHistoryArguments,
     history_page,
 )
+from .mcp_runtime import (
+    McpOrigin,
+    build_mcp_tools,
+    execute_mcp_tool,
+    find_server_tool,
+    search_mcp_tools,
+    validate_json_schema_arguments,
+)
 from .memories import AgentMemories
 from .tools import (
     ALL_TOOLS,
@@ -57,6 +66,7 @@ from .tools import (
 )
 from .tools.computer import UseComputerArguments
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
+from .tools.mcp import MCP_GATEWAY_TOOLS, McpCallArguments, McpSearchArguments
 from .tools.persona import UpdatePersonaArguments
 from .tools.workspace import (
     CreateWorkspaceDocumentArguments,
@@ -108,10 +118,30 @@ def validate(
     command: ToolCommand, tools: list[StructuredTool]
 ) -> ArgumentRejection | None:
     """Reject before execution, retaining field diagnostics without input values."""
-    if command.tool not in {tool.name for tool in tools}:
+    tools_by_name = {tool.name: tool for tool in tools}
+    if command.tool not in tools_by_name:
         raise ServiceError(f"unknown tool {command.tool!r}", 502, "invalid_command")
+    schema = tools_by_name[command.tool].args_schema
+    if isinstance(schema, dict):
+        problems = validate_json_schema_arguments(schema, command.arguments)
+        if problems:
+            return ArgumentRejection(
+                tool=command.tool,
+                problems=[
+                    ArgumentProblem(
+                        field=field
+                        if re.fullmatch(
+                            r"[A-Za-z_][A-Za-z0-9_]{0,63}|[0-9]{1,6}", field
+                        )
+                        else "[redacted]",
+                        code=code,
+                    )
+                    for field, code in problems
+                ],
+            )
+        return None
     try:
-        TOOLS_BY_NAME[command.tool].args_schema.model_validate(command.arguments)
+        schema.model_validate(command.arguments)
     except ValidationError as error:
         return ArgumentRejection(
             tool=command.tool,
@@ -146,6 +176,35 @@ class RunConversation:
         self.end_run = False
         self.finished = False
         self.replayed = replayed
+
+    async def search_mcp_tools(self, args: McpSearchArguments) -> dict:
+        servers = await self.runs.active_mcp_servers()
+        return search_mcp_tools(
+            servers, server_filter=args.server, query=args.query
+        )
+
+    async def call_mcp_tool(self, args: McpCallArguments) -> dict:
+        servers = await self.runs.active_mcp_servers()
+        match = find_server_tool(servers, args.server, args.tool)
+        if match is None:
+            return {
+                "error": f"Tool '{args.tool}' was not found on connected MCP server '{args.server}'. "
+                "Use mcp_search_tools to check available servers and tools."
+            }
+        server, tool_info = match
+        return await execute_mcp_tool(
+            self.runs.services,
+            server,
+            tool_info,
+            args.arguments,
+            action_id=self.action_id,
+            replayed=self.replayed,
+            origin=McpOrigin(
+                agent_key=self.run.agent_key,
+                conversation_id=self.run.conversation_id,
+                run_id=self.run.id,
+            ),
+        )
 
     async def use_computer(self, args: UseComputerArguments) -> dict:
         if not self.runs.services.sandbox.configured:
@@ -585,14 +644,17 @@ class AgentRuns(RunClient):
             except ValueError:
                 detail = run.trigger_event.content
             event = RunObservation(
-                name={"computer": "computer_task_event", "codex": "codex_thread_event"}[
-                    run.trigger_event.kind
-                ],
+                name={
+                    "computer": "computer_task_event",
+                    "codex": "codex_thread_event",
+                    "t3": "t3_thread_event",
+                }[run.trigger_event.kind],
                 data=detail if isinstance(detail, dict) else {"detail": detail},
             )
 
         if limit is None:
-            limit = MAX_CONTEXT - tool_characters(self.bound_tools(run))
+            mcp_servers = await self.active_mcp_servers()
+            limit = MAX_CONTEXT - tool_characters(self.bound_tools(run, mcp_servers))
         budget = (
             limit - entry_characters(system) - (entry_characters(event) if event else 0)
         )
@@ -688,7 +750,9 @@ class AgentRuns(RunClient):
             status = await self.services.inference_status()
             if status.state != "ready":
                 raise ServiceError(status.message, 503)
-            limit = self.transcript_limit(status, run)
+            mcp_servers = await self.active_mcp_servers()
+            tools = self.bound_tools(run, mcp_servers)
+            limit = self.transcript_limit(status, run, mcp_servers)
             if sum(entry_characters(item) for item in run.transcript) > limit:
                 raise ServiceError("The agent run exceeded its context limit.", 422)
             started = monotonic()
@@ -697,7 +761,6 @@ class AgentRuns(RunClient):
                 run.id,
                 datetime.now(UTC).isoformat(),
             )
-            tools = self.bound_tools(run)
             draft_parts: list[str] = []
             draft_published = False
             last_draft_at = 0.0
@@ -784,11 +847,30 @@ class AgentRuns(RunClient):
             )
         return {"run": run, "command": command, "replayed": replayed}
 
-    def transcript_limit(self, status, run: AgentRun) -> int:
+    async def active_mcp_servers(self) -> list[McpServerRecord]:
+        mcp = getattr(self.services, "mcp", None)
+        if mcp is None:
+            return []
+        try:
+            servers = await mcp.list_servers()
+        except ServiceError:
+            return []
+        return [
+            server
+            for server in servers
+            if server.enabled and server.status == "connected"
+        ]
+
+    def transcript_limit(
+        self,
+        status,
+        run: AgentRun,
+        mcp_servers: list[McpServerRecord] | None = None,
+    ) -> int:
         """The transcript budget left after the bound tool definitions."""
         limit = context_characters(
             getattr(status, "context_limit", None)
-        ) - tool_characters(self.bound_tools(run))
+        ) - tool_characters(self.bound_tools(run, mcp_servers))
         if limit <= 0:
             raise ServiceError(
                 "The model context limit leaves no room for agent instructions "
@@ -797,17 +879,25 @@ class AgentRuns(RunClient):
             )
         return limit
 
-    def bound_tools(self, run: AgentRun) -> list[StructuredTool]:
+    def bound_tools(
+        self,
+        run: AgentRun,
+        mcp_servers: list[McpServerRecord] | None = None,
+    ) -> list[StructuredTool]:
         tools = (
             ALL_TOOLS
             if self.services.sandbox.configured
             else [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]
         )
-        return [
+        base = [
             tool
             for tool in tools
             if tool.name != "read_request_references" or run.references
         ]
+        if mcp_servers:
+            mcp_tools, _ = build_mcp_tools(mcp_servers, {t.name for t in base})
+            return [*base, *mcp_tools]
+        return base
 
     @traced("kadan.agent_runs.invoke_tool")
     async def invoke_tool(self, state: RunState) -> dict:
@@ -821,8 +911,38 @@ class AgentRuns(RunClient):
             )
         tool = TOOLS_BY_NAME.get(command.tool)
         conversation = RunConversation(self, run, state.replayed)
+        mcp_target: tuple[McpServerRecord, Any] | None = None
         if tool is None:
+            mcp_servers = await self.active_mcp_servers()
+            gateway_by_name = {t.name: t for t in MCP_GATEWAY_TOOLS}
+            if command.tool in gateway_by_name:
+                tool = gateway_by_name[command.tool]
+            else:
+                _, registry = build_mcp_tools(mcp_servers, set(TOOLS_BY_NAME))
+                mcp_target = registry.get(command.tool)
+
+        if mcp_target is not None:
+            server, tool_info = mcp_target
+            result = await execute_mcp_tool(
+                self.services,
+                server,
+                tool_info,
+                command.arguments,
+                action_id=conversation.action_id,
+                replayed=state.replayed,
+                origin=McpOrigin(
+                    agent_key=run.agent_key,
+                    conversation_id=run.conversation_id,
+                    run_id=run.id,
+                ),
+            )
+        elif tool is None:
             result = {"tool": command.tool, "error": "This tool no longer exists."}
+        elif tool in MCP_GATEWAY_TOOLS:
+            result = await tool.ainvoke(
+                command.arguments,
+                config={"configurable": {"conversation": conversation}},
+            )
         elif tool in PERSONA_TOOLS:
             if state.replayed and command.tool == "update_persona":
                 result = {

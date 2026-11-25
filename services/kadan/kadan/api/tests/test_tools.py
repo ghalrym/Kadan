@@ -27,7 +27,6 @@ from kadan.runner.tools.browser import (
 )
 from kadan.runner.tools.conversation import send_message
 from kadan.runner.tools.file import file_poll_events, file_upload_file
-from kadan.runner.tools.mcp import mcp_execute_mcp_tool
 from kadan.runner.tools.nodejs import nodejs_update_nodejs_session
 from kadan.runner.tools.workspace import create_workspace_document
 
@@ -149,7 +148,7 @@ def test_uploads_send_text_as_a_file():
     assert request["data"] == {"path": "/home/gem/a.txt"}
 
 
-def test_display_actions_and_mcp_calls_send_their_own_body():
+def test_display_actions_send_their_own_body():
     schema = browser_execute_action.args_schema.model_json_schema()
     assert "$defs" not in schema
     _, path, request = call(
@@ -163,14 +162,6 @@ def test_display_actions_and_mcp_calls_send_their_own_body():
         "button": "left",
         "num_clicks": 1,
     }
-    _, path, request = call(
-        mcp_execute_mcp_tool,
-        server_name="browser",
-        tool_name="navigate",
-        arguments={"url": "https://example.com"},
-    )
-    assert path == "/v1/mcp/browser/tools/navigate"
-    assert request["json_body"] == {"url": "https://example.com"}
 
 
 def test_browser_get_markdown_drops_ad_urls_and_enforces_total_budget():

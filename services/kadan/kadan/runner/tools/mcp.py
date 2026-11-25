@@ -1,56 +1,62 @@
-"""MCP tools: the MCP servers that run inside the computer."""
+"""MCP gateway tools for discovering and calling unpinned remote MCP tools."""
 
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import Field
 
-from ...api.sandbox_client import SandboxClient, segment
-from .base import Arguments, body, computer_tool
+from .base import Arguments, conversation_tool
 
 
-class ListServersArguments(Arguments):
-    include_hidden: bool = Field(default=False, description="Include hidden servers.")
+class McpSearchArguments(Arguments):
+    server: str | None = Field(
+        default=None,
+        description="Optional MCP server name or slug to search (omit to search all connected servers).",
+    )
+    query: str = Field(
+        default="",
+        max_length=200,
+        description="Optional keyword filter matching tool names or descriptions.",
+    )
 
 
-@computer_tool("GET")
-async def mcp_list_mcp_servers(
-    args: ListServersArguments, computer: SandboxClient
-) -> dict:
-    """List the configured MCP servers."""
-    return await computer.run("GET", "/v1/mcp/servers", params=body(args))
-
-
-class ServerArguments(Arguments):
-    server_name: str = Field(description="MCP server name from mcp_list_mcp_servers.")
-
-
-@computer_tool("GET")
-async def mcp_list_mcp_tools(args: ServerArguments, computer: SandboxClient) -> dict:
-    """List an MCP server's tools with their descriptions and parameters."""
-    return await computer.run("GET", f"/v1/mcp/{segment(args.server_name)}/tools")
-
-
-class ExecuteToolArguments(ServerArguments):
-    tool_name: str = Field(description="Tool name from mcp_list_mcp_tools.")
+class McpCallArguments(Arguments):
+    server: str = Field(
+        min_length=1,
+        max_length=100,
+        description="MCP server slug or name from mcp_search_tools.",
+    )
+    tool: str = Field(
+        min_length=1,
+        max_length=200,
+        description="Exact tool name from mcp_search_tools.",
+    )
     arguments: dict[str, Any] = Field(
-        default_factory=dict, description="The tool's arguments."
+        default_factory=dict,
+        description="JSON arguments matching the tool's schema.",
     )
 
 
-@computer_tool("POST")
-async def mcp_execute_mcp_tool(
-    args: ExecuteToolArguments, computer: SandboxClient
+class McpConversation(Protocol):
+    async def search_mcp_tools(self, args: McpSearchArguments) -> dict: ...
+    async def call_mcp_tool(self, args: McpCallArguments) -> dict: ...
+
+
+@conversation_tool
+async def mcp_search_tools(
+    args: McpSearchArguments, conversation: McpConversation
 ) -> dict:
-    """Run a tool on one of the computer's MCP servers."""
-    return await computer.run(
-        "POST",
-        f"/v1/mcp/{segment(args.server_name)}/tools/{segment(args.tool_name)}",
-        json_body=args.arguments,
-    )
+    """Search additional tools on connected MCP servers that are not directly bound."""
+    return await conversation.search_mcp_tools(args)
 
 
-TOOLS = [
-    # mcp_list_mcp_servers,
-    # mcp_list_mcp_tools,
-    # mcp_execute_mcp_tool,
-]
+@conversation_tool
+async def mcp_call_tool(
+    args: McpCallArguments, conversation: McpConversation
+) -> dict:
+    """Call a tool discovered via mcp_search_tools on a connected MCP server."""
+    return await conversation.call_mcp_tool(args)
+
+
+# Keep empty so COMPUTER_TOOLS does not bind legacy sandbox MCP tools.
+TOOLS: list = []
+MCP_GATEWAY_TOOLS = [mcp_search_tools, mcp_call_tool]
