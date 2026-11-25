@@ -20,7 +20,7 @@ Saved work can continue after the browser closes. A queued message does not prom
 | [Personas](personas.md) | Let agents maintain saved response instructions, with optional additional named personas. |
 | [Shared agent instructions](agent-instructions.md) | Change operator-maintained instructions for subsequent agent work. |
 | [Agent actions](agent-actions.md) | Ask agents to browse, change files and run commands, with explicit limits on recovery. |
-| [Coding with Codex](coding.md) | Sign in with ChatGPT once, let the agent run Codex on its computer and track its threads. |
+| [Integrations and T3 Code](integrations.md) | Connect T3 Code and other remote MCP tool services, let the agent delegate coding threads and receive background updates. |
 | [Computer](computer.md) | Watch or control the shared computer, and request or steer its assistant's work. |
 | [Images in conversations](image-generation.md) | Continue chatting while images generate and receive saved results later. |
 | [Pets](pets.md) | Create, import, preview, repair and explicitly select animated pets. |

@@ -6,8 +6,7 @@ Kadan can look up the recorded status of this conversation’s image jobs and co
 
 The computer assistant has one continuing working thread per agent, so later tasks can build on what earlier ones did. Tasks run one at a time in the order they were handed over or requested. Users can [request or steer its work](computer.md) directly from the computer view. When the thread grows long, the assistant keeps only short summaries of its oldest finished tasks. A single task that does not fit its context, exceeds its action limit or keeps sending invalid arguments fails with an explanation.
 
-For coding work, the agent can start [Codex threads](coding.md) on this same
-computer and check on them later.
+For coding work, the agent can delegate threads to a connected [T3 Code integration](integrations.md) and call tools from other connected remote MCP services.
 
 The standard deployment uses Hikari's native Inkling 2 Mini language worker (or the selected Claude/Codex Language subscription) with the same saved session, personas, tool permissions and action recovery. When using Local, its checkpoint requires a user-approved download; unavailable workers or incomplete checkpoints produce an error. Its bounded context can reject long conversations; tool-use quality and speed need manual evaluation for the work being attempted.
 

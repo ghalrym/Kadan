@@ -10,8 +10,8 @@ while the computer works.
 ## Responsibilities
 
 - The conversation agent binds `use_computer(instructions, message)` beside its
-  conversation, workspace, memory, persona and Codex tools. Codex stays with the
-  conversation agent because it is a separate kind of delegated work.
+  conversation, workspace, memory, persona, and [Remote MCP](mcp-integrations.md) tools. Remote MCP integrations (including T3 Code) stay with the
+  conversation agent because coding threads are delegated externally rather than run inside the sandbox.
 - The computer agent binds the sandbox tools, `computer_look` and
   `finish_task(summary, succeeded)`. Its instructions come from
   `COMPUTER_AGENT.md` (`KADAN_COMPUTER_INSTRUCTION_FILE`), read before every
@@ -22,7 +22,7 @@ while the computer works.
 
 ## Handover
 
-`use_computer` works like `generate_image` and `codex_start`. It creates a task
+`use_computer` works like `generate_image`. It creates a task
 keyed by the action ID, delivers `message` and ends the run. A replay after a
 restart gets the original task back. Each later conversation context lists
 pending tasks so the agent does not resubmit them.

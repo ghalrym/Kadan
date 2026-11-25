@@ -6,8 +6,8 @@ shared Compose network, and lets the owner watch or take over that computer from
 ## Components
 
 - `kadan-sandbox`: the pinned AIO Sandbox image (`ghcr.io/agent-infra/sandbox`).
-  It owns execution. The image also includes the pinned Codex CLI and Kadan's
-  [Codex threads script](coding.md); Kadan keeps no copy of the sandbox's API.
+  It owns execution; Kadan keeps no copy of the sandbox's API. Coding work is
+  delegated separately via [Remote MCP integrations](mcp-integrations.md).
 - `kadan/api/sandbox_client.py`: the only client of the sandbox's HTTP API.
 - `kadan/runner/tools/`: one hand-written LangChain tool per sandbox route, with
   a Pydantic argument model. Each module's `TOOLS` list selects the enabled tools.
@@ -101,7 +101,7 @@ Inspect the resolved configuration before applying it:
 
 ```sh
 docker compose -f compose.yaml -f compose.resources.yaml config
-# After stopping agent/coding work and saving open app state:
+# After stopping agent computer work and saving open app state:
 docker compose -f compose.yaml -f compose.resources.yaml up -d --no-deps kadan-sandbox
 ```
 
