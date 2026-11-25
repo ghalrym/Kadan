@@ -14,6 +14,7 @@ from .computer_tasks import ComputerTasks
 from .config import RunnerSettings
 from .image_jobs import ImageJobs
 from .pet_jobs import PetJobs
+from .t3_events import T3ThreadEvents
 
 logger = logging.getLogger(__name__)
 POLL_SECONDS = 0.5
@@ -25,6 +26,7 @@ class RunnerServices(LocalServices):
         self.runs = AgentRuns(self, owner)
         self.images = ImageJobs(self)
         self.pets = PetJobs(self)
+        self.t3 = T3ThreadEvents(self)
         self.computer = ComputerTasks(self)
 
 
@@ -124,10 +126,12 @@ async def serve(client, settings, runner_settings: RunnerSettings, stop: asyncio
     runner = AgentRunner(services, runner_settings)
     services.images.start()
     services.pets.start()
+    services.t3.start()
     services.computer.start()
     try:
         await runner.run(stop)
     finally:
         await services.images.close()
         await services.pets.close()
+        await services.t3.close()
         await services.computer.close()
