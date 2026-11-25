@@ -1483,48 +1483,319 @@ __global__ void inkling_moe_decode_down_reduce_kernel(
         moe_out[col] = total;
 }
 
-// Prefill MoE gather: copies ffn_h[token_idx[i]] into F32 + FP16 contiguous expert buffer.
-__global__ void inkling_moe_gather_kernel(
-    const float* __restrict__ ffn_h,
-    const unsigned* __restrict__ token_idx,
-    float* __restrict__ dst_f32,
-    __half* __restrict__ dst_fp16,
-    unsigned total_slots
+// GPU-side CSR expert bucketing (zero host syncs during prefill!).
+// 1 CTA (256 threads) counts 128 expert buckets, exclusive-scans offsets, and
+// builds exp_token_idx[slot] and exp_slot_for_rk[row * 8 + k].
+__global__ void inkling_moe_bucket_gpu_kernel(
+    const unsigned* __restrict__ row_experts,  // [rows * 8]
+    unsigned total_slots,
+    unsigned* __restrict__ exp_offsets,        // [129]
+    unsigned* __restrict__ exp_token_idx,      // [rows * 8]
+    unsigned* __restrict__ exp_slot_for_rk     // [rows * 8]
 ) {
-    const unsigned slot = blockIdx.x;
-    if (slot >= total_slots)
-        return;
-    const unsigned tok = token_idx[slot];
-    const float* src = ffn_h + std::size_t(tok) * G::n_embd;
-    float* out_f = dst_f32 + std::size_t(slot) * G::n_embd;
-    __half* out_h = dst_fp16 + std::size_t(slot) * G::n_embd;
+    static_assert(G::n_experts == 128 && G::n_experts_used == 8);
+    __shared__ unsigned s_count[G::n_experts];
+    __shared__ unsigned s_cursor[G::n_experts];
     const unsigned t = threadIdx.x;
-#pragma unroll
-    for (unsigned j = 0; j < 9; ++j) {
-        const unsigned idx = t + j * 256u;
-        const float v = src[idx];
-        out_f[idx] = v;
-        out_h[idx] = __float2half_rn(v);
+    if (t < G::n_experts)
+        s_count[t] = 0u;
+    __syncthreads();
+
+    for (unsigned rk = t; rk < total_slots; rk += blockDim.x)
+        atomicAdd(&s_count[row_experts[rk]], 1u);
+    __syncthreads();
+
+    if (t == 0u) {
+        unsigned acc = 0u;
+        for (unsigned e = 0u; e < G::n_experts; ++e) {
+            s_cursor[e] = acc;
+            exp_offsets[e] = acc;
+            acc += s_count[e];
+        }
+        exp_offsets[G::n_experts] = acc;
+    }
+    __syncthreads();
+
+    for (unsigned rk = t; rk < total_slots; rk += blockDim.x) {
+        const unsigned e = row_experts[rk];
+        const unsigned pos = atomicAdd(&s_cursor[e], 1u);
+        exp_token_idx[pos] = rk >> 3;
+        exp_slot_for_rk[rk] = pos;
     }
 }
 
-// Prefill SiTU activation: writes both F32 (for m<16 dp4a) and FP16 (for m>=16 Tensor Core).
-__global__ void inkling_situ_prefill_kernel(
-    const float* __restrict__ gate_up,  // [total_slots, 2 * 1152]
-    float* __restrict__ act_f32,        // [total_slots, 1152]
-    __half* __restrict__ act_fp16,      // [total_slots, 1152]
-    unsigned total_slots
+// Grouped tiled quantized MMQ prefill kernel: gate_up + SiTU across ALL 128 experts
+// in ONE launch! Reads SoA weights directly (zero W_fp16 HBM round-trip) with 16-row
+// tiling (16x weight reuse, 4.5 KB shared memory) and gathers ffn_q8 on the fly.
+// Grid: dim3(1152/4 = 288, 128), Block: 128 threads (4 warps = 4 cols).
+template <int Kind>
+__global__ void inkling_moe_prefill_gate_up_situ_kernel(
+    const unsigned* __restrict__ exp_offsets,    // [129]
+    const unsigned* __restrict__ exp_token_idx,  // [total_slots]
+    const unsigned char* const* __restrict__ gate_up_ptrs,
+    const Q8Block* __restrict__ ffn_q8,          // [rows, 72]
+    const float* __restrict__ ffn_f32,           // [rows, 2304]
+    float* __restrict__ act_out,                 // [total_slots, 1152]
+    std::size_t qs_row_bytes,
+    std::size_t scales_offset
 ) {
-    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
-    const std::size_t total = std::size_t(total_slots) * G::n_ff_exp;
-    if (i >= total)
+    static_assert(G::n_ff_exp % 4 == 0 && (G::n_embd >> 5) % 8 == 0);
+    constexpr unsigned n_blocks = G::n_embd >> 5;  // 72
+    constexpr unsigned kTileM = 16u;
+
+    const unsigned e = blockIdx.y;
+    const unsigned off = exp_offsets[e];
+    const unsigned m = exp_offsets[e + 1u] - off;
+    if (m == 0u)
         return;
-    const std::size_t slot = i / G::n_ff_exp;
-    const std::size_t d = i % G::n_ff_exp;
-    const float* row = gate_up + slot * (2 * G::n_ff_exp);
-    const float val = situ_act(row[d], row[G::n_ff_exp + d]);
-    act_f32[i] = val;
-    act_fp16[i] = __float2half_rn(val);
+
+    __shared__ unsigned s_tok[kTileM];
+    __shared__ Q8Block s_x[Kind != kWKindF32 ? kTileM * 8u : 1];
+
+    const unsigned col = blockIdx.x * 4u + (threadIdx.x >> 5);
+    const unsigned lane = threadIdx.x & 31u;
+    const unsigned grp = lane >> 2;
+    const unsigned sub = lane & 3u;
+
+    const unsigned char* w_base = gate_up_ptrs[e];
+    const unsigned char* w_gate = w_base + std::size_t(col) * qs_row_bytes;
+    const unsigned char* w_up = w_base + std::size_t(col + G::n_ff_exp) * qs_row_bytes;
+    const __half* sc_gate =
+        (Kind == kWKindF32)
+            ? nullptr
+            : (reinterpret_cast<const __half*>(w_base + scales_offset) + std::size_t(col) * n_blocks);
+    const __half* sc_up =
+        (Kind == kWKindF32)
+            ? nullptr
+            : (reinterpret_cast<const __half*>(w_base + scales_offset)
+               + std::size_t(col + G::n_ff_exp) * n_blocks);
+
+    for (unsigned r0 = 0u; r0 < m; r0 += kTileM) {
+        const unsigned tile_rows = min(kTileM, m - r0);
+        if (threadIdx.x < tile_rows)
+            s_tok[threadIdx.x] = exp_token_idx[off + r0 + threadIdx.x];
+        __syncthreads();
+
+        float g_sum[kTileM];
+        float u_sum[kTileM];
+#pragma unroll
+        for (unsigned r = 0u; r < kTileM; ++r) {
+            g_sum[r] = 0.0f;
+            u_sum[r] = 0.0f;
+        }
+
+        if constexpr (Kind == kWKindF32) {
+            const auto* wg = reinterpret_cast<const float4*>(w_gate);
+            const auto* wu = reinterpret_cast<const float4*>(w_up);
+            for (unsigned v = lane; v < (G::n_embd >> 2); v += 32u) {
+                const float4 g = wg[v], u = wu[v];
+                for (unsigned r = 0u; r < tile_rows; ++r) {
+                    const float4 x = reinterpret_cast<const float4*>(
+                        ffn_f32 + std::size_t(s_tok[r]) * G::n_embd
+                    )[v];
+                    float gs = g_sum[r], us = u_sum[r];
+                    gs = fmaf(g.x, x.x, gs);
+                    gs = fmaf(g.y, x.y, gs);
+                    gs = fmaf(g.z, x.z, gs);
+                    gs = fmaf(g.w, x.w, gs);
+                    us = fmaf(u.x, x.x, us);
+                    us = fmaf(u.y, x.y, us);
+                    us = fmaf(u.z, x.z, us);
+                    us = fmaf(u.w, x.w, us);
+                    g_sum[r] = gs;
+                    u_sum[r] = us;
+                }
+            }
+        } else {
+            const unsigned lr = threadIdx.x >> 3;   // 0..15
+            const unsigned lkb = threadIdx.x & 7u;  // 0..7
+            for (unsigned b_base = 0u; b_base < n_blocks; b_base += 8u) {
+                if (lr < tile_rows)
+                    s_x[lr * 8u + lkb] =
+                        ffn_q8[std::size_t(s_tok[lr]) * n_blocks + b_base + lkb];
+                __syncthreads();
+
+                const unsigned b = b_base + grp;
+                int32_t wg0, wg1, wu0, wu1;
+                const float dg = (Kind == kWKindIQ4_NL)
+                                     ? load_iq4nl_soa_quarter(w_gate, sc_gate, b, sub, wg0, wg1)
+                                     : load_q8_0_soa_quarter(w_gate, sc_gate, b, sub, wg0, wg1);
+                const float du = (Kind == kWKindIQ4_NL)
+                                     ? load_iq4nl_soa_quarter(w_up, sc_up, b, sub, wu0, wu1)
+                                     : load_q8_0_soa_quarter(w_up, sc_up, b, sub, wu0, wu1);
+
+                if (tile_rows == kTileM) {
+#pragma unroll
+                    for (unsigned r = 0u; r < kTileM; ++r) {
+                        const Q8Block& xb = s_x[r * 8u + grp];
+                        int32_t x0, x1;
+                        if constexpr (Kind == kWKindIQ4_NL) {
+                            x0 = xb.qs[sub];
+                            x1 = xb.qs[sub + 4u];
+                        } else {
+                            x0 = xb.qs[sub * 2u];
+                            x1 = xb.qs[sub * 2u + 1u];
+                        }
+                        const int32_t ag = __dp4a(wg1, x1, __dp4a(wg0, x0, 0));
+                        const int32_t au = __dp4a(wu1, x1, __dp4a(wu0, x0, 0));
+                        g_sum[r] = fmaf(dg * xb.d, float(ag), g_sum[r]);
+                        u_sum[r] = fmaf(du * xb.d, float(au), u_sum[r]);
+                    }
+                } else {
+                    for (unsigned r = 0u; r < tile_rows; ++r) {
+                        const Q8Block& xb = s_x[r * 8u + grp];
+                        int32_t x0, x1;
+                        if constexpr (Kind == kWKindIQ4_NL) {
+                            x0 = xb.qs[sub];
+                            x1 = xb.qs[sub + 4u];
+                        } else {
+                            x0 = xb.qs[sub * 2u];
+                            x1 = xb.qs[sub * 2u + 1u];
+                        }
+                        const int32_t ag = __dp4a(wg1, x1, __dp4a(wg0, x0, 0));
+                        const int32_t au = __dp4a(wu1, x1, __dp4a(wu0, x0, 0));
+                        g_sum[r] = fmaf(dg * xb.d, float(ag), g_sum[r]);
+                        u_sum[r] = fmaf(du * xb.d, float(au), u_sum[r]);
+                    }
+                }
+                __syncthreads();
+            }
+        }
+
+        for (unsigned r = 0u; r < tile_rows; ++r) {
+            float gs = g_sum[r], us = u_sum[r];
+#pragma unroll
+            for (unsigned sh = 16u; sh; sh >>= 1) {
+                gs += __shfl_down_sync(0xffffffffu, gs, sh);
+                us += __shfl_down_sync(0xffffffffu, us, sh);
+            }
+            if (lane == 0u)
+                act_out[std::size_t(off + r0 + r) * G::n_ff_exp + col] = situ_act(gs, us);
+        }
+        __syncthreads();
+    }
+}
+
+// Grouped tiled quantized MMQ prefill kernel: down projection across ALL 128 experts
+// in ONE launch! Reads SoA weights directly with 32-row tiling (32x weight reuse,
+// 9 KB shared memory) — single weight pass per expert on typical 512-token chunks.
+// Grid: dim3(2304/4 = 576, 128), Block: 128 threads (4 warps = 4 cols).
+template <int Kind>
+__global__ void inkling_moe_prefill_down_kernel(
+    const unsigned* __restrict__ exp_offsets,  // [129]
+    const unsigned char* const* __restrict__ down_ptrs,
+    const Q8Block* __restrict__ act_q8,        // [total_slots, 36]
+    const float* __restrict__ act_f32,         // [total_slots, 1152]
+    float* __restrict__ down_out,              // [total_slots, 2304]
+    std::size_t qs_row_bytes,
+    std::size_t scales_offset
+) {
+    static_assert(G::n_embd % 4 == 0);
+    constexpr unsigned n_blocks = G::n_ff_exp >> 5;  // 36
+    constexpr unsigned kTileM = 32u;
+
+    const unsigned e = blockIdx.y;
+    const unsigned off = exp_offsets[e];
+    const unsigned m = exp_offsets[e + 1u] - off;
+    if (m == 0u)
+        return;
+
+    __shared__ Q8Block s_x[Kind != kWKindF32 ? kTileM * 8u : 1];
+
+    const unsigned col = blockIdx.x * 4u + (threadIdx.x >> 5);
+    const unsigned lane = threadIdx.x & 31u;
+    const unsigned grp = lane >> 2;
+    const unsigned sub = lane & 3u;
+
+    const unsigned char* w_base = down_ptrs[e];
+    const unsigned char* wrow = w_base + std::size_t(col) * qs_row_bytes;
+    const __half* sc_row =
+        (Kind == kWKindF32)
+            ? nullptr
+            : (reinterpret_cast<const __half*>(w_base + scales_offset) + std::size_t(col) * n_blocks);
+
+    for (unsigned r0 = 0u; r0 < m; r0 += kTileM) {
+        const unsigned tile_rows = min(kTileM, m - r0);
+        float sums[kTileM];
+#pragma unroll
+        for (unsigned r = 0u; r < kTileM; ++r)
+            sums[r] = 0.0f;
+
+        if constexpr (Kind == kWKindF32) {
+            const auto* wf = reinterpret_cast<const float4*>(wrow);
+            for (unsigned v = lane; v < (G::n_ff_exp >> 2); v += 32u) {
+                const float4 w = wf[v];
+                for (unsigned r = 0u; r < tile_rows; ++r) {
+                    const float4 x = reinterpret_cast<const float4*>(
+                        act_f32 + std::size_t(off + r0 + r) * G::n_ff_exp
+                    )[v];
+                    float s = sums[r];
+                    s = fmaf(w.x, x.x, s);
+                    s = fmaf(w.y, x.y, s);
+                    s = fmaf(w.z, x.z, s);
+                    s = fmaf(w.w, x.w, s);
+                    sums[r] = s;
+                }
+            }
+        } else {
+            for (unsigned b_base = 0u; b_base < n_blocks; b_base += 8u) {
+                for (unsigned idx = threadIdx.x; idx < tile_rows * 8u; idx += 128u) {
+                    const unsigned lr = idx >> 3;
+                    const unsigned lkb = idx & 7u;
+                    if (b_base + lkb < n_blocks)
+                        s_x[idx] =
+                            act_q8[std::size_t(off + r0 + lr) * n_blocks + b_base + lkb];
+                }
+                __syncthreads();
+
+                const unsigned b = b_base + grp;
+                if (b < n_blocks) {
+                    int32_t w0, w1;
+                    const float wd = (Kind == kWKindIQ4_NL)
+                                         ? load_iq4nl_soa_quarter(wrow, sc_row, b, sub, w0, w1)
+                                         : load_q8_0_soa_quarter(wrow, sc_row, b, sub, w0, w1);
+                    if (tile_rows == kTileM) {
+#pragma unroll
+                        for (unsigned r = 0u; r < kTileM; ++r) {
+                            const Q8Block& xb = s_x[r * 8u + grp];
+                            int32_t acc;
+                            if constexpr (Kind == kWKindIQ4_NL) {
+                                acc = __dp4a(w0, xb.qs[sub], 0);
+                                acc = __dp4a(w1, xb.qs[sub + 4u], acc);
+                            } else {
+                                acc = __dp4a(w0, xb.qs[sub * 2u], 0);
+                                acc = __dp4a(w1, xb.qs[sub * 2u + 1u], acc);
+                            }
+                            sums[r] = fmaf(wd * xb.d, float(acc), sums[r]);
+                        }
+                    } else {
+                        for (unsigned r = 0u; r < tile_rows; ++r) {
+                            const Q8Block& xb = s_x[r * 8u + grp];
+                            int32_t acc;
+                            if constexpr (Kind == kWKindIQ4_NL) {
+                                acc = __dp4a(w0, xb.qs[sub], 0);
+                                acc = __dp4a(w1, xb.qs[sub + 4u], acc);
+                            } else {
+                                acc = __dp4a(w0, xb.qs[sub * 2u], 0);
+                                acc = __dp4a(w1, xb.qs[sub * 2u + 1u], acc);
+                            }
+                            sums[r] = fmaf(wd * xb.d, float(acc), sums[r]);
+                        }
+                    }
+                }
+                __syncthreads();
+            }
+        }
+
+        for (unsigned r = 0u; r < tile_rows; ++r) {
+            float s = sums[r];
+#pragma unroll
+            for (unsigned sh = 16u; sh; sh >>= 1)
+                s += __shfl_down_sync(0xffffffffu, s, sh);
+            if (lane == 0u)
+                down_out[std::size_t(off + r0 + r) * G::n_embd + col] = s;
+        }
+    }
 }
 
 // Prefill MoE scatter: weighted sum of each token's 8 expert outputs into moe_out[rows, 2304].
@@ -1699,6 +1970,7 @@ struct ScratchViews {
     void* blas_ws = nullptr;
     unsigned* row_experts = nullptr;      // [rows, 8]
     float* row_weights = nullptr;         // [rows, 8]
+    unsigned* exp_offsets = nullptr;      // [129]
     unsigned* exp_token_idx = nullptr;    // [rows * 8]
     unsigned* exp_slot_for_rk = nullptr;  // [rows * 8]
     float* argmax_p_val = nullptr;        // [256]
@@ -1786,6 +2058,7 @@ struct ScratchViews {
         Layout ml;
         const auto off_re = ml.add(expert_rows * sizeof(unsigned));
         const auto off_rw = ml.add(expert_rows * sizeof(float));
+        const auto off_eo = ml.add((G::n_experts + 1) * sizeof(unsigned));
         const auto off_ti = ml.add(expert_rows * sizeof(unsigned));
         const auto off_sr = ml.add(expert_rows * sizeof(unsigned));
         const auto off_apv = ml.add(256 * sizeof(float));
@@ -1795,6 +2068,7 @@ struct ScratchViews {
         require(ml.bytes <= kRoutingMetaBytes, "inkling_gpu_meta_scratch");
         v.row_experts = arena.at<unsigned>(off_meta + off_re);
         v.row_weights = arena.at<float>(off_meta + off_rw);
+        v.exp_offsets = arena.at<unsigned>(off_meta + off_eo);
         v.exp_token_idx = arena.at<unsigned>(off_meta + off_ti);
         v.exp_slot_for_rk = arena.at<unsigned>(off_meta + off_sr);
         v.argmax_p_val = arena.at<float>(off_meta + off_apv);
@@ -3604,152 +3878,74 @@ private:
             else
                 launch_dn(std::integral_constant<int, kWKindIQ4_NL>{});
         } else {
-            // Prefill MoE (rows > 1): tiny D2H of expert indices (<= 16 KB),
-            // CSR bucket on CPU (~10 us), gather -> FP16 GEMM (m>=16) / dp4a (m<16)
-            // -> SiTU -> down -> scatter.
+            // Prefill MoE (rows > 1): 100% async GPU-side CSR bucketing (zero host syncs!)
+            // + grouped tiled quantized MMQ kernels reading SoA weights directly with zero
+            // FP16 dequantization HBM traffic (2 launches per layer instead of ~512!).
             const std::size_t total_slots = std::size_t(rows) * G::n_experts_used;
-            std::vector<unsigned> host_experts(total_slots);
-            checked(cudaMemcpyAsync(
-                host_experts.data(),
+            inkling_moe_bucket_gpu_kernel<<<1, 256, 0, stream>>>(
                 sv.row_experts,
-                total_slots * sizeof(unsigned),
-                cudaMemcpyDeviceToHost,
-                stream
-            ));
-            checked(cudaStreamSynchronize(stream));
-
-            std::array<unsigned, G::n_experts + 1> exp_offsets{};
-            for (unsigned e : host_experts)
-                ++exp_offsets[e + 1];
-            for (std::size_t e = 0; e < G::n_experts; ++e)
-                exp_offsets[e + 1] += exp_offsets[e];
-
-            std::array<unsigned, G::n_experts> cursor{};
-            for (std::size_t e = 0; e < G::n_experts; ++e)
-                cursor[e] = exp_offsets[e];
-
-            std::vector<unsigned> h_token_idx(total_slots);
-            std::vector<unsigned> h_slot_for_rk(total_slots);
-            for (unsigned r = 0; r < rows; ++r) {
-                for (unsigned k = 0; k < G::n_experts_used; ++k) {
-                    const std::size_t rk = std::size_t(r) * G::n_experts_used + k;
-                    const unsigned e = host_experts[rk];
-                    const unsigned pos = cursor[e]++;
-                    h_token_idx[pos] = r;
-                    h_slot_for_rk[rk] = pos;
-                }
-            }
-            checked(cudaMemcpyAsync(
+                unsigned(total_slots),
+                sv.exp_offsets,
                 sv.exp_token_idx,
-                h_token_idx.data(),
-                total_slots * sizeof(unsigned),
-                cudaMemcpyHostToDevice,
-                stream
-            ));
-            checked(cudaMemcpyAsync(
-                sv.exp_slot_for_rk,
-                h_slot_for_rk.data(),
-                total_slots * sizeof(unsigned),
-                cudaMemcpyHostToDevice,
-                stream
-            ));
-
-            inkling_moe_gather_kernel<<<unsigned(total_slots), 256, 0, stream>>>(
-                ffn_h, sv.exp_token_idx, sv.moe_in, sv.moe_in_fp16, unsigned(total_slots)
+                sv.exp_slot_for_rk
             );
             checked(cudaGetLastError());
 
-            // Pre-quantize small-row experts (m < 16) in one pass if needed.
-            bool has_small = false;
-            for (std::size_t e = 0; e < G::n_experts; ++e) {
-                const unsigned m = exp_offsets[e + 1] - exp_offsets[e];
-                if (m > 0 && m < 16u) {
-                    has_small = true;
-                    break;
-                }
-            }
-            if (has_small && l.gate_up_kind != kWKindF32) {
-                launch_quantize_q8(
-                    sv.moe_in, sv.x_q8, total_slots * G::n_embd, stream
-                );
+            // Quantize the `rows` unique FFN inputs once (when rows < 16, prep_input already did).
+            if (rows >= 16u && l.gate_up_kind != kWKindF32) {
+                launch_quantize_q8(ffn_h, sv.x_q8, std::size_t(rows) * G::n_embd, stream);
             }
 
-            // Gate + Up per active expert
-            for (std::size_t e = 0; e < G::n_experts; ++e) {
-                const unsigned off = exp_offsets[e];
-                const unsigned m = exp_offsets[e + 1] - off;
-                if (!m)
-                    continue;
-                const auto* base_ptr = l.gate_up_ptrs[e];
-                const __half* sc_ptr =
-                    l.gate_up_scales_offset
-                        ? reinterpret_cast<const __half*>(base_ptr + l.gate_up_scales_offset)
-                        : nullptr;
-                const MatrixRef mat{
-                    base_ptr,
-                    sc_ptr,
-                    l.gate_up_qs_row_bytes,
-                    unsigned(G::n_embd),
-                    unsigned(2 * G::n_ff_exp),
-                    l.gate_up_kind
-                };
-                project_matrix(
-                    arena.blas,
-                    mat,
-                    sv.moe_in + std::size_t(off) * G::n_embd,
-                    sv.moe_in_fp16 + std::size_t(off) * G::n_embd,
-                    sv.x_q8 + std::size_t(off) * (G::n_embd / 32),
-                    sv.w_fp16,
-                    sv.gate_up_out + std::size_t(off) * (2 * G::n_ff_exp),
-                    m,
-                    stream
-                );
-            }
+            // Grouped gate_up + fused SiTU across all 128 experts in one launch.
+            auto launch_prefill_gu = [&](auto kind_tag) {
+                constexpr int K = decltype(kind_tag)::value;
+                inkling_moe_prefill_gate_up_situ_kernel<K>
+                    <<<dim3(G::n_ff_exp / 4u, G::n_experts), 128, 0, stream>>>(
+                        sv.exp_offsets,
+                        sv.exp_token_idx,
+                        l.d_gate_up_ptrs,
+                        sv.x_q8,
+                        ffn_h,
+                        sv.act_out,
+                        l.gate_up_qs_row_bytes,
+                        l.gate_up_scales_offset
+                    );
+                checked(cudaGetLastError());
+            };
+            if (l.gate_up_kind == kWKindF32)
+                launch_prefill_gu(std::integral_constant<int, kWKindF32>{});
+            else if (l.gate_up_kind == kWKindQ8_0)
+                launch_prefill_gu(std::integral_constant<int, kWKindQ8_0>{});
+            else
+                launch_prefill_gu(std::integral_constant<int, kWKindIQ4_NL>{});
 
-            // Fused SiTU writing both F32 + FP16
-            const std::size_t situ_elems = total_slots * G::n_ff_exp;
-            inkling_situ_prefill_kernel<<<unsigned((situ_elems + 255) / 256), 256, 0, stream>>>(
-                sv.gate_up_out, sv.act_out, sv.act_out_fp16, unsigned(total_slots)
-            );
-            checked(cudaGetLastError());
-
-            if (has_small && l.down_kind != kWKindF32) {
+            if (l.down_kind != kWKindF32) {
                 launch_quantize_q8(
                     sv.act_out, sv.x_q8, total_slots * G::n_ff_exp, stream
                 );
             }
 
-            // Down per active expert (reuse sv.moe_in as down_out!)
-            for (std::size_t e = 0; e < G::n_experts; ++e) {
-                const unsigned off = exp_offsets[e];
-                const unsigned m = exp_offsets[e + 1] - off;
-                if (!m)
-                    continue;
-                const auto* base_ptr = l.down_ptrs[e];
-                const __half* sc_ptr =
-                    l.down_scales_offset
-                        ? reinterpret_cast<const __half*>(base_ptr + l.down_scales_offset)
-                        : nullptr;
-                const MatrixRef mat{
-                    base_ptr,
-                    sc_ptr,
-                    l.down_qs_row_bytes,
-                    unsigned(G::n_ff_exp),
-                    unsigned(G::n_embd),
-                    l.down_kind
-                };
-                project_matrix(
-                    arena.blas,
-                    mat,
-                    sv.act_out + std::size_t(off) * G::n_ff_exp,
-                    sv.act_out_fp16 + std::size_t(off) * G::n_ff_exp,
-                    sv.x_q8 + std::size_t(off) * (G::n_ff_exp / 32),
-                    sv.w_fp16,
-                    sv.moe_in + std::size_t(off) * G::n_embd,
-                    m,
-                    stream
-                );
-            }
+            // Grouped down projection across all 128 experts in one launch (reuses sv.moe_in).
+            auto launch_prefill_dn = [&](auto kind_tag) {
+                constexpr int K = decltype(kind_tag)::value;
+                inkling_moe_prefill_down_kernel<K>
+                    <<<dim3(G::n_embd / 4u, G::n_experts), 128, 0, stream>>>(
+                        sv.exp_offsets,
+                        l.d_down_ptrs,
+                        sv.x_q8,
+                        sv.act_out,
+                        sv.moe_in,
+                        l.down_qs_row_bytes,
+                        l.down_scales_offset
+                    );
+                checked(cudaGetLastError());
+            };
+            if (l.down_kind == kWKindF32)
+                launch_prefill_dn(std::integral_constant<int, kWKindF32>{});
+            else if (l.down_kind == kWKindQ8_0)
+                launch_prefill_dn(std::integral_constant<int, kWKindQ8_0>{});
+            else
+                launch_prefill_dn(std::integral_constant<int, kWKindIQ4_NL>{});
 
             inkling_moe_scatter_kernel<<<rows, 256, 0, stream>>>(
                 sv.moe_in, sv.exp_slot_for_rk, sv.row_weights, moe_out
