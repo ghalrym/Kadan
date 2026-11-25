@@ -13,13 +13,6 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4, uuid5
 
 from kadan_tracing import traced, traced_job
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
 from langchain_core.tools import StructuredTool
 from langgraph.errors import NodeCancelledError
 from langgraph.graph import END, START, StateGraph
@@ -31,7 +24,12 @@ from ..api.pydantic_models.agent_runs import (
     AgentRun,
     AgentRunState,
     ImageJob,
+    RunCall,
     RunMessage,
+    RunObservation,
+    RunResult,
+    TranscriptEntry,
+    UnrecoveredRecord,
 )
 from ..api.pydantic_models.coding import CodexOrigin, CodexTask
 from ..api.pydantic_models.computer import ComputerTask
@@ -43,7 +41,6 @@ from .agent_inference import (
     REPLY_TOKENS,
     AgentInference,
     ToolCommand,
-    parse_command,
     tool_characters,
 )
 from .conversation_history import (
@@ -74,6 +71,7 @@ from .tools.workspace import (
     ReadWorkspaceFileArguments,
     SaveWorkspaceFileArguments,
 )
+from .transcript import entry_characters, transcript_messages
 from .workspace_files import WorkspaceFiles
 
 if TYPE_CHECKING:
@@ -83,14 +81,12 @@ logger = logging.getLogger(__name__)
 LEASE_SECONDS = 60
 MAX_COMMANDS = 24
 MAX_ARGUMENT_CORRECTIONS = 2
-ARGUMENT_REJECTION = "Rejected tool arguments: "
 # Transcript budget in characters when Hikari does not report a context window.
 MAX_CONTEXT = 48000
 # Tool results are JSON, which tokenizes densely; three characters per token
 # estimates transcript space. Reserve generation separately from template overhead.
 CHARACTERS_PER_TOKEN = 3
 RESERVED_TOKENS = REASONING_TOKENS + REPLY_TOKENS + 1024
-TOOL_RESULT = "Tool result: "
 
 
 def context_characters(context_limit: int | None) -> int:
@@ -98,42 +94,6 @@ def context_characters(context_limit: int | None) -> int:
     if context_limit is None:
         return MAX_CONTEXT
     return max(0, (context_limit - RESERVED_TOKENS) * CHARACTERS_PER_TOKEN)
-
-
-def transcript_messages(transcript: list[RunMessage]) -> list[BaseMessage]:
-    """The saved transcript as LangChain messages, with tool calls and results."""
-    messages: list[BaseMessage] = []
-    call = 0
-    for item in transcript:
-        if item.role == "system":
-            messages.append(SystemMessage(content=item.content))
-        elif item.role == "assistant" and item.content.startswith('{"tool":'):
-            command = parse_command(item.content)
-            call += 1
-            messages.append(
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": command.tool,
-                            "args": command.arguments,
-                            "id": f"call_{call}",
-                        }
-                    ],
-                )
-            )
-        elif item.role == "assistant":
-            messages.append(AIMessage(content=item.content))
-        elif item.content.startswith(TOOL_RESULT) and call:
-            messages.append(
-                ToolMessage(
-                    content=item.content.removeprefix(TOOL_RESULT),
-                    tool_call_id=f"call_{call}",
-                )
-            )
-        else:
-            messages.append(HumanMessage(content=item.content))
-    return messages
 
 
 class ArgumentProblem(BaseModel):
@@ -259,11 +219,7 @@ class RunConversation:
                 },
             )
         self.end_run = args.end_run
-        return {
-            "tool": "send_message",
-            "delivered": True,
-            "message_id": str(self.action_id),
-        }
+        return {"tool": "send_message", "delivered": True}
 
     async def generate_image(self, args: GenerateImageArguments) -> dict:
         image = ImageJob.model_validate(
@@ -312,6 +268,14 @@ class RunConversation:
                 return history_page(resource, args)
         except (ServiceError, ValueError) as error:
             return {"error": str(error), "history_available": False}
+
+    async def read_task_status(self, offset: int) -> dict:
+        return await self.runs.services.json_request(
+            "Tsuchi",
+            "GET",
+            f"/api/agents/{self.run.agent_key}/resources/{self.run.conversation_id}/task-status",
+            params={"offset": offset},
+        )
 
     async def read_request_references(self) -> dict:
         return {
@@ -489,6 +453,7 @@ class AgentRuns(RunClient):
             self.path(run.agent_key, run.id),
             json={
                 **state.model_dump(mode="json"),
+                "transcript_format": 2,
                 "expected_version": run.version,
                 "worker_id": str(self.owner),
             },
@@ -568,7 +533,7 @@ class AgentRuns(RunClient):
     @traced("kadan.agent_runs.context")
     async def context(
         self, run: AgentRun, limit: int | None = None
-    ) -> list[RunMessage]:
+    ) -> list[TranscriptEntry]:
         instruction_file = Path(self.services.settings.agent_instruction_file)
         try:
             instructions = await asyncio.to_thread(instruction_file.read_text)
@@ -598,6 +563,24 @@ class AgentRuns(RunClient):
                 "Reading consumes one command and conversation context budget."
             )
         system = RunMessage(role="system", content=instructions)
+        messages = conversation.messages
+        # A later queued request may already be saved when this one starts.
+        if run.trigger_message_id is not None:
+            target = next(
+                (
+                    i
+                    for i, item in enumerate(messages)
+                    if item.id == run.trigger_message_id and item.role == "user"
+                ),
+                None,
+            )
+            if target is None:
+                raise ServiceError(
+                    "The message for this response is no longer available.", 422
+                )
+            messages = messages[: target + 1]
+
+        event = None
         if run.trigger_job_id:
             image = ImageJob.model_validate(
                 await self.services.json_request(
@@ -606,100 +589,69 @@ class AgentRuns(RunClient):
                     f"/api/agents/{run.agent_key}/image-jobs/{run.trigger_job_id}",
                 )
             )
-            trigger = RunMessage(
-                role="user",
-                content="Image job event: "
-                + json.dumps(
-                    {
-                        "job_id": str(image.id),
-                        "status": image.status,
-                        "prompt": image.prompt,
-                        "error": image.error,
-                        "delivered": image.delivered_message_id is not None,
-                    }
-                ),
+            if (image.agent_key, image.conversation_id) != (
+                run.agent_key,
+                run.conversation_id,
+            ):
+                raise ServiceError(
+                    "The image belongs to a different conversation.", 409
+                )
+            event = RunObservation(
+                name="image_job_event",
+                data={
+                    "job_id": str(image.id),
+                    "status": image.status,
+                    "prompt": image.prompt,
+                    "error": image.error,
+                    "delivered": image.delivered_message_id is not None,
+                },
             )
         elif run.trigger_event:
-            label = {
-                "codex": "Codex thread event: ",
-                "computer": "Computer task event: ",
-            }[run.trigger_event.kind]
-            trigger = RunMessage(role="user", content=label + run.trigger_event.content)
-        else:
-            trigger = RunMessage(
-                role="user",
-                content=f"Respond to user message {run.trigger_message_id} in the conversation above. Other user messages have their own queued runs.",
+            try:
+                detail = json.loads(run.trigger_event.content)
+            except ValueError:
+                detail = run.trigger_event.content
+            event = RunObservation(
+                name={"computer": "computer_task_event", "codex": "codex_thread_event"}[
+                    run.trigger_event.kind
+                ],
+                data=detail if isinstance(detail, dict) else {"detail": detail},
             )
-        jobs = [
-            ImageJob.model_validate(value)
-            for value in await self.services.json_request(
-                "Tsuchi",
-                "GET",
-                f"/api/agents/{run.agent_key}/resources/{run.conversation_id}/image-jobs",
-            )
-        ]
-        # Pending jobs survive their submitting run; later turns must see them.
-        pending = [
-            job for job in jobs if job.status in {"queued", "running", "cancelling"}
-        ]
-        if pending:
-            trigger.content += "\nPending image jobs (do not resubmit): " + json.dumps(
-                [
-                    {"job_id": str(job.id), "status": job.status, "prompt": job.prompt}
-                    for job in pending
-                ]
-            )
-        if self.services.sandbox.configured:
-            tasks = [
-                ComputerTask.model_validate(value)
-                for value in await self.services.json_request(
-                    "Tsuchi", "GET", f"/api/agents/{run.agent_key}/computer-tasks"
-                )
-            ]
-            if tasks:
-                trigger.content += (
-                    "\nPending computer tasks (do not resubmit): "
-                    + json.dumps(
-                        [
-                            {
-                                "task_id": str(task.id),
-                                "status": task.status,
-                                "instructions": task.instructions[:500],
-                            }
-                            for task in tasks
-                        ]
-                    )
-                )
+
         if limit is None:
             limit = MAX_CONTEXT - tool_characters(self.bound_tools(run))
-        budget = limit - len(system.content) - len(trigger.content)
+        budget = (
+            limit - entry_characters(system) - (entry_characters(event) if event else 0)
+        )
         if budget < 0:
             raise ServiceError(
                 "Agent instructions and event exceed the context limit.", 422
             )
-        history = []
-        trigger_in_history = False
-        for message in reversed(conversation.messages):
+
+        history: list[RunMessage] = []
+        for message in reversed(messages):
             if message.role not in {"user", "assistant"}:
                 continue
-            text = f"[message {message.id}] " + message.content
-            if message.attachment_ids:
-                text += (
-                    " [Attached assets: "
-                    + ", ".join(map(str, message.attachment_ids))
-                    + "]"
-                )
-            if len(text) > budget or len(history) >= 97:
-                break
-            history.append(RunMessage(role=message.role, content=text))
-            if message.id == run.trigger_message_id and message.role == "user":
-                trigger_in_history = True
-            budget -= len(text)
-        if run.trigger_message_id and not trigger_in_history:
-            raise ServiceError(
-                "The triggering message is outside the agent context window.", 422
+            turn = RunMessage(
+                role=message.role,
+                content=message.content,
+                attachment_ids=message.attachment_ids
+                if message.id == run.trigger_message_id
+                else [],
             )
-        return [system, *reversed(history), trigger]
+            size = entry_characters(turn)
+            if size > budget or len(history) >= 97:
+                if message.id == run.trigger_message_id:
+                    raise ServiceError(
+                        "The message for this response exceeds the context limit.", 422
+                    )
+                break
+            history.append(turn)
+            budget -= size
+        context: list[TranscriptEntry] = [system, *reversed(history)]
+        if event is not None:
+            context.append(event)
+        return context
 
     @traced("kadan.agent_runs.advance")
     async def advance(self, run: AgentRun) -> None:
@@ -731,17 +683,20 @@ class AgentRuns(RunClient):
     async def infer_command(self, state: RunState) -> dict:
         run = state.run
         run = await self.owned(run)
-        replayed = bool(run.transcript) and run.transcript[-1].role == "assistant"
+        if any(isinstance(item, UnrecoveredRecord) for item in run.transcript):
+            raise ServiceError(
+                "Kadan could not safely resume this saved response. Check any earlier actions before trying again.",
+                422,
+            )
+        replayed = bool(run.transcript) and isinstance(run.transcript[-1], RunCall)
         if replayed:
-            command = parse_command(run.transcript[-1].content)
+            command = run.transcript[-1].command
         else:
             rejections = [
-                item.content.removeprefix(ARGUMENT_REJECTION)
-                for item in run.transcript
-                if item.role == "user" and item.content.startswith(ARGUMENT_REJECTION)
+                item.data for item in run.transcript if item.role == "rejection"
             ]
             if len(rejections) > MAX_ARGUMENT_CORRECTIONS:
-                rejection = ArgumentRejection.model_validate_json(rejections[-1])
+                rejection = ArgumentRejection.model_validate(rejections[-1])
                 detail = "; ".join(
                     f"{problem.field}: {problem.code}" for problem in rejection.problems
                 )
@@ -753,11 +708,7 @@ class AgentRuns(RunClient):
                     "invalid_command",
                 )
             if (
-                sum(
-                    item.role == "assistant" and item.content.startswith('{"tool":')
-                    for item in run.transcript
-                )
-                + len(rejections)
+                sum(item.role == "call" for item in run.transcript) + len(rejections)
                 >= MAX_COMMANDS
             ):
                 raise ServiceError("The agent reached its 24-command run limit.", 422)
@@ -765,7 +716,7 @@ class AgentRuns(RunClient):
             if status.state != "ready":
                 raise ServiceError(status.message, 503)
             limit = self.transcript_limit(status, run)
-            if sum(len(item.content) for item in run.transcript) > limit:
+            if sum(entry_characters(item) for item in run.transcript) > limit:
                 raise ServiceError("The agent run exceeded its context limit.", 422)
             started = monotonic()
             logger.info(
@@ -775,12 +726,13 @@ class AgentRuns(RunClient):
             )
             try:
                 tools = self.bound_tools(run)
-                command = await self.inference.call(
+                call = await self.inference.call(
                     transcript_messages(run.transcript),
                     status.model_id,
                     f"kadan:{run.agent_key}:{run.conversation_id}",
                     tools,
                 )
+                command = call.command
                 rejection = validate(command, tools)
             finally:
                 logger.info(
@@ -796,9 +748,10 @@ class AgentRuns(RunClient):
                     run,
                     transcript=[
                         *run.transcript,
-                        RunMessage(
-                            role="user",
-                            content=ARGUMENT_REJECTION + rejection.model_dump_json(),
+                        RunObservation(
+                            role="rejection",
+                            name=command.tool,
+                            data=rejection.model_dump(mode="json"),
                         ),
                     ],
                 )
@@ -809,7 +762,7 @@ class AgentRuns(RunClient):
                 run,
                 transcript=[
                     *run.transcript,
-                    RunMessage(role="assistant", content=command.model_dump_json()),
+                    call,
                 ],
             )
         return {"run": run, "command": command, "replayed": replayed}
@@ -844,6 +797,11 @@ class AgentRuns(RunClient):
         command = state.command
         assert command is not None
         run = await self.owned(state.run)
+        pending = run.transcript[-1] if run.transcript else None
+        if not isinstance(pending, RunCall) or pending.command != command:
+            raise ServiceError(
+                "The selected action does not match the saved work.", 409
+            )
         tool = TOOLS_BY_NAME.get(command.tool)
         conversation = RunConversation(self, run, state.replayed)
         if tool is None:
@@ -926,7 +884,7 @@ class AgentRuns(RunClient):
             run,
             transcript=[
                 *run.transcript,
-                RunMessage(role="user", content=TOOL_RESULT + json.dumps(result)),
+                RunResult(call_id=run.transcript[-1].call_id, data=result),
             ],
             **(
                 {"status": "completed", "owner_id": None, "lease_expires_at": None}

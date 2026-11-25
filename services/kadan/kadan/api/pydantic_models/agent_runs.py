@@ -1,8 +1,8 @@
 """Durable agent runs and image jobs owned by Tsuchi."""
 
 from datetime import datetime
-from typing import Literal, Self
-from uuid import UUID
+from typing import Annotated, Literal, Self
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
@@ -25,19 +25,89 @@ class ReferenceSnapshot(BaseModel):
 class RunMessage(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: str = Field(max_length=1000000)
+    attachment_ids: list[UUID] = Field(default_factory=list, max_length=100)
 
 
 class ToolCommand(BaseModel):
-    """One tool call, persisted in the run transcript before it executes."""
+    """An action selected by the agent."""
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     tool: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_]+$")
     arguments: dict[str, JsonValue] = Field(default_factory=dict)
 
 
+class RunCall(BaseModel):
+    role: Literal["call"] = "call"
+    call_id: str = Field(
+        default_factory=lambda: uuid4().hex, min_length=1, max_length=120
+    )
+    command: ToolCommand
+
+
+class RunResult(BaseModel):
+    role: Literal["result"] = "result"
+    call_id: str = Field(min_length=1, max_length=120)
+    data: dict[str, JsonValue]
+
+
+class RunObservation(BaseModel):
+    role: Literal["observation", "rejection"] = "observation"
+    name: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_]+$")
+    data: dict[str, JsonValue] | list[JsonValue]
+
+
+class TaskStart(BaseModel):
+    role: Literal["task_start"] = "task_start"
+    task_id: UUID
+    origin: Literal["user", "agent"]
+    instructions: str = Field(max_length=10000)
+
+
+class TaskOutcome(BaseModel):
+    task_id: UUID
+    status: Literal["completed", "failed", "cancelled", "stopped"]
+    summary: str = Field(max_length=10000)
+
+
+class TaskEnd(TaskOutcome):
+    role: Literal["task_end"] = "task_end"
+
+
+class TaskHistory(BaseModel):
+    role: Literal["task_history"] = "task_history"
+    tasks: list[TaskOutcome] = Field(max_length=20)
+
+
+class MigratedMarker(BaseModel):
+    """Occupies a retired scheduling row so saved side-effect identities stay valid."""
+
+    role: Literal["retired"] = "retired"
+
+
+class UnrecoveredRecord(BaseModel):
+    """Original journal row whose safe replay could not be established."""
+
+    role: Literal["unrecovered"] = "unrecovered"
+    original: JsonValue
+
+
+TranscriptEntry = Annotated[
+    RunMessage
+    | RunCall
+    | RunResult
+    | RunObservation
+    | TaskStart
+    | TaskEnd
+    | TaskHistory
+    | MigratedMarker
+    | UnrecoveredRecord,
+    Field(discriminator="role"),
+]
+
+
 class AgentRunState(BaseModel):
     status: Literal["queued", "running", "completed", "failed", "cancelled"] = "queued"
-    transcript: list[RunMessage] = Field(default_factory=list, max_length=1000)
+    transcript: list[TranscriptEntry] = Field(default_factory=list, max_length=1000)
     owner_id: UUID | None = None
     lease_expires_at: datetime | None = None
     error: str | None = Field(default=None, max_length=10000)

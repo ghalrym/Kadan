@@ -162,6 +162,7 @@ def message_excerpt(message: Message, content: str, start: int, end: int) -> dic
         "role": message.role,
         "created_at": message.created_at.isoformat(),
         "content": content,
+        "attachment_ids": [str(asset) for asset in message.attachment_ids],
         "content_start": start,
         "content_end": end,
         "original_content_characters": len(message.content),

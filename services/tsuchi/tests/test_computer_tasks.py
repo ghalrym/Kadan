@@ -174,3 +174,28 @@ def test_cancelling_offline_retires_only_that_tasks_steering(repository):
     assert [(item.task_id, item.content) for item in steering] == [
         (second.id, "Second steering")
     ]
+
+
+def test_conversation_task_status_includes_terminal_work_and_excludes_unrelated_work(
+    repository,
+):
+    _, direct = repository.computer_request("alpha", uuid4(), "Direct request")
+    run, task = handed_over(repository, "Search the video collection")
+    repository.cancel_computer_task("alpha", task.id)
+    other_run, other = handed_over(repository, "Work from another chat")
+    image = repository.create_image_job(
+        "alpha", run.id, uuid4(), "Draw an owl", uuid4(), run.owner_id
+    )
+    page = repository.conversation_task_status("alpha", run.conversation_id, 0)
+    assert {(row.id, row.kind, row.status) for row in page.tasks} == {
+        (task.id, "computer", "cancelled"),
+        (image.id, "image", "queued"),
+    }
+    assert not {other.id, direct.id}.intersection(row.id for row in page.tasks)
+    assert page.next_offset is None
+    assert (
+        repository.conversation_task_status("alpha", other_run.conversation_id, 0)
+        .tasks[0]
+        .id
+        == other.id
+    )

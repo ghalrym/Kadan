@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from .agent_runs import RunMessage
+from .agent_runs import TranscriptEntry
 from .resources import AgentKey
 
 
@@ -37,7 +37,7 @@ class ComputerSteering(BaseModel):
 
 class ComputerThread(BaseModel):
     agent_key: AgentKey
-    transcript: list[RunMessage] = Field(default_factory=list, max_length=1000)
+    transcript: list[TranscriptEntry] = Field(default_factory=list, max_length=1000)
     owner_id: UUID | None = None
     lease_expires_at: datetime | None = None
     steering: list[ComputerSteering] = Field(default_factory=list)

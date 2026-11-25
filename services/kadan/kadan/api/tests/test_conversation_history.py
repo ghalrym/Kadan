@@ -12,7 +12,7 @@ from langchain_core.messages import ToolMessage
 from pydantic import ValidationError
 
 from kadan.api.config import ServiceError
-from kadan.api.pydantic_models.agent_runs import RunMessage
+from kadan.api.pydantic_models.agent_runs import RunCall, RunResult, ToolCommand
 from kadan.api.pydantic_models.resources import Message, Resource
 from kadan.runner.agent_runs import RunConversation, transcript_messages
 from kadan.runner.conversation_history import (
@@ -194,11 +194,10 @@ def test_tool_is_read_only_scoped_and_replayable(conversation):
     assert not binding.end_run
     messages = transcript_messages(
         [
-            RunMessage(
-                role="assistant",
-                content='{"tool":"read_conversation_history","arguments":{}}',
+            RunCall(
+                call_id="read", command=ToolCommand(tool="read_conversation_history")
             ),
-            RunMessage(role="user", content="Tool result: " + json.dumps(result)),
+            RunResult(call_id="read", data=result),
         ]
     )
     assert isinstance(messages[-1], ToolMessage)

@@ -24,6 +24,8 @@ from .models import (
     ComputerTaskOrigin,
     ComputerThread,
     ComputerThreadState,
+    ConversationTaskPage,
+    ConversationTaskStatus,
     ExportManifest,
     ExportRevision,
     ImageJob,
@@ -52,6 +54,7 @@ from .models import (
     resource_input_adapter,
     utc_now,
 )
+from .transcript_migration import upgrade_transcripts
 
 
 def search_expression(query: str) -> str:
@@ -177,6 +180,7 @@ class Repository:
                 db.execute("ALTER TABLE agents ADD COLUMN selected_pet_id TEXT")
             if "persona_id" not in columns:
                 db.execute("ALTER TABLE agents ADD COLUMN persona_id TEXT")
+            upgrade_transcripts(db)
             db.commit()
 
     @contextmanager
@@ -1185,6 +1189,42 @@ class Repository:
             if key:
                 self._agent(db, key)
             return self._active_computer_tasks(db, key)
+
+    def conversation_task_status(
+        self, key: str, conversation_id: UUID, offset: int
+    ) -> ConversationTaskPage:
+        page_size = 5
+        with self.connect() as db:
+            self._conversation(db, key, conversation_id)
+            rows = db.execute(
+                """
+                SELECT id, 'image' AS kind, status, updated_at,
+                       substr(json_extract(data, '$.prompt'), 1, 500) AS request_excerpt,
+                       substr(json_extract(data, '$.error'), 1, 1000) AS outcome_excerpt
+                FROM image_jobs WHERE agent_key = :key AND conversation_id = :conversation
+                UNION ALL
+                SELECT id, 'computer', status, json_extract(data, '$.updated_at') AS updated_at,
+                       substr(json_extract(data, '$.instructions'), 1, 500),
+                       substr(json_extract(data, '$.summary'), 1, 1000)
+                FROM computer_tasks
+                WHERE agent_key = :key AND json_extract(data, '$.origin.conversation_id') = :conversation
+                ORDER BY updated_at DESC, id DESC
+                LIMIT :limit OFFSET :offset
+                """,
+                {
+                    "key": key,
+                    "conversation": str(conversation_id),
+                    "limit": page_size + 1,
+                    "offset": offset,
+                },
+            ).fetchall()
+        return ConversationTaskPage(
+            tasks=[
+                ConversationTaskStatus.model_validate(dict(row))
+                for row in rows[:page_size]
+            ],
+            next_offset=offset + page_size if len(rows) > page_size else None,
+        )
 
     def latest_computer_task(self, key: str) -> ComputerTask | None:
         with self.connect() as db:

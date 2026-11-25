@@ -16,6 +16,10 @@ export type AssistantMessage = {
    * Role
    */
   role?: 'assistant'
+  /**
+   * Tool Calls
+   */
+  tool_calls?: Array<OutputToolCall> | null
 }
 
 /**
@@ -97,7 +101,25 @@ export type CapabilityProviders = {
 /**
  * ChatCallFunction
  */
-export type ChatCallFunction = {
+export type ChatCallFunctionInput = {
+  /**
+   * Arguments
+   */
+  arguments:
+    | {
+        [key: string]: JsonValue
+      }
+    | string
+  /**
+   * Name
+   */
+  name: string
+}
+
+/**
+ * ChatCallFunction
+ */
+export type ChatCallFunctionOutput = {
   /**
    * Arguments
    */
@@ -135,11 +157,36 @@ export type ChatFunction = {
 }
 
 /**
+ * ChatImagePart
+ */
+export type ChatImagePart = {
+  image_url: ChatImageUrl
+  /**
+   * Type
+   */
+  type: 'image_url'
+}
+
+/**
+ * ChatImageUrl
+ */
+export type ChatImageUrl = {
+  /**
+   * Url
+   */
+  url: string
+}
+
+/**
  * ChatMessage
  *
  * Unified chat message supporting text, images, reasoning, and tool calls.
  */
-export type ChatMessage = {
+export type ChatMessageInput = {
+  /**
+   * Content
+   */
+  content?: Array<ChatTextPart | ChatImagePart> | string | null
   /**
    * Images
    */
@@ -171,7 +218,65 @@ export type ChatMessage = {
   /**
    * Tool Calls
    */
-  tool_calls?: Array<ChatToolCall> | null
+  tool_calls?: Array<ChatToolCallInput> | null
+}
+
+/**
+ * ChatMessage
+ *
+ * Unified chat message supporting text, images, reasoning, and tool calls.
+ */
+export type ChatMessageOutput = {
+  /**
+   * Content
+   */
+  content?: Array<ChatTextPart | ChatImagePart> | string | null
+  /**
+   * Images
+   */
+  images?: Array<string> | null
+  /**
+   * Meta
+   */
+  meta?: string | null
+  /**
+   * Name
+   */
+  name?: string | null
+  /**
+   * Reasoning Content
+   */
+  reasoning_content?: string | null
+  /**
+   * Role
+   */
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  /**
+   * Text
+   */
+  text?: string
+  /**
+   * Tool Call Id
+   */
+  tool_call_id?: string | null
+  /**
+   * Tool Calls
+   */
+  tool_calls?: Array<ChatToolCallOutput> | null
+}
+
+/**
+ * ChatTextPart
+ */
+export type ChatTextPart = {
+  /**
+   * Text
+   */
+  text: string
+  /**
+   * Type
+   */
+  type: 'text'
 }
 
 /**
@@ -188,8 +293,23 @@ export type ChatTool = {
 /**
  * ChatToolCall
  */
-export type ChatToolCall = {
-  function: ChatCallFunction
+export type ChatToolCallInput = {
+  function: ChatCallFunctionInput
+  /**
+   * Id
+   */
+  id: string
+  /**
+   * Type
+   */
+  type?: 'function'
+}
+
+/**
+ * ChatToolCall
+ */
+export type ChatToolCallOutput = {
+  function: ChatCallFunctionOutput
   /**
    * Id
    */
@@ -359,7 +479,7 @@ export type CompletionChoice = {
   /**
    * Finish Reason
    */
-  finish_reason?: 'stop' | 'length'
+  finish_reason?: 'stop' | 'length' | 'tool_calls'
   /**
    * Index
    */
@@ -383,6 +503,10 @@ export type CompletionOutputMessage = {
    * Text
    */
   text: string
+  /**
+   * Tool Calls
+   */
+  tool_calls?: Array<OutputToolCall> | null
 }
 
 /**
@@ -404,7 +528,7 @@ export type CompletionRequest = {
   /**
    * Messages
    */
-  messages: Array<ChatMessage>
+  messages: Array<ChatMessageInput>
   /**
    * Model
    */
@@ -722,7 +846,7 @@ export type MessagesResponse = {
   /**
    * Messages
    */
-  messages: Array<ChatMessage>
+  messages: Array<ChatMessageOutput>
 }
 
 /**
@@ -950,6 +1074,35 @@ export type NoulQuestion = {
    * Type
    */
   type: 'Noul'
+}
+
+/**
+ * OutputFunction
+ */
+export type OutputFunction = {
+  /**
+   * Arguments
+   */
+  arguments: string
+  /**
+   * Name
+   */
+  name: string
+}
+
+/**
+ * OutputToolCall
+ */
+export type OutputToolCall = {
+  function: OutputFunction
+  /**
+   * Id
+   */
+  id: string
+  /**
+   * Type
+   */
+  type: 'function'
 }
 
 /**

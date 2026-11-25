@@ -295,8 +295,8 @@ export default function Chat({
     }
   }
   async function send(generate: boolean, retry?: PendingMessage) {
-    const text = retry?.content ?? draft.trim();
-    if (!text || sendLock.current || sending || blocked) return;
+    const text = retry?.content ?? draft;
+    if (!text.trim() || sendLock.current || sending || blocked) return;
     if (!retry && !attachments.ready) {
       setError("Finish uploading or remove the unresolved attachments before sending.");
       return;

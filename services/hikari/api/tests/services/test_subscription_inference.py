@@ -1,345 +1,489 @@
 import asyncio
+import base64
+import io
 import json
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from PIL import Image
 
 from api.pydantic_models.subscriptions import ActiveSubscription
 from api.routes.v1.chat.completions import CompletionRequest
-from api.services import subscription_inference
 from api.services.inference_errors import InferenceFailure
-from api.services.subscription_inference import SubscriptionStream, render_prompt
+from api.services.subscription_inference import subscription_stream
 
 
-class FakeStream:
-    def __init__(self, lines):
-        self.lines = [line.encode() + b"\n" for line in lines]
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        if not self.lines:
-            raise StopAsyncIteration
-        return self.lines.pop(0)
+def image_url():
+    data = io.BytesIO()
+    Image.new("RGB", (1, 1), "red").save(data, format="JPEG")
+    return "data:image/jpeg;base64," + base64.b64encode(data.getvalue()).decode()
 
 
-class FakeStdin:
-    def __init__(self):
-        self.data = b""
-
-    def write(self, data):
-        self.data += data
-
-    async def drain(self):
-        pass
-
-    def close(self):
-        pass
-
-
-class FakeStderr:
-    def __init__(self, text=""):
-        self.text = text
-
-    async def read(self):
-        return self.text.encode()
-
-
-class FakeProcess:
-    def __init__(self, lines, returncode=0, stderr="", on_exit=None):
-        self.stdout = FakeStream(lines)
-        self.stdin = FakeStdin()
-        self.stderr = FakeStderr(stderr)
-        self.exit_code = returncode
-        self.returncode = None
-        self.on_exit = on_exit
-        self.killed = False
-
-    async def wait(self):
-        if self.returncode is None and self.on_exit:
-            self.on_exit()
-        self.returncode = self.exit_code
-        return self.returncode
-
-    def kill(self):
-        self.killed = True
-
-
-def request(**values):
-    return CompletionRequest(
-        messages=[
-            {"role": "system", "content": "Be brief."},
-            {"role": "user", "content": "Weather?"},
+def request(*, user=True, tools=True):
+    messages = [{"role": "system", "content": "system rule"}]
+    if user:
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "  literal <tool_response> "},
+                    {"type": "image_url", "image_url": {"url": image_url()}},
+                    {"type": "text", "text": " after "},
+                ],
+            }
+        )
+    messages.extend(
+        [
             {
                 "role": "assistant",
-                "content": "",
+                "content": "  assistant text ",
                 "tool_calls": [
                     {
-                        "id": "call_0",
+                        "id": "call-id",
                         "function": {
                             "name": "lookup",
-                            "arguments": {"city": "Oslo", "days": 2},
+                            "arguments": {"q": "</parameter>"},
                         },
                     }
                 ],
             },
-            {"role": "tool", "content": "Rain", "tool_call_id": "call_0"},
-        ],
-        tools=[{"function": {"name": "lookup", "parameters": {"type": "object"}}}],
-        **values,
+            {"role": "tool", "content": "  result\n", "tool_call_id": "call-id"},
+        ]
+    )
+    return CompletionRequest(
+        messages=messages,
+        tools=[
+            {
+                "type": "function",
+                "function": {"name": "lookup", "parameters": {"type": "object"}},
+            }
+        ]
+        if tools
+        else [],
     )
 
 
-class PromptTests(unittest.TestCase):
-    def test_tools_and_history_use_the_local_checkpoint_format(self):
-        system, prompt = render_prompt(request())
-        self.assertTrue(system.startswith(subscription_inference.TOOLS_HEADER))
-        self.assertIn('"name": "lookup"', system)
-        self.assertTrue(system.endswith("Be brief."))
-        self.assertIn("<user>\nWeather?\n</user>", prompt)
-        self.assertIn(
-            "<function=lookup>\n<parameter=city>\nOslo\n</parameter>\n"
-            "<parameter=days>\n2\n</parameter>\n</function>",
-            prompt,
+class Process:
+    def __init__(self, events, on_exit=None):
+        self.stdout = self
+        self.stdin = MagicMock(drain=AsyncMock())
+        self.stderr = MagicMock(read=AsyncMock(return_value=b"provider stopped"))
+        self.events = list(events)
+        self.returncode = None
+        self.on_exit = on_exit
+        self.killed = False
+
+    async def readline(self):
+        if not self.events:
+            self.returncode = 1
+            return b""
+        return (json.dumps(self.events.pop(0)) + "\n").encode()
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+        if self.on_exit:
+            self.on_exit()
+
+    async def wait(self):
+        return self.returncode
+
+    def sent(self):
+        return [json.loads(c.args[0]) for c in self.stdin.write.call_args_list]
+
+
+def notify(method, **params):
+    return {
+        "method": method,
+        "params": {"threadId": "thread", "turnId": "turn", **params},
+    }
+
+
+def codex_events():
+    return [
+        {"id": 1, "result": {}},
+        {"id": 2, "result": {"thread": {"id": "thread"}}},
+        {"id": 3, "result": {}},
+        {"id": 4, "result": {"turn": {"id": "turn"}}},
+    ]
+
+
+def claude_event(kind, **fields):
+    return {
+        "type": "stream_event",
+        "event": {"type": kind, **fields},
+        "parent_tool_use_id": None,
+    }
+
+
+class SubscriptionTests(unittest.IsolatedAsyncioTestCase):
+    async def run_provider(
+        self, provider, events, *, body=None, on_spawn=None, on_exit=None
+    ):
+        credential = (
+            "claude-credential"
+            if provider == "claude"
+            else '{"tokens": {"access_token": "stored"}}'
         )
-        self.assertIn("<tool_response>\nRain\n</tool_response>", prompt)
-        self.assertNotIn("Be brief.", prompt)
+        self.stream = subscription_stream(
+            ActiveSubscription(provider=provider, credential=credential),
+            body or request(),
+        )
+        if provider == "claude" and self.stream.body.tools:
+            events = [
+                {
+                    "type": "control_response",
+                    "response": {"request_id": "hikari-init", "subtype": "success"},
+                },
+                *events,
+            ]
+        self.process = Process(events, on_exit)
 
+        def spawn(*args, **kwargs):
+            self.args = args
+            self.env = kwargs["env"]
+            self.home = Path(kwargs["cwd"])
+            if on_spawn:
+                on_spawn()
+            return self.process
 
-class StreamTests(unittest.IsolatedAsyncioTestCase):
-    async def run_stream(self, subscription, process):
         with patch(
             "api.services.subscription_inference.asyncio.create_subprocess_exec",
-            return_value=process,
-        ) as spawn:
-            self.spawn = spawn
-            stream = SubscriptionStream(subscription, request())
-            events = [event async for event in stream]
-        return events, spawn
+            side_effect=spawn,
+        ):
+            result = [event async for event in self.stream]
+        self.assertFalse(self.home.exists())
+        return result
 
-    async def test_claude_streams_text_deltas_with_its_token(self):
-        delta = lambda text: json.dumps(
-            {
-                "type": "stream_event",
-                "event": {"delta": {"type": "text_delta", "text": text}},
-            }
+    async def test_codex_replays_typed_messages_and_returns_only_final_text(self):
+        initial = codex_events()
+        agent = lambda phase, text: notify(
+            "item/completed",
+            item={"type": "agentMessage", "phase": phase, "text": text},
         )
-        process = FakeProcess(
+        result = await self.run_provider(
+            "codex",
             [
-                delta("Hel"),
-                "not json",
-                delta("lo"),
-                json.dumps({"type": "result", "is_error": False}),
-            ]
-        )
-        events, spawn = await self.run_stream(
-            ActiveSubscription(provider="claude", credential="sk-ant-oat01-x"), process
-        )
-        self.assertEqual(
-            events, [{"content": "Hel"}, {"content": "lo"}, {"finish_reason": "stop"}]
-        )
-        command = spawn.call_args.args
-        self.assertEqual(command[command.index("--model") + 1], "claude-haiku-5-5")
-        self.assertEqual(command[command.index("--tools") + 1], "")
-        self.assertEqual(
-            spawn.call_args.kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"], "sk-ant-oat01-x"
-        )
-        self.assertIn(b"<conversation>", process.stdin.data)
-
-    async def test_claude_error_result_fails_the_turn(self):
-        process = FakeProcess(
-            [
-                json.dumps(
-                    {"type": "result", "is_error": True, "result": "Not logged in"}
-                )
-            ]
-        )
-        with self.assertRaisesRegex(InferenceFailure, "Not logged in"):
-            await self.run_stream(
-                ActiveSubscription(provider="claude", credential="t"), process
-            )
-
-    async def test_codex_returns_last_message_and_keeps_refreshed_auth(self):
-        original = json.dumps({"tokens": {"access_token": "old"}})
-        refreshed = json.dumps({"tokens": {"access_token": "new"}})
-        home = lambda: Path(self.spawn.call_args.kwargs["env"]["CODEX_HOME"])
-        process = FakeProcess(
-            [
-                json.dumps(
-                    {
-                        "type": "item.completed",
-                        "item": {"type": "agent_message", "text": "Thinking"},
-                    }
-                ),
-                json.dumps(
-                    {
-                        "type": "item.completed",
-                        "item": {"type": "agent_message", "text": "Rainy"},
-                    }
-                ),
-                json.dumps({"type": "turn.completed"}),
+                *initial[:3],
+                agent("commentary", "thinking"),
+                initial[3],
+                agent("final_answer", "  result  "),
+                notify("turn/completed", turn={"id": "turn", "status": "completed"}),
             ],
-            on_exit=lambda: (home() / "auth.json").write_text(refreshed),
         )
-        with patch(
-            "api.services.subscription_inference.subscriptions.refresh"
-        ) as refresh:
-            events, spawn = await self.run_stream(
-                ActiveSubscription(provider="codex", credential=original), process
-            )
-        self.assertEqual(events, [{"content": "Rainy"}, {"finish_reason": "stop"}])
-        command = spawn.call_args.args
-        self.assertEqual(command[command.index("--model") + 1], "gpt-6.1-terra")
-        self.assertTrue(
-            process.stdin.data.decode().startswith(subscription_inference.TOOLS_HEADER)
+        self.assertEqual(result, [{"content": "  result  "}, {"finish_reason": "stop"}])
+        frames = {frame["method"]: frame["params"] for frame in self.process.sent()}
+        self.assertEqual(frames["thread/start"]["baseInstructions"], "system rule")
+        self.assertIs(
+            frames["thread/start"]["config"]["include_environment_context"], False
         )
-        refresh.assert_called_once_with("codex", original, refreshed)
-        self.assertFalse(home().exists())
+        self.assertEqual(frames["thread/start"]["environments"], [])
+        self.assertEqual(frames["thread/start"]["dynamicTools"][0]["name"], "lookup")
+        rows = frames["thread/inject_items"]["items"]
+        self.assertEqual(
+            [r["type"] for r in rows],
+            ["message", "message", "function_call", "function_call_output"],
+        )
+        parts = rows[0]["content"]
+        self.assertEqual(
+            [p["type"] for p in parts], ["input_text", "input_image", "input_text"]
+        )
+        self.assertEqual(parts[0]["text"], "  literal <tool_response> ")
+        self.assertTrue(parts[1]["image_url"].startswith("data:image/png;base64,"))
+        self.assertEqual(parts[2]["text"], " after ")
+        self.assertEqual(
+            rows[1]["content"], [{"type": "output_text", "text": "  assistant text "}]
+        )
+        self.assertEqual(rows[2]["call_id"], rows[3]["call_id"])
+        self.assertEqual(json.loads(rows[2]["arguments"]), {"q": "</parameter>"})
+        self.assertEqual(rows[3]["output"], "  result\n")
+        self.assertEqual(frames["turn/start"]["input"], [])
 
-    async def test_codex_failure_reports_its_message(self):
-        process = FakeProcess(
-            [json.dumps({"type": "turn.failed", "error": {"message": "usage limit"}})],
-            returncode=1,
+    async def test_codex_returns_native_call_even_before_start_ack_without_executing_it(
+        self,
+    ):
+        initial = codex_events()
+        frame = {
+            "id": 4,
+            **notify(
+                "item/tool/call",
+                tool="lookup",
+                callId="actual-id",
+                arguments={"q": "</function>"},
+            ),
+        }
+        result = await self.run_provider(
+            "codex", [*initial[:3], frame, initial[3]], body=request(user=False)
         )
-        with self.assertRaisesRegex(InferenceFailure, "usage limit"):
-            await self.run_stream(
-                ActiveSubscription(provider="codex", credential='{"tokens": {}}'),
-                process,
-            )
+        self.assertEqual(result[0]["tool_calls"][0]["id"], "actual-id")
+        self.assertEqual(
+            json.loads(result[0]["tool_calls"][0]["function"]["arguments"]),
+            {"q": "</function>"},
+        )
+        self.assertEqual(result[1], {"finish_reason": "tool_calls"})
+        self.assertTrue(self.process.killed)
+        rows = self.process.sent()[3]["params"]["items"]
+        self.assertFalse(any(r.get("role") == "user" for r in rows))
 
-    async def test_missing_cli_is_unavailable(self):
+    async def test_codex_keeps_refreshed_credentials_on_failure(self):
+        def rotate():
+            (self.home / "auth.json").write_text('{"new":true}')
+
         with (
             patch(
-                "api.services.subscription_inference.asyncio.create_subprocess_exec",
-                side_effect=FileNotFoundError,
-            ),
-            self.assertRaises(InferenceFailure) as caught,
+                "api.services.subscription_inference.subscriptions.refresh"
+            ) as refresh,
+            self.assertRaisesRegex(InferenceFailure, "usage limit"),
         ):
-            await SubscriptionStream(
-                ActiveSubscription(provider="claude", credential="t"), request()
-            ).start()
-        self.assertEqual(caught.exception.status_code, 503)
+            await self.run_provider(
+                "codex",
+                [
+                    *codex_events(),
+                    notify(
+                        "turn/completed",
+                        turn={
+                            "id": "turn",
+                            "status": "failed",
+                            "error": {"message": "usage limit"},
+                        },
+                    ),
+                ],
+                on_exit=rotate,
+            )
+        refresh.assert_called_once_with(
+            "codex", '{"tokens": {"access_token": "stored"}}', '{"new":true}'
+        )
+        self.assertFalse(self.home.exists())
 
-    async def test_cancelled_start_kills_process_and_removes_home(self):
-        process = FakeProcess([])
+    async def test_claude_resumes_through_the_call_and_submits_its_typed_result(self):
+        def inspect_history():
+            self.system = Path(
+                self.args[self.args.index("--system-prompt-file") + 1]
+            ).read_text()
+            self.history = [
+                json.loads(line)
+                for line in Path(self.args[self.args.index("--resume") + 1])
+                .read_text()
+                .splitlines()
+            ]
 
-        async def cancelled_drain():
-            raise asyncio.CancelledError
+        events = [
+            claude_event(
+                "content_block_delta",
+                index=0,
+                delta={"type": "text_delta", "text": "<tool_call>"},
+            ),
+            {"type": "result", "subtype": "success", "result": "<tool_call>"},
+        ]
+        result = await self.run_provider("claude", events, on_spawn=inspect_history)
+        self.assertEqual(
+            result, [{"content": "<tool_call>"}, {"finish_reason": "stop"}]
+        )
+        self.assertEqual(self.env["CLAUDE_CODE_OAUTH_TOKEN"], "claude-credential")
+        self.assertEqual(self.system, "system rule")
+        self.assertEqual(
+            self.args[self.args.index("--resume-session-at") + 1],
+            self.history[-2]["uuid"],
+        )
+        first, assistant, last = [row["message"] for row in self.history]
+        self.assertEqual(
+            [p["type"] for p in first["content"]], ["text", "image", "text"]
+        )
+        self.assertEqual(first["content"][0]["text"], "  literal <tool_response> ")
+        self.assertEqual(first["content"][1]["source"]["media_type"], "image/png")
+        self.assertEqual(first["content"][2]["text"], " after ")
+        self.assertEqual(
+            assistant["content"][1],
+            {
+                "type": "tool_use",
+                "id": "call-id",
+                "name": "mcp__hikari__lookup",
+                "input": {"q": "</parameter>"},
+            },
+        )
+        self.assertEqual(last, self.process.sent()[1]["message"])
+        self.assertEqual(
+            last["content"],
+            [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call-id",
+                    "content": "  result\n",
+                }
+            ],
+        )
 
-        process.stdin.drain = cancelled_drain
-        stream = SubscriptionStream(
+    async def test_claude_keeps_consecutive_user_turns_and_anchors_the_first(self):
+        body = CompletionRequest(
+            messages=[
+                {"role": "user", "content": "older"},
+                {"role": "user", "content": "respond here"},
+            ]
+        )
+
+        def read_rows():
+            self.rows = [
+                json.loads(line)
+                for line in Path(self.args[self.args.index("--resume") + 1])
+                .read_text()
+                .splitlines()
+            ]
+
+        await self.run_provider(
+            "claude",
+            [{"type": "result", "subtype": "success", "result": "reply"}],
+            body=body,
+            on_spawn=read_rows,
+        )
+        self.assertEqual([r["message"]["role"] for r in self.rows], ["user", "user"])
+        self.assertEqual(
+            self.args[self.args.index("--resume-session-at") + 1], self.rows[0]["uuid"]
+        )
+        self.assertEqual(
+            self.process.sent()[0]["message"]["content"],
+            [{"type": "text", "text": "respond here"}],
+        )
+
+    async def test_claude_supplies_schemas_and_waits_for_completed_native_call(self):
+        def control(method):
+            return {
+                "type": "control_request",
+                "request_id": method,
+                "request": {
+                    "subtype": "mcp_message",
+                    "server_name": "hikari",
+                    "message": {
+                        "method": method,
+                        "id": 8,
+                        "params": {"protocolVersion": "2025-11-25"},
+                    },
+                },
+            }
+
+        result = await self.run_provider(
+            "claude",
+            [
+                control("initialize"),
+                control("tools/list"),
+                claude_event(
+                    "content_block_start",
+                    index=1,
+                    content_block={
+                        "type": "tool_use",
+                        "id": "native",
+                        "name": "mcp__hikari__lookup",
+                        "input": {},
+                    },
+                ),
+                claude_event(
+                    "content_block_delta",
+                    index=1,
+                    delta={"type": "input_json_delta", "partial_json": '{"q":"'},
+                ),
+                claude_event(
+                    "content_block_delta",
+                    index=1,
+                    delta={
+                        "type": "input_json_delta",
+                        "partial_json": '  </parameter>"}',
+                    },
+                ),
+                claude_event("message_delta", delta={"stop_reason": "tool_use"}),
+                claude_event("message_stop"),
+            ],
+            body=request(user=False),
+        )
+        self.assertEqual(
+            self.process.sent()[3]["response"]["response"]["mcp_response"]["result"][
+                "tools"
+            ][0]["name"],
+            "lookup",
+        )
+        call = result[0]["tool_calls"][0]
+        self.assertEqual(
+            [
+                call["id"],
+                call["function"]["name"],
+                json.loads(call["function"]["arguments"]),
+            ],
+            ["native", "lookup", {"q": "  </parameter>"}],
+        )
+        self.assertEqual(result[-1], {"finish_reason": "tool_calls"})
+
+    async def test_claude_truncated_call_never_becomes_a_command(self):
+        result = await self.run_provider(
+            "claude",
+            [
+                claude_event(
+                    "content_block_start",
+                    index=1,
+                    content_block={
+                        "type": "tool_use",
+                        "id": "native",
+                        "name": "mcp__hikari__lookup",
+                        "input": {},
+                    },
+                ),
+                claude_event(
+                    "content_block_delta",
+                    index=1,
+                    delta={
+                        "type": "input_json_delta",
+                        "partial_json": '{"unfinished":',
+                    },
+                ),
+                claude_event("message_delta", delta={"stop_reason": "max_tokens"}),
+                claude_event("message_stop"),
+            ],
+        )
+        self.assertEqual(result, [{"finish_reason": "length"}])
+
+    async def test_image_only_input_goes_directly_to_claude_without_placeholder(self):
+        body = CompletionRequest(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": image_url()}}
+                    ],
+                }
+            ]
+        )
+        result = await self.run_provider(
+            "claude",
+            [{"type": "result", "subtype": "success", "result": "Red"}],
+            body=body,
+        )
+        self.assertEqual(result, [{"content": "Red"}, {"finish_reason": "stop"}])
+        self.assertNotIn("--resume", self.args)
+        self.assertEqual(
+            [v["type"] for v in self.process.sent()[0]["message"]["content"]], ["image"]
+        )
+
+    async def test_missing_cli_and_cancelled_turn_release_temporary_home(self):
+        stream = subscription_stream(
             ActiveSubscription(provider="claude", credential="t"), request()
         )
         with (
             patch(
                 "api.services.subscription_inference.asyncio.create_subprocess_exec",
-                return_value=process,
-            ) as spawn,
-            self.assertRaises(asyncio.CancelledError),
+                side_effect=FileNotFoundError,
+            ),
+            self.assertRaises(InferenceFailure),
         ):
             await stream.start()
+        self.assertIsNone(stream.home)
+        process = Process([])
+        process.stdin.drain = AsyncMock(side_effect=asyncio.CancelledError)
+        with (
+            patch(
+                "api.services.subscription_inference.asyncio.create_subprocess_exec",
+                return_value=process,
+            ),
+            self.assertRaises(asyncio.CancelledError),
+        ):
+            async for _ in stream:
+                pass
         self.assertTrue(process.killed)
-        self.assertFalse(Path(spawn.call_args.kwargs["cwd"]).exists())
-
-    async def test_claude_sends_multimodal_images_as_stream_json(self):
-        import base64
-        from io import BytesIO
-
-        from PIL import Image
-
-        buf = BytesIO()
-        Image.new("RGB", (4, 4), color=(255, 0, 0)).save(buf, format="JPEG")
-        jpeg_url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-        body = CompletionRequest(
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "What color?"},
-                        {"type": "image_url", "image_url": {"url": jpeg_url}},
-                    ],
-                }
-            ]
-        )
-        self.assertEqual(body.messages[0].text, "What color?")
-        self.assertEqual(len(body.messages[0].images), 1)
-        self.assertTrue(body.messages[0].images[0].startswith("data:image/png;base64,"))
-        delta = json.dumps(
-            {
-                "type": "stream_event",
-                "event": {"delta": {"type": "text_delta", "text": "Red"}},
-            }
-        )
-        process = FakeProcess(
-            [delta, json.dumps({"type": "result", "is_error": False})]
-        )
-        with patch(
-            "api.services.subscription_inference.asyncio.create_subprocess_exec",
-            return_value=process,
-        ) as spawn:
-            stream = SubscriptionStream(
-                ActiveSubscription(provider="claude", credential="tok"), body
-            )
-            events = [event async for event in stream]
-        self.assertEqual(events, [{"content": "Red"}, {"finish_reason": "stop"}])
-        command = spawn.call_args.args
-        self.assertEqual(command[command.index("--input-format") + 1], "stream-json")
-        sent = json.loads(process.stdin.data.decode())
-        self.assertEqual(sent["type"], "user")
-        content = sent["message"]["content"]
-        self.assertEqual(content[0]["type"], "image")
-        self.assertEqual(content[0]["source"]["media_type"], "image/png")
-        self.assertEqual(content[1]["type"], "text")
-        self.assertIn("What color?", content[1]["text"])
-
-    async def test_codex_writes_multimodal_images_to_temp_files(self):
-        import base64
-        from io import BytesIO
-
-        from PIL import Image
-
-        buf = BytesIO()
-        Image.new("RGB", (4, 4), color=(0, 255, 0)).save(buf, format="PNG")
-        png_url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
-        body = CompletionRequest(
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": png_url}},
-                        {"type": "text", "text": "Describe"},
-                    ],
-                }
-            ]
-        )
-        seen_image_bytes = {}
-
-        def capture_image(*args, **kwargs):
-            idx = args.index("--image")
-            seen_image_bytes["bytes"] = Path(args[idx + 1]).read_bytes()
-            return FakeProcess(
-                [
-                    json.dumps(
-                        {
-                            "type": "item.completed",
-                            "item": {"type": "agent_message", "text": "Green"},
-                        }
-                    ),
-                    json.dumps({"type": "turn.completed"}),
-                ]
-            )
-
-        with patch(
-            "api.services.subscription_inference.asyncio.create_subprocess_exec",
-            side_effect=capture_image,
-        ) as spawn:
-            stream = SubscriptionStream(
-                ActiveSubscription(provider="codex", credential='{"tokens": {}}'), body
-            )
-            events = [event async for event in stream]
-        self.assertEqual(events, [{"content": "Green"}, {"finish_reason": "stop"}])
-        command = spawn.call_args.args
-        self.assertEqual(command[-1], "-")
-        self.assertIn("--image", command)
-        self.assertEqual(seen_image_bytes["bytes"], buf.getvalue())
+        self.assertIsNone(stream.home)

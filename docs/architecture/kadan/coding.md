@@ -67,8 +67,7 @@ The runner's `CodexEvents` loop polls `finished` every five seconds. For each ru
 asks Tsuchi to queue an event run in the origin conversation with
 `kind: "codex"` and the outcome as content, using a run ID derived from the Codex
 run, and only then acknowledges it. A crash between the two repeats the request,
-which Tsuchi answers with the existing run. A 404 or the specific trashed-conversation 409 drops the result. Other conflicts remain for retry and do not prevent delivery to other conversations. The event run's context ends with
-`Codex thread event: {...}`, and the agent reports the outcome with `send_message`.
+which Tsuchi answers with the existing run. A 404 or the specific trashed-conversation 409 drops the result. Other conflicts remain for retry and do not prevent delivery to other conversations. The runner supplies the saved outcome as a structured tool observation. The agent reports it in the originating conversation.
 
 ## API and agent tools
 

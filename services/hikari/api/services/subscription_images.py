@@ -3,119 +3,26 @@
 import asyncio
 import base64
 import binascii
-import json
-import os
 import struct
-import tempfile
 import zlib
 from contextlib import suppress
-from pathlib import Path
 from uuid import uuid4
 
 import anyio
 from api.pydantic_models.media import ImageSet
-from api.pydantic_models.subscriptions import SUBSCRIPTION_MODELS, ActiveSubscription
 from api.repositories import subscriptions
 from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
-from api.services.subscription_inference import SubscriptionStream
+from api.services.subscription_inference import CodexAppServer
 
 
-class SubscriptionImages(SubscriptionStream):
-    def __init__(self, subscription: ActiveSubscription, body):
-        # Reuse CLI lifecycle and compare-and-swap credential refresh, not chat prompting.
-        self.subscription = subscription
-        self.model = SUBSCRIPTION_MODELS["codex"]
-        self.body = body
-        self.home = None
-        self.process = None
-        self.stderr = None
-        self.sequence = 0
-        self.pending_events = []
+class SubscriptionImages(CodexAppServer):
+    output_limit = 64 * 1024 * 1024
 
     def _command(self):
-        env = {**os.environ, "HOME": str(self.home), "CODEX_HOME": str(self.home)}
-        env.pop("OPENAI_API_KEY", None)
-        (self.home / "auth.json").write_text(self.subscription.credential)
-        return [
-            "codex",
-            "app-server",
-            "--listen",
-            "stdio://",
-            "-c",
-            "features.image_generation=true",
-            "-c",
-            "features.shell_tool=false",
-            "-c",
-            "features.multi_agent=false",
-            "-c",
-            'web_search="disabled"',
-        ], env
-
-    async def start(self):
-        # SubscriptionStream.start writes a chat prompt; app-server speaks JSON-RPC.
-        self.home = Path(tempfile.mkdtemp(prefix="hikari-codex-images-"))
-        command, env = self._command()
-        try:
-            self.process = await asyncio.create_subprocess_exec(
-                *command,
-                cwd=self.home,
-                env=env,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                limit=64 * 1024 * 1024,
-            )
-            self.stderr = asyncio.create_task(self.process.stderr.read())
-        except FileNotFoundError as error:
-            raise InferenceFailure(
-                "ChatGPT images are unavailable in this Hikari installation."
-            ) from error
-
-    async def send(self, method, params, request_id=None):
-        value = {"method": method, "params": params}
-        if request_id is not None:
-            value["id"] = request_id
-        self.process.stdin.write((json.dumps(value) + "\n").encode())
-        await self.process.stdin.drain()
-
-    async def event(self):
-        if self.pending_events:
-            return self.pending_events.pop(0)
-        return await self.read_event()
-
-    async def read_event(self):
-        line = await self.process.stdout.readline()
-        if not line:
-            raise InferenceFailure(
-                "ChatGPT image request failed: " + await self._error_text(), 502
-            )
-        try:
-            event = json.loads(line)
-            if not isinstance(event, dict):
-                raise TypeError("expected JSON object")
-            return event
-        except (ValueError, TypeError) as error:
-            raise InferenceFailure(
-                "ChatGPT returned an unreadable image response.", 502
-            ) from error
-
-    async def rpc(self, method, params):
-        self.sequence += 1
-        request_id = self.sequence
-        await self.send(method, params, request_id)
-        while True:
-            event = await self.read_event()
-            if event.get("id") == request_id:
-                if "error" in event:
-                    raise InferenceFailure(
-                        "ChatGPT image request failed: "
-                        + str(event["error"].get("message", event["error"]))[:2000],
-                        502,
-                    )
-                return event["result"]
-            self.reject_server_request(event)
-            self.pending_events.append(event)
+        command, env = super()._command()
+        command.extend(["-c", "features.image_generation=true"])
+        return command, env
 
     def reject_server_request(self, event):
         if "method" in event and "id" in event:
@@ -136,18 +43,7 @@ class SubscriptionImages(SubscriptionStream):
             )
         try:
             await self.start()
-            await self.rpc(
-                "initialize",
-                {
-                    "clientInfo": {
-                        "name": "hikari",
-                        "title": "Hikari",
-                        "version": "1.0",
-                    },
-                    "capabilities": {"experimentalApi": True},
-                },
-            )
-            await self.send("initialized", {})
+            await self.initialize()
             capabilities = await self.rpc("modelProvider/capabilities/read", {})
             if not capabilities.get("imageGeneration"):
                 raise InferenceFailure(

@@ -15,6 +15,8 @@ A sign-in that is cancelled, rejected or left unfinished for 15 minutes connects
 
 The Language choice applies to every chat and screenshot request: Hikari Chat, Kadan agent conversations, Kadan computer screenshot observations, and direct chat API clients. Kadan treats language as ready while a subscription serves it, even if Inkling 2 Mini was never downloaded. Voice calls, video, speech, transcription, formatting and decisions stay local.
 
+Hikari sends earlier chat messages with their speakers and preserves the order of text and images. It provides tool results separately from what the user wrote. Replies can quote text resembling a tool without starting an action. Claude can combine consecutive messages from the same speaker. When a request cannot be represented by the selected provider, Hikari reports the limitation.
+
 A subscription request uses the provider's own usage limits and terms. An expired sign-in, exhausted usage or provider outage fails the request with the provider's error; Hikari never falls back to the local model or to the other provider. Cancelling a request stops it, but the provider may still count usage already consumed. Subscription replies are not subject to local memory admission, and conversation prefix reuse does not apply.
 
 The service responsible for this feature is Hikari. See [Subscription providers architecture](../../architecture/hikari/subscriptions.md) for how requests reach each provider.

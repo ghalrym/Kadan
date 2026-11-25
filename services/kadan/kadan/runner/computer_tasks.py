@@ -9,7 +9,6 @@ each result back to the conversation that asked through Tsuchi.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -19,19 +18,29 @@ from uuid import uuid4
 from kadan_tracing import traced
 
 from ..api.config import ServiceError
-from ..api.pydantic_models.agent_runs import RunMessage, ToolCommand
+from ..api.pydantic_models.agent_runs import (
+    RunCall,
+    RunMessage,
+    RunObservation,
+    RunResult,
+    TaskEnd,
+    TaskHistory,
+    TaskOutcome,
+    TaskStart,
+    ToolCommand,
+    TranscriptEntry,
+    UnrecoveredRecord,
+)
 from ..api.pydantic_models.computer import ComputerTask, ComputerThread
-from .agent_inference import AgentInference, parse_command, tool_characters
+from .agent_inference import AgentInference, tool_characters
 from .agent_runs import (
-    ARGUMENT_REJECTION,
-    TOOL_RESULT,
     context_characters,
-    transcript_messages,
     validate,
 )
 from .tools import COMPUTER_AGENT_TOOLS, TOOLS_BY_NAME
 from .tools.base import invoke_computer_tool
 from .tools.computer import FinishTaskArguments
+from .transcript import entry_characters, transcript_messages
 
 if TYPE_CHECKING:
     from ..api.services import LocalServices
@@ -45,71 +54,58 @@ MAX_ARGUMENT_CORRECTIONS = 2
 # Older finished tasks are folded into one summary line once the thread is long.
 MAX_THREAD_MESSAGES = 900
 MAX_EARLIER_TASKS = 20
-TASK_START = "Computer task: "
-TASK_END = "Task finished: "
-STEERING = "User steering: "
-EARLIER = "Earlier tasks: "
 NEW_STEERING = "New steering arrived for this task"
 
 
-def open_task(transcript: list[RunMessage]) -> tuple[str, int] | None:
+def open_task(transcript: list[TranscriptEntry]) -> tuple[str, int] | None:
     """The task ID and start index of an unfinished task block, if any."""
     for index in range(len(transcript) - 1, -1, -1):
-        content = transcript[index].content
-        if transcript[index].role != "user":
-            continue
-        if content.startswith(TASK_END):
+        item = transcript[index]
+        if isinstance(item, TaskEnd):
             return None
-        if content.startswith(TASK_START):
-            return json.loads(content.removeprefix(TASK_START))["task_id"], index
+        if isinstance(item, TaskStart):
+            return str(item.task_id), index
     return None
 
 
-def pending_command(transcript: list[RunMessage]) -> bool:
-    return bool(transcript) and transcript[-1].role == "assistant"
+def pending_command(transcript: list[TranscriptEntry]) -> bool:
+    return bool(transcript) and isinstance(transcript[-1], RunCall)
 
 
-def characters(transcript: list[RunMessage]) -> int:
-    return sum(len(item.content) for item in transcript)
+def characters(transcript: list[TranscriptEntry]) -> int:
+    return sum(entry_characters(item) for item in transcript)
 
 
-def compact(transcript: list[RunMessage], budget: int) -> list[RunMessage]:
+def compact(transcript: list[TranscriptEntry], budget: int) -> list[TranscriptEntry]:
     """Drop the oldest finished tasks until the thread fits, keeping their summaries."""
-    earlier: list[dict] = []
+    earlier: list[TaskOutcome] = []
     items = list(transcript)
-    if items and items[0].content.startswith(EARLIER):
-        earlier = json.loads(items[0].content.removeprefix(EARLIER))
-        items = items[1:]
+    if items and isinstance(items[0], TaskHistory):
+        earlier = items.pop(0).tasks
+    if len(transcript) <= MAX_THREAD_MESSAGES and characters(transcript) <= budget:
+        return transcript
     changed = False
-    while (
-        len(EARLIER) + len(json.dumps(earlier)) + characters(items) > budget
-        or len(items) > MAX_THREAD_MESSAGES
-    ):
+    while items:
         end = next(
-            (
-                index
-                for index, item in enumerate(items)
-                if item.role == "user" and item.content.startswith(TASK_END)
-            ),
-            None,
+            (i for i, entry in enumerate(items) if isinstance(entry, TaskEnd)), None
         )
         if end is None:
             break
-        finished = json.loads(items[end].content.removeprefix(TASK_END))
+        finished = items[end]
         earlier = [
             *earlier,
-            {
-                "task_id": finished["task_id"],
-                "status": finished["status"],
-                "summary": finished["summary"][:300],
-            },
+            TaskOutcome(
+                task_id=finished.task_id,
+                status=finished.status,
+                summary=finished.summary[:300],
+            ),
         ][-MAX_EARLIER_TASKS:]
         items = items[end + 1 :]
         changed = True
-    if not changed:
-        return transcript
-    head = [RunMessage(role="user", content=EARLIER + json.dumps(earlier))]
-    return [*head, *items] if earlier else items
+        candidate = [TaskHistory(tasks=earlier), *items]
+        if len(candidate) <= MAX_THREAD_MESSAGES and characters(candidate) <= budget:
+            return candidate
+    return [TaskHistory(tasks=earlier), *items] if changed else transcript
 
 
 class LeaseLost(Exception):
@@ -129,7 +125,7 @@ class ThreadWork:
 
     async def save(
         self,
-        transcript: list[RunMessage] | None = None,
+        transcript: list[TranscriptEntry] | None = None,
         consumed: list | None = None,
         task: dict | None = None,
         release: bool = False,
@@ -143,6 +139,7 @@ class ThreadWork:
                     "PUT",
                     f"/api/agents/{self.key}/computer-thread",
                     json={
+                        "transcript_format": 2,
                         "transcript": [
                             item.model_dump(mode="json")
                             for item in (
@@ -192,7 +189,9 @@ class ThreadWork:
                 return
             await self.run_task(active[0])
 
-    def close_interrupted(self, transcript: list[RunMessage]) -> list[RunMessage]:
+    def close_interrupted(
+        self, transcript: list[TranscriptEntry]
+    ) -> list[TranscriptEntry]:
         """End a block left open by a task cancelled while no worker held it."""
         opened = open_task(transcript)
         if opened is None:
@@ -200,31 +199,53 @@ class ThreadWork:
         if pending_command(transcript):
             transcript = [
                 *transcript,
-                RunMessage(
-                    role="user",
-                    content=TOOL_RESULT
-                    + json.dumps({"error": "The task ended before this ran."}),
+                RunResult(
+                    call_id=transcript[-1].call_id,
+                    data={"error": "The task ended before this ran."},
                 ),
             ]
-        end = {"task_id": opened[0], "status": "stopped", "summary": ""}
         return [
             *transcript,
-            RunMessage(role="user", content=TASK_END + json.dumps(end)),
+            TaskEnd(task_id=opened[0], status="stopped", summary=""),
         ]
 
     @traced("kadan.computer_tasks.run_task")
     async def run_task(self, task: ComputerTask) -> None:
         opened = open_task(self.thread.transcript)
+        if task.status == "running":
+            # An unrecognized old journal may contain an unconfirmed change.
+            # Only the current task needs to stop. Earlier closed tasks are history.
+            start = (
+                opened[1]
+                if opened
+                else next(
+                    (
+                        i + 1
+                        for i in reversed(range(len(self.thread.transcript)))
+                        if isinstance(self.thread.transcript[i], TaskEnd)
+                    ),
+                    0,
+                )
+            )
+            if any(
+                isinstance(entry, UnrecoveredRecord)
+                for entry in self.thread.transcript[start:]
+            ):
+                await self.end(
+                    task,
+                    "failed",
+                    "Kadan could not safely resume this computer task. Check what it completed before trying again.",
+                )
+                return
         if opened is None or opened[0] != str(task.id):
-            start = {
-                "task_id": str(task.id),
-                "from": "agent" if task.origin else "user",
-                "instructions": task.instructions,
-            }
             await self.save(
                 [
                     *self.close_interrupted(self.thread.transcript),
-                    RunMessage(role="user", content=TASK_START + json.dumps(start)),
+                    TaskStart(
+                        task_id=task.id,
+                        origin="agent" if task.origin else "user",
+                        instructions=task.instructions,
+                    ),
                 ],
                 task={"id": str(task.id), "status": "running"},
             )
@@ -242,7 +263,7 @@ class ThreadWork:
                     [
                         *thread.transcript,
                         *(
-                            RunMessage(role="user", content=STEERING + item.content)
+                            RunMessage(role="user", content=item.content)
                             for item in steering
                         ),
                     ],
@@ -250,7 +271,7 @@ class ThreadWork:
                 )
             replayed = pending_command(self.thread.transcript)
             if replayed:
-                command = parse_command(self.thread.transcript[-1].content)
+                command = self.thread.transcript[-1].command
             else:
                 try:
                     command = await self.infer()
@@ -278,7 +299,7 @@ class ThreadWork:
             await self.save(
                 [
                     *self.thread.transcript,
-                    RunMessage(role="user", content=TOOL_RESULT + json.dumps(result)),
+                    RunResult(call_id=self.thread.transcript[-1].call_id, data=result),
                 ]
             )
 
@@ -288,15 +309,8 @@ class ThreadWork:
         opened = open_task(transcript)
         assert opened is not None
         current = transcript[opened[1] :]
-        commands = sum(
-            item.role == "assistant" and item.content.startswith('{"tool":')
-            for item in current
-        )
-        rejections = [
-            item
-            for item in current
-            if item.role == "user" and item.content.startswith(ARGUMENT_REJECTION)
-        ]
+        commands = sum(item.role == "call" for item in current)
+        rejections = [item for item in current if item.role == "rejection"]
         if len(rejections) > MAX_ARGUMENT_CORRECTIONS:
             raise ServiceError(
                 "The computer agent exhausted its tool-argument corrections.", 502
@@ -320,25 +334,30 @@ class ThreadWork:
             raise ServiceError(
                 "The task exceeded the computer agent's context limit.", 422
             )
-        command = await self.tasks.inference.call(
+        call = await self.tasks.inference.call(
             transcript_messages([system, *transcript]),
             status.model_id,
             f"kadan-computer:{self.key}",
             COMPUTER_AGENT_TOOLS,
         )
-        if command.tool == "finish":
-            command = ToolCommand(
-                tool="finish_task",
-                arguments={"summary": "Stopped without reporting a result."},
+        if call.command.tool == "finish":
+            call = RunCall(
+                call_id=call.call_id,
+                command=ToolCommand(
+                    tool="finish_task",
+                    arguments={"summary": "Stopped without reporting a result."},
+                ),
             )
+        command = call.command
         rejection = validate(command, COMPUTER_AGENT_TOOLS)
         if rejection is not None:
             await self.save(
                 [
                     *transcript,
-                    RunMessage(
-                        role="user",
-                        content=ARGUMENT_REJECTION + rejection.model_dump_json(),
+                    RunObservation(
+                        role="rejection",
+                        name=command.tool,
+                        data=rejection.model_dump(mode="json"),
                     ),
                 ]
             )
@@ -347,7 +366,7 @@ class ThreadWork:
         await self.save(
             [
                 *transcript,
-                RunMessage(role="assistant", content=command.model_dump_json()),
+                call,
             ]
         )
         return command
@@ -370,7 +389,7 @@ class ThreadWork:
             await self.save(
                 [
                     *self.thread.transcript,
-                    RunMessage(role="user", content=TOOL_RESULT + json.dumps(result)),
+                    RunResult(call_id=self.thread.transcript[-1].call_id, data=result),
                 ]
             )
             return False
@@ -387,10 +406,9 @@ class ThreadWork:
                 else {"error": "The user cancelled this task before it ran."}
             )
             transcript.append(
-                RunMessage(role="user", content=TOOL_RESULT + json.dumps(result))
+                RunResult(call_id=self.thread.transcript[-1].call_id, data=result)
             )
-        end = {"task_id": str(task.id), "status": status, "summary": summary}
-        transcript.append(RunMessage(role="user", content=TASK_END + json.dumps(end)))
+        transcript.append(TaskEnd(task_id=task.id, status=status, summary=summary))
         while True:
             try:
                 await self.save(

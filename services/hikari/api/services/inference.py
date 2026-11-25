@@ -51,7 +51,7 @@ class InferenceStream:
         else:
             yield {
                 key: result[key]
-                for key in ("finish_reason", "timing", "cache")
+                for key in ("finish_reason", "timing", "cache", "tool_calls")
                 if key in result
             }
 

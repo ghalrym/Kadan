@@ -98,8 +98,6 @@ InferenceRequest parse_request(const Json& envelope) {
                 } else if (content_field->is_array()) {
                     for (const auto& part : *content_field) {
                         if (part.is_string()) {
-                            if (!msg.text.empty())
-                                msg.text += '\n';
                             msg.text += part.get<std::string>();
                             continue;
                         }
@@ -109,11 +107,7 @@ InferenceRequest parse_request(const Json& envelope) {
                         const auto ptype = part.value("type", std::string("text"));
                         if (ptype == "text" || ptype == "input_text") {
                             const auto piece = part.value("text", std::string());
-                            if (!piece.empty()) {
-                                if (!msg.text.empty())
-                                    msg.text += '\n';
-                                msg.text += piece;
-                            }
+                            msg.text += piece;
                         } else if (
                             ptype == "image_url" || ptype == "image"
                             || ptype == "input_image"
@@ -130,15 +124,20 @@ InferenceRequest parse_request(const Json& envelope) {
                                     url = iu.get<std::string>();
                                 else if (iu.is_object() && iu.contains("url"))
                                     url = iu.at("url").get<std::string>();
-                            } else if (part.contains("url") && part.at("url").is_string()) {
+                            } else if (
+                                part.contains("url") && part.at("url").is_string()
+                            ) {
                                 url = part.at("url").get<std::string>();
                             }
                             preparation_check(
                                 !url.empty(), "Image content part requires a URL", 422
                             );
+                            msg.image_offsets.push_back(msg.text.size());
                             msg.images.push_back(std::move(url));
                         } else {
-                            throw RequestError("Unsupported chat content part type", 422);
+                            throw RequestError(
+                                "Unsupported chat content part type", 422
+                            );
                         }
                     }
                 } else {
@@ -154,6 +153,7 @@ InferenceRequest parse_request(const Json& envelope) {
                 );
                 for (const auto& img : message.at("images")) {
                     preparation_check(img.is_string(), "Invalid image entry", 422);
+                    msg.image_offsets.push_back(msg.text.size());
                     msg.images.push_back(img.get<std::string>());
                 }
             }

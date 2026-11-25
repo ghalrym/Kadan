@@ -1,5 +1,4 @@
 import asyncio
-import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
@@ -10,7 +9,10 @@ from kadan.api.pydantic_models.agent_runs import (
     AgentRun,
     ReferenceSnapshot,
     RequestReference,
+    RunCall,
     RunMessage,
+    RunResult,
+    ToolCommand,
 )
 from kadan.api.run_client import RunClient
 from kadan.runner.agent_runs import RunConversation, transcript_messages
@@ -42,11 +44,10 @@ def test_reference_tool_returns_data_with_provenance_as_tool_message():
         [
             RunMessage(role="system", content="Instructions"),
             RunMessage(role="user", content="Read my reference"),
-            RunMessage(
-                role="assistant",
-                content='{"tool":"read_request_references","arguments":{}}',
+            RunCall(
+                call_id="read", command=ToolCommand(tool="read_request_references")
             ),
-            RunMessage(role="user", content="Tool result: " + json.dumps(result)),
+            RunResult(call_id="read", data=result),
         ]
     )
     assert isinstance(messages[-1], ToolMessage)

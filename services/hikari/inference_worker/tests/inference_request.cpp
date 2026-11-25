@@ -4,6 +4,8 @@
 #include <cassert>
 #include <iostream>
 
+#include "kadan/chat_prompt.hpp"
+
 using namespace kadan::serving;
 
 int main() {
@@ -88,7 +90,8 @@ int main() {
                 Json::array(
                     {{{"type", "text"}, {"text", "Look at this"}},
                      {{"type", "image_url"},
-                      {"image_url", {{"url", "data:image/png;base64,iVBORw0KGgo="}}}}}
+                      {"image_url", {{"url", "data:image/png;base64,iVBORw0KGgo="}}}},
+                     {{"type", "text"}, {"text", " then that"}}}
                 )}},
               {{"role", "assistant"},
                {"content", ""},
@@ -97,7 +100,8 @@ int main() {
                 Json::array(
                     {{{"id", "call_1"},
                       {"type", "function"},
-                      {"function", {{"name", "bash"}, {"arguments", "{\"cmd\":\"ls\"}"}}}}}
+                      {"function",
+                       {{"name", "bash"}, {"arguments", "{\"cmd\":\"ls\"}"}}}}}
                 )}},
               {{"role", "tool"},
                {"tool_call_id", "call_1"},
@@ -113,7 +117,11 @@ int main() {
         assert(req.reasoning_effort == "medium");
         assert(req.tools.size() == 1 && req.tools[0].name == "bash");
         assert(req.messages.size() == 3);
-        assert(req.messages[0].text == "Look at this");
+        assert(req.messages[0].text == "Look at this then that");
+        assert(req.messages[0].image_offsets == std::vector<std::size_t>{12});
+        const auto prompt = chat_prompt(req.messages, 4096).text;
+        assert(prompt.find("Look at this") < prompt.find("<|content_image|>"));
+        assert(prompt.find("<|content_image|>") < prompt.find(" then that"));
         assert(req.messages[0].images.size() == 1);
         assert(req.messages[1].reasoning_content == "checking");
         assert(req.messages[1].tool_calls.size() == 1);

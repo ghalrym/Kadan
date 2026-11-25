@@ -120,7 +120,7 @@ public:
         const auto rendered = chat_prompt(
             input.messages, byte_limit, input.tools, input.reasoning_effort
         );
-        const std::size_t input_bytes = rendered.size();
+        const std::size_t input_bytes = rendered.text.size();
         require(
             input_bytes > 0 && input_bytes <= byte_limit, "chat_input_transport_bound"
         );
@@ -134,8 +134,9 @@ public:
             std::make_unique<HostAllocation>(resources_, Workload::llm, scratch);
 
         std::vector<std::uint32_t> raw_tokens(capacity_);
-        const auto raw_count =
-            tokenizer_->encode(rendered, raw_tokens, cancel, byte_limit);
+        const auto raw_count = tokenizer_->encode(
+            rendered.text, raw_tokens, cancel, byte_limit, rendered.literal_ranges
+        );
         raw_tokens.resize(raw_count);
 
         // Expand each <|unused_200054|> placeholder into N_img placeholder tokens
@@ -159,7 +160,8 @@ public:
             for (const auto id : raw_tokens) {
                 if (id == placeholder) {
                     require(
-                        img_index < message_images.size(), "chat_image_placeholder_count"
+                        img_index < message_images.size(),
+                        "chat_image_placeholder_count"
                     );
                     const auto& png = *message_images[img_index++];
                     const auto n_img = text::image_token_count(png);
@@ -175,9 +177,7 @@ public:
                     prompt_.push_back(id);
                 }
             }
-            require(
-                img_index == message_images.size(), "chat_image_placeholder_count"
-            );
+            require(img_index == message_images.size(), "chat_image_placeholder_count");
         }
 
         prompt_tokens_ = prompt_.size();
@@ -210,21 +210,17 @@ public:
                 reuse = false;
         }
 
-        // Callers append each turn before a final instruction they replace, so
-        // the state before the last message is what the next turn shares.
+        // Keep the state before the current turn as a reusable history prefix.
         std::size_t leading = 0;
         if (reuse && input.conversation_id && input.messages.size() > 1
             && scheduled_images_.empty()) {
             std::vector<std::uint32_t> tokens(capacity_);
             const auto earlier =
                 std::span(input.messages).first(input.messages.size() - 1);
+            const auto prefix =
+                chat_messages(earlier, byte_limit, input.tools, input.reasoning_effort);
             const auto n = tokenizer_->encode(
-                chat_messages(
-                    earlier, byte_limit, input.tools, input.reasoning_effort, false
-                ),
-                tokens,
-                cancel,
-                byte_limit
+                prefix.text, tokens, cancel, byte_limit, prefix.literal_ranges
             );
             if (n < prompt_tokens_
                 && std::equal(tokens.begin(), tokens.begin() + n, prompt_.begin()))
@@ -296,7 +292,8 @@ public:
                 emit_visible(parser.on_text(chunk));
         };
 
-        auto match_special = [&](unsigned id) -> std::optional<InklingStreamParser::Special> {
+        auto match_special =
+            [&](unsigned id) -> std::optional<InklingStreamParser::Special> {
             if (id_message_model_ && id == *id_message_model_)
                 return InklingStreamParser::Special::message_model;
             if (id_content_thinking_ && id == *id_content_thinking_)
@@ -325,8 +322,12 @@ public:
 
                 if (const auto sp = match_special(selected.id)) {
                     flush_pending_utf8(true);
-                    emit_visible(parser.on_special(*sp));
+                    parser.on_special(*sp);
                 } else {
+                    require(
+                        !tokenizer_->is_special(selected.id),
+                        "chat_unexpected_control_token"
+                    );
                     if (parser.in_thinking())
                         ++thinking_tokens;
                     pending += tokenizer_->decode(selected.id);
@@ -346,15 +347,9 @@ public:
                     selected = model_->step(*id_content_text_, true);
                     steps += 4;
                     generated += 3;
-                    emit_visible(
-                        parser.on_special(InklingStreamParser::Special::end_message)
-                    );
-                    emit_visible(
-                        parser.on_special(InklingStreamParser::Special::message_model)
-                    );
-                    emit_visible(
-                        parser.on_special(InklingStreamParser::Special::content_text)
-                    );
+                    parser.on_special(InklingStreamParser::Special::end_message);
+                    parser.on_special(InklingStreamParser::Special::message_model);
+                    parser.on_special(InklingStreamParser::Special::content_text);
                     continue;
                 }
 
@@ -367,7 +362,9 @@ public:
         }
 
         flush_pending_utf8(true);
-        emit_visible(parser.finish());
+        auto calls = parser.finish(request.id, reason != "length");
+        if (!calls.empty())
+            reason = "tool_calls";
 
         model_->end_request();
 
@@ -407,6 +404,7 @@ public:
             request,
             Json{
                 {"text", text},
+                {"tool_calls", std::move(calls)},
                 {"finish_reason", reason},
                 {"cache", std::move(cache)},
                 {"timing",

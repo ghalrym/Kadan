@@ -1,13 +1,14 @@
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Literal, Self
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     HttpUrl,
+    JsonValue,
     TypeAdapter,
     field_validator,
     model_validator,
@@ -621,6 +622,84 @@ class ReferenceSnapshot(Model):
 class RunMessage(Model):
     role: Literal["system", "user", "assistant"]
     content: str = Field(max_length=1000000)
+    attachment_ids: list[UUID] = Field(default_factory=list, max_length=100)
+
+
+class ToolCommand(Model):
+    """An action selected by the agent."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    tool: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_]+$")
+    arguments: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class RunCall(Model):
+    role: Literal["call"] = "call"
+    call_id: str = Field(
+        default_factory=lambda: uuid4().hex, min_length=1, max_length=120
+    )
+    command: ToolCommand
+
+
+class RunResult(Model):
+    role: Literal["result"] = "result"
+    call_id: str = Field(min_length=1, max_length=120)
+    data: dict[str, JsonValue]
+
+
+class RunObservation(Model):
+    role: Literal["observation", "rejection"] = "observation"
+    name: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_]+$")
+    data: dict[str, JsonValue] | list[JsonValue]
+
+
+class TaskStart(Model):
+    role: Literal["task_start"] = "task_start"
+    task_id: UUID
+    origin: Literal["user", "agent"]
+    instructions: str = Field(max_length=10000)
+
+
+class TaskOutcome(Model):
+    task_id: UUID
+    status: Literal["completed", "failed", "cancelled", "stopped"]
+    summary: str = Field(max_length=10000)
+
+
+class TaskEnd(TaskOutcome):
+    role: Literal["task_end"] = "task_end"
+
+
+class TaskHistory(Model):
+    role: Literal["task_history"] = "task_history"
+    tasks: list[TaskOutcome] = Field(max_length=20)
+
+
+class MigratedMarker(Model):
+    """Occupies a retired scheduling row so saved side-effect identities stay valid."""
+
+    role: Literal["retired"] = "retired"
+
+
+class UnrecoveredRecord(Model):
+    """Original journal row whose safe replay could not be established."""
+
+    role: Literal["unrecovered"] = "unrecovered"
+    original: JsonValue
+
+
+TranscriptEntry = Annotated[
+    RunMessage
+    | RunCall
+    | RunResult
+    | RunObservation
+    | TaskStart
+    | TaskEnd
+    | TaskHistory
+    | MigratedMarker
+    | UnrecoveredRecord,
+    Field(discriminator="role"),
+]
 
 
 class RunEvent(Model):
@@ -632,7 +711,7 @@ class RunEvent(Model):
 
 class AgentRunState(Model):
     status: Literal["queued", "running", "completed", "failed", "cancelled"] = "queued"
-    transcript: list[RunMessage] = Field(default_factory=list, max_length=1000)
+    transcript: list[TranscriptEntry] = Field(default_factory=list, max_length=1000)
     owner_id: UUID | None = None
     lease_expires_at: datetime | None = None
     error: str | None = Field(default=None, max_length=10000)
@@ -745,6 +824,22 @@ class ComputerTask(Model):
     updated_at: datetime
 
 
+class ConversationTaskStatus(Model):
+    id: UUID
+    kind: Literal["image", "computer"]
+    status: Literal[
+        "queued", "running", "cancelling", "completed", "failed", "cancelled"
+    ]
+    updated_at: datetime
+    request_excerpt: str
+    outcome_excerpt: str | None
+
+
+class ConversationTaskPage(Model):
+    tasks: list[ConversationTaskStatus]
+    next_offset: int | None
+
+
 class ComputerSteering(Model):
     """A user request waiting to be read by the running computer task."""
 
@@ -755,7 +850,7 @@ class ComputerSteering(Model):
 
 
 class ComputerThreadState(Model):
-    transcript: list[RunMessage] = Field(default_factory=list, max_length=1000)
+    transcript: list[TranscriptEntry] = Field(default_factory=list, max_length=1000)
     owner_id: UUID | None = None
     lease_expires_at: datetime | None = None
 

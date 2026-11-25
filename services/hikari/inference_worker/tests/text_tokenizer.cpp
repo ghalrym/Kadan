@@ -134,6 +134,7 @@ int main() {
         assert(tokenizer.encode("abc", output, cancel) == 1 && output[0] == 256);
         assert(tokenizer.encode("<|begin_of_text|>abc<|eom|>", output, cancel) == 3);
         assert(output[0] == 200000 && output[1] == 256 && output[2] == 200007);
+        assert(tokenizer.is_special(200000) && !tokenizer.is_special(256));
         tokenizer.unload();
         auto rejects_muse = [&](const Json& invalid, const char* expected) {
             std::ofstream(path) << invalid;
@@ -224,6 +225,13 @@ int main() {
         assert(output[0] == vocabulary.at(tokens[0xc3] + tokens[0xa9]));
         assert(
             tokenizer.encode("<tag>more", output, cancel) == 1 && output[0] == 151644
+        );
+        const std::array<std::pair<std::size_t, std::size_t>, 1> literal{{{5, 10}}};
+        auto count = tokenizer.encode("<tag><tag>", output, cancel, 32000, literal);
+        assert(count > 2 && output[0] == 151643);
+        assert(
+            std::find(output.begin() + 1, output.begin() + count, 151643)
+            == output.begin() + count
         );
         auto rejects = [](auto action, const char* expected) {
             bool rejected = false;

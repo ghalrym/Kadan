@@ -44,16 +44,14 @@ tasks oldest first, releasing the lease when the queue is empty. It does not use
 the per-agent slot that `AgentRunner` holds for conversation runs, so a running
 computer task never blocks a chat response.
 
-A task appears in the transcript as a block: a `Computer task:` line with its ID,
-source and instructions, then commands and results, then a `Task finished:` line
-with the outcome. Commands are persisted before execution, exactly like
+Each task has explicit start and outcome records. Commands and results carry a shared call ID. A direct request carries its original user text, and the agent’s delegation reaches the model as a task observation. Commands are persisted before execution, exactly like
 conversation runs. After a restart only GET tools repeat, and an unconfirmed
 change is reported to the model as uncertain. A block left open by a task
 cancelled while no worker held the thread is closed as `stopped` before the next
-task starts.
+task starts. Tsuchi upgrades earlier journals once and retains their original action positions. If a running task’s saved actions cannot be interpreted, the runner reports that task as failed before replay.
 
 Before each inference, the oldest finished blocks are folded into a single
-`Earlier tasks:` line holding their last twenty summaries until the transcript
+history record holding their last twenty summaries until the transcript
 fits the context left after the instructions and tool definitions, or under 900
 messages. The current task is never folded. If it alone does not fit, the task
 fails. Each task has an 80-command limit and two argument corrections.
@@ -67,7 +65,7 @@ request sent as a task finishes therefore always lands somewhere. Request IDs
 make retries idempotent.
 
 Before every inference the worker appends pending steering as
-`User steering:` messages and marks it consumed in the same versioned thread
+user messages with their original text and marks it consumed in the same versioned thread
 write. Tsuchi refuses to complete a task while steering is unread
 (`New steering arrived for this task`). The worker then reports that to the
 model as the `finish_task` result and continues. Failed and cancelled tasks

@@ -276,13 +276,14 @@ for (const generate of [true, false]) {
     const first = message("first", "user", "Question A");
     const view = await chat([run("A", "running")], { ...chain, messages: [first] });
     const finishSend = view.holdSend();
-    const content = generate ? "Question B" : "A note for later";
+    const content = generate ? "    Question B\n" : "    A note for later\n";
     view.composer().onChange(content);
     view.render();
     view.composer().onSend(generate);
     view.render();
     assert.deepEqual(view.receipts(), ["Sending…"]);
     assert.equal(view.requests.at(-1).path, `/agents/guide/conversations/conversation/${generate ? "runs" : "notes"}`);
+    assert.equal(view.requests.at(-1).body.content, content);
     const saved = { ...chain, version: 2, messages: [first, message("sent-message", "user", content)] };
     const queued = run("B", "queued");
     finishSend(generate ? { run: queued, conversation: saved } : saved);

@@ -12,6 +12,20 @@
             "default": "assistant",
             "title": "Role",
             "type": "string"
+          },
+          "tool_calls": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OutputToolCall"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Calls"
           }
         },
         "required": [
@@ -133,7 +147,39 @@
         "title": "CapabilityProviders",
         "type": "object"
       },
-      "ChatCallFunction": {
+      "ChatCallFunction-Input": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Arguments"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_]+$",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "arguments"
+        ],
+        "title": "ChatCallFunction",
+        "type": "object"
+      },
+      "ChatCallFunction-Output": {
         "additionalProperties": false,
         "properties": {
           "arguments": {
@@ -198,10 +244,67 @@
         "title": "ChatFunction",
         "type": "object"
       },
-      "ChatMessage": {
+      "ChatImagePart": {
+        "additionalProperties": false,
+        "properties": {
+          "image_url": {
+            "$ref": "#/components/schemas/ChatImageUrl"
+          },
+          "type": {
+            "const": "image_url",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "image_url"
+        ],
+        "title": "ChatImagePart",
+        "type": "object"
+      },
+      "ChatImageUrl": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "ChatImageUrl",
+        "type": "object"
+      },
+      "ChatMessage-Input": {
         "additionalProperties": false,
         "description": "Unified chat message supporting text, images, reasoning, and tool calls.",
         "properties": {
+          "content": {
+            "anyOf": [
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ChatTextPart"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatImagePart"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
           "images": {
             "anyOf": [
               {
@@ -284,7 +387,7 @@
             "anyOf": [
               {
                 "items": {
-                  "$ref": "#/components/schemas/ChatToolCall"
+                  "$ref": "#/components/schemas/ChatToolCall-Input"
                 },
                 "type": "array"
               },
@@ -299,6 +402,153 @@
           "role"
         ],
         "title": "ChatMessage",
+        "type": "object"
+      },
+      "ChatMessage-Output": {
+        "additionalProperties": false,
+        "description": "Unified chat message supporting text, images, reasoning, and tool calls.",
+        "properties": {
+          "content": {
+            "anyOf": [
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ChatTextPart"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatImagePart"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "images": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Images"
+          },
+          "meta": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meta"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "reasoning_content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Content"
+          },
+          "role": {
+            "enum": [
+              "system",
+              "user",
+              "assistant",
+              "tool"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          },
+          "tool_call_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Call Id"
+          },
+          "tool_calls": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChatToolCall-Output"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Calls"
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "title": "ChatMessage",
+        "type": "object"
+      },
+      "ChatTextPart": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "const": "text",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "text"
+        ],
+        "title": "ChatTextPart",
         "type": "object"
       },
       "ChatTool": {
@@ -320,11 +570,37 @@
         "title": "ChatTool",
         "type": "object"
       },
-      "ChatToolCall": {
+      "ChatToolCall-Input": {
         "additionalProperties": false,
         "properties": {
           "function": {
-            "$ref": "#/components/schemas/ChatCallFunction"
+            "$ref": "#/components/schemas/ChatCallFunction-Input"
+          },
+          "id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "function",
+            "default": "function",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "function"
+        ],
+        "title": "ChatToolCall",
+        "type": "object"
+      },
+      "ChatToolCall-Output": {
+        "additionalProperties": false,
+        "properties": {
+          "function": {
+            "$ref": "#/components/schemas/ChatCallFunction-Output"
           },
           "id": {
             "maxLength": 120,
@@ -616,7 +892,8 @@
             "default": "stop",
             "enum": [
               "stop",
-              "length"
+              "length",
+              "tool_calls"
             ],
             "title": "Finish Reason",
             "type": "string"
@@ -657,6 +934,20 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "tool_calls": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OutputToolCall"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Calls"
           }
         },
         "required": [
@@ -698,7 +989,7 @@
           },
           "messages": {
             "items": {
-              "$ref": "#/components/schemas/ChatMessage"
+              "$ref": "#/components/schemas/ChatMessage-Input"
             },
             "minItems": 1,
             "title": "Messages",
@@ -1312,7 +1603,7 @@
         "properties": {
           "messages": {
             "items": {
-              "$ref": "#/components/schemas/ChatMessage"
+              "$ref": "#/components/schemas/ChatMessage-Output"
             },
             "title": "Messages",
             "type": "array"
@@ -1727,6 +2018,47 @@
           "type"
         ],
         "title": "NoulQuestion",
+        "type": "object"
+      },
+      "OutputFunction": {
+        "properties": {
+          "arguments": {
+            "title": "Arguments",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "arguments"
+        ],
+        "title": "OutputFunction",
+        "type": "object"
+      },
+      "OutputToolCall": {
+        "properties": {
+          "function": {
+            "$ref": "#/components/schemas/OutputFunction"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "function",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "function"
+        ],
+        "title": "OutputToolCall",
         "type": "object"
       },
       "RequestRecord": {

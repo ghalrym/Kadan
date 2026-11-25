@@ -36,16 +36,6 @@ class CompletionRequestTests(unittest.TestCase):
 
     def test_unsupported_message_fields_are_rejected_instead_of_discarded(self):
         for field, value in (
-            (
-                "tool_calls",
-                [
-                    {
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {"name": "weather", "arguments": "{}"},
-                    }
-                ],
-            ),
             ("function_call", {"name": "weather", "arguments": "{}"}),
             ("tool_call_id", "call_1"),
             ("name", "weather"),
@@ -59,6 +49,47 @@ class CompletionRequestTests(unittest.TestCase):
                         ]
                     )
                 self.assertTrue(error.exception.errors())
+
+    def test_json_response_tool_history_can_be_submitted_again(self):
+        call = {
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "weather", "arguments": "{}"},
+        }
+        request = CompletionRequest(
+            messages=[{"role": "assistant", "content": "", "tool_calls": [call]}]
+        )
+        self.assertEqual(request.messages[0].tool_calls[0].function.arguments, {})
+
+    def test_image_keeps_its_place_in_multipart_message(self):
+        from unittest.mock import patch
+
+        from api.pydantic_models.chat import ChatImagePart
+
+        with patch(
+            "api.pydantic_models.chat.normalize_image_data_url",
+            side_effect=lambda url: url,
+        ):
+            request = CompletionRequest(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Before "},
+                            {"type": "image_url", "image_url": {"url": "image"}},
+                            {"type": "text", "text": " After"},
+                        ],
+                    }
+                ]
+            )
+            parts = request.messages[0].ordered_content()
+            self.assertEqual(parts[0].text, "Before ")
+            self.assertIsInstance(parts[1], ChatImagePart)
+            self.assertEqual(parts[2].text, " After")
+            self.assertEqual(
+                request.model_dump()["messages"][0]["content"][1]["image_url"]["url"],
+                "image",
+            )
 
     def test_ambiguous_text_and_content_are_rejected(self):
         with self.assertRaises(ValidationError):
@@ -134,6 +165,37 @@ class CompletionResponseTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(response["object"], "chat.completion")
                     self.assertTrue(response["id"].startswith("chatcmpl-"))
 
+    async def test_native_and_subscription_tool_results_keep_the_same_shape(self):
+        from api.routes.v1.chat.completions import (
+            completion_response,
+            subscription_result,
+        )
+
+        call = {
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "example", "arguments": '{"text":"</parameter>"}'},
+        }
+
+        async def stream():
+            yield {"content": " keep "}
+            yield {"tool_calls": [call]}
+            yield {"finish_reason": "tool_calls"}
+
+        identity = {"id": "unit", "created": 1, "model": "unit"}
+        response = completion_response(
+            identity, await subscription_result(stream())
+        ).model_dump()
+        self.assertEqual(response["choices"][0]["message"]["content"], " keep ")
+        self.assertEqual(response["message"]["tool_calls"], [call])
+        self.assertEqual(response["choices"][0]["message"]["tool_calls"], [call])
+        frames = [frame async for frame in chunks(stream(), identity)]
+        delta = json.loads(frames[2][6:])["choices"][0]["delta"]
+        self.assertEqual(delta, {"tool_calls": [{**call, "index": 0}]})
+        self.assertEqual(
+            json.loads(frames[-2][6:])["choices"][0]["finish_reason"], "tool_calls"
+        )
+
     async def test_empty_input_messages_remain_invalid(self):
         with self.assertRaises(ValidationError):
             CompletionRequest(messages=[{"role": "user", "content": ""}])
@@ -164,14 +226,16 @@ class CompletionResponseTests(unittest.IsolatedAsyncioTestCase):
             for reason in ("stop", "length"):
                 with self.subTest(text=text, reason=reason):
 
-                    async def stream():
+                    async def stream(text, reason):
                         if text:
                             yield {"content": "Hello "}
                             yield {"content": "🌍"}
                         yield {"finish_reason": reason}
 
                     identity = {"id": "chatcmpl-unit", "created": 1, "model": "small"}
-                    frames = [frame async for frame in chunks(stream(), identity)]
+                    frames = [
+                        frame async for frame in chunks(stream(text, reason), identity)
+                    ]
                     self.assertEqual(frames[-1], "data: [DONE]\n\n")
                     events = [
                         json.loads(frame.removeprefix("data: "))
@@ -208,7 +272,7 @@ class CompletionResponseTests(unittest.IsolatedAsyncioTestCase):
         for failure in (None, InferenceFailure("Worker failed", 502)):
             with self.subTest(failure=failure):
 
-                async def stream():
+                async def stream(failure):
                     yield {"content": "Partial"}
                     if failure:
                         raise failure
@@ -216,7 +280,7 @@ class CompletionResponseTests(unittest.IsolatedAsyncioTestCase):
                 frames = [
                     frame
                     async for frame in chunks(
-                        stream(),
+                        stream(failure),
                         {"id": "chatcmpl-unit", "created": 1, "model": "small"},
                     )
                 ]
@@ -247,8 +311,9 @@ class SubscriptionCompletionTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self, subscription, body):
                 self.subscription = subscription
 
-            async def text(self):
-                return "<tool_call>\n<function=finish>\n</function>\n</tool_call>"
+            async def __aiter__(self):
+                yield {"content": "  <function=finish>  "}
+                yield {"finish_reason": "stop"}
 
         request = Request({"type": "http"}, receive=self.receive)
         body = CompletionRequest(messages=[{"role": "user", "content": "Hello"}])
@@ -257,13 +322,15 @@ class SubscriptionCompletionTests(unittest.IsolatedAsyncioTestCase):
                 "api.routes.v1.chat.completions.subscriptions.active",
                 return_value=ActiveSubscription(provider="claude", credential="t"),
             ),
-            patch("api.routes.v1.chat.completions.SubscriptionStream", Stream),
+            patch("api.routes.v1.chat.completions.subscription_stream", Stream),
             patch("api.routes.v1.chat.completions.inference.submit") as submit,
         ):
             response = (await create_completion(body, request)).model_dump()
         submit.assert_not_called()
         self.assertEqual(response["model"], "claude-haiku-5-5")
-        self.assertIn("<function=finish>", response["choices"][0]["message"]["content"])
+        self.assertEqual(
+            response["choices"][0]["message"]["content"], "  <function=finish>  "
+        )
         self.assertEqual(response["choices"][0]["finish_reason"], "stop")
 
     async def test_unconnected_selection_is_a_conflict(self):

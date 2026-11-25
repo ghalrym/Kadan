@@ -1,5 +1,6 @@
 import base64
 import binascii
+import json
 from io import BytesIO
 from typing import Literal
 
@@ -9,6 +10,7 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    field_validator,
     model_validator,
 )
 
@@ -24,8 +26,6 @@ IMAGE_DATA_URL_PREFIXES = (
 
 def normalize_image_data_url(url: str) -> str:
     """Validate a PNG or JPEG data URL and normalize it to a PNG data URL."""
-    if not isinstance(url, str):
-        raise ValueError("Image URL must be a string")
     expected_format = None
     payload = None
     for prefix, fmt in IMAGE_DATA_URL_PREFIXES:
@@ -82,6 +82,13 @@ class ChatCallFunction(BaseModel):
     name: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_]+$")
     arguments: dict[str, JsonValue]
 
+    @field_validator(
+        "arguments", mode="before", json_schema_input_type=dict[str, JsonValue] | str
+    )
+    @classmethod
+    def parse_arguments(cls, value):
+        return json.loads(value) if isinstance(value, str) else value
+
 
 class ChatToolCall(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -114,6 +121,9 @@ class ChatMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
     meta: str | None = None
     text: str = ""
+    content: list[ChatTextPart | ChatImagePart] | str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     images: list[str] | None = Field(default=None, max_length=MAX_IMAGES_PER_MESSAGE)
     tool_calls: list[ChatToolCall] | None = None
     tool_call_id: str | None = Field(default=None, min_length=1, max_length=120)
@@ -125,49 +135,68 @@ class ChatMessage(BaseModel):
     def normalize_content(cls, values):
         if not isinstance(values, dict):
             return values
-        if "text" in values and "content" in values:
-            raise ValueError("Specify either text or content, not both")
         data = dict(values)
-        extracted_images: list[str] = []
-        if "content" in data:
-            content = data.pop("content")
-            if isinstance(content, str):
-                data["text"] = content
-            elif isinstance(content, list):
-                text_parts: list[str] = []
-                for item in content:
-                    if not isinstance(item, dict):
-                        raise ValueError("Content parts must be JSON objects")
-                    kind = item.get("type")
-                    if kind == "text":
-                        part = ChatTextPart.model_validate(item)
-                        text_parts.append(part.text)
-                    elif kind == "image_url":
-                        part = ChatImagePart.model_validate(item)
-                        extracted_images.append(part.image_url.url)
-                    else:
-                        raise ValueError(f"Unsupported content part type: {kind!r}")
-                data["text"] = "".join(text_parts)
-            else:
-                raise ValueError("Message content must be a string or list of parts")
-        if "images" in data or extracted_images:
-            raw_images = data.get("images")
-            if raw_images is None:
-                combined = extracted_images
-            elif isinstance(raw_images, list):
-                combined = [*raw_images, *extracted_images]
-            else:
-                raise ValueError("images must be a list of image data URLs")
-            if len(combined) > MAX_IMAGES_PER_MESSAGE:
+        content = data.get("content")
+        if content is not None and data.get("text"):
+            raise ValueError("Specify either text or content, not both")
+        if isinstance(content, str):
+            data["text"] = data.pop("content")
+        elif isinstance(content, list):
+            images = data.get("images") or []
+            if not isinstance(images, list):
+                raise ValueError("Images must be a list of image data URLs")  # noqa: TRY004 - Pydantic handles ValueError as input validation.
+            count = sum(
+                isinstance(part, ChatImagePart)
+                or isinstance(part, dict)
+                and part.get("type") == "image_url"
+                for part in content
+            )
+            if count + len(images) > MAX_IMAGES_PER_MESSAGE:
                 raise ValueError(
                     f"A message may contain at most {MAX_IMAGES_PER_MESSAGE} images"
                 )
-            data["images"] = (
-                [normalize_image_data_url(url) for url in combined]
-                if combined
-                else None
-            )
+            if images:
+                data["content"] = [
+                    *(
+                        {"type": "image_url", "image_url": {"url": url}}
+                        for url in images
+                    ),
+                    *content,
+                ]
+                data.pop("images")
         return data
+
+    @field_validator("images")
+    @classmethod
+    def normalize_images(cls, value):
+        return [normalize_image_data_url(url) for url in value] if value else None
+
+    @field_validator("content")
+    @classmethod
+    def normalize_parts(cls, value):
+        if not isinstance(value, list):
+            return value
+        return [
+            ChatImagePart(
+                type="image_url",
+                image_url=ChatImageUrl(
+                    url=normalize_image_data_url(part.image_url.url)
+                ),
+            )
+            if isinstance(part, ChatImagePart)
+            else part
+            for part in value
+        ]
+
+    def ordered_content(self) -> list[ChatTextPart | ChatImagePart]:
+        parts = list(self.content) if isinstance(self.content, list) else []
+        if self.text:
+            parts.append(ChatTextPart(type="text", text=self.text))
+        for image in self.images or ():
+            parts.append(
+                ChatImagePart(type="image_url", image_url=ChatImageUrl(url=image))
+            )
+        return parts
 
     @model_validator(mode="after")
     def valid_role_fields(self):
@@ -177,11 +206,13 @@ class ChatMessage(BaseModel):
             raise ValueError("Tool results require their tool call ID")
         if self.name is not None and self.role != "tool":
             raise ValueError("Only tool messages may specify a tool name")
-        if self.images and self.role != "user":
+        parts = self.ordered_content()
+        image_count = sum(isinstance(part, ChatImagePart) for part in parts)
+        if image_count and self.role != "user":
             raise ValueError("Only user messages may contain images")
         if (
-            not self.text
-            and not self.images
+            not any(isinstance(part, ChatTextPart) and part.text for part in parts)
+            and not image_count
             and not self.tool_calls
             and self.role != "tool"
         ):

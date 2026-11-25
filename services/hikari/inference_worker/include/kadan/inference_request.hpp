@@ -54,6 +54,8 @@ struct ChatMessage {
     std::optional<std::string> tool_call_id = std::nullopt;
     std::optional<std::string> name = std::nullopt;
     std::optional<std::string> reasoning_content = std::nullopt;
+    // Byte offset in text where each ordered content image occurred.
+    std::vector<std::size_t> image_offsets = {};
 };
 
 struct ChatRequest {

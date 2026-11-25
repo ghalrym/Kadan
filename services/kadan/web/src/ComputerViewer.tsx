@@ -60,8 +60,8 @@ export default function ComputerViewer({ agentKey, agentName, onClose }: Props) 
 
   async function sendRequest(event: React.FormEvent) {
     event.preventDefault();
-    const content = draft.trim();
-    if (!content || sending) return;
+    const content = draft;
+    if (!content.trim() || sending) return;
     setSending(true);
     try {
       await api(`${workPath}/requests`, { id: randomUuid(), content });

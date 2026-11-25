@@ -22,13 +22,22 @@ from pydantic import (
 )
 
 
+def contains_chat_image(message: dict) -> bool:
+    if message.get("images"):
+        return True
+    parts = message.get("content")
+    return isinstance(parts, list) and any(
+        isinstance(part, dict) and part.get("type") == "image_url" for part in parts
+    )
+
+
 def encode_request(message: dict) -> bytes:
     encoded = json.dumps(message, allow_nan=False, ensure_ascii=False).encode()
     task = message.get("input", {})
     has_media = (task.get("feature") == "image" and task.get("image") is not None) or (
         task.get("feature") == "llm"
         and any(
-            isinstance(msg, dict) and bool(msg.get("images"))
+            isinstance(msg, dict) and contains_chat_image(msg)
             for msg in task.get("messages", [])
         )
     )

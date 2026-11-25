@@ -15,7 +15,7 @@ from api.repositories import subscriptions
 from api.services.inference import inference
 from api.services.inference_errors import InferenceFailure
 from api.services.inference_http import infer
-from api.services.subscription_inference import SubscriptionStream
+from api.services.subscription_inference import subscription_stream
 
 router = APIRouter(prefix="/v1/chat/completions", tags=["Chat"])
 
@@ -50,15 +50,29 @@ class CompletionRequest(BaseModel):
     reasoning_effort: Literal["low", "medium", "high"] | None = None
 
 
+class OutputFunction(BaseModel):
+    name: str
+    arguments: str
+
+
+class OutputToolCall(BaseModel):
+    id: str
+    type: Literal["function"]
+    function: OutputFunction
+
+
 class AssistantMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: str
+    tool_calls: list[OutputToolCall] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class CompletionChoice(BaseModel):
     index: int = 0
     message: AssistantMessage
-    finish_reason: Literal["stop", "length"] = "stop"
+    finish_reason: Literal["stop", "length", "tool_calls"] = "stop"
 
 
 class CacheUsage(BaseModel):
@@ -76,6 +90,10 @@ class CompletionOutputMessage(BaseModel):
     role: Literal["assistant"]
     text: str
     meta: str | None = None
+
+    tool_calls: list[OutputToolCall] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class CompletionResponse(BaseModel):
@@ -155,6 +173,7 @@ async def chunks(stream, identity, measurement=None, request_started=None):
     yield chunk({"role": "assistant", "content": ""})
     finish = None
     cache = None
+    next_call = 0
     try:
         async for event in stream:
             observe_generation(measurement, event)
@@ -168,11 +187,18 @@ async def chunks(stream, identity, measurement=None, request_started=None):
                 ) * 1000
             if "content" in event:
                 yield chunk({"content": event["content"]})
+            if event.get("tool_calls"):
+                calls = [
+                    {**call, "index": next_call + i}
+                    for i, call in enumerate(event["tool_calls"])
+                ]
+                next_call += len(calls)
+                yield chunk({"tool_calls": calls})
             if "cache" in event:
                 cache = event["cache"]
             if "finish_reason" in event:
                 finish = event["finish_reason"]
-        if finish not in ("stop", "length"):
+        if finish not in ("stop", "length", "tool_calls"):
             raise InferenceFailure("Generation ended without a terminal event.", 502)
         yield chunk({}, finish, cache)
         yield "data: [DONE]\n\n"
@@ -214,10 +240,7 @@ async def create_completion(body: CompletionRequest, request: Request):
     if subscription is not None:
         return await subscription_completion(body, request, subscription, identity)
     if body.stream:
-        try:
-            stream, model = await infer(request, inference.open_chat_stream(body))
-        except HTTPException:
-            raise
+        stream, model = await infer(request, inference.open_chat_stream(body))
         identity["model"] = model or identity["model"]
         return OwnedStreamResponse(
             chunks(
@@ -233,13 +256,21 @@ async def create_completion(body: CompletionRequest, request: Request):
     )
     identity["model"] = result["model"]
     observe_generation(measurement, result)
+    return completion_response(identity, result)
+
+
+def completion_response(identity, result):
     text = result["text"]
     return CompletionResponse(
         **identity,
-        message=CompletionOutputMessage(role="assistant", text=text),
+        message=CompletionOutputMessage(
+            role="assistant", text=text, tool_calls=result.get("tool_calls") or None
+        ),
         choices=[
             CompletionChoice(
-                message=AssistantMessage(content=text),
+                message=AssistantMessage(
+                    content=text, tool_calls=result.get("tool_calls") or None
+                ),
                 finish_reason=result["finish_reason"],
             )
         ],
@@ -247,9 +278,22 @@ async def create_completion(body: CompletionRequest, request: Request):
     )
 
 
+async def subscription_result(stream):
+    content, calls, finish = [], [], None
+    async for event in stream:
+        if "content" in event:
+            content.append(event["content"])
+        calls.extend(event.get("tool_calls", ()))
+        if "finish_reason" in event:
+            finish = event["finish_reason"]
+    if finish not in ("stop", "length", "tool_calls"):
+        raise InferenceFailure("Generation ended without a terminal event.", 502)
+    return {"text": "".join(content), "tool_calls": calls, "finish_reason": finish}
+
+
 async def subscription_completion(body, request, subscription, identity):
     """Serve the turn from the user's subscription in the same response shapes."""
-    stream = SubscriptionStream(subscription, body)
+    stream = subscription_stream(subscription, body)
     identity["model"] = stream.model
     if body.stream:
         try:
@@ -257,9 +301,5 @@ async def subscription_completion(body, request, subscription, identity):
         except InferenceFailure as exc:
             raise HTTPException(exc.status_code, str(exc)) from exc
         return OwnedStreamResponse(chunks(stream, identity), stream)
-    text = await infer(request, stream.text())
-    return CompletionResponse(
-        **identity,
-        message=CompletionOutputMessage(role="assistant", text=text),
-        choices=[CompletionChoice(message=AssistantMessage(content=text))],
-    )
+    result = await infer(request, subscription_result(stream))
+    return completion_response(identity, result)

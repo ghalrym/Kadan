@@ -25,7 +25,7 @@ Serves public chat, agent tool-calling turns, and multimodal screenshot vision u
 ## Engine
 
 - Dense GGUF multimodal architecture (`inkling2`) with a bundled F16 vision projector (`mmproj`) for native image encoding.
-- Supports Inkling 2 Mini's chat template, reasoning blocks, structured `<tool_call>` / `<tool_response>` history, and multimodal image embeddings.
+- Supports Inkling 2 Mini's chat template, reasoning blocks, tool-call JSON and tool-role history, and multimodal image embeddings.
 - Uses quantized weight projections with in-kernel dequantization (no F32 weight expansion on the decode path).
 - Supports prefix cache reuse and conversation checkpoints across turns in the same conversation, with host-side detachment on offload.
 ## Memory

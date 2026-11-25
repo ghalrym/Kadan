@@ -95,6 +95,7 @@ Json read_json(const std::string& path, const std::atomic_bool& cancel) {
 struct Tokenizer::Impl {
     std::array<std::string, 256> bytes;
     std::vector<std::string> decoded;
+    std::vector<bool> special;
     bool fixed_vocabulary;
     bool normalize = false;
     bool ignore_merges = false;
@@ -266,6 +267,7 @@ struct Tokenizer::Impl {
             j.at("added_tokens").size() <= (fixed_vocabulary ? 256 : 2048),
             "text_tokenizer_added_limit"
         );
+        special.resize(ids.size());
         for (const auto& item : j.at("added_tokens")) {
             check(
                 !item.at("single_word").get<bool>() && !item.at("lstrip").get<bool>()
@@ -287,6 +289,7 @@ struct Tokenizer::Impl {
                 "text_tokenizer_added"
             );
             ids[id] = true;
+            special[id] = item.value("special", false);
             added.emplace_back(std::move(text), id);
         }
     }
@@ -423,7 +426,8 @@ struct Tokenizer::Impl {
     std::size_t encode(
         const std::string& input,
         std::span<std::uint32_t> output,
-        const std::atomic_bool& cancel
+        const std::atomic_bool& cancel,
+        std::span<const std::pair<std::size_t, std::size_t>> literal_ranges
     ) {
         UErrorCode status = U_ZERO_ERROR;
         int32_t needed = 0;
@@ -492,25 +496,43 @@ struct Tokenizer::Impl {
                 at = bounds[1];
             }
         };
-        std::size_t at = 0;
-        while (at < input.size()) {
-            stop(cancel);
-            std::size_t found = input.size(), length = 0;
-            std::uint32_t selected = 0;
-            for (const auto& token : added) {
-                const auto where = input.find(token.first, at);
-                if (where < found || (where == found && token.first.size() > length)) {
-                    found = where;
-                    length = token.first.size();
-                    selected = token.second;
+        auto formatted = [&](std::string_view segment) {
+            std::size_t at = 0;
+            while (at < segment.size()) {
+                stop(cancel);
+                std::size_t found = segment.size(), length = 0;
+                std::uint32_t selected = 0;
+                for (const auto& token : added) {
+                    const auto where = segment.find(token.first, at);
+                    if (where < found
+                        || (where == found && token.first.size() > length)) {
+                        found = where;
+                        length = token.first.size();
+                        selected = token.second;
+                    }
                 }
+                ordinary(segment.substr(at, found - at));
+                if (!length)
+                    break;
+                emit(selected);
+                at = found + length;
             }
-            ordinary(std::string_view(input).substr(at, found - at));
-            if (!length)
-                break;
-            emit(selected);
-            at = found + length;
+        };
+
+        // Only template segments may resolve reserved control tokens. Literal bytes
+        // use the ordinary BPE even when they spell a role or image marker exactly.
+        const auto view = std::string_view(input);
+        std::size_t at = 0;
+        for (const auto& [start, end] : literal_ranges) {
+            check(
+                at <= start && start <= end && end <= view.size(),
+                "text_tokenizer_literal_range"
+            );
+            formatted(view.substr(at, start - at));
+            ordinary(view.substr(start, end - start));
+            at = end;
         }
+        formatted(view.substr(at));
         check(written > 0, "text_tokenizer_empty");
         return written;
     }
@@ -554,7 +576,8 @@ std::size_t Tokenizer::encode(
     const std::string& text,
     std::span<std::uint32_t> output,
     const std::atomic_bool& cancel,
-    std::size_t input_limit
+    std::size_t input_limit,
+    std::span<const std::pair<std::size_t, std::size_t>> literal_ranges
 ) {
     stop(cancel);
     check(bool(impl_), "text_tokenizer_not_loaded");
@@ -569,12 +592,17 @@ std::size_t Tokenizer::encode(
     Admission temporary(
         *resources_, workload_, std::max<Bytes>(32 * 1024 * 1024, text.size() * 1024)
     );
-    return impl_->encode(text, output, cancel);
+    return impl_->encode(text, output, cancel, literal_ranges);
 }
 
 std::string Tokenizer::decode(std::uint32_t token) const {
     check(bool(impl_) && token < impl_->decoded.size(), "text_tokenizer_decode_id");
     return impl_->decoded[token];
+}
+
+bool Tokenizer::is_special(std::uint32_t token) const {
+    check(bool(impl_) && token < impl_->special.size(), "text_tokenizer_decode_id");
+    return impl_->special[token];
 }
 
 std::optional<std::uint32_t> Tokenizer::added_token_id(std::string_view token) const {

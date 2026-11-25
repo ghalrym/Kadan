@@ -5,6 +5,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "kadan/resources.hpp"
 
@@ -29,6 +30,7 @@ public:
     void load(const std::string& tokenizer_json, const std::atomic_bool&);
     void unload();
     std::string decode(std::uint32_t token) const;
+    bool is_special(std::uint32_t token) const;
     std::optional<std::uint32_t> added_token_id(std::string_view token) const;
     // Verbatim prompt presentation, NFC/regex/byte-level BPE, no template or
     // inserted special tokens. Caller owns/admitted output storage.
@@ -36,7 +38,8 @@ public:
         const std::string&,
         std::span<std::uint32_t>,
         const std::atomic_bool&,
-        std::size_t input_limit = max_input_bytes
+        std::size_t input_limit = max_input_bytes,
+        std::span<const std::pair<std::size_t, std::size_t>> literal_ranges = {}
     );
 
 private:

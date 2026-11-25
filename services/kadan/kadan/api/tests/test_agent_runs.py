@@ -15,7 +15,14 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from kadan.api.config import ServiceError
-from kadan.api.pydantic_models.agent_runs import AgentRun, ImageJob, RunMessage
+from kadan.api.pydantic_models.agent_runs import (
+    AgentRun,
+    ImageJob,
+    RunCall,
+    RunMessage,
+    RunResult,
+    UnrecoveredRecord,
+)
 from kadan.api.pydantic_models.computer import ComputerTask, ComputerTaskOrigin
 from kadan.api.pydantic_models.resources import Message, Resource, ResourceKind
 from kadan.runner.agent_inference import (
@@ -25,7 +32,6 @@ from kadan.runner.agent_inference import (
     tool_characters,
 )
 from kadan.runner.agent_runs import (
-    ARGUMENT_REJECTION,
     MAX_ARGUMENT_CORRECTIONS,
     MAX_CONTEXT,
     RESERVED_TOKENS,
@@ -239,7 +245,7 @@ class Commands:
             raise result
         if callable(result):
             result = result()
-        return result
+        return result if isinstance(result, RunCall) else RunCall(command=result)
 
 
 @pytest.fixture
@@ -285,7 +291,7 @@ def test_crash_after_delivery_replays_same_message_identity_once(boundary):
     async def check():
         with pytest.raises(asyncio.CancelledError):
             await boundary.controller.advance(boundary.start_owned())
-        assert boundary.current.transcript[-1].role == "assistant"
+        assert boundary.current.transcript[-1].role == "call"
         boundary.controller.inference = Commands()
         await boundary.controller.advance(boundary.current)
 
@@ -307,9 +313,7 @@ def test_image_submission_returns_queued_job_without_waiting_or_delivery(boundar
     assert image.status == "queued"
     assert boundary.images.wakeup.is_set()
     assert boundary.deliveries == []
-    result = json.loads(
-        boundary.current.transcript[-1].content.removeprefix("Tool result: ")
-    )
+    result = boundary.current.transcript[-1].data
     assert result == {
         "tool": "generate_image",
         "job_id": str(image.id),
@@ -352,7 +356,8 @@ def test_image_event_context_carries_result_and_delivery_state(
         update={"trigger_job_id": job_id, "trigger_message_id": None}
     )
     context = asyncio.run(boundary.controller.context(run))
-    event = json.loads(context[-1].content.removeprefix("Image job event: "))
+    assert context[-1].name == "image_job_event"
+    event = context[-1].data
     assert event == {
         "job_id": str(job_id),
         "status": status,
@@ -386,12 +391,7 @@ def test_cancellation_during_inference_prevents_its_message_delivery(boundary):
 
 def test_cancelled_run_cannot_execute_persisted_command(boundary):
     run = boundary.start_owned(
-        transcript=[
-            RunMessage(
-                role="assistant",
-                content=send(end_run=False, content="No").model_dump_json(),
-            )
-        ]
+        transcript=[RunCall(command=send(end_run=False, content="No"))]
     )
     boundary.cancel()
     boundary.controller.inference = Commands()
@@ -543,16 +543,11 @@ def test_instruction_decode_failure_respects_lease_fencing(boundary, monkeypatch
 def test_recovery_can_replay_the_last_allowed_command(boundary):
     transcript = []
     for _ in range(23):
+        call = RunCall(command=send(end_run=False, content="Earlier"))
         transcript.extend(
-            [
-                RunMessage(
-                    role="assistant",
-                    content='{"tool":"send_message","content":"Earlier"}',
-                ),
-                RunMessage(role="user", content="Tool result: delivered"),
-            ]
+            [call, RunResult(call_id=call.call_id, data={"delivered": True})]
         )
-    transcript.append(RunMessage(role="assistant", content='{"tool":"finish"}'))
+    transcript.append(RunCall(command=finish()))
     boundary.controller.inference = Commands()
     asyncio.run(
         boundary.controller.advance(boundary.start_owned(transcript=transcript))
@@ -607,14 +602,22 @@ def test_lease_renewal_waits_for_delivery_before_reading_run_version(boundary):
 
 
 def test_final_message_releases_ownership_without_completion_inference(boundary):
-    boundary.controller.inference = Commands(send(content="Done", end_run=True))
+    selected = RunCall(
+        call_id="provider_message_3", command=send(content="Done", end_run=True)
+    )
+    boundary.controller.inference = Commands(selected)
     asyncio.run(boundary.controller.process(boundary.current))
     assert len(boundary.controller.inference.calls) == 1
     assert [message.content for message in boundary.deliveries] == ["Done"]
     assert boundary.current.status == "completed"
     assert boundary.current.owner_id is None
     assert boundary.current.lease_expires_at is None
-    assert boundary.current.transcript[-1].content.startswith("Tool result:")
+    assert boundary.current.transcript[-1].role == "result"
+    assert (
+        boundary.current.transcript[-2].call_id
+        == boundary.current.transcript[-1].call_id
+        == selected.call_id
+    )
 
 
 def test_crash_after_image_submission_replays_job_without_inference(boundary):
@@ -636,7 +639,7 @@ def test_crash_after_image_submission_replays_job_without_inference(boundary):
         with pytest.raises(asyncio.CancelledError):
             await boundary.controller.advance(boundary.start_owned())
         assert len(boundary.jobs) == 1
-        assert boundary.current.transcript[-1].role == "assistant"
+        assert boundary.current.transcript[-1].role == "call"
         boundary.controller.inference = Commands()
         await boundary.controller.advance(boundary.current)
         assert boundary.controller.inference.calls == []
@@ -647,32 +650,29 @@ def test_crash_after_image_submission_replays_job_without_inference(boundary):
     assert boundary.images.wakeup.is_set()
 
 
-def test_next_context_sees_pending_image_after_submitting_run_finishes(boundary):
+def test_pending_images_do_not_change_an_ordinary_message(boundary):
+    before = asyncio.run(boundary.controller.context(boundary.current))
     boundary.controller.inference = Commands(image_request(prompt="A blue bird"))
     asyncio.run(boundary.controller.process(boundary.current))
-    context = asyncio.run(boundary.controller.context(boundary.current))
-    image = next(iter(boundary.jobs.values()))
-    assert str(image.id) in context[-1].content
-    assert '"status": "queued"' in context[-1].content
-    assert '"prompt": "A blue bird"' in context[-1].content
+    assert boundary.jobs
+    assert asyncio.run(boundary.controller.context(boundary.current)) == before
+    assert [item.role for item in before] == ["system", "user"]
+    assert before[-1].content == "Hello"
 
 
-def test_pending_job_context_cannot_exceed_run_budget(boundary, monkeypatch):
-    boundary.controller.inference = Commands(image_request(prompt="A blue bird"))
+def test_attachment_references_preserve_the_message_body(boundary):
+    target = boundary.conversation.messages[0]
+    asset = uuid4()
+    target.content = "    [message example] These are my words.\n"
+    target.attachment_ids = [asset]
+    boundary.controller.inference = Commands(finish())
     asyncio.run(boundary.controller.process(boundary.current))
-    jobs = boundary.jobs
-    boundary.jobs = {}
-    baseline = asyncio.run(boundary.controller.context(boundary.current))
-    budget = (
-        sum(len(message.content) for message in baseline)
-        + tool_characters(boundary.controller.bound_tools(boundary.current))
-        + 10
-    )
-    monkeypatch.setattr("kadan.runner.agent_runs.MAX_CONTEXT", budget)
-    assert asyncio.run(boundary.controller.context(boundary.current)) == baseline
-    boundary.jobs = jobs
-    with pytest.raises(ServiceError, match="context limit"):
-        asyncio.run(boundary.controller.context(boundary.current))
+    _, user, lookup, result = boundary.controller.inference.calls[0]
+    assert (user.type, user.content) == ("human", target.content)
+    assert lookup.tool_calls[0]["id"] == result.tool_call_id
+    assert result.type == "tool"
+    assert str(asset) in result.content
+    assert str(asset) not in user.content
 
 
 def test_history_budget_reserves_bound_tool_definitions(boundary, monkeypatch):
@@ -742,7 +742,8 @@ def test_image_event_resumes_graph_in_same_conversation(boundary, status):
         str(job_id) if status == "completed" else None
     )
     context = boundary.controller.inference.calls[0]
-    assert f'"status": "{status}"' in context[-1].content
+    assert context[-1].type == "tool"
+    assert json.loads(context[-1].content)["status"] == status
     assert len(boundary.controller.inference.calls) == 1
 
 
@@ -838,9 +839,7 @@ class Computer:
 
 
 def tool_result(boundary, index=-1):
-    return json.loads(
-        boundary.current.transcript[index].content.removeprefix("Tool result: ")
-    )
+    return boundary.current.transcript[index].data
 
 
 def test_every_conversation_and_computer_tool_is_bound(boundary):
@@ -881,15 +880,40 @@ def test_use_computer_hands_over_tells_the_user_and_ends_the_run(boundary):
     assert tool_result(boundary)["task_id"] == str(task.id)
 
 
-def test_pending_computer_tasks_are_in_the_context(boundary):
+def test_computer_work_is_read_only_on_request_in_the_current_conversation(boundary):
     boundary.sandbox = Computer()
+    status = {
+        "tasks": [{"status": "failed", "request_excerpt": "Open the docs"}],
+        "next_offset": None,
+    }
+    reads = []
+    original = boundary.json_request
+
+    async def read(service, method, path, **kwargs):
+        if path.endswith("/task-status"):
+            reads.append((service, method, path, kwargs["params"]))
+            return status
+        return await original(service, method, path, **kwargs)
+
+    boundary.json_request = read
+    context = asyncio.run(boundary.controller.context(boundary.current))
+    assert context[-1].content == "Hello"
+    assert reads == []
     boundary.controller.inference = Commands(
-        command("use_computer", instructions="Open the docs", message="On it!")
+        command("read_task_status", offset=0), finish()
     )
     asyncio.run(boundary.controller.process(boundary.current))
-    context = asyncio.run(boundary.controller.context(boundary.current))
-    assert "Pending computer tasks (do not resubmit)" in context[-1].content
-    assert "Open the docs" in context[-1].content
+    assert reads == [
+        (
+            "Tsuchi",
+            "GET",
+            f"/api/agents/test/resources/{boundary.conversation.id}/task-status",
+            {"offset": 0},
+        )
+    ]
+    result = boundary.controller.inference.calls[1][-1]
+    assert result.type == "tool"
+    assert json.loads(result.content) == status
 
 
 def test_computer_tools_are_not_available_to_the_conversation_agent(boundary):
@@ -916,10 +940,7 @@ def test_ownership_lost_after_command_saved_prevents_computer_dispatch(boundary,
                 )
             )
         )
-        assert (
-            boundary.current.transcript[-1].content
-            == state["command"].model_dump_json()
-        )
+        assert boundary.current.transcript[-1].command == state["command"]
         if loss == "cancelled":
             boundary.cancel()
         else:
@@ -934,7 +955,12 @@ def test_ownership_lost_after_command_saved_prevents_computer_dispatch(boundary,
 
     asyncio.run(check())
     assert boundary.computer_tasks == {}
-    assert boundary.current.transcript[-1].role == "assistant"
+    assert boundary.current.transcript[-1].role == "call"
+
+
+def persisted_action(boundary, command, *, replayed=False):
+    run = boundary.start_owned(transcript=[RunCall(command=command)])
+    return RunState(run=run, command=command, replayed=replayed)
 
 
 @pytest.mark.parametrize("parent_id", [None, uuid4()])
@@ -970,12 +996,11 @@ def test_workspace_creation_uses_the_run_agent_without_a_computer(boundary, pare
         return await original_request(service, method, path, **kwargs)
 
     boundary.json_request = request
-    run = boundary.start_owned()
     asyncio.run(
         boundary.controller.invoke_tool(
-            RunState(
-                run=run,
-                command=command(
+            persisted_action(
+                boundary,
+                command(
                     "create_workspace_document",
                     title=" Notes ",
                     markdown="# Plan",
@@ -1011,11 +1036,9 @@ def test_workspace_write_failure_is_reported_without_success_or_retry(boundary, 
     boundary.json_request = request
     asyncio.run(
         boundary.controller.invoke_tool(
-            RunState(
-                run=boundary.start_owned(),
-                command=command(
-                    "create_workspace_document", title="Notes", parent_id=uuid4()
-                ),
+            persisted_action(
+                boundary,
+                command("create_workspace_document", title="Notes", parent_id=uuid4()),
             )
         )
     )
@@ -1035,9 +1058,9 @@ def test_restart_does_not_repeat_an_unconfirmed_workspace_write(boundary):
     boundary.json_request = request
     asyncio.run(
         boundary.controller.invoke_tool(
-            RunState(
-                run=boundary.start_owned(),
-                command=command("create_workspace_document", title="Notes"),
+            persisted_action(
+                boundary,
+                command("create_workspace_document", title="Notes"),
                 replayed=True,
             )
         )
@@ -1070,9 +1093,9 @@ def test_invalid_workspace_response_is_an_uncertain_write(boundary):
     boundary.json_request = request
     asyncio.run(
         boundary.controller.invoke_tool(
-            RunState(
-                run=boundary.start_owned(),
-                command=command("create_workspace_document", title="Notes"),
+            persisted_action(
+                boundary,
+                command("create_workspace_document", title="Notes"),
             )
         )
     )
@@ -1127,14 +1150,16 @@ def test_history_argument_rejection_is_useful_and_never_executes(
     assert boundary.current.status == "completed"
     assert len(boundary.controller.inference.calls) == 2
     feedback = boundary.controller.inference.calls[1][-1]
-    assert feedback.type == "human"
-    rejection = json.loads(feedback.content.removeprefix(ARGUMENT_REJECTION))
+    assert feedback.type == "tool"
+    rejection = json.loads(feedback.content)
     assert rejection["tool"] == invalid.tool
     assert rejection["problems"] == [{"field": field, "code": code}]
     assert "No tool was executed" in rejection["error"]
     assert "private" not in json.dumps(boundary.current.model_dump(mode="json"))
-    assert invalid.model_dump_json() not in [
-        item.content for item in boundary.current.transcript
+    assert invalid not in [
+        item.command
+        for item in boundary.current.transcript
+        if isinstance(item, RunCall)
     ]
     history.assert_not_awaited()
     assert boundary.deliveries == []
@@ -1164,13 +1189,7 @@ def test_argument_correction_exhaustion_retains_safe_diagnostics(boundary):
     assert "read_conversation_history" in boundary.current.error
     assert "unsupported: extra_forbidden" in boundary.current.error
     assert (
-        len(
-            [
-                item
-                for item in boundary.current.transcript
-                if item.content.startswith(ARGUMENT_REJECTION)
-            ]
-        )
+        len([item for item in boundary.current.transcript if item.role == "rejection"])
         == 3
     )
     assert "private" not in json.dumps(boundary.current.model_dump(mode="json"))
@@ -1215,7 +1234,7 @@ def test_argument_diagnostics_are_bounded_and_redact_unconventional_keys(boundar
     )
     asyncio.run(boundary.controller.process(boundary.current))
     feedback = boundary.controller.inference.calls[1][-1].content
-    rejection = json.loads(feedback.removeprefix(ARGUMENT_REJECTION))
+    rejection = json.loads(feedback)
     assert len(rejection["problems"]) == 5
     assert all(problem["field"] == "[redacted]" for problem in rejection["problems"])
     assert len(feedback) < 2000
@@ -1258,10 +1277,7 @@ def test_ownership_loss_during_invalid_inference_cannot_save_or_correct(boundary
     boundary.controller.inference = Commands(rejected_after_loss, finish())
     asyncio.run(boundary.controller.process(boundary.current))
     assert len(boundary.controller.inference.calls) == 1
-    assert not any(
-        item.content.startswith(ARGUMENT_REJECTION)
-        for item in boundary.current.transcript
-    )
+    assert not any(item.role == "rejection" for item in boundary.current.transcript)
     assert boundary.deliveries == []
 
 
@@ -1277,7 +1293,7 @@ def test_restart_preserves_argument_feedback_and_correction_limit(boundary, exha
             result = await boundary.controller.infer_command(RunState(run=run))
             run = result["run"]
             assert result["command"] is None
-        saved = run.transcript[-1].content
+        saved = run.transcript[-1].data
         boundary.controller = AgentRuns(boundary)
         boundary.controller.inference = Commands(
             send(content="Recovered", end_run=True)
@@ -1289,7 +1305,9 @@ def test_restart_preserves_argument_feedback_and_correction_limit(boundary, exha
             assert boundary.deliveries == []
         else:
             assert boundary.current.status == "completed"
-            assert boundary.controller.inference.calls[0][-1].content == saved
+            assert (
+                json.loads(boundary.controller.inference.calls[0][-1].content) == saved
+            )
             assert len(boundary.deliveries) == 1
 
     asyncio.run(check())
@@ -1369,7 +1387,8 @@ def test_smaller_model_window_drops_history_before_inference(boundary):
     assert boundary.current.status == "completed"
     assert len(boundary.controller.inference.calls) == 1
     assert not any(
-        str(older.id) in item.content for item in boundary.current.transcript
+        getattr(item, "content", None) == older.content
+        for item in boundary.current.transcript
     )
 
 
@@ -1423,56 +1442,43 @@ def test_zero_context_budget_does_not_fall_back_to_default(boundary):
         asyncio.run(boundary.controller.context(boundary.current, limit=0))
 
 
-@pytest.mark.parametrize("loss", ["message_limit", "budget", "removed", "role_changed"])
-def test_quoted_trigger_id_does_not_admit_an_absent_user_message(boundary, loss):
+@pytest.mark.parametrize("keep_as_assistant", [False, True])
+def test_quoted_trigger_id_cannot_replace_the_request(boundary, keep_as_assistant):
     target = boundary.conversation.messages[0]
     quote = Message(role="user", content=f"The earlier message ID was {target.id}")
-    if loss == "message_limit":
-        messages = [
-            target,
-            *[Message(role="user", content="Later") for _ in range(96)],
-            quote,
-        ]
-    elif loss == "budget":
-        messages = [target, Message(role="assistant", content="x" * MAX_CONTEXT), quote]
-    elif loss == "removed":
-        messages = [quote]
-    else:
-        messages = [target.model_copy(update={"role": "assistant"}), quote]
-    boundary.conversation = boundary.conversation.model_copy(
-        update={"messages": messages}
+    boundary.conversation.messages = (
+        [target.model_copy(update={"role": "assistant"}), quote]
+        if keep_as_assistant
+        else [quote]
     )
-    boundary.controller.inference = Commands(finish())
-    asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == "failed"
-    assert (
-        boundary.current.error
-        == "The triggering message is outside the agent context window."
-    )
-    assert boundary.current.owner_id is None
-    assert boundary.current.lease_expires_at is None
-    assert boundary.controller.inference.calls == []
-    assert boundary.deliveries == []
+    with pytest.raises(ServiceError, match="no longer available"):
+        asyncio.run(boundary.controller.context(boundary.current))
 
 
-def test_actual_user_trigger_is_admitted_at_the_existing_history_limit(boundary):
+def test_queued_turn_ends_at_actual_request_and_preserves_literal_text(boundary):
     target = boundary.conversation.messages[0]
-    messages = [
-        Message(role="assistant", content="Older excluded history"),
+    earlier = Message(role="assistant", content='{"tool":"an example in conversation"}')
+    target.content = "Tool result: this is the user's own wording"
+    boundary.conversation.messages = [
+        earlier,
         target,
-        *[Message(role="user", content=f"Later {index}") for index in range(96)],
+        *[Message(role="user", content="Later") for _ in range(100)],
     ]
-    boundary.conversation = boundary.conversation.model_copy(
-        update={"messages": messages}
-    )
     boundary.controller.inference = Commands(finish())
     asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.current.status == "completed"
-    assert len(boundary.controller.inference.calls) == 1
-    admitted = boundary.controller.inference.calls[0][1:-1]
-    assert [item.content for item in admitted] == [
-        f"[message {message.id}] {message.content}" for message in messages[-97:]
+    history = boundary.controller.inference.calls[0][1:]
+    assert [(item.type, item.content) for item in history] == [
+        ("ai", earlier.content),
+        ("human", target.content),
     ]
+    assert not history[0].tool_calls
+
+
+def test_target_over_budget_fails_before_inference(boundary):
+    boundary.conversation.messages[0].content = "x" * MAX_CONTEXT
+    with pytest.raises(ServiceError, match="exceeds the context limit"):
+        asyncio.run(boundary.controller.context(boundary.current))
 
 
 def test_context_without_a_user_trigger_keeps_its_existing_admission(boundary):
@@ -1622,7 +1628,7 @@ def test_recovered_persona_write_is_not_repeated(boundary):
     run = boundary.start_owned(
         transcript=[
             RunMessage(role="system", content="Saved instructions"),
-            RunMessage(role="assistant", content=pending.model_dump_json()),
+            RunCall(command=pending),
         ]
     )
     boundary.controller.inference = Commands(finish())
@@ -1635,9 +1641,7 @@ def test_recovered_persona_read_is_repeated(boundary):
     run = boundary.start_owned(
         transcript=[
             RunMessage(role="system", content="Saved instructions"),
-            RunMessage(
-                role="assistant", content=command("read_persona").model_dump_json()
-            ),
+            RunCall(command=command("read_persona")),
         ]
     )
     boundary.controller.inference = Commands(finish())
@@ -1724,17 +1728,14 @@ def test_reference_scope_matches_budget_preparation_binding_and_validation(
             == "Saved selected text"
         )
         assert all(
-            "Saved selected text" not in item.content
+            "Saved selected text" not in item.model_dump_json()
             for item in boundary.current.transcript
-            if item.role == "system" or not item.content.startswith("Tool result: ")
+            if item.role != "result"
         )
     else:
         assert boundary.current.status == "failed"
         assert "unknown tool" in boundary.current.error
-        assert not any(
-            item.content.startswith("Tool result: ")
-            for item in boundary.current.transcript
-        )
+        assert not any(item.role == "result" for item in boundary.current.transcript)
 
 
 def test_saved_reference_reader_replays_from_global_registry_without_selection(
@@ -1743,10 +1744,7 @@ def test_saved_reference_reader_replays_from_global_registry_without_selection(
     boundary.start_owned(
         transcript=[
             RunMessage(role="system", content="Saved instructions"),
-            RunMessage(
-                role="assistant",
-                content=command("read_request_references").model_dump_json(),
-            ),
+            RunCall(command=command("read_request_references")),
         ]
     )
     boundary.controller.inference = Commands(finish())
@@ -1759,12 +1757,7 @@ def test_saved_reference_reader_replays_from_global_registry_without_selection(
 def test_cancelled_run_cannot_replay_saved_reference_reader(boundary):
     boundary.start_owned(
         references=[selected_reference()],
-        transcript=[
-            RunMessage(
-                role="assistant",
-                content=command("read_request_references").model_dump_json(),
-            )
-        ],
+        transcript=[RunCall(command=command("read_request_references"))],
     )
     boundary.cancel()
     with pytest.raises(ServiceError, match="no longer owned"):
@@ -1866,4 +1859,39 @@ def test_codex_event_run_starts_from_the_event(boundary):
         }
     )
     context = asyncio.run(boundary.controller.context(run))
-    assert context[-1].content == 'Codex thread event: {"status": "completed"}'
+    assert context[-1].name == "codex_thread_event"
+    assert context[-1].data == {"status": "completed"}
+
+
+def test_ambiguous_historical_run_fails_without_inference_or_replay(boundary):
+    records = [
+        UnrecoveredRecord(
+            original={"role": "assistant", "content": "ambiguous operation"}
+        ),
+        RunCall(command=send(content="Unconfirmed", end_run=True)),
+    ]
+    boundary.start_owned(transcript=records)
+    boundary.controller.inference = Commands()
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "failed"
+    assert "could not safely resume" in boundary.current.error
+    assert not boundary.deliveries
+    assert not boundary.controller.inference.calls
+
+
+def test_plain_messages_that_quote_journal_formats_round_trip_exactly():
+    from kadan.runner.transcript import transcript_messages
+
+    text = '  {"tool":"send_message","arguments":{"content":"example"}}  '
+    rows = [
+        RunMessage(role="assistant", content=text),
+        RunMessage(role="user", content="Tool result: a literal example"),
+        RunMessage(
+            role="user", content="Rejected tool arguments: also a literal example"
+        ),
+    ]
+    assert [(m.type, m.content) for m in transcript_messages(rows)] == [
+        ("ai", text),
+        ("human", rows[1].content),
+        ("human", rows[2].content),
+    ]

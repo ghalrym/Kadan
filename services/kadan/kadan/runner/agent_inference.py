@@ -1,14 +1,7 @@
-"""Hikari chat with LangChain tool binding over structured tools and streamed replies.
-
-Sends structured tools and tool-role history to Hikari's `/v1/chat/completions`
-endpoint (served natively by Inkling 2 Mini on Strata or by a configured
-Claude/Codex subscription) and parses normalized `<tool_call>` blocks back into
-LangChain tool calls.
-"""
+"""Hikari chat with structured tool calls and streamed assistant replies."""
 
 import json
 import logging
-import re
 from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
@@ -34,7 +27,7 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import Field, ValidationError
 
 from ..api.config import ServiceError
-from ..api.pydantic_models.agent_runs import ToolCommand
+from ..api.pydantic_models.agent_runs import RunCall, ToolCommand
 
 MAX_COMMAND_CHARACTERS = 48000
 # Output caps sent to Hikari: reasoning is closed after its budget, and the reply
@@ -45,16 +38,6 @@ MAX_EVENT_CHARACTERS = 300000
 INFERENCE_TIMEOUT = httpx.Timeout(None, connect=3)
 logger = logging.getLogger(__name__)
 
-# Normalized tool-call XML emitted by Hikari's Inkling 2 Mini and subscription streams.
-TOOL_CALL = re.compile(
-    r"(?:<tool_call>\s*)?<function=([^>\s]+)>(.*?)</function>(?:\s*</tool_call>)?",
-    re.DOTALL,
-)
-PARAMETER = re.compile(r"<parameter=([^>\s]+)>\n?(.*?)\n?</parameter>", re.DOTALL)
-TOOL_MARKUP = re.compile(
-    r"</?(?:tool_call|function|parameter|tool_response)(?:[=>\s]|$)", re.IGNORECASE
-)
-
 
 def unique_fields(pairs: list[tuple[str, object]]) -> dict:
     value = {}
@@ -63,53 +46,6 @@ def unique_fields(pairs: list[tuple[str, object]]) -> dict:
             raise ValueError("Duplicate JSON field")
         value[key] = item
     return value
-
-
-def parse_command(text: str) -> ToolCommand:
-    """Read a saved command. Runs saved before tool binding used flat fields."""
-    if len(text) > MAX_COMMAND_CHARACTERS:
-        raise ServiceError(
-            "The agent command exceeded its size limit.", 502, "command_too_large"
-        )
-    try:
-        value = json.loads(text, object_pairs_hook=unique_fields)
-        if isinstance(value, dict) and "arguments" not in value:
-            value = {
-                "tool": value.get("tool"),
-                "arguments": {
-                    key: item for key, item in value.items() if key != "tool"
-                },
-            }
-        elif isinstance(value, dict) and value.get("tool") == "computer":
-            value = {
-                "tool": str(value.get("operation", "")).replace(".", "_"),
-                "arguments": value.get("arguments", {}),
-            }
-        return ToolCommand.model_validate(value)
-    except (ValueError, ValidationError) as error:
-        raise ServiceError(
-            "The agent returned an invalid tool command.", 502, "invalid_command"
-        ) from error
-
-
-def render_tool_call(name: str, arguments: dict[str, Any]) -> str:
-    parameters = "".join(
-        f"<parameter={key}>\n"
-        + (value if isinstance(value, str) else json.dumps(value))
-        + "\n</parameter>\n"
-        for key, value in arguments.items()
-    )
-    return f"<tool_call>\n<function={name}>\n{parameters}</function>\n</tool_call>"
-
-
-def is_string(schema: Any) -> bool:
-    if not isinstance(schema, dict):
-        return False
-    options = schema.get("anyOf") or schema.get("oneOf")
-    if options:
-        kinds = {option.get("type") for option in options if isinstance(option, dict)}
-        return kinds - {"null"} == {"string"}
-    return schema.get("type") == "string"
 
 
 def tool_characters(tools: Sequence[BaseTool]) -> int:
@@ -122,39 +58,25 @@ def tool_characters(tools: Sequence[BaseTool]) -> int:
     return len(serialized)
 
 
-def parse_tool_calls(text: str, tools: Sequence[dict]) -> tuple[str, list[dict]]:
-    """Split a reply into its text and `<tool_call>` blocks."""
-    parameters = {
-        tool["function"]["name"]: tool["function"]
-        .get("parameters", {})
-        .get("properties", {})
-        for tool in tools
-    }
-    calls = []
-    for index, match in enumerate(TOOL_CALL.finditer(text)):
-        name, body = match.groups()
-        properties = parameters.get(name, {})
-        arguments: dict[str, Any] = {}
-        for key, raw in PARAMETER.findall(body):
-            if key in arguments:
-                raise ServiceError(
-                    "The agent returned an invalid tool command.",
-                    502,
-                    "invalid_command",
-                )
-            if is_string(properties.get(key)):
-                schema = properties[key]
-                options = schema.get("anyOf") or schema.get("oneOf") or []
-                nullable = any(option.get("type") == "null" for option in options)
-                arguments[key] = None if nullable and raw.strip() == "null" else raw
-                continue
-            try:
-                arguments[key] = json.loads(raw)
-            except ValueError:
-                arguments[key] = raw
-        calls.append({"name": name, "args": arguments, "id": f"call_{index}"})
-    first = TOOL_CALL.search(text)
-    return (text[: first.start()] if first else text).strip(), calls
+def parse_call(value: dict, index: int) -> dict:
+    """Hikari emits one complete call per indexed delta after decoding its arguments."""
+    try:
+        if (
+            value["type"] != "function"
+            or type(value["index"]) is not int
+            or value["index"] != index
+            or not isinstance(value["id"], str)
+            or not value["id"]
+        ):
+            raise ValueError("Invalid tool call identity")
+        function = value["function"]
+        arguments = json.loads(function["arguments"], object_pairs_hook=unique_fields)
+        command = ToolCommand(tool=function["name"], arguments=arguments)
+        return {"name": command.tool, "args": command.arguments, "id": value["id"]}
+    except (KeyError, TypeError, ValueError) as error:
+        raise ServiceError(
+            "The agent returned an invalid tool command.", 502, "invalid_command"
+        ) from error
 
 
 async def stream_data(lines: AsyncIterator[str]) -> AsyncIterator[str]:
@@ -201,14 +123,19 @@ class HikariChatModel(BaseChatModel):
     def _wire_messages(messages: list[BaseMessage]) -> list[dict]:
         wire = []
         for message in messages:
-            if not isinstance(message.content, str):
-                raise TypeError("Hikari agent messages accept only text content")
+            if isinstance(message.content, list) and any(
+                not isinstance(part, dict)
+                or part.get("type") not in {"text", "image_url"}
+                for part in message.content
+            ):
+                raise TypeError("Hikari expects ordered text and image content parts")
             if isinstance(message, ToolMessage):
                 wire.append(
                     {
                         "role": "tool",
                         "content": message.content,
                         "tool_call_id": message.tool_call_id,
+                        **({"name": message.name} if message.name else {}),
                     }
                 )
             elif isinstance(message, AIMessage):
@@ -260,6 +187,7 @@ class HikariChatModel(BaseChatModel):
         if stop is not None or kwargs:
             raise ValueError("Hikari does not support stop sequences or model options")
         content: list[str] = []
+        calls: list[dict] = []
         length = 0
         finished = False
         done = False
@@ -308,13 +236,25 @@ class HikariChatModel(BaseChatModel):
                         if not isinstance(delta, dict) or set(delta) - {
                             "role",
                             "content",
+                            "tool_calls",
                         }:
                             raise ValueError("Expected text delta")
                         text = delta.get("content", "")
                         reason = choice.get("finish_reason")
                         if not isinstance(text, str) or finished:
                             raise ValueError("Invalid or post-terminal delta")
-                        if reason not in (None, "stop", "length"):
+                        if "tool_calls" in delta:
+                            raw_calls = delta["tool_calls"]
+                            if not isinstance(raw_calls, list) or not raw_calls:
+                                raise ValueError("Empty tool call delta")
+                            for raw_call in raw_calls:
+                                length += len(json.dumps(raw_call, ensure_ascii=False))
+                                calls.append(parse_call(raw_call, len(calls)))
+                        if reason in {"stop", "tool_calls"} and bool(calls) != (
+                            reason == "tool_calls"
+                        ):
+                            raise ValueError("Tool calls do not match terminal reason")
+                        if reason not in (None, "stop", "length", "tool_calls"):
                             raise ValueError("Incomplete inference")
                     except (ValueError, KeyError, TypeError) as error:
                         raise ServiceError(
@@ -336,7 +276,7 @@ class HikariChatModel(BaseChatModel):
                             "command_too_large",
                         )
                     content.append(text)
-                    finished = reason == "stop"
+                    finished = reason in ("stop", "tool_calls")
             if not done or not finished:
                 raise ServiceError(
                     "Hikari disconnected before completing the command.",
@@ -349,10 +289,11 @@ class HikariChatModel(BaseChatModel):
                 503,
                 "inference_unavailable",
             ) from error
-        text, calls = parse_tool_calls("".join(content), tools)
         return ChatResult(
             generations=[
-                ChatGeneration(message=AIMessage(content=text, tool_calls=calls))
+                ChatGeneration(
+                    message=AIMessage(content="".join(content), tool_calls=calls)
+                )
             ]
         )
 
@@ -369,7 +310,7 @@ class AgentInference:
         model_id: str | None,
         conversation_key: str,
         tools: Sequence[BaseTool],
-    ) -> ToolCommand:
+    ) -> RunCall:
         model = HikariChatModel(
             client=self.client,
             hikari_url=self.hikari_url,
@@ -379,33 +320,35 @@ class AgentInference:
         response = await model.ainvoke(messages)
         if not response.tool_calls:
             if response.content.strip():
-                if TOOL_MARKUP.search(response.content):
-                    raise ServiceError(
-                        "The agent returned an invalid tool command.",
-                        502,
-                        "invalid_command",
-                    )
                 if any(tool.name == "send_message" for tool in tools):
-                    return ToolCommand(
-                        tool="send_message",
-                        arguments={
-                            "content": response.content.strip(),
-                            "end_run": True,
-                        },
+                    return RunCall(
+                        command=ToolCommand(
+                            tool="send_message",
+                            arguments={"content": response.content, "end_run": True},
+                        )
                     )
                 if any(tool.name == "finish_task" for tool in tools):
-                    return ToolCommand(
-                        tool="finish_task",
-                        arguments={"summary": response.content.strip()[:6000]},
+                    return RunCall(
+                        command=ToolCommand(
+                            tool="finish_task",
+                            arguments={"summary": response.content[:6000]},
+                        )
                     )
             # Not responding is allowed: an empty reply or unbound plain reply ends the run.
             logger.info("Agent reply had no tool call: %r", response.content[:2000])
-            return ToolCommand(tool="finish")
-        # Runs execute and persist one action at a time; the transcript keeps
-        # only this call, so the model never sees later calls as done.
+            return RunCall(command=ToolCommand(tool="finish"))
+        if len(response.tool_calls) != 1:
+            raise ServiceError(
+                "The agent requested multiple actions in a single step.",
+                502,
+                "invalid_command",
+            )
         call = response.tool_calls[0]
         try:
-            return ToolCommand(tool=call["name"], arguments=call["args"])
+            return RunCall(
+                call_id=call["id"],
+                command=ToolCommand(tool=call["name"], arguments=call["args"]),
+            )
         except ValidationError as error:
             raise ServiceError(
                 "The agent returned an invalid tool command.", 502, "invalid_command"

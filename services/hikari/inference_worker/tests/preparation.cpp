@@ -715,7 +715,7 @@ void typed_request_units() {
     );
     const auto& input = std::get<ChatRequest>(chat.input);
     assert(input.messages.size() == 1 && input.messages[0].text == "Hello");
-    assert(chat_prompt(input.messages, 4096).find("Hello") != std::string::npos);
+    assert(chat_prompt(input.messages, 4096).text.find("Hello") != std::string::npos);
     // Leading messages render to the full prompt's leading text.
     const std::vector<ChatMessage> turns{
         {"system", "Rules"}, {"user", "Hi"}, {"assistant", "Hey"}, {"user", "Next"}
@@ -723,37 +723,46 @@ void typed_request_units() {
     const auto whole = chat_prompt(turns, 4096);
     const auto earlier = chat_messages(std::span(turns).first(3), 4096);
     assert(
-        whole.starts_with(earlier)
-        && earlier.ends_with("<|end_message|><|content_model_end_sampling|>")
+        whole.text.starts_with(earlier.text)
+        && earlier.text.ends_with("<|end_message|><|content_model_end_sampling|>")
     );
-    assert(whole.find("Thinking effort level: 0.9") != std::string::npos);
-    assert(whole.ends_with("<|end_message|>"));
-    // InklingStreamParser hides thinking, emits text, and converts tool calls.
+    assert(whole.text.find("Thinking effort level: 0.9") != std::string::npos);
+    assert(whole.text.ends_with("<|end_message|>"));
     {
         using S = InklingStreamParser::Special;
         InklingStreamParser parser;
-        std::string emitted;
-        emitted += parser.on_special(S::content_thinking);
-        emitted += parser.on_text("secret plan");
-        emitted += parser.on_special(S::end_message);
-        emitted += parser.on_special(S::message_model);
-        emitted += parser.on_special(S::content_text);
-        emitted += parser.on_text("Hello");
-        emitted += parser.on_special(S::end_message);
-        emitted += parser.on_special(S::message_model);
-        emitted += parser.on_text("bash");
-        emitted += parser.on_special(S::content_invoke_tool_json);
-        emitted += parser.on_text("{\"name\":\"bash\",\"args\":{\"cmd\":\"ls\",\"n\":2}}");
-        emitted += parser.on_special(S::end_message);
-        emitted += parser.finish();
-        assert(emitted.find("secret plan") == std::string::npos);
-        assert(emitted.find("Hello") != std::string::npos);
-        assert(emitted.find("<tool_call>\n<function=bash>\n") != std::string::npos);
-        assert(emitted.find("<parameter=cmd>\nls\n</parameter>\n") != std::string::npos);
-        assert(emitted.find("<parameter=n>\n2\n</parameter>\n") != std::string::npos);
-        assert(emitted.find("</function>\n</tool_call>") != std::string::npos);
+        parser.on_special(S::content_thinking);
+        assert(parser.on_text("secret plan").empty());
+        parser.on_special(S::end_message);
+        parser.on_special(S::content_text);
+        assert(parser.on_text("  <tool_call>") == "  <tool_call>");
+        parser.on_special(S::end_message);
+        parser.on_special(S::message_model);
+        assert(parser.on_text("example").empty());
+        parser.on_special(S::content_invoke_tool_json);
+        assert(parser.on_text(R"({"name":"example","args":{"text":"</parameter>"}})")
+                   .empty());
+        parser.on_special(S::end_message);
+        const auto calls = parser.finish("unit", true);
+        assert(calls.size() == 1 && calls[0]["id"] == "call_unit_0");
+        assert(calls[0]["function"]["name"] == "example");
+        assert(
+            Json::parse(calls[0]["function"]["arguments"].get<std::string>())["text"]
+            == "</parameter>"
+        );
+        parser.on_special(S::content_invoke_tool_json);
+        parser.on_text("garbled");
+        bool rejected = false;
+        try {
+            parser.on_special(S::end_message);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        assert(rejected);
     }
-    auto load = request("load", {{"feature", "llm"}, {"model_id", "inkling-2-mini-iq4-nl"}}, "load");
+    auto load = request(
+        "load", {{"feature", "llm"}, {"model_id", "inkling-2-mini-iq4-nl"}}, "load"
+    );
     assert(!std::get<ChatRequest>(load.input).context_supplied);
     load = request("load", {{"feature", "llm"}, {"context_limit", nullptr}}, "load");
     assert(
@@ -1465,7 +1474,9 @@ std::string inkling2_loop_metadata(bool valid) {
          })
         w.u32(key, value);
     w.integers("inkling2_loop.attention.head_count", std::vector<std::int32_t>(24, 24));
-    w.integers("inkling2_loop.attention.head_count_kv", std::vector<std::int32_t>(24, 8));
+    w.integers(
+        "inkling2_loop.attention.head_count_kv", std::vector<std::int32_t>(24, 8)
+    );
     std::vector<bool> swa(24, true);
     for (std::size_t i = 0; i < 24; ++i)
         swa[i] = (i % 6) != 5;

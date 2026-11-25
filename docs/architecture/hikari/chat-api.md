@@ -1,10 +1,8 @@
 # Chat API
 
-`POST /v1/chat/completions` accepts nonempty messages with `system`, `user`
-or `assistant` roles. Each message uses either Hikari's `text` field, an
-OpenAI `content` string, or OpenAI-style multimodal `content` parts containing
-text and `image_url` payloads. JSON responses include `choices` and Hikari's `message`;
-SSE responses use content deltas, a `stop` or `length` terminal chunk and `[DONE]`.
+`POST /v1/chat/completions` accepts system, user, assistant and tool messages. A turn can use Hikari’s `text` field, a `content` string, or ordered text and image parts. Tool results identify the assistant call they answer. The native renderer tokenizes role and channel markers separately from authored text, so quoting a marker preserves its literal meaning.
+
+Both JSON response envelopes expose complete calls in `tool_calls`. The function arguments are a JSON object encoded as a string. Streaming sends assistant text in `delta.content` and complete indexed calls in `delta.tool_calls`. The terminal reason is `stop`, `tool_calls` or `length`, followed by `[DONE]`. An incomplete native tool invocation cannot produce an executable call.
 
 The endpoint uses the configured local Inkling 2 Mini checkpoint (`inkling-2-mini-iq4-nl` by default, or `inkling-2-mini-q8-0` via `HIKARI_LLM_QUANT`), whether `model` is supplied or omitted, and rejects unsupported model IDs. When a [subscription provider](subscriptions.md) serves language, the same request (including multimodal screenshots) is answered by that subscription instead. Structured tool definitions and tool history follow [the language worker contract](worker-llm.md). Unknown fields, unsupported roles and malformed tool or image payloads fail validation. Before streaming starts, errors use FastAPI's HTTP status and `detail` body; stream failures use an `error` event followed by `[DONE]`, without a successful terminal choice.
 

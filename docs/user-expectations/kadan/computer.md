@@ -22,9 +22,11 @@ The default computer has 2 CPUs, 4 GiB of memory and no GPU allocation. Advanced
 
 ## Asking the computer directly
 
-The bottom of the computer view has a request box. When the agent's computer assistant is idle, sending a request starts a new task for it. While a task is running, a request steers that task: the assistant reads it before its next step and follows it over the original instructions.
+The bottom of the computer view has a request box. When the agent's computer assistant is idle, sending a request starts a new task for it. While a task is running, a request steers that task: the assistant receives the user's own words before its next step and follows them over the original instructions. Kadan keeps task outcomes separate from requests and steering.
 
 The assistant's own working chat is never shown. The view's header shows only whether it is **Idle**, starting or **Working**, whether it has yet to read a steering request, and how many more tasks are queued. For two minutes after a task ends, it shows whether the task was done, failed or stopped, with the assistant's summary, before returning to **Idle**. The request box shows text only when a request cannot be sent. **Stop the current task** cancels it after the action already in progress; that action is not undone. Tasks started from the view report to no conversation. If the agent handed the task over, its conversation still receives the result, including any changes from steering.
+
+If Kadan cannot identify the last action of an older interrupted task, it marks that task as failed before trying any further action. Later tasks can still proceed.
 
 A request sent just as a task finishes is never lost: it either steers that task before it ends or starts the next one. Requests and tasks wait while Kadan's runner is unavailable. If Hikari is unavailable when the assistant needs it, the task fails and reports that instead of retrying on its own.
 

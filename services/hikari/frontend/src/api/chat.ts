@@ -1,6 +1,6 @@
-import type { CacheUsage, ChatMessage } from './generated/types.gen'
+import type { CacheUsage, ChatMessageInput } from './generated/types.gen'
 
-export type ConversationMessage = Pick<ChatMessage, 'role' | 'meta'> & {
+export type ConversationMessage = Pick<ChatMessageInput, 'role' | 'meta'> & {
   text: string
   cache?: CacheUsage
 }

@@ -1,7 +1,6 @@
 """The computer agent's worker, with in-memory storage, computer and inference."""
 
 import asyncio
-import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -9,7 +8,14 @@ from uuid import UUID, uuid4
 import pytest
 
 from kadan.api.config import ServiceError
-from kadan.api.pydantic_models.agent_runs import RunMessage, ToolCommand
+from kadan.api.pydantic_models.agent_runs import (
+    RunCall,
+    RunMessage,
+    TaskEnd,
+    TaskStart,
+    ToolCommand,
+    UnrecoveredRecord,
+)
 from kadan.api.pydantic_models.computer import (
     ComputerSteering,
     ComputerTask,
@@ -17,11 +23,7 @@ from kadan.api.pydantic_models.computer import (
     ComputerThread,
 )
 from kadan.runner.computer_tasks import (
-    EARLIER,
     NEW_STEERING,
-    STEERING,
-    TASK_END,
-    TASK_START,
     ComputerTasks,
     compact,
 )
@@ -153,7 +155,7 @@ class Commands:
         result = self.results.pop(0)
         if isinstance(result, BaseException):
             raise result
-        return result
+        return result if isinstance(result, RunCall) else RunCall(command=result)
 
 
 def command(tool, **arguments):
@@ -176,23 +178,23 @@ def serve(storage, *commands):
     return tasks.inference
 
 
-def contents(storage):
-    return [item.content for item in storage.thread.transcript]
-
-
 def test_task_runs_computer_tools_then_reports_its_summary(storage):
     task = storage.add_task()
-    serve(storage, command("bash_exec", command="echo hi"), finish("Printed hi."))
+    selected = RunCall(
+        call_id="provider_computer_7", command=command("bash_exec", command="echo hi")
+    )
+    calls = serve(storage, selected, finish("Printed hi."))
+    assert calls.calls[1][-1].tool_call_id == selected.call_id
+    assert calls.calls[1][-2].tool_calls[0]["id"] == selected.call_id
+
     method, path, request = storage.sandbox.calls[0]
     assert (method, path) == ("POST", "/v1/bash/exec")
     assert request["json_body"]["command"] == "echo hi"
     done = storage.tasks[task.id]
     assert (done.status, done.summary) == ("completed", "Printed hi.")
     assert storage.events == [done]
-    assert contents(storage)[0].startswith(TASK_START)
-    assert json.loads(contents(storage)[-1].removeprefix(TASK_END))["status"] == (
-        "completed"
-    )
+    assert storage.thread.transcript[0].role == "task_start"
+    assert storage.thread.transcript[-1].status == ("completed")
     assert storage.thread.owner_id is None
 
 
@@ -206,7 +208,7 @@ def test_user_steering_is_read_before_the_next_inference(storage):
     storage.add_task(origin=False)
     storage.steer("Use the terminal instead")
     calls = serve(storage, finish())
-    assert calls.calls[0][-1].content == STEERING + "Use the terminal instead"
+    assert calls.calls[0][-1].content == "Use the terminal instead"
     assert storage.steering == []
 
 
@@ -217,7 +219,7 @@ def test_steering_that_arrives_before_finishing_keeps_the_task_going(storage):
     assert len(calls.calls) == 2
     second = [message.content for message in calls.calls[1]]
     assert any("new steering" in item for item in second)
-    assert second[-1] == STEERING + "Also open the changelog"
+    assert second[-1] == "Also open the changelog"
     assert storage.tasks[task.id].summary == "Docs and changelog open."
 
 
@@ -251,17 +253,17 @@ def test_sandbox_errors_become_tool_results(storage):
 def test_restart_never_repeats_an_unconfirmed_side_effect(storage, tool, repeated):
     task = storage.add_task()
     task = storage.tasks[task.id] = task.model_copy(update={"status": "running"})
-    start = {"task_id": str(task.id), "from": "agent", "instructions": "Do it"}
+    start = TaskStart(task_id=task.id, origin="agent", instructions="Do it")
     pending = command(tool, **({"command": "ls"} if tool == "bash_exec" else {}))
     storage.thread.transcript = [
-        RunMessage(role="user", content=TASK_START + json.dumps(start)),
-        RunMessage(role="assistant", content=pending.model_dump_json()),
+        start,
+        RunCall(command=pending),
     ]
     storage.steer("Use a different approach")
     calls = serve(storage, finish())
     assert bool(storage.sandbox.calls) is repeated
     messages = [item.content for item in calls.calls[0]]
-    assert messages[-1] == STEERING + "Use a different approach"
+    assert messages[-1] == "Use a different approach"
     assert ("may or may not have run" in messages[-2]) is not repeated
 
 
@@ -283,8 +285,7 @@ def test_cancelled_task_stops_without_inference(storage):
     tasks.task = cancel_on_first_read
     asyncio.run(tasks.serve("test"))
     assert tasks.inference.calls == []
-    end = json.loads(contents(storage)[-1].removeprefix(TASK_END))
-    assert end["status"] == "cancelled"
+    assert storage.thread.transcript[-1].status == "cancelled"
 
 
 def test_inference_failure_fails_the_task(storage):
@@ -317,21 +318,22 @@ def test_another_worker_cannot_take_a_held_thread(storage):
 
 
 def block(task_id, size, status="completed"):
-    start = {"task_id": task_id, "from": "agent", "instructions": "x"}
-    end = {"task_id": task_id, "status": status, "summary": f"Summary {task_id}"}
+    ident = UUID(int=ord(task_id))
+    start = TaskStart(task_id=ident, origin="agent", instructions="x")
+    end = TaskEnd(task_id=ident, status=status, summary=f"Summary {task_id}")
     return [
-        RunMessage(role="user", content=TASK_START + json.dumps(start)),
+        start,
         RunMessage(role="assistant", content="y" * size),
-        RunMessage(role="user", content=TASK_END + json.dumps(end)),
+        end,
     ]
 
 
 def test_compaction_folds_the_oldest_finished_tasks_into_summaries():
     transcript = [*block("a", 1000), *block("b", 1000), *block("c", 10)]
     compacted = compact(transcript, 1000)
-    assert compacted[0].content.startswith(EARLIER)
-    earlier = json.loads(compacted[0].content.removeprefix(EARLIER))
-    assert [item["task_id"] for item in earlier] == ["a", "b"]
+    assert compacted[0].role == "task_history"
+    earlier = compacted[0].tasks
+    assert [item.task_id.int for item in earlier] == [ord("a"), ord("b")]
     assert compacted[1:] == block("c", 10)
 
 
@@ -359,12 +361,23 @@ def test_cancellation_during_inference_prevents_dispatch(storage):
             storage.tasks[task.id] = storage.tasks[task.id].model_copy(
                 update={"status": "cancelled"}
             )
-            return command("bash_exec", command="touch file")
+            return RunCall(command=command("bash_exec", command="touch file"))
 
     tasks.inference = CancelDuringInference()
     asyncio.run(tasks.serve("test"))
     assert storage.sandbox.calls == []
-    assert (
-        json.loads(contents(storage)[-1].removeprefix(TASK_END))["status"]
-        == "cancelled"
-    )
+    assert storage.thread.transcript[-1].status == "cancelled"
+
+
+def test_ambiguous_saved_task_fails_before_replay_and_next_task_can_continue(storage):
+    first = storage.add_task("first")
+    storage.tasks[first.id] = first.model_copy(update={"status": "running"})
+    storage.thread.transcript = [
+        UnrecoveredRecord(original={"role": "assistant", "content": "ambiguous action"})
+    ]
+    second = storage.add_task("second")
+    calls = serve(storage, finish("Second completed."))
+    assert storage.tasks[first.id].status == "failed"
+    assert "could not safely resume" in storage.tasks[first.id].summary
+    assert storage.tasks[second.id].status == "completed"
+    assert len(calls.calls) == 1

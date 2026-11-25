@@ -21,6 +21,18 @@ class RequestBoundTests(unittest.IsolatedAsyncioTestCase):
                 {"input": {"feature": "llm", "text": "x" * (4 * 1024 * 1024)}}
             )
 
+    def test_ordered_chat_image_gets_media_transport_limit(self):
+        parts = [{"type": "image_url", "image_url": {"url": "x" * (4 * 1024 * 1024)}}]
+        encoded = encode_request(
+            {
+                "input": {
+                    "feature": "llm",
+                    "messages": [{"role": "user", "content": parts}],
+                }
+            }
+        )
+        self.assertGreater(len(encoded), 3 * 1024 * 1024)
+
     async def test_image_progress_is_initialized_with_the_job(self):
         job = InferenceJob(
             InferenceTask(

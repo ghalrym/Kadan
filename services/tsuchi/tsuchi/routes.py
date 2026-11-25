@@ -21,6 +21,7 @@ from .models import (
     ComputerTask,
     ComputerThread,
     ComputerThreadState,
+    ConversationTaskPage,
     ImageJob,
     ImageJobState,
     MarkdownResource,
@@ -112,6 +113,7 @@ class EventRunCreate(Model):
 
 
 class RunUpdate(AgentRunState):
+    transcript_format: Literal[2]
     expected_version: int = Field(ge=1)
     worker_id: UUID
 
@@ -140,6 +142,7 @@ class ComputerTaskUpdate(Model):
 
 
 class ComputerThreadUpdate(ComputerThreadState):
+    transcript_format: Literal[2]
     expected_version: int = Field(ge=1)
     worker_id: UUID
     consumed_steering_ids: list[UUID] = Field(default_factory=list, max_length=100)
@@ -277,7 +280,7 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     @router.put("/agents/{key}/runs/{run_id}", response_model=AgentRun)
     def update_run(key: AgentKey, run_id: UUID, value: RunUpdate):
         state = AgentRunState.model_validate(
-            value.model_dump(exclude={"expected_version", "worker_id"})
+            value.model_dump(include=set(AgentRunState.model_fields))
         )
         return repository.update_run(
             key, run_id, state, value.expected_version, value.worker_id
@@ -313,6 +316,15 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     )
     def conversation_image_jobs(key: AgentKey, conversation_id: UUID):
         return repository.conversation_image_jobs(key, conversation_id)
+
+    @router.get(
+        "/agents/{key}/resources/{conversation_id}/task-status",
+        response_model=ConversationTaskPage,
+    )
+    def conversation_task_status(
+        key: AgentKey, conversation_id: UUID, offset: Annotated[int, Query(ge=0)] = 0
+    ):
+        return repository.conversation_task_status(key, conversation_id, offset)
 
     @router.get("/agents/{key}/image-jobs/{job_id}", response_model=ImageJob)
     def get_image_job(key: AgentKey, job_id: UUID):

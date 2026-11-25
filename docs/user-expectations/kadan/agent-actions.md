@@ -2,6 +2,8 @@
 
 Kadan agents can have their configured computer browse websites, read and change files, and run commands or code during text conversations. The agent does not operate the computer itself. It hands each job to its computer assistant, tells the user what is happening and stays free to keep talking. When the assistant finishes, fails or is stopped, the agent is woken in the same conversation with the assistant's summary and reports the outcome. Hikari supplies both models' decisions with the same language model; Kadan executes the actions. Voice calls do not provide these tools.
 
+Kadan can look up the recorded status of this conversation’s image jobs and computer tasks, including completed, failed, and cancelled work. A chat with the same agent does not receive another conversation’s task instructions. A status lookup can fail, and an earlier chat reply may describe an outdated state.
+
 The computer assistant has one continuing working thread per agent, so later tasks can build on what earlier ones did. Tasks run one at a time in the order they were handed over or requested. Users can [request or steer its work](computer.md) directly from the computer view. When the thread grows long, the assistant keeps only short summaries of its oldest finished tasks. A single task that does not fit its context, exceeds its action limit or keeps sending invalid arguments fails with an explanation.
 
 For coding work, the agent can start [Codex threads](coding.md) on this same

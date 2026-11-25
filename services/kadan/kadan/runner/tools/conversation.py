@@ -37,6 +37,12 @@ class GenerateImageArguments(Arguments):
     )
 
 
+class TaskStatusArguments(Arguments):
+    offset: int = Field(
+        default=0, ge=0, description="Use next_offset to read older work."
+    )
+
+
 class Conversation(Protocol):
     """The run a conversation tool acts on; `AgentRuns` provides it."""
 
@@ -45,6 +51,8 @@ class Conversation(Protocol):
     async def generate_image(self, args: GenerateImageArguments) -> dict: ...
 
     async def read_request_references(self) -> dict: ...
+
+    async def read_task_status(self, offset: int) -> dict: ...
 
     async def finish(self) -> None: ...
 
@@ -92,4 +100,18 @@ async def read_request_references(
     return await conversation.read_request_references()
 
 
-TOOLS = [send_message, generate_image, finish, read_request_references]
+@conversation_tool
+async def read_task_status(
+    args: TaskStatusArguments, conversation: Conversation
+) -> dict:
+    """Check recorded image and computer work in this conversation before reporting its status or resubmitting it."""
+    return await conversation.read_task_status(args.offset)
+
+
+TOOLS = [
+    send_message,
+    generate_image,
+    finish,
+    read_request_references,
+    read_task_status,
+]

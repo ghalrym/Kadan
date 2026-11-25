@@ -329,6 +329,9 @@ def test_runner_dispatches_memory_tools_without_computer_and_fences_replayed_wri
         controller.services.json_request.return_value = [memory()]
     if tool.name == "read_memory":
         state.command.arguments = {"memory_id": str(MEMORY_ID)}
+    from kadan.api.pydantic_models.agent_runs import RunCall
+
+    run.transcript = [RunCall(command=state.command)]
     asyncio.run(controller.invoke_tool(state))
     controller.owned.assert_awaited_once_with(run)
     result = controller.save_result.call_args.args[2]
