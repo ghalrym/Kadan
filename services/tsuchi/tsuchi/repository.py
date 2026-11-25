@@ -1992,6 +1992,8 @@ class Repository:
         self, db: sqlite3.Connection, key: str, value: ResourceInput, resource_id: UUID
     ) -> None:
         parent_id = value.parent_id
+        if value.kind == ResourceKind.PROJECT and parent_id:
+            raise StorageError("A project cannot be placed inside another resource")
         visited = {resource_id}
         while parent_id:
             if parent_id in visited:
@@ -2000,6 +2002,18 @@ class Repository:
                 )
             visited.add(parent_id)
             parent = self._resource(db, key, parent_id)
+            if parent.kind == ResourceKind.PROJECT:
+                # Projects hold only conversations and are never nested.
+                if (
+                    parent_id != value.parent_id
+                    or value.kind != ResourceKind.CONVERSATION
+                ):
+                    raise StorageError("Only conversations can be placed in a project")
+                if parent.deleted_at:
+                    raise StorageError(
+                        "Parent must be an active project in this namespace"
+                    )
+                break
             if parent.kind != ResourceKind.SPACE or parent.deleted_at:
                 raise StorageError("Parent must be an active Space in this namespace")
             parent_id = parent.parent_id

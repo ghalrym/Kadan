@@ -1,59 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import {
-  Egg,
-  FolderOpen,
-  Menu,
-  MessageCircle,
-  Palette,
-  Pencil,
-  Plug,
-  Server,
-  RefreshCw,
-  X,
-} from "lucide-react";
+import { Egg, Menu } from "lucide-react";
 import { agentPath, allResources, api } from "./api";
 import { latestConversation } from "./agentRuns";
-import type { Agent, PetJob, Resource, Status } from "./types";
+import { emptyConversation, pickConversation, summarize, upsertConversation } from "./conversations";
+import type { Agent, ConversationSummary, PetJob, Resource, Space, Status } from "./types";
 import Chat from "./Chat";
-import Workspace from "./Workspace";
 import Hatch from "./Hatch";
-import Pet, { agentPet, useMood } from "./Pet";
+import Pet, { agentPet } from "./Pet";
 import { agentHue } from "./pet";
 import PetEditor from "./PetEditor";
 import RenameAgent from "./RenameAgent";
 import RunnerAssignment from "./RunnerAssignment";
-import Integrations from "./Integrations";
-import { PetContext, useAgentPet } from "./PetContext";
+import Plugins from "./Plugins";
+import Sidebar, { type Page } from "./Sidebar";
+import SpacePage from "./SpacePage";
+import SpaceDialog from "./SpaceDialog";
+import ConfirmDialog from "./ConfirmDialog";
+import AgentPage from "./AgentPage";
+import { PetContext } from "./PetContext";
 
 /** Animate a view change, letting the agent's pet glide between layouts. */
 function transition(update: () => void) {
   if (!document.startViewTransition || matchMedia("(prefers-reduced-motion: reduce)").matches)
     return update();
   document.startViewTransition(() => flushSync(update));
-}
-
-function AgentIdentity({ agent, onSelect }: { agent: Agent; onSelect: () => void }) {
-  const [mood, react] = useMood("idle");
-  const sheet = useAgentPet(agent.key);
-  return (
-    <button
-      className="agent-identity"
-      onPointerEnter={() => react("waving")}
-      onClick={() => {
-        react("jumping");
-        onSelect();
-      }}
-    >
-      <span className="agent-identity-pet">
-        <Pet sheet={sheet} state={mood} size={48} look />
-      </span>
-      <span className="agent-identity-text">
-        <strong>{agent.name}</strong>
-        <code>{agent.key}</code>
-      </span>
-    </button>
-  );
 }
 
 export default function App() {
@@ -63,15 +34,20 @@ export default function App() {
   const [editingPet, setEditingPet] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [assigningRunner, setAssigningRunner] = useState(false);
-  const [integrations, setIntegrations] = useState(false);
+  const [spaceDialog, setSpaceDialog] = useState<{ space?: Space } | null>(null);
+  const [confirm, setConfirm] = useState<{ title: string; message: string; confirm: string; run: () => Promise<void> } | null>(null);
   const petSelectionRevision = useRef(0);
   const petReadRevision = useRef(0);
   const pendingPetSelection = useRef(0);
   const [personas, setPersonas] = useState<Resource[]>([]);
-  // The agent has one continuous conversation rather than separate threads.
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [spaces, setSpaces] = useState<Space[]>([]);
+  /** The open chat, remembered with the agent it belongs to. */
+  const [selection, setSelection] = useState<{ owner: string; id: string } | null>(null);
   const [chain, setChain] = useState<Resource | null>(null);
-  const [view, setView] = useState<"chat" | "workspace">("chat");
-  const [workspaceVisited, setWorkspaceVisited] = useState(false);
+  const [page, setPage] = useState<Page>({ name: "chat" });
+  /** A first message from a Space page, sent when its new chat opens. */
+  const [autoSend, setAutoSend] = useState<{ id: string; text: string } | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState("");
   const [petError, setPetError] = useState<{ key: string; message: string } | null>(null);
@@ -91,6 +67,9 @@ export default function App() {
   const currentAgentKey = useRef(key);
   const agentKey = currentAgentKey;
   const refreshRevision = useRef(0);
+  const selectedRef = useRef(selection);
+  selectedRef.current = selection;
+  const selectedId = selection?.owner === key ? selection.id : null;
   if (currentAgentKey.current !== key) {
     currentAgentKey.current = key;
     ++petSelectionRevision.current;
@@ -198,6 +177,9 @@ export default function App() {
         setEditingPet(false);
         setRenaming(false);
         setAssigningRunner(false);
+        setSpaceDialog(null);
+        setConfirm(null);
+        setPage({ name: "chat" });
       }
       setAgent(first ?? null);
       setResourceRevision((revision) => revision + 1);
@@ -226,42 +208,150 @@ export default function App() {
     void refreshPetSelection(key, () => current, true).catch(() => {});
     return () => { current = false; };
   }, [key, refreshPetSelection, petRetry]);
+  // Chats, Spaces and personas load together; the open chat loads separately below.
   useEffect(() => {
     if (!key) return;
     let current = true;
     const revision = refreshRevision.current;
+    const isCurrent = () => current && revision === refreshRevision.current;
     setLoading(true);
     Promise.all([
-      api<Resource>(`${agentPath(key)}/chain`),
+      api<ConversationSummary[]>(`${agentPath(key)}/conversations`),
+      api<Space[]>(`${agentPath(key)}/spaces`),
       allResources(key, "persona"),
     ])
-      .then(([conversation, profiles]) => {
-        if (current && revision === refreshRevision.current) {
-          setChain((current) => current?.agent_key === key && current.id === conversation.id
-            ? latestConversation(current, conversation) : conversation);
-          setPersonas(profiles);
-          setResourceOwner(key);
+      .then(async ([rows, saved, profiles]) => {
+        if (!isCurrent()) return;
+        const preferred = selectedRef.current?.owner === key ? selectedRef.current.id : null;
+        let id = pickConversation(rows, preferred);
+        if (!id) {
+          const created = await api<Resource>(`${agentPath(key)}/conversations`, {}, "POST");
+          if (!isCurrent()) return;
+          rows = [summarize(created, null)];
+          id = created.id;
         }
+        setConversations(rows);
+        setSpaces(saved);
+        setPersonas(profiles);
+        setSelection((value) => value?.owner === key && value.id === id ? value : { owner: key, id });
       })
       .catch((e) => {
-        if (current && revision === refreshRevision.current) setError(e.message);
-      })
-      .finally(() => {
-        if (current && revision === refreshRevision.current) setLoading(false);
+        if (isCurrent()) {
+          setError(e.message);
+          setLoading(false);
+        }
       });
     return () => {
       current = false;
     };
   }, [key, resourceRevision]);
+  useEffect(() => {
+    if (!key || !selectedId) return;
+    let current = true;
+    const revision = refreshRevision.current;
+    const isCurrent = () => current && revision === refreshRevision.current && currentAgentKey.current === key;
+    setLoading(true);
+    api<Resource>(`${agentPath(key)}/resources/${encodeURIComponent(selectedId)}`)
+      .then((conversation) => {
+        if (!isCurrent()) return;
+        setChain((current) => current?.agent_key === key && current.id === conversation.id
+          ? latestConversation(current, conversation) : conversation);
+        setResourceOwner(key);
+      })
+      .catch((e) => {
+        if (isCurrent()) setError(e.message);
+      })
+      .finally(() => {
+        if (isCurrent()) setLoading(false);
+      });
+    return () => {
+      current = false;
+    };
+  }, [key, selectedId, resourceRevision]);
 
+  function spaceOf(conversationId: string, parentId: string | null) {
+    const listed = conversations.find((row) => row.id === conversationId);
+    if (listed) return listed.space_id;
+    return parentId && spaces.some((space) => space.id === parentId) ? parentId : null;
+  }
   function updateChain(value: Resource) {
     if (agentKey.current !== key) return;
     setChain((current) => current ? latestConversation(current, value) : current);
+    setConversations((rows) => upsertConversation(rows, summarize(value, spaceOf(value.id, value.parent_id))));
   }
-  function show(next: typeof view) {
+  function show(next: Page) {
     setMenu(false);
-    if (next === "workspace") setWorkspaceVisited(true);
-    transition(() => setView(next));
+    transition(() => setPage(next));
+  }
+  function openChat(id: string) {
+    setSelection({ owner: key, id });
+    show({ name: "chat" });
+  }
+  async function newChat(spaceId: string | null) {
+    const reuse = emptyConversation(conversations, spaceId);
+    if (reuse) {
+      openChat(reuse.id);
+      return reuse.id;
+    }
+    const created = await api<Resource>(`${agentPath(key)}/conversations`, { space_id: spaceId }, "POST");
+    if (agentKey.current !== created.agent_key) return null;
+    setConversations((rows) => upsertConversation(rows, summarize(created, spaceId)));
+    setChain(created);
+    setResourceOwner(key);
+    openChat(created.id);
+    return created.id;
+  }
+  function startNewChat(spaceId: string | null) {
+    newChat(spaceId).catch((e) => setError((e as Error).message));
+  }
+  async function updateConversation(id: string, change: { title?: string; space_id?: string | null }) {
+    try {
+      const saved = await api<ConversationSummary>(`${agentPath(key)}/conversations/${encodeURIComponent(id)}`, change, "PUT");
+      setConversations((rows) => upsertConversation(rows, saved));
+    } catch (e) {
+      setError((e as Error).message);
+      throw e;
+    }
+  }
+  /** After the open chat disappears, open the next one rather than an empty screen. */
+  function reopenAfterRemoval(remaining: ConversationSummary[]) {
+    const next = pickConversation(remaining.filter((row) => row.message_count > 0), null);
+    if (next) openChat(next);
+    else startNewChat(null);
+  }
+  function deleteChat(id: string) {
+    const chat = conversations.find((row) => row.id === id);
+    setConfirm({
+      title: "Delete chat?",
+      message: `“${chat?.title ?? "This chat"}” will be moved to Tsuchi’s trash, where it can be restored.`,
+      confirm: "Delete",
+      run: async () => {
+        await api<void>(`${agentPath(key)}/conversations/${encodeURIComponent(id)}`, undefined, "DELETE");
+        const remaining = conversations.filter((row) => row.id !== id);
+        setConversations(remaining);
+        if (selectedId === id) reopenAfterRemoval(remaining);
+      },
+    });
+  }
+  function deleteSpace(space: Space) {
+    const count = conversations.filter((row) => row.space_id === space.id && row.message_count > 0).length;
+    setConfirm({
+      title: "Delete Space?",
+      message: `“${space.title}”${count ? ` and its ${count} chat${count === 1 ? "" : "s"}` : ""} will be moved to Tsuchi’s trash, where ${count ? "they" : "it"} can be restored.`,
+      confirm: "Delete Space",
+      run: async () => {
+        await api<void>(`${agentPath(key)}/spaces/${encodeURIComponent(space.id)}`, undefined, "DELETE");
+        const remaining = conversations.filter((row) => row.space_id !== space.id);
+        setSpaces((rows) => rows.filter((row) => row.id !== space.id));
+        setConversations(remaining);
+        const inside = conversations.some((row) => row.id === selectedId && row.space_id === space.id);
+        if (inside || (page.name === "space" && page.id === space.id)) reopenAfterRemoval(remaining);
+      },
+    });
+  }
+  async function startInSpace(spaceId: string, text: string) {
+    const id = await newChat(spaceId);
+    if (id) setAutoSend({ id, text });
   }
   function restoreFocus() {
     if (mobile && !menu) openNavigation.current?.focus();
@@ -311,125 +401,42 @@ export default function App() {
         className={`sidebar ${menu ? "is-open" : ""}`}
         aria-label="Navigation"
       >
-        <header className="panel-head">
-          {agent ? (
-            <AgentIdentity agent={agent} onSelect={() => show("chat")} />
-          ) : (
-            <span className="brand">
-              <span className="logo" aria-hidden="true">
-                <i />
-                <i />
-                <i />
-                <i />
-              </span>
-              Kadan
-            </span>
-          )}
-          <button
-            className="icon mobile-only"
-            aria-label="Close navigation"
-            ref={closeNavigation}
-            onClick={() => setMenu(false)}
-          >
-            <X size={18} />
-          </button>
-        </header>
-        <nav className="panel-nav" aria-label="Views">
-          <button
-            className={key && view === "chat" ? "selected" : ""}
-            disabled={!key}
-            onClick={() => show("chat")}
-          >
-            <MessageCircle size={17} />
-            Messages
-          </button>
-          <button
-            className={view === "workspace" ? "selected" : ""}
-            disabled={!key || disabled}
-            onClick={() => show("workspace")}
-          >
-            <FolderOpen size={17} />
-            Workspace
-          </button>
-          <button disabled={!key} onClick={() => { setMenu(false); setIntegrations(true); }}>
-            <Plug size={17} />
-            Integrations
-          </button>
-        </nav>
-        <nav className="panel-nav" aria-label="Agent settings">
-          <h2 className="panel-label">Agent</h2>
-          <button disabled={!key} onClick={() => { setMenu(false); setEditingPet(true); }}>
-            <Palette size={17} />
-            Edit pet
-          </button>
-          <button disabled={!key || disabled} onClick={() => { setMenu(false); setRenaming(true); }}>
-            <Pencil size={17} />
-            Rename agent
-          </button>
-          <button disabled={!key || disabled} onClick={() => { setMenu(false); setAssigningRunner(true); }}>
-            <Server size={17} />
-            Runner assignment
-          </button>
-        </nav>
-        <footer className="services">
-          <a
-            href={status?.tsuchi.browser_url ?? undefined}
-            aria-disabled={!status?.tsuchi.browser_url}
-            target="_blank"
-            rel="noreferrer"
-            title={status?.tsuchi.message ?? "Checking"}
-          >
-            <span className={`dot ${status?.tsuchi.state === "ready" ? "ready" : status ? "down" : ""}`} />
-            Tsuchi
-            <span className="sr-only">
-              {!status ? "checking" : status.tsuchi.state === "ready" ? "connected" : "unavailable"}
-            </span>
-          </a>
-          <a
-            href={status?.hikari.settings_url ?? undefined}
-            aria-disabled={!status?.hikari.settings_url}
-            target="_blank"
-            rel="noreferrer"
-            title={status?.hikari.message ?? "Checking"}
-          >
-            <span
-              className={`dot ${status?.hikari.state === "ready" ? "ready" : status?.hikari.state === "unavailable" ? "down" : status ? "warn" : ""}`}
-            />
-            Hikari
-            <span className="sr-only">
-              {!status ? "checking" : status.hikari.state === "ready" ? "ready" : "needs attention"}
-            </span>
-          </a>
-        </footer>
+        <Sidebar
+          agent={agent}
+          page={page}
+          conversations={key && resourceOwner === key ? conversations : []}
+          spaces={key && resourceOwner === key ? spaces : []}
+          selectedId={selectedId}
+          status={status}
+          loading={loading}
+          disabled={disabled}
+          closeRef={closeNavigation}
+          onClose={() => setMenu(false)}
+          onRefresh={() => {
+            void refreshAgent();
+            void refreshStatus();
+          }}
+          onNewChat={startNewChat}
+          onOpenChat={openChat}
+          onOpenSpace={(id) => show({ name: "space", id })}
+          onCreateSpace={() => { setMenu(false); setSpaceDialog({}); }}
+          onPage={(name) => show({ name })}
+          onRenameChat={(id, title) => updateConversation(id, { title })}
+          onMoveChat={(id, spaceId) => updateConversation(id, { space_id: spaceId })}
+          onDeleteChat={deleteChat}
+        />
       </aside>
       <main id="main" tabIndex={-1} inert={mobile && menu}>
-        <header className="topbar">
-          <button
-            className="icon mobile-only"
-            aria-label="Open navigation"
-            ref={openNavigation}
-            aria-expanded={menu}
-            aria-controls="navigation"
-            onClick={() => setMenu(true)}
-          >
-            <Menu size={20} />
-          </button>
-          <h1>
-            {view === "workspace" ? "Workspace" : agent?.name || "Kadan"}
-          </h1>
-          <button
-            className="icon"
-            aria-label="Refresh services and agent"
-            title="Refresh"
-            disabled={disabled}
-            onClick={() => {
-              void refreshAgent();
-              void refreshStatus();
-            }}
-          >
-            <RefreshCw size={16} className={loading ? "spin" : ""} />
-          </button>
-        </header>
+        <button
+          className="icon mobile-only mobile-menu"
+          aria-label="Open navigation"
+          ref={openNavigation}
+          aria-expanded={menu}
+          aria-controls="navigation"
+          onClick={() => setMenu(true)}
+        >
+          <Menu size={20} />
+        </button>
         {error && (
           <div className="banner" role="alert">
             {error}
@@ -442,11 +449,6 @@ export default function App() {
           <div className="banner" role="alert">
             {petError.message}
             <button onClick={() => setPetRetry((revision) => revision + 1)}>Retry</button>
-          </div>
-        )}
-        {key && workspaceVisited && (
-          <div className="workspace-pane" hidden={view !== "workspace"}>
-            <Workspace key={key} agentKey={key} browserUrl={status?.tsuchi.browser_url ?? null} />
           </div>
         )}
         {loading && !key ? (
@@ -468,7 +470,37 @@ export default function App() {
               Hatch your agent
             </button>
           </div>
-        ) : view === "workspace" ? null : chain && resourceOwner === key ? (
+        ) : page.name === "plugins" ? (
+          <Plugins agentName={agent?.name || key} />
+        ) : page.name === "agent" && agent ? (
+          <AgentPage
+            agent={agent}
+            disabled={disabled}
+            onEditPet={() => setEditingPet(true)}
+            onRename={() => setRenaming(true)}
+            onRunner={() => setAssigningRunner(true)}
+          />
+        ) : page.name === "space" ? (
+          (() => {
+            const space = resourceOwner === key ? spaces.find((row) => row.id === page.id) : undefined;
+            return space ? (
+              <SpacePage
+                key={space.id}
+                space={space}
+                conversations={conversations}
+                disabled={disabled}
+                onStart={(text) => startInSpace(space.id, text)}
+                onOpenChat={openChat}
+                onEdit={() => setSpaceDialog({ space })}
+                onDelete={() => deleteSpace(space)}
+              />
+            ) : (
+              <div className="center-empty">
+                <p className="center-hint">{loading ? "Loading Space…" : "This Space is no longer available."}</p>
+              </div>
+            );
+          })()
+        ) : chain && resourceOwner === key && chain.id === selectedId ? (
           <Chat
             key={`${key}:${chain.id}`}
             agentKey={key}
@@ -482,6 +514,8 @@ export default function App() {
             onEditPet={() => setEditingPet(true)}
             blocked={loading}
             refreshStatus={refreshStatus}
+            autoSend={autoSend?.id === chain.id ? autoSend.text : undefined}
+            onAutoSent={() => setAutoSend(null)}
           />
         ) : (
           <div className="center-empty" role="status">
@@ -502,7 +536,25 @@ export default function App() {
           restoreFocus();
         }}
       />}
-      {integrations && <Integrations onClose={() => { setIntegrations(false); restoreFocus(); }} />}
+      {spaceDialog && key && <SpaceDialog
+        agentKey={key}
+        space={spaceDialog.space}
+        onSaved={(saved) => {
+          setSpaces((rows) => [saved, ...rows.filter((row) => row.id !== saved.id)]);
+          if (!spaceDialog.space) show({ name: "space", id: saved.id });
+        }}
+        onClose={() => {
+          setSpaceDialog(null);
+          restoreFocus();
+        }}
+      />}
+      {confirm && <ConfirmDialog
+        title={confirm.title}
+        message={confirm.message}
+        confirm={confirm.confirm}
+        onConfirm={confirm.run}
+        onClose={() => setConfirm(null)}
+      />}
       {assigningRunner && agent && <RunnerAssignment
         agent={agent}
         onClose={() => {
@@ -530,7 +582,7 @@ export default function App() {
           setCreating(false);
           transition(() => {
             setAgent(created);
-            setView("chat");
+            setPage({ name: "chat" });
           });
         }}
       />}

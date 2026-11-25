@@ -15,6 +15,8 @@ class ResourceKind(StrEnum):
     SPACE = "space"
     DECK = "deck"
     CONVERSATION = "conversation"
+    # Shown in Kadan as a Space: a name, instructions and its own chats.
+    PROJECT = "project"
 
 
 class SourceLink(BaseModel):

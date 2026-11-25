@@ -1,10 +1,10 @@
-# Workspace and memory access
+# Document and memory access
 
-Tsuchi owns content, revisions, trash and file bytes. Kadan exposes separate read contracts for Workspace documents and agent-managed Memories without maintaining a second store. A Memory is a user-viewable record of content managed by an agent, rather than a Workspace document.
+Tsuchi owns content, revisions, trash and file bytes. Kadan exposes separate read contracts for saved documents and agent-managed Memories without maintaining a second store. A Memory is a user-viewable record of content managed by an agent, rather than a Workspace document.
 
 Workspace documents retain Tsuchi's `space` (Markdown) and `deck` kinds. Memories retain `memory`; personas and conversations belong to neither collection. All records remain scoped by `agent_key`. Existing IDs, kinds, revisions, attachments and parent links are unchanged, with no migration or copying of content. In particular, an existing Memory's `parent_id` does not make it a Workspace document.
 
-The Open Tsuchi link uses the configured storage frontend. Workspace reads on navigation, search and explicit refresh rather than continuously synchronizing external edits. Selected records refresh independently of search results so filtering cannot imply deletion. A document read uses the unfiltered active resource collection for its text, ancestors and children; memory and file details use their individual reads. Confirmed absence, trash or a changed kind hides obsolete content, while transient failures retain the last loaded record with an error. Each read is invalidated by newer navigation or refreshes so late responses cannot replace the current selection.
+Kadan no longer has a document or file browser; Tsuchi is where users read and edit saved documents and files. The document read contract remains because the composer's References picker searches documents and memories together. The Agent page reads Memories on open, search and explicit refresh rather than continuously synchronizing external edits; transient failures stay distinguishable from an empty list.
 
 ## Read contract
 
@@ -19,7 +19,7 @@ Tsuchi's resource list accepts repeated `kinds` query parameters, such as `kinds
 
 ## Ownership
 
-`api/pydantic_models/resources.py`, `api/routes/agents/workspace.py`, `api/routes/agents/memories.py` and `api/services.py` own Kadan's read boundary. Tsuchi's repository and resource routes own filtering and persistence. The Workspace frontend owns document navigation and the separate Memories view. Runner document tools create `space` records and use existing Space parent validation; runner memory tools manage `memory` records separately. The read routes do not start runner operations.
+`api/pydantic_models/resources.py`, `api/routes/agents/workspace.py`, `api/routes/agents/memories.py` and `api/services.py` own Kadan's read boundary. Tsuchi's repository and resource routes own filtering and persistence. The References picker owns document and memory selection, and the Agent page owns the Memories view and corrections. Runner document tools create `space` records and use existing Space parent validation; runner memory tools manage `memory` records separately. The read routes do not start runner operations.
 
 Resource search is lexical over stored titles, Markdown, tags and structured text. Asset search uses metadata, not extracted document text or transcribed audio. Failed reads must remain distinguishable from empty collections. Browsing does not modify runner context: current context preparation reads recent chat, automatically includes the agent's owned persona when present, and adds any distinct explicitly selected persona, without automatically retrieving displayed documents or Memories. Storage alone does not provide recall.
 

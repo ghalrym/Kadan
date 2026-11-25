@@ -1,4 +1,10 @@
-export type Kind = "persona" | "memory" | "space" | "deck" | "conversation";
+export type Kind =
+  | "persona"
+  | "memory"
+  | "space"
+  | "deck"
+  | "conversation"
+  | "project";
 export type View =
   | "overview"
   | Kind
@@ -48,7 +54,7 @@ export interface ResourceFields {
   attachment_ids: string[];
 }
 export interface MarkdownInput extends ResourceFields {
-  kind: "persona" | "memory" | "space";
+  kind: "persona" | "memory" | "space" | "project";
   deck: null;
   messages: [];
 }
@@ -117,6 +123,7 @@ export const kindLabels: Record<Kind, string> = {
   space: "Spaces",
   deck: "Slide decks",
   conversation: "Conversations",
+  project: "Kadan Spaces",
 };
 export const singularLabels: Record<Kind, string> = {
   persona: "persona",
@@ -124,6 +131,7 @@ export const singularLabels: Record<Kind, string> = {
   space: "Space",
   deck: "slide deck",
   conversation: "conversation",
+  project: "Kadan Space",
 };
 export function newResource(kind: Kind): ResourceInput {
   const fields: ResourceFields = {

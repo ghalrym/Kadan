@@ -1,4 +1,4 @@
-# Workspace file delivery
+# File delivery
 
 `save_workspace_file` is a conversation tool because the run owns its destination and durable action identity. `RunConversation` derives the asset ID from the persisted command position, supplies the current agent namespace, and checks ownership before downloading and immediately before uploading. Transfers do not hold the runner mutation lock, allowing lease renewal while bytes move. Cancellation after the upload starts cannot revoke a committed file.
 

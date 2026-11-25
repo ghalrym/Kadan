@@ -8,6 +8,6 @@ Response completion and message delivery are separate. A finished response can s
 
 Updates arrive periodically and can lag saved changes. Loading and failed reads must remain distinct from no activity. After a refresh failure, previously loaded activity remains visible with an error; it is the last received state. Switching conversations resets Activity to that conversation's evidence.
 
-Activity counts cover response and image records, not external [T3 Code threads](integrations.md). Track live coding threads in T3 Code using the link the agent shares; stopping a chat response leaves T3 Code threads running.
+Activity counts cover response and image records, not external [T3 Code threads](plugins.md). Track live coding threads in T3 Code using the link the agent shares; stopping a chat response leaves T3 Code threads running.
 
 Activity is a summary of retained work, not the agent's hidden reasoning, command transcript or a complete audit of external effects. Failures and stops remain available for review without being retried automatically. Use [Stop and Stop image](stopping-chat-work.md) for active work; viewing Activity does not cancel, resume or replay it.

@@ -196,7 +196,7 @@ test("title corrections preserve an existing memory beyond runner text limits", 
 });
 
 
-test("Workspace refresh updates displayed memory while preserving an unsaved correction's version", async () => {
+test("Reloading a memory list updates the displayed memory while preserving an unsaved correction's version", async () => {
   const ui = editor();
   ui.receive({ ...memory, markdown: "Refreshed memory", version: 3 });
   assert.match(ui.text(), /Refreshed memory/);

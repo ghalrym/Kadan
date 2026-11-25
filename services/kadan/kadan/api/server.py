@@ -12,10 +12,11 @@ from .config import ServiceError, Settings
 from .routes import agents, calls, computer, health, mcp, runners, status, transcriptions
 from .routes.agents import (
     assets,
-    chain,
+    conversations,
     memories,
     pets,
     resources,
+    spaces,
     workspace,
 )
 from .routes.agents import computer as agent_computer
@@ -62,7 +63,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resources.router,
         workspace.router,
         memories.router,
-        chain.router,
+        conversations.router,
+        spaces.router,
         pets.router,
         agent_computer.router,
         assets.router,

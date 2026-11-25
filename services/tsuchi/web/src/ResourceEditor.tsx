@@ -52,7 +52,13 @@ function resourceInput(resource: ResourceInput): ResourceInput {
     };
   return { ...fields, kind: resource.kind, deck: null, messages: [] };
 }
-function parentChoices(resources: Resource[], currentId?: string) {
+function parentChoices(
+  resources: Resource[],
+  kind: Kind,
+  currentId?: string,
+) {
+  // Kadan Spaces hold only conversations and never have a parent.
+  if (kind === "project") return [];
   const excluded = new Set(currentId ? [currentId] : []);
   let changed = true;
   while (changed) {
@@ -68,7 +74,10 @@ function parentChoices(resources: Resource[], currentId?: string) {
       }
   }
   return resources.filter(
-    (resource) => resource.kind === "space" && !excluded.has(resource.id),
+    (resource) =>
+      (resource.kind === "space" ||
+        (kind === "conversation" && resource.kind === "project")) &&
+      !excluded.has(resource.id),
   );
 }
 export function ResourceEditor({
@@ -347,13 +356,17 @@ export function ResourceEditor({
                         }
                       >
                         <option value="">No parent</option>
-                        {parentChoices(data?.resources || [], current?.id).map(
-                          (resource) => (
-                            <option key={resource.id} value={resource.id}>
-                              {resource.title}
-                            </option>
-                          ),
-                        )}
+                        {parentChoices(
+                          data?.resources || [],
+                          draft.kind,
+                          current?.id,
+                        ).map((resource) => (
+                          <option key={resource.id} value={resource.id}>
+                            {resource.kind === "project"
+                              ? `${resource.title} (Kadan Space)`
+                              : resource.title}
+                          </option>
+                        ))}
                       </select>
                     </label>
                   )}

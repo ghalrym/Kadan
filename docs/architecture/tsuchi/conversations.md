@@ -6,7 +6,7 @@ Tsuchi stores conversation records without owning agent execution. Kadan queues 
 
 The append checks the resource version and rejects conflicts instead of overwriting concurrent changes. Message identifiers cannot repeat. Ordered stored messages and durable agent-run state are distinct: a conversation edit alone neither invokes Hikari nor delivers an agent result.
 
-Multiple conversations can coexist in a namespace. Kadan selects the oldest active conversation, so trash and restore affect selection without adding a thread interface. The storage API does not impose Kadan's single-chat presentation on other clients.
+Multiple conversations can coexist in a namespace. A conversation may be parented to a `project`, the resource kind Kadan presents as a Space. A project holds only conversations, has no parent of its own and is never part of a `space` document hierarchy; see [Chats and Spaces](../kadan/spaces.md).
 
 `POST /api/agents/{key}/resources/{id}/event-runs` queues a run woken by an
 external event, such as a finished Codex run. It carries an opaque `trigger_event`

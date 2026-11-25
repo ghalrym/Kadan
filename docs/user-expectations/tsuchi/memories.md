@@ -6,6 +6,6 @@ Edits and previews remain drafts until saved. Closing the editor with unsaved ch
 
 Search matches stored words in titles, text and tags. It does not infer meaning or extract text from attached files. A loading or search error must remain distinguishable from having no matching memories.
 
-Saving a memory does not run inference or guarantee that an agent will recall it. Kadan's current response flow does not automatically retrieve memories. See [Workspace browsing](../kadan/workspace.md) for how users inspect them in Kadan.
+Saving a memory does not run inference or guarantee that an agent will recall it. Kadan's current response flow does not automatically retrieve memories. See [Agent memory](../kadan/memories.md) for how users inspect them in Kadan.
 
 Saved memories support [revisions](revisions.md), [trash](trash.md) and [restore](restore.md).

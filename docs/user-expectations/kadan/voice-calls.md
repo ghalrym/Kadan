@@ -2,7 +2,7 @@
 
 The **Call** action on an agent's card opens a separate spoken conversation using Hikari's fixed LFM3-Audio-2B model for recognition, reply text and speech. There is one call path and no trial switch. Its checkpoint must already be downloaded and available in Hikari. Calls can start even when text chat is unavailable; they still need Tsuchi to read the agent's saved persona. A missing worker or checkpoint reports an error instead of downloading automatically or falling back to another model.
 
-Calls have no tools, access to Workspace resources, or saved transcript. They do not continue the text conversation. End call or leaving the chat releases the microphone and discards call history.
+Calls have no tools, access to saved documents, memories or Space instructions, or saved transcript. They do not continue any text chat. End call or leaving the chat releases the microphone and discards call history.
 
 Starting a call shows whether Kadan is starting browser audio, waiting for the microphone, preparing recording, or connecting to the call server. Setup has one twenty-second deadline across these stages. A timeout ends setup and reports the stage that stalled; check the browser prompt or service named in the error and start a new call. End call also cancels setup. If microphone permission arrives after cancellation or timeout, Kadan immediately stops that stream and does not open a call.
 

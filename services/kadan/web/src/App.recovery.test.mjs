@@ -36,17 +36,17 @@ const mocks = {
   react: reactUrl,
   "react/jsx-runtime": jsxUrl,
   "react-dom": moduleUrl("export const flushSync = callback => callback();"),
-  "lucide-react": moduleUrl("export const Egg='', FolderOpen='', Menu='', MessageCircle='', Palette='', Pencil='', Plug='', Server='', RefreshCw='', X='';"),
+  "lucide-react": moduleUrl("export const Egg='', Menu='';"),
   "./api": moduleUrl("export const agentPath = () => ''; export const api = () => { throw Error('Unexpected request'); }; export const allResources = api;"),
   "./Pet": moduleUrl("export default 'Pet'; export const agentPet = () => null; export const useMood = () => [];"),
   "./pet": moduleUrl("export const agentHue = () => 0;"),
   "./PetContext": moduleUrl("export const PetContext = { Provider: 'Provider' }; export const useAgentPet = () => null;"),
-  ...Object.fromEntries(["Chat", "Workspace", "Personas", "Hatch", "PetEditor", "RenameAgent", "RunnerAssignment", "Integrations"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
+  ...Object.fromEntries(["Chat", "Hatch", "PetEditor", "RenameAgent", "RunnerAssignment", "Plugins", "Sidebar", "SpacePage", "SpaceDialog", "ConfirmDialog", "AgentPage"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
 };
 const loader = registerHooks({
   resolve(specifier, context, nextResolve) {
     if (context.parentURL === appUrl) {
-      const url = mocks[specifier] ?? (specifier === "./agentRuns" ? new URL("./agentRuns.ts", import.meta.url).href : null);
+      const url = mocks[specifier] ?? (["./agentRuns", "./conversations"].includes(specifier) ? new URL(`${specifier}.ts`, import.meta.url).href : null);
       if (url) return { url, shortCircuit: true };
     }
     return nextResolve(specifier, context);
@@ -64,17 +64,23 @@ const { elements } = await import(jsxUrl);
 const { default: App } = await import(appUrl);
 loader.deregister();
 
-const originals = new Map(["matchMedia"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+const originals = new Map(["matchMedia", "document"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 // Slots follow App's useState calls; refs and effects do not consume these slots.
-const AGENT = 0, RENAMING = 3, ASSIGNING_RUNNER = 4, INTEGRATIONS = 5, CHAIN = 7, LOADING = 14, BUSY = 15;
-const original = { id: "original", agent_key: "agent", version: 3, messages: [] };
+const AGENT = 0, RENAMING = 3, ASSIGNING_RUNNER = 4, SPACE_DIALOG = 5, CONVERSATIONS = 8, SPACES = 9, SELECTION = 10,
+  CHAIN = 11, PAGE = 12, LOADING = 18, BUSY = 19, RESOURCE_OWNER = 25;
+const original = { id: "original", agent_key: "agent", title: "New chat", version: 3, messages: [] };
 const replacement = { ...original, id: "replacement", version: 1 };
+const select = (conversation) => {
+  state[CHAIN] = conversation;
+  state[SELECTION] = { owner: "agent", id: conversation.id };
+};
 beforeEach(() => {
   state.length = 0;
   state[AGENT] = { key: "agent", name: "Agent" };
-  state[CHAIN] = original;
-  state[21] = "agent";
+  select(original);
+  state[RESOURCE_OWNER] = "agent";
   Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: () => ({ matches: false }) });
+  Object.defineProperty(globalThis, "document", { configurable: true, value: {} });
 });
 afterEach(() => {
   for (const [key, descriptor] of originals) {
@@ -82,11 +88,17 @@ afterEach(() => {
     else delete globalThis[key];
   }
 });
-function chat() {
+function render() {
   begin();
   elements.length = 0;
   App();
-  const result = elements.find(element => element.type === "Chat");
+}
+function find(type) {
+  return elements.find(element => element.type === type);
+}
+function chat() {
+  render();
+  const result = find("Chat");
   assert.ok(result, "App must provide the selected chat");
   return result;
 }
@@ -95,13 +107,13 @@ test("changing conversations remounts chat while new snapshots of the same conve
   const first = chat();
   state[CHAIN] = { ...original, version: 4 };
   assert.equal(chat().key, first.key);
-  state[CHAIN] = replacement;
+  select(replacement);
   assert.notEqual(chat().key, first.key);
 });
 
 test("a previous chat callback cannot overwrite the newly selected conversation", () => {
   const previous = chat().props.onChange;
-  state[CHAIN] = replacement;
+  select(replacement);
   chat();
   previous({ ...original, version: 10 });
   assert.equal(state[CHAIN], replacement);
@@ -115,21 +127,6 @@ test("the selected chat accepts newer messages and rejects late older snapshots"
   update(original);
   assert.equal(state[CHAIN], newer);
 });
-
-
-for (const slot of [LOADING, BUSY]) {
-  test(`rename is disabled while ${slot === LOADING ? "loading agents" : "busy"}`, () => {
-    state[LOADING] = false;
-    state[BUSY] = false;
-    chat();
-    const rename = () => elements.find(element => element.type === "button"
-      && Array.isArray(element.props.children) && element.props.children.includes("Rename agent"));
-    assert.equal(rename().props.disabled, false);
-    state[slot] = true;
-    chat();
-    assert.equal(rename().props.disabled, true);
-  });
-}
 
 test("renaming updates the agent's name without replacing the conversation", () => {
   state[AGENT] = { key: "agent", name: "Agent", selected_pet_id: "pet" };
@@ -145,46 +142,86 @@ test("renaming updates the agent's name without replacing the conversation", () 
   assert.equal(updatedChat.props.agentName, "Renamed");
 });
 
-test("runner assignment opens for the agent and closes", () => {
+test("the agent page opens runner assignment, which closes again", () => {
   state[LOADING] = false;
-  chat();
-  const open = elements.find(element => element.type === "button"
-    && Array.isArray(element.props.children) && element.props.children.includes("Runner assignment"));
-  assert.equal(open.props.disabled, false);
-  open.props.onClick();
-  chat();
-  const assignment = elements.find(element => element.type === "RunnerAssignment");
+  render();
+  find("Sidebar").props.onPage("agent");
+  render();
+  const page = find("AgentPage");
+  assert.equal(page.props.disabled, false);
+  page.props.onRunner();
+  render();
+  const assignment = find("RunnerAssignment");
   assert.equal(assignment.props.agent.key, "agent");
   assignment.props.onClose();
   assert.equal(state[ASSIGNING_RUNNER], false);
-  chat();
-  assert.equal(elements.some(element => element.type === "RunnerAssignment"), false);
+  render();
+  assert.equal(find("RunnerAssignment"), undefined);
 });
 
 test("hatching is only offered while there is no agent", () => {
   chat();
-  assert.equal(elements.some(element => element.type === "Hatch"), false);
+  assert.equal(find("Hatch"), undefined);
   state[AGENT] = null;
   state[LOADING] = false;
-  begin();
-  elements.length = 0;
-  App();
-  assert.equal(elements.some(element => element.type === "Hatch"), true);
-  assert.equal(elements.some(element => element.type === "Chat"), false);
+  render();
+  assert.ok(find("Hatch"));
+  assert.equal(find("Chat"), undefined);
 });
 
-test("integrations panel opens while chat is busy and closing keeps the conversation", () => {
+test("plugins open while chat is busy and returning keeps the conversation", () => {
   state[BUSY] = true;
   const previous = chat();
-  const open = elements.find(element => element.type === "button"
-    && Array.isArray(element.props.children) && element.props.children.includes("Integrations"));
-  assert.equal(open.props.disabled, false);
-  open.props.onClick();
-  chat();
-  const panel = elements.find(element => element.type === "Integrations");
-  assert.ok(panel);
-  panel.props.onClose();
-  assert.equal(state[INTEGRATIONS], false);
+  const sidebar = find("Sidebar");
+  sidebar.props.onPage("plugins");
+  render();
+  assert.ok(find("Plugins"));
+  assert.equal(find("Chat"), undefined);
+  find("Sidebar").props.onOpenChat("original");
   assert.equal(chat().key, previous.key);
   assert.equal(state[CHAIN], original);
 });
+
+test("opening a chat from the sidebar selects it and waits for its messages", () => {
+  state[CONVERSATIONS] = [{ id: "replacement", space_id: null, message_count: 1, updated_at: "2026-01-01" }];
+  chat().props;
+  find("Sidebar").props.onOpenChat("replacement");
+  assert.deepEqual(state[SELECTION], { owner: "agent", id: "replacement" });
+  render();
+  assert.equal(find("Chat"), undefined, "the previous chat must not show under the new selection");
+  state[CHAIN] = replacement;
+  assert.equal(chat().props.chain, replacement);
+});
+
+test("a Space page lists its Space and opens its settings", () => {
+  const space = { id: "space", title: "Garden", instructions: "", version: 1 };
+  state[SPACES] = [space];
+  state[PAGE] = { name: "space", id: "space" };
+  render();
+  const page = find("SpacePage");
+  assert.equal(page.props.space, space);
+  page.props.onEdit();
+  assert.deepEqual(state[SPACE_DIALOG], { space });
+  render();
+  assert.equal(find("SpaceDialog").props.space, space);
+});
+
+test("chat updates keep the sidebar summary current", () => {
+  const update = chat().props.onChange;
+  update({ ...original, version: 4, messages: [{ id: "m", role: "user", content: "Plan a garden" }] });
+  assert.equal(state[CONVERSATIONS][0].title, "Plan a garden");
+  assert.equal(state[CONVERSATIONS][0].message_count, 1);
+});
+
+for (const slot of [LOADING, BUSY]) {
+  test(`rename is disabled while ${slot === LOADING ? "loading agents" : "busy"}`, () => {
+    state[LOADING] = false;
+    state[BUSY] = false;
+    state[PAGE] = { name: "agent" };
+    render();
+    assert.equal(find("AgentPage").props.disabled, false);
+    state[slot] = true;
+    render();
+    assert.equal(find("AgentPage").props.disabled, true);
+  });
+}

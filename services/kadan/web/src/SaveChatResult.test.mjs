@@ -73,7 +73,7 @@ test("save uses persisted reply identity and confirms only after storage acknowl
   assert.equal(view.calls[0].body.title, "Useful result");
   view.resolve({ id: "document", title: "Stored title" });
   await pending;
-  assert.match(text(view.render()), /Saved in Workspace/);
+  assert.match(text(view.render()), /Saved as a document/);
   assert.match(text(view.render()), /Stored title/);
   assert.equal(view.find(node => node.type === "form"), null);
 });

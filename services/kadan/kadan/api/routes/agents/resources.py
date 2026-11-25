@@ -11,7 +11,7 @@ router = APIRouter()
 
 class ResourceCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    # Each agent has one conversation, created by the chain route.
+    # Conversations and Spaces have their own routes.
     kind: Literal["persona"]
     title: Title
     markdown: str = Field(default="", max_length=48000)

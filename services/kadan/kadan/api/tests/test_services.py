@@ -302,64 +302,6 @@ def test_note_persists_without_contacting_hikari():
     assert all(not path.startswith("/v1/") for _, path in boundary.requests)
 
 
-class ChainBoundary:
-    def __init__(self, rows):
-        self.rows = rows
-        self.created = []
-
-    def __call__(self, request):
-        assert request.url.path == "/api/agents/test/resources"
-        if request.method == "GET":
-            assert request.url.params["kind"] == "conversation"
-            return httpx.Response(
-                200,
-                json=[
-                    row.model_dump(mode="json")
-                    for row in self.rows[
-                        int(request.url.params["offset"]) : int(
-                            request.url.params["offset"]
-                        )
-                        + 200
-                    ]
-                ],
-            )
-        body = json.loads(request.content)
-        assert body == {"kind": "conversation", "title": "Chain"}
-        created = resource(id=UUID(int=len(self.created) + 1), title=body["title"])
-        self.created.append(created)
-        self.rows.append(created)
-        return httpx.Response(201, json=created.model_dump(mode="json"))
-
-
-def test_chain_is_created_once_for_concurrent_first_use():
-    boundary = ChainBoundary([])
-
-    async def operation(service):
-        return await asyncio.gather(*(service.chain("test") for _ in range(3)))
-
-    chains = run(boundary, operation)
-    assert len(boundary.created) == 1
-    assert {chain.id for chain in chains} == {boundary.created[0].id}
-
-
-def test_chain_reuses_the_oldest_conversation():
-    older = resource(id=UUID(int=7), created_at=datetime(2026, 1, 1, tzinfo=UTC))
-    newer = resource(id=UUID(int=8))
-    boundary = ChainBoundary([newer, older])
-    assert run(boundary, lambda service: service.chain("test")).id == older.id
-    assert boundary.created == []
-
-
-def test_chain_finds_oldest_beyond_first_page_and_after_reordering():
-    older = resource(id=UUID(int=999), created_at=datetime(2025, 1, 1, tzinfo=UTC))
-    rows = [resource(id=UUID(int=index + 1)) for index in range(400)]
-    boundary = ChainBoundary([*rows, older])
-    assert run(boundary, lambda service: service.chain("test")).id == older.id
-    boundary.rows = [older, *reversed(rows)]
-    assert run(boundary, lambda service: service.chain("test")).id == older.id
-    assert boundary.created == []
-
-
 def test_edit_persona_preserves_existing_metadata():
     persona = resource(
         "persona",

@@ -8,4 +8,4 @@ The browser keeps a serial upload queue scoped to agent and conversation, with s
 
 The conversation-scoped outbox snapshots attachment IDs with the original message ID, content, persona and generation choice. Send retries reuse that snapshot; newer draft uploads stay separate. Confirmed upload references survive failed submissions, and optimistic chat rendering uses the same IDs. Agent history already includes attachment references; `open_workspace_file` provides a checked copy on the computer without injecting binary content into text context.
 
-See [Chat attachment expectations](../../user-expectations/kadan/chat-attachments.md) and [Workspace file delivery](file-delivery.md).
+See [Chat attachment expectations](../../user-expectations/kadan/chat-attachments.md) and [File delivery](file-delivery.md).

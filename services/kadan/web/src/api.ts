@@ -17,7 +17,8 @@ export async function api<T>(
   const response = await fetch(
     `/api${path}`,
     body === undefined
-      ? {}
+      // A bodiless call is a read unless another method such as DELETE is named.
+      ? method === "POST" ? {} : { method }
       : body instanceof FormData
         ? { method, body }
         : {

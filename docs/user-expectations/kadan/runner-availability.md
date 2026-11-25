@@ -10,7 +10,7 @@ An operator can explicitly reassign an agent to another runner with capacity. Ad
 
 Recovery can take time. Saved conversations and delivered messages remain, cancelled responses must stay cancelled, and unconfirmed computer actions require inspection before retrying. Releasing an assignment makes the agent eligible for assignment again; it is not a pause control.
 
-Open **Runner assignment** in the selected agent's sidebar to inspect its assigned runner, heartbeat status and occupied slots. **Refresh assignments** reads the current state; the view does not update automatically. A failed read must remain distinguishable from an unassigned agent. An expired heartbeat means the runner has not renewed its availability, not that its process has necessarily stopped.
+Choose **Manage runner** on the [Agent page](navigation.md) to inspect its assigned runner, heartbeat status and occupied slots. **Refresh assignments** reads the current state; the view does not update automatically. A failed read must remain distinguishable from an unassigned agent. An expired heartbeat means the runner has not renewed its availability, not that its process has necessarily stopped.
 
 Choose a runner with a current heartbeat and a free slot, then select **Assign**. **Release assignment** makes the agent eligible for automatic assignment again, possibly to the same runner. Kadan refreshes the assignment after either change. These controls do not guarantee that work starts immediately or that an external action already in progress stops immediately.
 

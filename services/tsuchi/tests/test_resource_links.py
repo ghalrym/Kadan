@@ -6,7 +6,12 @@ from uuid import uuid4
 
 import pytest
 from tsuchi.config import StorageError
-from tsuchi.models import MarkdownContent, ResourceKind, utc_now
+from tsuchi.models import (
+    ConversationContent,
+    MarkdownContent,
+    ResourceKind,
+    utc_now,
+)
 from tsuchi.repository import Repository
 
 
@@ -97,3 +102,73 @@ def test_self_parent_and_cyclic_ancestors_are_rejected(self_parent):
             child_id,
         )
     assert repository._resource.call_count == (0 if self_parent else 2)
+
+
+def project(deleted_at=None):
+    return SimpleNamespace(
+        kind=ResourceKind.PROJECT, deleted_at=deleted_at, parent_id=None
+    )
+
+
+def test_project_cannot_have_a_parent():
+    repository = Repository.__new__(Repository)
+    repository._resource = Mock(return_value=space())
+    with pytest.raises(StorageError, match="project cannot be placed"):
+        repository._validate_links(
+            Mock(),
+            "alpha",
+            MarkdownContent(kind="project", title="Trip", parent_id=uuid4()),
+            uuid4(),
+        )
+    repository._resource.assert_not_called()
+
+
+def test_conversation_can_be_placed_in_a_project():
+    parent_id = uuid4()
+    repository = Repository.__new__(Repository)
+    repository._resource = Mock(return_value=project())
+    db = Mock()
+    repository._validate_links(
+        db,
+        "alpha",
+        ConversationContent(kind="conversation", title="Chat", parent_id=parent_id),
+        uuid4(),
+    )
+    repository._resource.assert_called_once_with(db, "alpha", parent_id)
+
+
+@pytest.mark.parametrize("kind", ["space", "memory", "persona"])
+def test_only_conversations_can_be_placed_in_a_project(kind):
+    repository = Repository.__new__(Repository)
+    repository._resource = Mock(return_value=project())
+    with pytest.raises(StorageError, match="Only conversations"):
+        repository._validate_links(
+            Mock(),
+            "alpha",
+            MarkdownContent(kind=kind, title="Child", parent_id=uuid4()),
+            uuid4(),
+        )
+
+
+def test_project_cannot_be_an_ancestor_of_a_nested_space():
+    repository = Repository.__new__(Repository)
+    repository._resource = Mock(side_effect=[space(uuid4()), project()])
+    with pytest.raises(StorageError, match="Only conversations"):
+        repository._validate_links(
+            Mock(),
+            "alpha",
+            ConversationContent(kind="conversation", title="Chat", parent_id=uuid4()),
+            uuid4(),
+        )
+
+
+def test_conversation_cannot_be_placed_in_a_trashed_project():
+    repository = Repository.__new__(Repository)
+    repository._resource = Mock(return_value=project(utc_now()))
+    with pytest.raises(StorageError, match="active project"):
+        repository._validate_links(
+            Mock(),
+            "alpha",
+            ConversationContent(kind="conversation", title="Chat", parent_id=uuid4()),
+            uuid4(),
+        )

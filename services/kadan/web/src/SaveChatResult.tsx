@@ -38,12 +38,12 @@ export default function SaveChatResult({ agentKey, conversationId, message, disa
   }
 
   if (saved) return <p className="field-hint" role="status">
-    Saved in Workspace: <strong>{saved.title}</strong>. Open Documents to read it or Tsuchi to edit it.
+    Saved as a document: <strong>{saved.title}</strong>. Open Tsuchi to read or edit it.
   </p>;
   return <div className="save-chat-result">
     <button type="button" className="text-link" disabled={saving || disabled}
       aria-expanded={open} onClick={() => setOpen(!open)}>
-      {open ? "Close save form" : "Save to Workspace"}
+      {open ? "Close save form" : "Save as document"}
     </button>
     {open && <form onSubmit={save}>
       <label>Document title

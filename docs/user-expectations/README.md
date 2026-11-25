@@ -4,7 +4,7 @@ These pages are the canonical product expectations for Kadan and its supporting 
 
 | Area | Start here |
 | --- | --- |
-| Kadan | [Agents, conversations, memory, computer and Workspace](kadan/overview.md) |
+| Kadan | [Agents, chats, Spaces, plugins, memory and computer](kadan/overview.md) |
 | Hikari | [Models, inference, media and voice](hikari/overview.md) |
 | Tsuchi | [Storage, editing, files, history and recovery](tsuchi/overview.md) |
 | Shared | [Installation](install-and-use.md), [security and operator responsibility](security.md), [performance tracing](tracing.md) |

@@ -1,10 +1,18 @@
 # Agent conversations
 
-Kadan lets users hatch an agent and return to one continuous chat with it. Creating an agent saves its records in Tsuchi without downloading or running a model. Users can [rename agents](renaming-agents.md); deleting agents is not available.
+Kadan lets users hatch an agent, hold as many chats with it as they like, and return to any of them from the sidebar. Creating an agent saves its records in Tsuchi without downloading or running a model. Users can [rename agents](renaming-agents.md); deleting agents is not available.
 
 Hatching requires a name and a unique permanent key. Invalid or duplicate keys produce an error without replacing an existing agent. After an uncertain creation, refresh the agent list before trying again. Kadan opens the first agent returned by Tsuchi after refreshing; other existing agents are not selectable in Kadan. Both applications use the same [namespaces](../tsuchi/namespaces.md).
 
-Each agent has its own saved conversation. Drafts are kept separately in the current browser tab and can be lost when the tab closes; they are not saved messages. When refresh opens a different agent, Kadan waits for that agent’s conversation and personas rather than showing the previous agent’s. If loading fails, it reports the error; retry refreshes the records. A failed refresh for the same agent leaves its last loaded conversation visible.
+## Chats
+
+Each agent has its own saved chats; Tsuchi stores them as conversations. **New chat** starts one outside any Space, and chats can also be started inside a [Space](spaces.md). Kadan opens the most recently active chat when it loads, and creates a first chat when the agent has none. An empty chat appears in the sidebar only while it is open; it is listed once it has a message.
+
+A chat without its own name is titled from its first message. **Rename** in the chat's **…** menu gives it a name; renaming or moving a chat keeps its messages, even while a reply is being saved. **Delete** asks for confirmation and moves the chat to Tsuchi's trash, where it can be restored; a reply still in progress cannot be saved into a deleted chat. After the open chat is deleted, Kadan opens the next most recent chat, or a new one.
+
+Each reply receives only the messages of its own chat. Replies, activity, images and background updates stay in the chat that requested them, so switching chats does not move or cancel that work.
+
+One unsent draft is kept per agent in the current browser tab and follows you between chats; it can be lost when the tab closes and is not a saved message. When refresh opens a different agent, Kadan waits for that agent’s chats and personas rather than showing the previous agent’s. If loading fails, it reports the error; retry refreshes the records. A failed refresh for the same agent leaves its last loaded chat visible.
 
 Users can [upload files and attach them](chat-attachments.md) to a message or note, and select saved [Space or memory references](request-references.md) for one response. Upload confirmation is separate from message delivery. Sending saves the message and queues work. Users can keep typing and send more messages while earlier work waits. Replies can be delayed by other work or model loading. The agent can finish work without sending a visible reply; errors and stopped work must remain visible.
 

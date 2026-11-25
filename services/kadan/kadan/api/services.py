@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from pydantic_core import from_json
 
 from .config import ServiceError, Settings
+from .conversation_client import ConversationClient
 from .mcp_client import McpClient
 from .pet_client import PetClient
 from .pydantic_models.inference import (
@@ -20,8 +21,6 @@ from .routes.agents.resources import PersonaUpdate
 from .routes.status import InferenceState, ServiceState, Status
 from .run_client import RunClient
 from .sandbox_client import SandboxClient
-
-CHAIN_TITLE = "Chain"
 
 
 def response_error(response: httpx.Response, service: str) -> ServiceError:
@@ -43,7 +42,7 @@ class LocalServices:
         self.runs = RunClient(self)
         self.sandbox = SandboxClient(self)
         self.mcp = McpClient(self)
-        self.chain_locks: dict[str, asyncio.Lock] = {}
+        self.conversations = ConversationClient(self)
 
     async def json_request(
         self,
@@ -167,43 +166,6 @@ class LocalServices:
         if resource.kind not in kinds or resource.deleted_at is not None:
             raise ServiceError("Record not found in this collection.", 404, "not_found")
         return resource
-
-    async def chain(self, key: str) -> Resource:
-        # Tsuchi assigns resource IDs, so serialize first use to create one chain.
-        async with self.chain_locks.setdefault(key, asyncio.Lock()):
-            oldest = None
-            offset = 0
-            while True:
-                rows = await self.json_request(
-                    "Tsuchi",
-                    "GET",
-                    f"/api/agents/{key}/resources",
-                    params={
-                        "kind": "conversation",
-                        "trash": "false",
-                        "limit": 200,
-                        "offset": offset,
-                    },
-                )
-                for row in rows:
-                    candidate = parse_resource(row)
-                    if oldest is None or (candidate.created_at, str(candidate.id)) < (
-                        oldest.created_at,
-                        str(oldest.id),
-                    ):
-                        oldest = candidate
-                if len(rows) < 200:
-                    break
-                offset += len(rows)
-            if oldest is not None:
-                return oldest
-            value = await self.json_request(
-                "Tsuchi",
-                "POST",
-                f"/api/agents/{key}/resources",
-                json={"kind": "conversation", "title": CHAIN_TITLE},
-            )
-            return parse_resource(value)
 
     async def inference_status(self) -> InferenceState:
         settings_url = self.settings.hikari_browser_url + "/settings"

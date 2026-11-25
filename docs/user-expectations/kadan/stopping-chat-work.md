@@ -4,7 +4,7 @@ Sending a chat message saves it and queues the agent's response. Closing the bro
 
 The chat's **Stop response** control cancels the queued and running response work currently shown for that conversation. The interface reports "Response stopped" after cancellation. Messages already delivered remain in the conversation; stopping is not an undo operation.
 
-Chat Stop does not stop [T3 Code threads](integrations.md) already running in
+Chat Stop does not stop [T3 Code threads](plugins.md) already running in
 T3 Code. Ask the agent to interrupt the thread or stop it directly in T3 Code. It also does not stop a task already
 handed to the computer assistant; stop that from the [computer view](computer.md).
 

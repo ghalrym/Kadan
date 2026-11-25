@@ -22,7 +22,7 @@ export interface Message {
 export interface Resource {
   id: string;
   agent_key: string;
-  kind: "persona" | "memory" | "space" | "deck" | "conversation";
+  kind: "persona" | "memory" | "space" | "deck" | "conversation" | "project";
   title: string;
   markdown: string;
   parent_id: string | null;
@@ -34,6 +34,28 @@ export interface Resource {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+}
+/** A chat listed in the sidebar, without its messages. */
+export interface ConversationSummary {
+  id: string;
+  agent_key: string;
+  title: string;
+  space_id: string | null;
+  message_count: number;
+  preview: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+/** A Space groups chats under shared instructions. */
+export interface Space {
+  id: string;
+  agent_key: string;
+  title: string;
+  instructions: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
 }
 export interface Asset {
   id: string;

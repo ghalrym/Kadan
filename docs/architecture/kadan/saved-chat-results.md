@@ -1,6 +1,6 @@
 # Saved chat results
 
-See [Saving replies to Workspace](../../user-expectations/kadan/saving-chat-results.md) for user-visible behavior.
+See [Saving replies as documents](../../user-expectations/kadan/saving-chat-results.md) for user-visible behavior.
 
 Kadan exposes a title-only action for turning a stored assistant reply into a Tsuchi Space document. The storage transaction reads the active same-agent conversation and copies the reply's Markdown, source links and attachment references. It adds source conversation/message tags; it does not copy attachment bytes or execute the reply's instructions.
 

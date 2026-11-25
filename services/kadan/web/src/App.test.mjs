@@ -8,9 +8,15 @@ const source = ts.transpileModule(
   readFileSync(new URL("./App.tsx", import.meta.url), "utf8"),
   { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } },
 ).outputText;
+const conversations = {};
+runInNewContext(ts.transpileModule(
+  readFileSync(new URL("./conversations.ts", import.meta.url), "utf8"),
+  { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } },
+).outputText, { exports: conversations });
 const agent = { key: "guide", name: "Guide" };
 const persona = { id: "persona", agent_key: agent.key, kind: "persona", markdown: "Be precise." };
-const chain = { id: "chain", agent_key: agent.key, kind: "conversation" };
+const chain = { id: "chain", agent_key: agent.key, kind: "conversation", title: "New chat", messages: [] };
+const listed = [{ id: "chain", space_id: null, message_count: 1, updated_at: "2026-01-01T00:00:00Z" }];
 const settle = () => new Promise(resolve => setImmediate(resolve));
 function deferred() {
   let resolve, reject;
@@ -59,11 +65,15 @@ async function app(petResponses = [], agentResponses = [[agent]]) {
     "react-dom": { flushSync: callback => callback() },
     "lucide-react": {},
     "./Chat": { default: "Chat" },
-    "./Workspace": { default: "Workspace" },
-    "./Personas": { default: "Personas" },
     "./RenameAgent": { default: "RenameAgent" },
     "./RunnerAssignment": { default: "RunnerAssignment" },
-    "./Integrations": { default: "Integrations" },
+    "./Plugins": { default: "Plugins" },
+    "./Sidebar": { default: "Sidebar" },
+    "./SpacePage": { default: "SpacePage" },
+    "./SpaceDialog": { default: "SpaceDialog" },
+    "./ConfirmDialog": { default: "ConfirmDialog" },
+    "./AgentPage": { default: "AgentPage" },
+    "./conversations": conversations,
     "./agentRuns": { latestConversation: (current, incoming) => current.id === incoming.id && incoming.version > current.version ? incoming : current },
     "./Hatch": { default: "Hatch" },
     "./Pet": { agentPet: () => ({ url: "hatchling" }) },
@@ -77,9 +87,12 @@ async function app(petResponses = [], agentResponses = [[agent]]) {
         return overrides.allResources ? overrides.allResources(key, kind) : [persona];
       },
       async api(path, body, method) {
+        // Every agent lists the one chat below and has no Spaces unless a test says otherwise.
+        if (path.endsWith("/conversations") && !body) return listed;
+        if (path.endsWith("/spaces")) return [];
         if (overrides.api) return overrides.api(path, body, method);
         if (path === "/agents") return agentResponses.shift() ?? [agent];
-        if (path.endsWith("/chain")) return chain;
+        if (path.includes("/resources/")) return chain;
         if (path.endsWith("/pet")) {
           requests.push({ path, body, method });
           const response = petResponses.shift();
@@ -112,34 +125,35 @@ async function app(petResponses = [], agentResponses = [[agent]]) {
       ...[node.props?.children].flat(Infinity).flatMap(child => findAll(predicate, child ?? null)),
     ];
   }
-  for (let i = 0; i < 3; i++) {
+  // Agent, then chats and Spaces, then the open chat each load in a later render.
+  for (let i = 0; i < 5; i++) {
     render();
     await new Promise(resolve => setImmediate(resolve));
   }
   return { render, findAll, requests };
 }
 
-test("navigation offers Messages and Workspace without a standalone Persona view", async () => {
+test("the sidebar moves between chat, Plugins and the agent page", async () => {
   const view = await app();
-  const navigation = view.findAll(node => node.props?.["aria-label"] === "Views")[0];
-  const buttons = view.findAll(node => node.type === "button", navigation);
-  assert.deepEqual(buttons.map(node => node.props.children.at(-1)), ["Messages", "Workspace", "Integrations"]);
-  const settings = view.findAll(node => node.props?.["aria-label"] === "Agent settings")[0];
-  assert.deepEqual(
-    view.findAll(node => node.type === "button", settings).map(node => node.props.children.at(-1)),
-    ["Edit pet", "Rename agent", "Runner assignment"],
-  );
-  assert.equal(view.findAll(node => node.type === "Personas").length, 0);
-  buttons[1].props.onClick();
+  const sidebar = () => view.findAll(node => node.type === "Sidebar")[0];
+  const count = type => view.findAll(node => node.type === type).length;
+  assert.equal(sidebar().props.selectedId, "chain");
+  assert.deepEqual(sidebar().props.conversations, listed);
+  assert.equal(count("Chat"), 1);
+  sidebar().props.onPage("plugins");
   view.render();
-  assert.equal(view.findAll(node => node.type === "Workspace").length, 1);
-  assert.equal(view.findAll(node => node.props?.className === "workspace-pane")[0].props.hidden, false);
-  assert.equal(view.findAll(node => node.type === "Chat").length, 0);
-  buttons[0].props.onClick();
+  assert.equal(count("Plugins"), 1);
+  assert.equal(count("Chat"), 0);
+  sidebar().props.onPage("agent");
   view.render();
-  assert.equal(view.findAll(node => node.type === "Chat").length, 1);
-  assert.equal(view.findAll(node => node.type === "Workspace").length, 1);
-  assert.equal(view.findAll(node => node.props?.className === "workspace-pane")[0].props.hidden, true);
+  assert.equal(count("AgentPage"), 1);
+  view.findAll(node => node.type === "AgentPage")[0].props.onEditPet();
+  view.render();
+  assert.equal(count("PetEditor"), 1);
+  sidebar().props.onOpenChat("chain");
+  view.render();
+  assert.equal(count("Chat"), 1);
+  assert.equal(count("AgentPage"), 0);
 });
 
 test("hiding the editor preserves agent-scoped persona loading for chat", async () => {
@@ -184,9 +198,7 @@ test("a failed pet retry stays visible and can be retried again", async () => {
 });
 
 function openPetEditor(view) {
-  const button = view.findAll(node => node.type === "button"
-    && Array.isArray(node.props.children) && node.props.children.includes("Edit pet"))[0];
-  button.props.onClick();
+  view.findAll(node => node.type === "Chat")[0].props.onEditPet();
   view.render();
   return view.findAll(node => node.type === "PetEditor")[0];
 }
@@ -228,7 +240,7 @@ for (const reconciled of [false, true]) {
 }
 
 async function switchAgent(view) {
-  view.findAll(node => node.type === "button" && node.props.title === "Refresh")[0].props.onClick();
+  view.findAll(node => node.type === "Sidebar")[0].props.onRefresh();
   await settle();
   view.render();
   await settle();
@@ -290,18 +302,20 @@ test("a new agent never receives the old agent's resources when its load fails",
     api: async path => {
       if (path === "/agents") return [selected];
       if (path === "/status" || path.endsWith("/pet")) return null;
-      if (path === "/agents/guide/chain") return chain;
-      if (path === "/agents/other/chain") throw Error("conversation unavailable");
+      if (path === "/agents/guide/resources/chain") return chain;
+      if (path === "/agents/other/resources/chain") throw Error("conversation unavailable");
       assert.fail(path);
     },
     allResources: async key => key === "guide" ? [persona] : [],
   });
   assert.equal(view.findAll(node => node.type === "Chat")[0].props.chain, chain);
   selected = other;
-  view.findAll(node => node.props?.["aria-label"] === "Refresh services and agent")[0].props.onClick();
+  view.findAll(node => node.type === "Sidebar")[0].props.onRefresh();
   await tick();
   view.render();
   assert.equal(view.findAll(node => node.type === "Chat").length, 0);
+  await tick();
+  view.render();
   await tick();
   view.render();
   assert.equal(view.findAll(node => node.type === "Chat").length, 0);
@@ -311,20 +325,20 @@ test("a new agent never receives the old agent's resources when its load fails",
 test("late resource responses from a previous refresh cannot replace the latest resources", async () => {
   const delayed = deferred();
   let calls = 0;
-  const newest = { ...chain, id: "newest" };
+  const newest = { ...chain, version: 3 };
   const view = await app({
     api: async path => {
       if (path === "/agents") return [agent];
       if (path === "/status" || path.endsWith("/pet")) return null;
-      if (path.endsWith("/chain")) return ++calls === 1 ? chain : calls === 2 ? delayed.promise : newest;
+      if (path.includes("/resources/")) return ++calls === 1 ? { ...chain, version: 1 } : calls === 2 ? delayed.promise : newest;
       assert.fail(path);
     },
   });
-  const refresh = () => view.findAll(node => node.props?.["aria-label"] === "Refresh services and agent")[0].props.onClick();
+  const refresh = () => view.findAll(node => node.type === "Sidebar")[0].props.onRefresh();
   refresh(); await tick(); view.render();
   refresh(); await tick(); view.render(); await tick(); view.render();
   assert.equal(view.findAll(node => node.type === "Chat")[0].props.chain, newest);
-  delayed.resolve({ ...chain, id: "stale" });
+  delayed.resolve({ ...chain, version: 5 });
   await tick(); view.render();
   assert.equal(view.findAll(node => node.type === "Chat")[0].props.chain, newest);
 });
@@ -340,12 +354,12 @@ test("a late pet selection from another agent cannot replace the current pet", a
       if (path === "/status") return null;
       if (path === "/agents/guide/pet") return delayed.promise;
       if (path === "/agents/other/pet") return otherPet;
-      if (path.endsWith("/chain")) return { ...chain, agent_key: selected.key };
+      if (path.includes("/resources/")) return { ...chain, agent_key: selected.key };
       assert.fail(path);
     },
   });
   selected = other;
-  view.findAll(node => node.props?.["aria-label"] === "Refresh services and agent")[0].props.onClick();
+  view.findAll(node => node.type === "Sidebar")[0].props.onRefresh();
   await tick(); view.render(); await tick(); view.render();
   delayed.resolve({ id: "old-pet", version: 1 });
   await tick(); view.render();
@@ -362,13 +376,13 @@ test("the newest agent refresh wins when an earlier agent request finishes late"
     api: async path => {
       if (path === "/agents") return ++calls === 1 ? [agent] : calls === 2 ? delayed.promise : [other];
       if (path === "/status" || path.endsWith("/pet")) return null;
-      if (path.endsWith("/chain")) return { ...chain, agent_key: path.split("/")[2] };
+      if (path.includes("/resources/")) return { ...chain, agent_key: path.split("/")[2] };
       assert.fail(path);
     },
     allResources: async key => [{ ...persona, agent_key: key }],
   });
-  const refresh = () => view.findAll(node => node.props?.["aria-label"] === "Refresh services and agent")[0].props.onClick();
-  refresh(); refresh(); await tick(); view.render(); await tick(); view.render();
+  const refresh = () => view.findAll(node => node.type === "Sidebar")[0].props.onRefresh();
+  refresh(); refresh(); await tick(); view.render(); await tick(); view.render(); await tick(); view.render();
   assert.equal(view.findAll(node => node.type === "Chat")[0].props.agentKey, "other");
   delayed.resolve([agent]); await tick(); view.render();
   assert.equal(view.findAll(node => node.type === "Chat")[0].props.agentKey, "other");
@@ -380,7 +394,7 @@ test("a failed refresh for the same agent retains its last loaded conversation",
     api: async path => {
       if (path === "/agents") return [agent];
       if (path === "/status" || path.endsWith("/pet")) return null;
-      if (path.endsWith("/chain")) {
+      if (path.includes("/resources/")) {
         if (fail) throw Error("unavailable");
         return chain;
       }
@@ -388,7 +402,7 @@ test("a failed refresh for the same agent retains its last loaded conversation",
     },
   });
   fail = true;
-  view.findAll(node => node.props?.["aria-label"] === "Refresh services and agent")[0].props.onClick();
+  view.findAll(node => node.type === "Sidebar")[0].props.onRefresh();
   await tick(); view.render(); await tick(); view.render();
   assert.equal(view.findAll(node => node.type === "Chat")[0].props.chain, chain);
   assert.match(view.findAll(node => node.props?.role === "alert")[0].props.children[0], /unavailable/);
@@ -403,11 +417,11 @@ test("a delayed refresh cannot replace newer messages received during that refre
     api: async path => {
       if (path === "/agents") return [agent];
       if (path === "/status" || path.endsWith("/pet")) return null;
-      if (path.endsWith("/chain")) return ++calls === 1 ? initial : delayed.promise;
+      if (path.includes("/resources/")) return ++calls === 1 ? initial : delayed.promise;
       assert.fail(path);
     },
   });
-  view.findAll(node => node.props?.["aria-label"] === "Refresh services and agent")[0].props.onClick();
+  view.findAll(node => node.type === "Sidebar")[0].props.onRefresh();
   await tick(); view.render();
   view.findAll(node => node.type === "Chat")[0].props.onChange(newer);
   delayed.resolve({ ...chain, version: 2 });
@@ -424,15 +438,15 @@ test("a previous agent's chat callback cannot update the newly loaded agent", as
     api: async path => {
       if (path === "/agents") return [selected];
       if (path === "/status" || path.endsWith("/pet")) return null;
-      if (path.endsWith("/chain")) return selected.key === "other" ? otherChain : { ...chain, version: 1 };
+      if (path.includes("/resources/")) return selected.key === "other" ? otherChain : { ...chain, version: 1 };
       assert.fail(path);
     },
     allResources: async key => key === "other" ? [otherPersona] : [persona],
   });
   const previous = view.findAll(node => node.type === "Chat")[0].props.onChange;
   selected = other;
-  view.findAll(node => node.props?.["aria-label"] === "Refresh services and agent")[0].props.onClick();
-  await tick(); view.render(); await tick(); view.render();
+  view.findAll(node => node.type === "Sidebar")[0].props.onRefresh();
+  await tick(); view.render(); await tick(); view.render(); await tick(); view.render();
   previous({ ...chain, version: 10 });
   view.render();
   const chat = view.findAll(node => node.type === "Chat")[0];

@@ -74,7 +74,12 @@ function SpaceTree({
   );
   const children = new Map<string | null, Resource[]>();
   for (const resource of resources) {
-    if (resource.kind !== "space" && !resource.parent_id) continue;
+    // Chats inside Kadan Spaces belong to Kadan, not this document tree.
+    if (
+      resource.kind !== "space" &&
+      !(resource.parent_id && spaces.has(resource.parent_id))
+    )
+      continue;
     const parent =
       resource.parent_id && spaces.has(resource.parent_id)
         ? resource.parent_id

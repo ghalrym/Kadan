@@ -95,6 +95,8 @@ class ResourceKind(StrEnum):
     SPACE = "space"
     DECK = "deck"
     CONVERSATION = "conversation"
+    # Kadan shows projects as "Spaces": a name, instructions and its own chats.
+    PROJECT = "project"
 
 
 class Slide(Model):
@@ -163,7 +165,12 @@ class ResourceContent(Metadata):
 
 
 class MarkdownContent(ResourceContent):
-    kind: Literal[ResourceKind.PERSONA, ResourceKind.MEMORY, ResourceKind.SPACE]
+    kind: Literal[
+        ResourceKind.PERSONA,
+        ResourceKind.MEMORY,
+        ResourceKind.SPACE,
+        ResourceKind.PROJECT,
+    ]
     deck: None = None
     messages: list[Message] = Field(default_factory=list, max_length=0)
 

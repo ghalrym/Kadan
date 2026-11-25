@@ -10,6 +10,6 @@ Explicit coding continuations queued by Kadan retain their original task and
 conversation with the saved response work. Editing the displayed message does not
 change or repeat that queued task.
 
-Tsuchi can store several conversations for an agent. Kadan currently opens the oldest active one and has no thread selector. Trashing or restoring a conversation can change which chat Kadan opens.
+Tsuchi stores each of an agent's Kadan chats as a conversation. A conversation can belong to a Kadan Space, and its details show that Space as its parent. Trashing a conversation removes the chat from Kadan; restoring it brings the chat back, but only after its Space is restored.
 
 See [Conversation storage](../../architecture/tsuchi/conversations.md) for identifiers and version checks.

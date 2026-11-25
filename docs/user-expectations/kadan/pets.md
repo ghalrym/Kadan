@@ -1,6 +1,6 @@
 # Pets
 
-Kadan lets users create or import an animated pet for each agent. Open **Edit pet** to browse candidates and preview their animations and look directions. Creating or importing a candidate does not change the current pet. **Use pet** selects it for the agent identity, home and chat; **Use hatchling** returns to the default.
+Kadan lets users create or import an animated pet for each agent. Open **Edit pet** on the [Agent page](navigation.md), or under the pet on an empty chat, to browse candidates and preview their animations and look directions. Creating or importing a candidate does not change the current pet. **Use pet** selects it for the agent identity, home and chat; **Use hatchling** returns to the default.
 
 If Kadan cannot load the selected pet, it reports the failure and offers **Retry** to load it again. The default hatchling remains visible until the selected pet is available.
 
