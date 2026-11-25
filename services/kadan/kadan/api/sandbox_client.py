@@ -284,6 +284,7 @@ class SandboxClient:
         json_body: Any = None,
         data: dict[str, str] | None = None,
         files: dict[str, tuple[str, bytes]] | None = None,
+        max_characters: int | None = MAX_RESULT_CHARACTERS,
     ) -> dict:
         """Call one sandbox route for a tool and summarize the response for the agent.
 
@@ -294,7 +295,7 @@ class SandboxClient:
         request: dict[str, Any] = {"params": params, "data": data, "files": files}
         if json_body is not None:
             request["json"] = json_body
-        result = await self.send(method, path, request)
+        result = await self.send(method, path, request, max_characters=max_characters)
         if (
             path.startswith("/v1/browser/")
             and path != BROWSER_RESTART_PATH
@@ -315,11 +316,20 @@ class SandboxClient:
                     **result,
                     "error": "The browser stopped responding and could not be restarted.",
                 }
-            result = await self.send(method, path, request)
+            result = await self.send(
+                method, path, request, max_characters=max_characters
+            )
             result["recovered"] = BROWSER_RECOVERED
         return result
 
-    async def send(self, method: str, path: str, request: dict[str, Any]) -> dict:
+    async def send(
+        self,
+        method: str,
+        path: str,
+        request: dict[str, Any],
+        *,
+        max_characters: int | None = MAX_RESULT_CHARACTERS,
+    ) -> dict:
         try:
             async with asyncio.timeout(OPERATION_SECONDS):
                 async with self.services.client.stream(
@@ -352,14 +362,23 @@ class SandboxClient:
         text = content.decode(errors="replace")
         if media_type.startswith("application/json") and complete:
             try:
-                text = json.dumps(json.loads(text), separators=(",", ":"))
-                if len(text) <= MAX_RESULT_CHARACTERS:
-                    return {**result, "body": json.loads(text)}
+                parsed = json.loads(text)
+                if max_characters is None:
+                    return {**result, "body": parsed}
+                compact = json.dumps(parsed, separators=(",", ":"))
+                if len(compact) <= max_characters:
+                    return {**result, "body": parsed}
+                text = compact
             except ValueError:
                 pass
+        body_fields = (
+            {"body": text}
+            if max_characters is None
+            else truncated(text, max_characters)
+        )
         return {
             **result,
-            **truncated(text, MAX_RESULT_CHARACTERS),
+            **body_fields,
             **({} if complete else {"incomplete": True}),
         }
 

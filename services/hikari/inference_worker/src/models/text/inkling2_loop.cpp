@@ -605,15 +605,7 @@ public:
     }
 
     std::size_t device_state_bytes() const override {
-        std::size_t total = 0;
-        for (std::size_t s = 0; s < n_slots; ++s) {
-            const std::size_t cap = is_swa_phys(slot_phys(s))
-                                        ? 2 * slot_kv_capacity(s, context_)
-                                        : context_;
-            total += 2 * cap * n_embd_k_gqa * sizeof(float);
-        }
-        total += n_phys * n_rel_extent * n_rel * sizeof(float);
-        return total;
+        return inkling2_loop_device_state_bytes(context_);
     }
 
     void reset() override {
@@ -622,15 +614,55 @@ public:
             std::fill(slot.attention.values.begin(), slot.attention.values.end(), 0.0f);
             std::fill(slot.conv.begin(), slot.conv.end(), 0.0f);
         }
+        if (gpu_)
+            gpu_->reset();
+        gpu_valid_tokens_ = 0;
+        host_state_stale_ = false;
+        gpu_needs_upload_ = false;
     }
 
     ModelState take_state() override {
+        if (host_state_stale_ && gpu_) {
+            gpu_->sync_to_host(slots_, gpu_valid_tokens_, weights_.cancel());
+            host_state_stale_ = false;
+        }
         ModelState out;
         out.layers.reserve(n_slots);
         for (auto& slot : slots_)
             out.layers.emplace_back(std::move(slot));
         slots_.clear();
         return out;
+    }
+
+    ModelState snapshot_state(std::size_t tokens, std::size_t context) override {
+        if (host_state_stale_ && gpu_) {
+            gpu_->sync_to_host(slots_, gpu_valid_tokens_, weights_.cancel());
+            host_state_stale_ = false;
+        }
+        ModelState compacted;
+        compacted.layers.reserve(n_slots);
+        for (const auto& s : slots_) {
+            InklingLayerState copy;
+            copy.sliding_window = s.sliding_window;
+            copy.conv = s.conv;
+            if (s.sliding_window || tokens >= context) {
+                copy.attention.keys = s.attention.keys;
+                copy.attention.values = s.attention.values;
+            } else {
+                const std::size_t width = s.attention.keys.size() / context;
+                const std::size_t keep = tokens * width;
+                copy.attention.keys.assign(
+                    s.attention.keys.begin(),
+                    s.attention.keys.begin() + std::ptrdiff_t(keep)
+                );
+                copy.attention.values.assign(
+                    s.attention.values.begin(),
+                    s.attention.values.begin() + std::ptrdiff_t(keep)
+                );
+            }
+            compacted.layers.emplace_back(std::move(copy));
+        }
+        return compacted;
     }
 
     void restore_state(ModelState state) override {
@@ -649,6 +681,8 @@ public:
             );
             slots_.push_back(std::move(entry));
         }
+        host_state_stale_ = false;
+        gpu_needs_upload_ = true;
     }
 
     Vec forward(
@@ -692,6 +726,40 @@ public:
             auto row_span = std::span(cur).subspan(r * n_embd, n_embd);
             weights_.rows("token_embd.weight", tokens[r], row_span);
             rms_norm(row_span, tok_norm_, rms_eps);
+        }
+
+        // Fast path: 100% GPU-resident 48-slot forward pass (+ decode CUDA Graph)
+        // when the single state GPU holds all packed weights and FP16 KV state.
+        if (!gpu_tried_) {
+            gpu_tried_ = true;
+            gpu_ = try_create_gpu_executor();
+        }
+        if (gpu_) {
+            weights_.check_unchanged();
+            if (position == 0) {
+                gpu_->reset();
+                gpu_valid_tokens_ = 0;
+                gpu_needs_upload_ = false;
+            } else if (gpu_needs_upload_ || gpu_valid_tokens_ != position) {
+                gpu_->sync_from_host(slots_, position, weights_.cancel());
+                gpu_valid_tokens_ = position;
+                gpu_needs_upload_ = false;
+            }
+            Vec gpu_logits;
+            if (gpu_->forward(
+                    cur, rows, position, logits, gpu_logits, progress, weights_.cancel()
+                )) {
+                weights_.check_unchanged();
+                gpu_valid_tokens_ = position + rows;
+                host_state_stale_ = true;
+                return gpu_logits;
+            }
+            // Device could not grow state; sync back to host and fall back cleanly to Strata.
+            if (host_state_stale_) {
+                gpu_->sync_to_host(slots_, gpu_valid_tokens_, weights_.cancel());
+                host_state_stale_ = false;
+            }
+            gpu_.reset();
         }
 
         // Precompute full-attention log-scale tau(pos) for this chunk.
@@ -1489,6 +1557,77 @@ private:
         return out;
     }
 
+    std::unique_ptr<InklingGpuExecutor> try_create_gpu_executor() {
+        InklingGpuModelDesc desc;
+        desc.context = context_;
+        desc.out_norm = out_norm_;
+        desc.out_res_query = out_res_query_;
+        desc.output_weight = weights_.describe_matrix("output.weight");
+        std::size_t total_bytes = n_vocab_unpadded * desc.output_weight.row_bytes;
+
+        auto bind_mat = [&](const std::string& name, std::size_t expert = 0) {
+            auto m = weights_.describe_matrix(name, expert);
+            total_bytes += m.out * m.row_bytes;
+            return m;
+        };
+
+        desc.layers.resize(n_phys);
+        for (std::size_t i = 0; i < n_phys; ++i) {
+            const auto& src = layers_[i];
+            auto& dst = desc.layers[i];
+            dst.is_swa = src.is_swa;
+            dst.has_attn_res = src.has_attn_res;
+            dst.has_exp_bias = src.has_exp_bias;
+            dst.attn_norm = src.attn_norm;
+            dst.attn_q_inp_norm = src.attn_q_inp_norm;
+            dst.attn_k_inp_norm = src.attn_k_inp_norm;
+            dst.attn_v_inp_norm = src.attn_v_inp_norm;
+            dst.attn_q_clip = src.attn_q_clip;
+            dst.attn_rel_bias = src.attn_rel_bias;
+            dst.attn_rel_clip = src.attn_rel_clip;
+            for (std::size_t k = 0; k < n_conv; ++k) {
+                dst.attn_k_conv[k] = src.attn_k_conv.tap[k];
+                dst.attn_v_conv[k] = src.attn_v_conv.tap[k];
+                dst.attn_post_conv[k] = src.attn_post_conv.tap[k];
+                dst.ffn_post_conv[k] = src.ffn_post_conv.tap[k];
+            }
+            dst.attn_res_query = src.attn_res_query;
+            dst.ffn_res_query = src.ffn_res_query;
+            dst.ffn_norm = src.ffn_norm;
+            dst.ffn_exp_probs_b = src.ffn_exp_probs_b;
+
+            dst.wq = bind_mat(src.wq);
+            dst.wk = bind_mat(src.wk);
+            dst.wv = bind_mat(src.wv);
+            dst.wo = bind_mat(src.wo);
+            dst.wgate = bind_mat(src.wgate);
+            dst.wrel = bind_mat(src.wrel);
+            dst.wsink = bind_mat(src.wsink);
+            if (!src.is_swa) {
+                dst.wk_conv_proj = bind_mat(src.wk_conv_proj);
+                dst.wv_conv_proj = bind_mat(src.wv_conv_proj);
+            }
+            dst.wffn_router = bind_mat(src.wffn_router);
+            for (std::size_t e = 0; e < n_experts; ++e) {
+                dst.wffn_gate_up[e] = bind_mat(src.wffn_gate_up, e);
+                dst.wffn_down[e] = bind_mat(src.wffn_down, e);
+            }
+        }
+        desc.loop_layers.resize(loop_core_len);
+        for (std::size_t i = 0; i < loop_core_len; ++i) {
+            const auto& src = loop_layers_[i];
+            auto& dst = desc.loop_layers[i];
+            dst.msg_query = src.msg_query;
+            for (std::size_t c = 0; c < loop_ctrl_count; ++c) {
+                dst.ctrl_down[c] = bind_mat(src.ctrl_down[c]);
+                dst.ctrl_gain[c] = bind_mat(src.ctrl_gain[c]);
+                dst.ctrl_forget[c] = bind_mat(src.ctrl_forget[c]);
+            }
+        }
+        desc.total_matrix_bytes = total_bytes;
+        return compute_.create_inkling_gpu(std::move(desc), weights_.cancel());
+    }
+
     const GgufWeights& weights_;
     DenseCompute& compute_;
     std::size_t context_ = 0;
@@ -1497,6 +1636,12 @@ private:
     std::vector<PhysLayer> layers_;
     std::vector<LoopLayer> loop_layers_;
     std::vector<InklingLayerState> slots_;
+
+    bool gpu_tried_ = false;
+    bool host_state_stale_ = false;
+    bool gpu_needs_upload_ = false;
+    std::size_t gpu_valid_tokens_ = 0;
+    std::unique_ptr<InklingGpuExecutor> gpu_;
 };
 }  // namespace
 
@@ -1581,6 +1726,22 @@ std::size_t inkling2_loop_state_bytes(std::size_t context) {
         floats += 2 * cap * n_embd_k_gqa + n_conv_hist * n_conv_channels;
     }
     return floats * sizeof(float);
+}
+
+std::size_t inkling2_loop_device_state_bytes(std::size_t context) {
+    // Mirrored KV caches stay in FP16 (2 bytes/value); short-conv state,
+    // relative-position bias tables and small resident layer params stay F32.
+    std::size_t total = 0;
+    for (std::size_t s = 0; s < n_slots; ++s) {
+        const std::size_t cap = is_swa_phys(slot_phys(s))
+                                    ? 2 * slot_kv_capacity(s, context)
+                                    : context;
+        total += 2 * cap * n_embd_k_gqa * sizeof(std::uint16_t);
+        total += n_conv_hist * n_conv_channels * sizeof(float);
+    }
+    total += n_phys * n_rel_extent * n_rel * sizeof(float);
+    total += 16ULL * 1024 * 1024;  // small layer params, pointer tables & step state
+    return total;
 }
 
 std::unique_ptr<Model>

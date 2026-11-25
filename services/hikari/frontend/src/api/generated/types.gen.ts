@@ -534,6 +534,12 @@ export type CompletionRequest = {
    */
   model?: 'inkling-2-mini-iq4-nl' | 'inkling-2-mini-q8-0' | null
   /**
+   * Priority
+   *
+   * Interactive turns run ahead of queued background turns between requests.
+   */
+  priority?: 'interactive' | 'background'
+  /**
    * Reasoning Effort
    */
   reasoning_effort?: 'low' | 'medium' | 'high' | null
@@ -1127,6 +1133,10 @@ export type RequestRecord = {
    */
   cache_reason?: string | null
   /**
+   * Cache Restore Ms
+   */
+  cache_restore_ms?: number | null
+  /**
    * Cached Prefix Sha256
    */
   cached_prefix_sha256?: string | null
@@ -1143,6 +1153,10 @@ export type RequestRecord = {
    */
   endpoint: string
   /**
+   * First Token Ms
+   */
+  first_token_ms?: number | null
+  /**
    * Generation Ttft Ms
    */
   generation_ttft_ms?: number | null
@@ -1150,6 +1164,10 @@ export type RequestRecord = {
    * Id
    */
   id: string
+  /**
+   * Image Encode Ms
+   */
+  image_encode_ms?: number | null
   /**
    * Latency
    */
@@ -1183,6 +1201,10 @@ export type RequestRecord = {
    */
   prompt: string
   /**
+   * Reasoning Ms
+   */
+  reasoning_ms?: number | null
+  /**
    * Request Bytes
    */
   request_bytes: number
@@ -1210,6 +1232,10 @@ export type RequestRecord = {
    * Stream Ttft Ms
    */
   stream_ttft_ms?: number | null
+  /**
+   * Thinking Tokens
+   */
+  thinking_tokens?: number | null
   /**
    * Time
    */

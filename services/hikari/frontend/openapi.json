@@ -1010,6 +1010,16 @@
             ],
             "title": "Model"
           },
+          "priority": {
+            "default": "interactive",
+            "description": "Interactive turns run ahead of queued background turns between requests.",
+            "enum": [
+              "interactive",
+              "background"
+            ],
+            "title": "Priority",
+            "type": "string"
+          },
           "reasoning_effort": {
             "anyOf": [
               {
@@ -2086,6 +2096,17 @@
             ],
             "title": "Cache Reason"
           },
+          "cache_restore_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Restore Ms"
+          },
           "cached_prefix_sha256": {
             "anyOf": [
               {
@@ -2123,6 +2144,17 @@
             "title": "Endpoint",
             "type": "string"
           },
+          "first_token_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Token Ms"
+          },
           "generation_ttft_ms": {
             "anyOf": [
               {
@@ -2137,6 +2169,17 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "image_encode_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Encode Ms"
           },
           "latency": {
             "title": "Latency",
@@ -2202,6 +2245,17 @@
             "title": "Prompt",
             "type": "string"
           },
+          "reasoning_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning Ms"
+          },
           "request_bytes": {
             "title": "Request Bytes",
             "type": "integer"
@@ -2259,6 +2313,17 @@
               }
             ],
             "title": "Stream Ttft Ms"
+          },
+          "thinking_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thinking Tokens"
           },
           "time": {
             "title": "Time",

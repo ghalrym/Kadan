@@ -101,6 +101,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     },
   };
   const exports = {};
+  const timerDelays = [];
   runInNewContext(source, {
     exports,
     ResizeObserver: class { observe() {} disconnect() {} },
@@ -110,7 +111,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
       setItem: (key, value) => storage.set(key, value),
       removeItem: key => storage.delete(key),
     },
-    setTimeout: callback => timers.push(callback), clearTimeout() {},
+    setTimeout: (callback, delay) => { timerDelays.push(delay); return timers.push(callback); }, clearTimeout() {},
     setInterval: () => 0, clearInterval() {},
   });
   function render() {
@@ -130,8 +131,11 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
   await settle();
   render();
   return {
-    render, requests, storage, attachments, callStarts,
+    render, requests, storage, attachments, callStarts, timerDelays,
     callDisabled: () => callDisabled,
+    streamingMessages: () => elements()
+      .filter(node => node.type === "article" && typeof node.props?.className === "string" && node.props.className.includes("streaming"))
+      .map(node => elements(node).find(child => child.type === "Markdown")?.props?.children ?? ""),
     card() {
       elements().find(node => node.props?.["aria-label"] === "Open Guide’s card").props.onClick();
       render();
@@ -465,3 +469,23 @@ test("saving a note retains selections and sends no references", async () => {
   assert.equal(view.references().selected.length, 1);
   assert.equal(view.requests.find(item => item.body?.content === "A note").body.references, undefined);
 });
+
+test("live streaming drafts render before completion and clear once the final reply is saved", async () => {
+  const view = await chat([{ ...run("r1", "running"), draft: "Hello " }]);
+  assert.deepEqual(view.streamingMessages(), ["Hello "]);
+  assert.equal(view.savedResults().length, 0);
+  assert.equal(view.timerDelays.at(-1), 350);
+
+  await view.poll([{ ...run("r1", "running"), draft: "Hello world!" }]);
+  assert.deepEqual(view.streamingMessages(), ["Hello world!"]);
+  assert.equal(view.savedResults().length, 0);
+
+  await view.poll(
+    [run("r1", "completed")],
+    { ...chain, version: 2, messages: [message("m1", "assistant", "Hello world!")] },
+  );
+  assert.deepEqual(view.streamingMessages(), []);
+  assert.equal(view.savedResults().length, 1);
+  assert.equal(view.timerDelays.at(-1), 2000);
+});
+

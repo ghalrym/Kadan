@@ -145,12 +145,18 @@ struct ContextLimits {
     std::size_t effective = 0, supported = 0;
 };
 
+enum class Priority : std::uint8_t {
+    interactive = 0,
+    background = 1
+};
+
 struct InferenceRequest {
     std::string id, model;
     TraceSink trace;
     Operation operation = Operation::generate;
     TaskInput input;
     Workload workload = Workload::llm;
+    Priority priority = Priority::interactive;
     bool prepared = false;
     EngineConfiguration configuration;
     std::filesystem::path workspace;

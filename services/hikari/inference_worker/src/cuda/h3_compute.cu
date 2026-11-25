@@ -158,6 +158,33 @@ q4k_run(const unsigned char* block, unsigned element, float* out) {
     }
 }
 
+__device__ inline void
+iq4nl_run(const unsigned char* block, unsigned element, float* out) {
+    const unsigned short bits =
+        static_cast<unsigned short>(unsigned(block[0]) | (unsigned(block[1]) << 8));
+    const float d = __half2float(__ushort_as_half(bits));
+    const unsigned shift = element < 16 ? 0u : 4u;
+    const unsigned off = element & 15u;
+    // Two 4-byte aligned reads within the 16-byte nibble payload (off is 0 or 8).
+    const unsigned char* p = block + 2 + off;
+#pragma unroll
+    for (unsigned i = 0; i < 8; ++i) {
+        const unsigned idx = (unsigned(p[i]) >> shift) & 15u;
+        out[i] = __fmul_rn(d, gguf::detail::iq4nl_value(idx));
+    }
+}
+
+__device__ inline void
+q8_0_run(const unsigned char* block, unsigned element, float* out) {
+    const unsigned short bits =
+        static_cast<unsigned short>(unsigned(block[0]) | (unsigned(block[1]) << 8));
+    const float d = __half2float(__ushort_as_half(bits));
+    const auto* q = reinterpret_cast<const signed char*>(block + 2 + element);
+#pragma unroll
+    for (unsigned i = 0; i < 8; ++i)
+        out[i] = __fmul_rn(d, float(q[i]));
+}
+
 // One warp per output column; each lane decodes aligned runs of eight values
 // (job.in % 8 == 0) and the warp reduces by shuffles. Kind is an Encoding, or
 // -1 for F32 rows, so each format compiles to its own straight-line decoder.
@@ -186,6 +213,10 @@ __device__ void matvec_rows(const MatvecJob& job, unsigned column) {
             weight[4] = b.x, weight[5] = b.y, weight[6] = b.z, weight[7] = b.w;
         } else if constexpr (encoding == gguf::Encoding::q4_k)
             q4k_run(row + std::size_t(i / values) * bytes, i % values, weight);
+        else if constexpr (encoding == gguf::Encoding::iq4_nl)
+            iq4nl_run(row + std::size_t(i / values) * bytes, i % values, weight);
+        else if constexpr (encoding == gguf::Encoding::q8_0)
+            q8_0_run(row + std::size_t(i / values) * bytes, i % values, weight);
         else
             gguf::decode_run<encoding>(
                 row + std::size_t(i / values) * bytes, i % values, weight
@@ -493,14 +524,21 @@ __global__ void cached_attention_combine(
     }
 }
 
-// Inkling 2 causal attention over a mirrored KV cache with relative-position bias,
+__global__ void
+f32_to_fp16_kernel(const float* source, __half* destination, std::size_t count) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < count)
+        destination[i] = __float2half_rn(source[i]);
+}
+
+// Inkling 2 causal attention over a mirrored FP16 KV cache with relative-position bias,
 // learned virtual sink logits, and optional sliding-window ring buffer.
 __global__ void inkling_attention_kernel(
     const float* q,
     const float* rel_q,
     const float* rel_bias,
-    const float* keys,
-    const float* values,
+    const __half* keys,
+    const __half* values,
     float* partial,
     unsigned position,
     unsigned heads,
@@ -538,11 +576,11 @@ __global__ void inkling_attention_kernel(
             const unsigned pos_k = pos_k_min + t;
             const unsigned slot_k =
                 ring_mask ? (pos_k & ring_mask) : (ring_cap ? pos_k % ring_cap : pos_k);
-            const float* key =
+            const __half* key =
                 keys + std::size_t(slot_k) * width + std::size_t(kv) * dim;
             float dot = 0;
             for (unsigned d = lane; d < dim; d += 32)
-                dot = fmaf(query[d], key[d], dot);
+                dot = fmaf(query[d], __half2float(key[d]), dot);
             for (unsigned offset = 16; offset; offset /= 2)
                 dot += __shfl_down_sync(0xffffffffu, dot, offset);
             const unsigned dist = pos_q - pos_k;
@@ -573,12 +611,12 @@ __global__ void inkling_attention_kernel(
             const unsigned pos_k = pos_k_min + first + w;
             const unsigned slot_k =
                 ring_mask ? (pos_k & ring_mask) : (ring_cap ? pos_k % ring_cap : pos_k);
-            const float* value =
+            const __half* value =
                 values + std::size_t(slot_k) * width + std::size_t(kv) * dim;
             for (unsigned i = 0; i < 2; ++i) {
                 const unsigned d = threadIdx.x + i * cached_attention_threads;
                 if (d < dim)
-                    acc[i] = fmaf(p, value[d], acc[i]);
+                    acc[i] = fmaf(p, __half2float(value[d]), acc[i]);
             }
         }
         maximum = tile;
@@ -1129,6 +1167,7 @@ public:
         float* data = nullptr;
         std::size_t capacity = 0, valid = 0, width = 0;
         Handle reservation = 0;
+        bool fp16 = false;
     };
 
     std::map<std::uint64_t, KvMirror> mirrors;
@@ -1156,49 +1195,100 @@ public:
 
     ~CudaDeviceOperations() override {
         try {
+            destroy_inkling_runtime();
             release_mirrors();
         } catch (...) {
         }
     }
 
+    struct InklingGraphKey {
+        const void* scratch = nullptr;
+        std::uint64_t kv_gen = 0;
+        std::size_t full_cap = 0;
+        bool operator==(const InklingGraphKey&) const = default;
+    };
+
+    cudaStream_t inkling_stream = nullptr;
+    cudaGraphExec_t inkling_graph = nullptr;
+    InklingGraphKey inkling_graph_key{};
+    std::uint64_t inkling_kv_gen = 0;
+
+    cudaStream_t ensure_inkling_stream() {
+        if (!inkling_stream)
+            checked(cudaStreamCreateWithFlags(&inkling_stream, cudaStreamNonBlocking));
+        return inkling_stream;
+    }
+
+    void sync_inkling_stream() {
+        if (inkling_stream)
+            checked(cudaStreamSynchronize(inkling_stream));
+    }
+
+    void invalidate_inkling_graph() {
+        if (inkling_graph) {
+            sync_inkling_stream();
+            checked(cudaGraphExecDestroy(inkling_graph));
+            inkling_graph = nullptr;
+            inkling_graph_key = {};
+        }
+        ++inkling_kv_gen;
+    }
+
+    void destroy_inkling_runtime() {
+        invalidate_inkling_graph();
+        if (inkling_stream) {
+            checked(cudaStreamDestroy(inkling_stream));
+            inkling_stream = nullptr;
+        }
+    }
+
     // Grows a mirror to `positions`, keeping its valid rows. Nullptr when the
     // device cannot admit it while leaving the scratch workspace room to grow.
-    KvMirror* mirror(std::uint64_t layer, std::size_t positions, std::size_t width) {
+    KvMirror* mirror(
+        std::uint64_t layer,
+        std::size_t positions,
+        std::size_t width,
+        bool use_fp16 = false
+    ) {
         auto& m = mirrors[layer];
-        if (m.width != width) {
+        if (m.width != width || m.fp16 != use_fp16) {
             release_mirror(m);
             m.width = width;
+            m.fp16 = use_fp16;
         }
         if (m.capacity >= positions)
             return &m;
         const auto capacity = std::max<std::size_t>({positions, 2 * m.capacity, 256});
+        const std::size_t elem_bytes = use_fp16 ? sizeof(__half) : sizeof(float);
         float* data = nullptr;
         Handle reservation = 0;
         if (!admit_state(
-                Bytes(2) * capacity * width * sizeof(float), data, reservation
+                Bytes(2) * capacity * width * elem_bytes, data, reservation
             ))
             return nullptr;
         const auto valid = m.valid;
         if (valid) {
+            auto* dst_bytes = reinterpret_cast<std::byte*>(data);
+            const auto* src_bytes = reinterpret_cast<const std::byte*>(m.data);
             checked(
                 cuda_trace::copy(
-                    data,
-                    m.data,
-                    valid * width * sizeof(float),
+                    dst_bytes,
+                    src_bytes,
+                    valid * width * elem_bytes,
                     cudaMemcpyDeviceToDevice
                 )
             );
             checked(
                 cuda_trace::copy(
-                    data + capacity * width,
-                    m.data + m.capacity * width,
-                    valid * width * sizeof(float),
+                    dst_bytes + capacity * width * elem_bytes,
+                    src_bytes + m.capacity * width * elem_bytes,
+                    valid * width * elem_bytes,
                     cudaMemcpyDeviceToDevice
                 )
             );
         }
         release_mirror(m);
-        m = {data, capacity, valid, width, reservation};
+        m = {data, capacity, valid, width, reservation, use_fp16};
         return &m;
     }
 
@@ -1243,6 +1333,8 @@ public:
 
     // Request boundary: KV mirrors and recurrent state.
     void release_mirrors() {
+        invalidate_inkling_graph();
+        sync_inkling_stream();
         for (auto& [layer, m] : mirrors)
             release_mirror(m);
         mirrors.clear();
@@ -1446,6 +1538,7 @@ public:
     }
 
     void reset() override {
+        destroy_inkling_runtime();
         release_mirrors();
         checked(cudaDeviceSynchronize());
 #ifndef KADAN_ATEN_RUNTIME
@@ -1796,6 +1889,8 @@ __global__ void narrow_bias(
         destination[i] = float(source[i]) + bias[i % out];
 }
 
+#include "inkling_gpu.cuh"
+
 class Compute final : public H3Compute {
     std::shared_ptr<Resources> resources_;
     std::vector<int> devices_;
@@ -1853,7 +1948,8 @@ class Compute final : public H3Compute {
                             static_cast<CudaDeviceOperations&>(workspace.operations());
                         for (const auto& [layer, mirror] : ops.mirrors)
                             state[devices_[i] + 1] +=
-                                2 * mirror.capacity * mirror.width * sizeof(float);
+                                Bytes(2) * mirror.capacity * mirror.width
+                                * (mirror.fp16 ? sizeof(__half) : sizeof(float));
                         for (const auto& [layer, recurrent] : ops.recurrent)
                             state[devices_[i] + 1] += recurrent.floats * sizeof(float);
                         for (const auto& [layer, rel] : ops.rel_biases)
@@ -2656,10 +2752,14 @@ class Compute final : public H3Compute {
                             );
                         } else {
                             const float one = 1, zero = 0;
-                            with_projection_math(
+                            const bool use_tf32 =
                                 projection_uses_tf32(
                                     policy, workload_, arena.compute_major, precise
-                                ),
+                                )
+                                || (workload_ == Workload::llm && packed_source
+                                    && arena.compute_major >= 8 && !precise);
+                            with_projection_math(
+                                use_tf32,
                                 CUBLAS_TF32_TENSOR_OP_MATH,
                                 [&] {
                                     cublasMath_t mode;
@@ -3997,10 +4097,34 @@ public:
                 auto& arena =
                     static_cast<CudaDeviceOperations&>(device_workspace.operations());
                 device_workspace.ensure(256);
-                auto* m = arena.mirror(a.layer, a.window ? ring_cap : positions, width);
+                auto* m = arena.mirror(
+                    a.layer, a.window ? ring_cap : positions, width, /*use_fp16=*/true
+                );
                 if (!m)
                     return;
                 admitted = true;
+                auto* m_keys = reinterpret_cast<__half*>(m->data);
+                auto* m_vals = m_keys + m->capacity * width;
+                auto upload_fp16 = [&](__half* dst, const float* src, std::size_t count) {
+                    if (!count)
+                        return;
+                    const std::size_t chunk_floats =
+                        std::max<std::size_t>(1, arena.scratch_limit / sizeof(float) / 2);
+                    for (std::size_t off = 0; off < count; off += chunk_floats) {
+                        const std::size_t n = std::min(chunk_floats, count - off);
+                        device_workspace.ensure(n * sizeof(float));
+                        checked(cuda_trace::copy(
+                            arena.at<void>(0),
+                            src + off,
+                            n * sizeof(float),
+                            cudaMemcpyHostToDevice
+                        ));
+                        f32_to_fp16_kernel<<<unsigned((n + 255) / 256), 256>>>(
+                            arena.at<float>(0), dst + off, n
+                        );
+                        checked(cudaGetLastError());
+                    }
+                };
                 if (a.window) {
                     auto upload_ring = [&](std::span<const float> src_k,
                                            std::span<const float> src_v,
@@ -4008,32 +4132,12 @@ public:
                                            std::size_t n_rows) {
                         const std::size_t dst = start_pos % ring_cap;
                         const std::size_t first_part = std::min(n_rows, ring_cap - dst);
-                        checked(cuda_trace::copy(
-                            m->data + dst * width,
-                            src_k.data(),
-                            first_part * width * sizeof(float),
-                            cudaMemcpyHostToDevice
-                        ));
-                        checked(cuda_trace::copy(
-                            m->data + m->capacity * width + dst * width,
-                            src_v.data(),
-                            first_part * width * sizeof(float),
-                            cudaMemcpyHostToDevice
-                        ));
+                        upload_fp16(m_keys + dst * width, src_k.data(), first_part * width);
+                        upload_fp16(m_vals + dst * width, src_v.data(), first_part * width);
                         if (first_part < n_rows) {
                             const std::size_t rem = n_rows - first_part;
-                            checked(cuda_trace::copy(
-                                m->data,
-                                src_k.data() + first_part * width,
-                                rem * width * sizeof(float),
-                                cudaMemcpyHostToDevice
-                            ));
-                            checked(cuda_trace::copy(
-                                m->data + m->capacity * width,
-                                src_v.data() + first_part * width,
-                                rem * width * sizeof(float),
-                                cudaMemcpyHostToDevice
-                            ));
+                            upload_fp16(m_keys, src_k.data() + first_part * width, rem * width);
+                            upload_fp16(m_vals, src_v.data() + first_part * width, rem * width);
                         }
                     };
                     if (m->valid != a.position) {
@@ -4078,18 +4182,8 @@ public:
                     for (float v : a.past_values.subspan(first * width, count))
                         require(std::isfinite(v), "h3_cuda_nonfinite_input");
                     m->valid = first;
-                    checked(cuda_trace::copy(
-                        m->data + first * width,
-                        a.past_keys.data() + first * width,
-                        count * sizeof(float),
-                        cudaMemcpyHostToDevice
-                    ));
-                    checked(cuda_trace::copy(
-                        m->data + m->capacity * width + first * width,
-                        a.past_values.data() + first * width,
-                        count * sizeof(float),
-                        cudaMemcpyHostToDevice
-                    ));
+                    upload_fp16(m_keys + first * width, a.past_keys.data() + first * width, count);
+                    upload_fp16(m_vals + first * width, a.past_values.data() + first * width, count);
                     m->valid = positions;
                 }
                 const float* rel_bias_dev = arena.rel_bias(a.rel_layer, a.rel_bias);
@@ -4164,8 +4258,8 @@ public:
                                 arena.at<float>(query) + row_values,
                                 arena.at<float>(rel_q_off) + row_rel,
                                 rb_ptr,
-                                m->data,
-                                m->data + m->capacity * width,
+                                m_keys,
+                                m_vals,
                                 arena.at<float>(partial),
                                 unsigned(a.position + first),
                                 unsigned(a.heads),
@@ -4211,6 +4305,24 @@ public:
             for (float v : a.output)
                 require(std::isfinite(v), "h3_cuda_nonfinite_output");
         return admitted;
+    }
+
+    std::unique_ptr<InklingGpuExecutor> create_inkling_gpu(
+        InklingGpuModelDesc desc, const std::atomic_bool& cancel
+    ) override {
+        require(!cancel.load(), "h3_cuda_cancelled");
+        if (threads_.size() != 1 || workload_ != Workload::llm)
+            return nullptr;
+        auto runner_cb = [this](
+                             const std::atomic_bool& c,
+                             std::function<void(DeviceWorkspace&, const std::atomic_bool&)> fn
+                         ) { run_on_state_device(c, std::move(fn)); };
+        auto exec = std::make_unique<inkling_gpu_detail::InklingGpuRunner>(
+            std::move(runner_cb), std::move(desc)
+        );
+        if (!exec->initialize(cancel))
+            return nullptr;
+        return exec;
     }
 
     void copy_recurrent_state(

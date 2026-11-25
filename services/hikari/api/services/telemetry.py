@@ -236,8 +236,13 @@ class TelemetryMiddleware:
                         in {
                             "video_job_id",
                             "generation_ttft_ms",
+                            "first_token_ms",
                             "stream_ttft_ms",
                             "prefill_ms",
+                            "image_encode_ms",
+                            "cache_restore_ms",
+                            "reasoning_ms",
+                            "thinking_tokens",
                             "decode_tokens_per_second",
                             "output_tokens",
                             "prefill_tokens",

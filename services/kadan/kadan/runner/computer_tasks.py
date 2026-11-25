@@ -12,6 +12,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -46,7 +47,7 @@ if TYPE_CHECKING:
     from ..api.services import LocalServices
 
 logger = logging.getLogger(__name__)
-POLL_SECONDS = 2
+POLL_SECONDS = 0.5
 LEASE_SECONDS = 60
 HEARTBEAT_SECONDS = 10
 MAX_TASK_COMMANDS = 80
@@ -74,6 +75,39 @@ def pending_command(transcript: list[TranscriptEntry]) -> bool:
 
 def characters(transcript: list[TranscriptEntry]) -> int:
     return sum(entry_characters(item) for item in transcript)
+
+
+def fold_finished_tasks(transcript: list[TranscriptEntry]) -> list[TranscriptEntry]:
+    """Fold every completed/failed/stopped task block into TaskHistory summaries.
+
+    Keeps any open task verbatim while preventing finished tasks from leaving
+    thousands of characters of stale tool outputs in the prompt prefix.
+    """
+    earlier: list[TaskOutcome] = []
+    items = list(transcript)
+    if items and isinstance(items[0], TaskHistory):
+        earlier = list(items.pop(0).tasks)
+    changed = False
+    while items:
+        end = next(
+            (i for i, entry in enumerate(items) if isinstance(entry, TaskEnd)), None
+        )
+        if end is None:
+            break
+        finished = items[end]
+        earlier = [
+            *earlier,
+            TaskOutcome(
+                task_id=finished.task_id,
+                status=finished.status,
+                summary=finished.summary[:300],
+            ),
+        ][-MAX_EARLIER_TASKS:]
+        items = items[end + 1 :]
+        changed = True
+    if not changed:
+        return transcript
+    return [TaskHistory(tasks=earlier), *items]
 
 
 def compact(transcript: list[TranscriptEntry], budget: int) -> list[TranscriptEntry]:
@@ -240,7 +274,7 @@ class ThreadWork:
         if opened is None or opened[0] != str(task.id):
             await self.save(
                 [
-                    *self.close_interrupted(self.thread.transcript),
+                    *fold_finished_tasks(self.close_interrupted(self.thread.transcript)),
                     TaskStart(
                         task_id=task.id,
                         origin="agent" if task.origin else "user",
@@ -290,12 +324,20 @@ class ThreadWork:
                     return
                 continue
             tool = TOOLS_BY_NAME[command.tool]
+            tool_started = monotonic()
             result = {
                 "tool": tool.name,
                 **await invoke_computer_tool(
                     tool, command.arguments, self.services.sandbox, replayed
                 ),
             }
+            logger.info(
+                "Computer tool ended agent=%s task=%s tool=%s elapsed_seconds=%.3f",
+                self.key,
+                task.id,
+                tool.name,
+                monotonic() - tool_started,
+            )
             await self.save(
                 [
                     *self.thread.transcript,
@@ -329,17 +371,33 @@ class ThreadWork:
             - tool_characters(COMPUTER_AGENT_TOOLS)
             - len(system.content)
         )
-        transcript = compact(transcript, budget)
+        transcript = compact(fold_finished_tasks(transcript), budget)
         if characters(transcript) > budget:
             raise ServiceError(
                 "The task exceeded the computer agent's context limit.", 422
             )
-        call = await self.tasks.inference.call(
-            transcript_messages([system, *transcript]),
-            status.model_id,
-            f"kadan-computer:{self.key}",
-            COMPUTER_AGENT_TOOLS,
+        started = monotonic()
+        logger.info(
+            "Computer inference started agent=%s task=%s chars=%d",
+            self.key,
+            opened[0],
+            characters(transcript) + len(system.content),
         )
+        try:
+            call = await self.tasks.inference.call(
+                transcript_messages([system, *transcript]),
+                status.model_id,
+                f"kadan-computer:{self.key}",
+                COMPUTER_AGENT_TOOLS,
+                priority="background",
+            )
+        finally:
+            logger.info(
+                "Computer inference ended agent=%s task=%s elapsed_seconds=%.3f",
+                self.key,
+                opened[0],
+                monotonic() - started,
+            )
         if call.command.tool == "finish":
             call = RunCall(
                 call_id=call.call_id,

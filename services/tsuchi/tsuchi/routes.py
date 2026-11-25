@@ -1,4 +1,5 @@
 import json
+import threading
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -155,6 +156,11 @@ class RunDelivery(Model):
     image_job_id: UUID | None = None
 
 
+class RunDraftUpdate(Model):
+    worker_id: UUID
+    content: str = Field(max_length=48000)
+
+
 class ImageJobCreate(Model):
     id: UUID
     prompt: str = Field(min_length=1, max_length=10000)
@@ -192,6 +198,22 @@ class AgentRunnerAssignment(Model):
 
 def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     router = APIRouter(prefix="/api")
+    draft_lock = threading.Lock()
+    run_drafts: dict[tuple[str, UUID], str] = {}
+
+    def clear_draft(key: str, run_id: UUID) -> None:
+        with draft_lock:
+            run_drafts.pop((key, run_id), None)
+
+    def with_draft(key: str, run: AgentRun) -> AgentRun:
+        if run.status != "running":
+            clear_draft(key, run.id)
+            return run
+        with draft_lock:
+            content = run_drafts.get((key, run.id))
+        if not content:
+            return run
+        return run.model_copy(update={"draft": content})
 
     @router.get("/runners", response_model=list[Runner])
     def list_runners():
@@ -246,7 +268,10 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         "/agents/{key}/resources/{conversation_id}/runs", response_model=list[AgentRun]
     )
     def conversation_runs(key: AgentKey, conversation_id: UUID):
-        return repository.conversation_runs(key, conversation_id)
+        return [
+            with_draft(key, run)
+            for run in repository.conversation_runs(key, conversation_id)
+        ]
 
     @router.post(
         "/agents/{key}/resources/{conversation_id}/runs",
@@ -275,26 +300,48 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
 
     @router.get("/agents/{key}/runs/{run_id}", response_model=AgentRun)
     def get_run(key: AgentKey, run_id: UUID):
-        return repository.get_run(key, run_id)
+        return with_draft(key, repository.get_run(key, run_id))
+
+    @router.put("/agents/{key}/runs/{run_id}/draft", status_code=204)
+    def update_run_draft(key: AgentKey, run_id: UUID, value: RunDraftUpdate):
+        run = repository.get_run(key, run_id)
+        if run.status != "running":
+            clear_draft(key, run_id)
+            raise StorageError("This agent run is not running.", 409)
+        if run.owner_id != value.worker_id:
+            raise StorageError("This agent run is not owned by this worker.", 409)
+        with draft_lock:
+            if value.content:
+                if len(run_drafts) >= 128 and (key, run_id) not in run_drafts:
+                    run_drafts.pop(next(iter(run_drafts)))
+                run_drafts[(key, run_id)] = value.content
+            else:
+                run_drafts.pop((key, run_id), None)
 
     @router.put("/agents/{key}/runs/{run_id}", response_model=AgentRun)
     def update_run(key: AgentKey, run_id: UUID, value: RunUpdate):
         state = AgentRunState.model_validate(
             value.model_dump(include=set(AgentRunState.model_fields))
         )
-        return repository.update_run(
+        updated = repository.update_run(
             key, run_id, state, value.expected_version, value.worker_id
         )
+        if updated.status != "running":
+            clear_draft(key, run_id)
+        return updated
 
     @router.post("/agents/{key}/runs/{run_id}/cancel", response_model=AgentRun)
     def cancel_run(key: AgentKey, run_id: UUID):
+        clear_draft(key, run_id)
         return repository.cancel_run(key, run_id)
 
     @router.post("/agents/{key}/runs/{run_id}/messages", response_model=Resource)
     def deliver_run_message(key: AgentKey, run_id: UUID, value: RunDelivery):
-        return repository.deliver_run_message(
+        resource = repository.deliver_run_message(
             key, run_id, value.worker_id, value.message, value.image_job_id
         )
+        clear_draft(key, run_id)
+        return resource
 
     @router.post(
         "/agents/{key}/runs/{run_id}/image-jobs",

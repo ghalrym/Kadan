@@ -67,6 +67,7 @@ export interface AgentRun {
   trigger_message_id: string | null;
   trigger_job_id: string | null;
   delivered_message_ids: string[];
+  draft?: string | null;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   error: string | null;
   created_at: string;

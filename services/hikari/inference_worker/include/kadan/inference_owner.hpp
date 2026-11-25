@@ -273,6 +273,42 @@ public:
                 && (queue_.empty() || (!loaded_ && !queue_.front()->cancel.load())))
                 idle = true;
             if (!release && !idle) {
+                if (loaded_ && !waiting_admission_ && !queue_.front()->cancel.load()) {
+                    const bool has_background = std::any_of(
+                        queue_.begin(),
+                        queue_.end(),
+                        [](const auto& item) {
+                            return item->request.priority == Priority::background;
+                        }
+                    );
+                    if (queue_.front()->request.priority == Priority::background) {
+                        if (interactive_streak_ < max_priority_streak_) {
+                            const auto it = std::find_if(
+                                std::next(queue_.begin()),
+                                queue_.end(),
+                                [](const auto& item) {
+                                    return item->request.priority
+                                               == Priority::interactive
+                                           && !item->cancel.load();
+                                }
+                            );
+                            if (it != queue_.end()) {
+                                auto chosen = *it;
+                                queue_.erase(it);
+                                queue_.push_front(std::move(chosen));
+                                ++interactive_streak_;
+                            } else {
+                                interactive_streak_ = 0;
+                            }
+                        } else {
+                            interactive_streak_ = 0;
+                        }
+                    } else if (has_background) {
+                        ++interactive_streak_;
+                    } else {
+                        interactive_streak_ = 0;
+                    }
+                }
                 job = queue_.front();
                 executing_ = true;
             }
@@ -558,6 +594,10 @@ public:
                 return true;
             }
             // The reason tells the API which memory the engine could not get.
+            {
+                std::lock_guard guard(mutex_);
+                waiting_admission_ = true;
+            }
             publish_(
                 request.id, JobState::waiting_for_resources, {{"error", error.what()}}
             );
@@ -769,6 +809,7 @@ private:
                 throw std::runtime_error("fifo_ownership");
             queue_.pop_front();  // Terminal execution is committed before transport
                                  // delivery.
+            waiting_admission_ = false;
         }
         try {
             if (state == JobState::failed && !result.is_object())
@@ -784,6 +825,7 @@ private:
         }
     }
 
+    static constexpr std::size_t max_priority_streak_ = 3;
     std::unique_ptr<SavedCache> cache_;
     Bytes cached_bytes_ =
         0;  // Protected by mutex_; state itself is execution-thread owned.
@@ -798,6 +840,8 @@ private:
     Prepare prepare_;
     Clock clock_;
     std::size_t limit_;
+    std::size_t interactive_streak_ = 0;
+    bool waiting_admission_ = false;
     mutable std::mutex mutex_;
     std::deque<std::shared_ptr<Job>> queue_;
     std::unique_ptr<InferenceEngine> engine_;

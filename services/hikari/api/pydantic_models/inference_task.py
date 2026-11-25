@@ -34,6 +34,7 @@ class ChatTask(TaskInput):
     max_tokens: int | None = Field(default=None, ge=1, strict=True)
     reasoning_tokens: int | None = Field(default=None, ge=1, strict=True)
     reasoning_effort: Literal["low", "medium", "high"] | None = None
+    priority: Literal["interactive", "background"] = "interactive"
 
 
 class ImageTask(TaskInput):

@@ -73,9 +73,19 @@ def required(schema: dict, root: dict) -> dict:
 
 
 def test_every_tool_has_a_unique_name_and_a_description():
-    assert len(ALL_TOOLS) == 22
+    assert len(ALL_TOOLS) == 23
     assert len(TOOLS_BY_NAME) == len(ALL_TOOLS) + len(COMPUTER_AGENT_TOOLS)
-    assert len(CONVERSATION_TOOLS) == 11
+    assert len(CONVERSATION_TOOLS) == 12
+    computer_names = {tool.name for tool in COMPUTER_TOOLS}
+    assert "browser_take_screenshot" not in computer_names
+    assert "browser_get_markdown" not in computer_names
+    assert {
+        "browser_navigate",
+        "browser_get_interactive_elements",
+        "browser_get_text",
+        "browser_evaluate",
+        "browser_execute_action",
+    } <= computer_names
     assert all(tool.description for tool in [*ALL_TOOLS, *COMPUTER_AGENT_TOOLS])
 
 
@@ -140,8 +150,10 @@ def test_uploads_send_text_as_a_file():
 
 
 def test_display_actions_and_mcp_calls_send_their_own_body():
+    schema = browser_execute_action.args_schema.model_json_schema()
+    assert "$defs" not in schema
     _, path, request = call(
-        browser_execute_action, action={"action_type": "CLICK", "x": 10, "y": 20}
+        browser_execute_action, action_type="CLICK", x=10, y=20
     )
     assert path == "/v1/browser/actions"
     assert request["json_body"] == {
@@ -161,13 +173,162 @@ def test_display_actions_and_mcp_calls_send_their_own_body():
     assert request["json_body"] == {"url": "https://example.com"}
 
 
+def test_browser_get_markdown_drops_ad_urls_and_enforces_total_budget():
+    from kadan.runner.tools.browser import (
+        PAGE_RESULT_MAX_CHARACTERS,
+        browser_get_markdown,
+    )
+
+    giant_ad_url = "https://www.googleadservices.com/pagead/aclk?sa=L&ai=" + ("A" * 3000)
+    big_markdown = (
+        "# YouTube\n[Home](/)\n[Shorts](/shorts)\n"
+        + f"[Shop now]({giant_ad_url})\n" * 6
+        + ("Navigation boilerplate line.\n" * 2000)
+        + "## Results\n[Kadan Demo Video](https://www.youtube.com/watch?v=abc123)\n"
+        + "[Another Cool Video](https://www.youtube.com/watch?v=xyz789)\n"
+    )
+    assert len(big_markdown) > 50000
+
+    class MarkdownComputer:
+        async def run(self, method, path, **request):
+            assert (method, path) == ("GET", "/v1/browser/page/markdown")
+            assert request.get("max_characters") is None
+            return {
+                "status": 200,
+                "content_type": "application/json",
+                "body": {"data": {"title": "YouTube", "markdown": big_markdown}},
+            }
+
+    links_result = asyncio.run(
+        browser_get_markdown.ainvoke(
+            {"links_only": True, "query": "watch"},
+            config={"configurable": {"computer": MarkdownComputer()}},
+        )
+    )
+    assert links_result["links_count"] == 2
+    assert "watch?v=abc123" in links_result["body"]
+    assert "googleadservices.com" not in links_result["body"]
+
+    query_result = asyncio.run(
+        browser_get_markdown.ainvoke(
+            {"query": "Kadan Demo"},
+            config={"configurable": {"computer": MarkdownComputer()}},
+        )
+    )
+    assert "Kadan Demo Video" in query_result["body"]
+    assert "watch?v=abc123" in query_result["body"]
+
+    default_result = asyncio.run(
+        browser_get_markdown.ainvoke(
+            {},
+            config={"configurable": {"computer": MarkdownComputer()}},
+        )
+    )
+    assert default_result["truncated"] is True
+    assert any("watch?v=abc123" in item for item in default_result["links"])
+    assert all("googleadservices.com" not in item for item in default_result["links"])
+    total_chars = len(default_result["body"]) + sum(
+        len(item) for item in default_result["links"]
+    )
+    assert total_chars <= PAGE_RESULT_MAX_CHARACTERS
+
+
+def test_browser_get_text_supports_query_and_offset():
+    from kadan.runner.tools.browser import (
+        PAGE_RESULT_MAX_CHARACTERS,
+        browser_get_text,
+    )
+
+    lines = [f"Header line {i}" for i in range(400)]
+    lines.extend(
+        [
+            "Show Your Work (Music Video)",
+            "Last Echo Ai",
+            "3:45 • 12K views • 2 weeks ago",
+        ]
+    )
+    big_text = "\n".join(lines)
+
+    class TextComputer:
+        async def run(self, method, path, **request):
+            assert (method, path) == ("GET", "/v1/browser/page/text")
+            assert request.get("max_characters") is None
+            return {
+                "status": 200,
+                "content_type": "application/json",
+                "body": {"data": {"title": "YouTube", "text": big_text}},
+            }
+
+    matched = asyncio.run(
+        browser_get_text.ainvoke(
+            {"query": "Show Your Work"},
+            config={"configurable": {"computer": TextComputer()}},
+        )
+    )
+    assert "Show Your Work (Music Video)" in matched["body"]
+    assert "Last Echo Ai" in matched["body"]
+    assert "3:45" in matched["body"]
+
+    full = asyncio.run(
+        browser_get_text.ainvoke(
+            {"offset": 100},
+            config={"configurable": {"computer": TextComputer()}},
+        )
+    )
+    assert full["offset"] == 100
+    assert len(full["body"]) <= PAGE_RESULT_MAX_CHARACTERS
+
+
+def test_browser_navigate_attaches_compact_page_observation():
+    from kadan.api.config import ServiceError
+
+    class NavComputer:
+        def __init__(self, fail_markdown=False):
+            self.calls = []
+            self.fail_markdown = fail_markdown
+
+        async def run(self, method, path, **request):
+            self.calls.append((method, path, request))
+            if path == "/v1/browser/page/navigate":
+                return {"status": 200, "body": {"ok": True}}
+            if self.fail_markdown:
+                raise ServiceError("markdown unavailable", 503)
+            return {
+                "status": 200,
+                "body": "# Docs\nWelcome!\n[Getting Started Guide](https://example.com/guide)\n",
+            }
+
+    comp = NavComputer()
+    result = asyncio.run(
+        browser_navigate.ainvoke(
+            {"url": "https://example.com"},
+            config={"configurable": {"computer": comp}},
+        )
+    )
+    assert result["status"] == 200
+    assert result["page"]["excerpt"].startswith("# Docs")
+    assert result["page"]["links"] == ["[Getting Started Guide](https://example.com/guide)"]
+
+    failing = NavComputer(fail_markdown=True)
+    fallback = asyncio.run(
+        browser_navigate.ainvoke(
+            {"url": "https://example.com"},
+            config={"configurable": {"computer": failing}},
+        )
+    )
+    assert fallback == {"status": 200, "body": {"ok": True}}
+
+
 @pytest.mark.parametrize(
     ("tool", "arguments"),
     [
         (browser_navigate, {"address": "https://example.com"}),
         (browser_navigate, {}),
         (browser_wait, {"type": "forever"}),
-        (browser_execute_action, {"action": {"action_type": "TELEPORT"}}),
+        (browser_execute_action, {"action_type": "TELEPORT"}),
+        (browser_execute_action, {"action_type": "MOVE_TO", "x": 10}),
+        (browser_execute_action, {"action_type": "TYPING"}),
+        (browser_execute_action, {"action_type": "WAIT"}),
         (send_message, {"content": "Hi"}),
         (create_workspace_document, {"title": " "}),
         (create_workspace_document, {"title": "x" * 501}),

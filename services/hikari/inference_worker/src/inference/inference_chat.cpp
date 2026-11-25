@@ -193,45 +193,77 @@ public:
         }
         reasoning_tokens_ = input.reasoning_tokens;
 
-        // Avoid false prefix hits when two different images have identical dimensions.
-        bool reuse = input.reuse_prefix;
-        if (reuse) {
-            const bool images_match =
-                cached_image_hashes_.size() <= scheduled_images_.size()
-                && std::equal(
-                    cached_image_hashes_.begin(),
-                    cached_image_hashes_.end(),
-                    scheduled_images_.begin(),
-                    [](std::uint64_t cached, const ScheduledImage& cur) {
-                        return cached == cur.hash;
-                    }
-                );
-            if (!images_match)
-                reuse = false;
+        std::vector<text::ImageTag> prompt_images;
+        prompt_images.reserve(scheduled_images_.size());
+        for (const auto& img : scheduled_images_)
+            prompt_images.push_back({img.offset, img.tokens, img.hash});
+
+        const bool reuse = input.reuse_prefix;
+        // Static prefix boundary: tool_declare + leading system messages + effort.
+        // Safe to share across fresh conversations with identical leading tokens.
+        std::size_t static_boundary = 0;
+        std::size_t system_count = 0;
+        while (system_count < input.messages.size()
+               && input.messages[system_count].role == "system")
+            ++system_count;
+        if (reuse && system_count > 0 && system_count < input.messages.size()) {
+            std::vector<std::uint32_t> tokens(capacity_);
+            const auto prefix = chat_messages(
+                std::span(input.messages).first(system_count),
+                byte_limit,
+                input.tools,
+                input.reasoning_effort,
+                true
+            );
+            const auto n = tokenizer_->encode(
+                prefix.text, tokens, cancel, byte_limit, prefix.literal_ranges
+            );
+            if (n > 0 && n < prompt_tokens_
+                && std::equal(tokens.begin(), tokens.begin() + n, prompt_.begin())
+                && text::images_match_prefix({}, prompt_images, n))
+                static_boundary = n;
         }
 
         // Keep the state before the current turn as a reusable history prefix.
         std::size_t leading = 0;
-        if (reuse && input.conversation_id && input.messages.size() > 1
-            && scheduled_images_.empty()) {
-            std::vector<std::uint32_t> tokens(capacity_);
+        if (reuse && input.conversation_id && input.messages.size() > 1) {
             const auto earlier =
                 std::span(input.messages).first(input.messages.size() - 1);
-            const auto prefix =
-                chat_messages(earlier, byte_limit, input.tools, input.reasoning_effort);
-            const auto n = tokenizer_->encode(
-                prefix.text, tokens, cancel, byte_limit, prefix.literal_ranges
+            const bool earlier_has_images = std::any_of(
+                earlier.begin(),
+                earlier.end(),
+                [](const ChatMessage& m) { return !m.decoded_images.empty(); }
             );
-            if (n < prompt_tokens_
-                && std::equal(tokens.begin(), tokens.begin() + n, prompt_.begin()))
-                leading = n;
+            if (!earlier_has_images) {
+                const bool all_system = std::all_of(
+                    earlier.begin(),
+                    earlier.end(),
+                    [](const ChatMessage& m) { return m.role == "system"; }
+                );
+                std::vector<std::uint32_t> tokens(capacity_);
+                const auto prefix = chat_messages(
+                    earlier,
+                    byte_limit,
+                    input.tools,
+                    input.reasoning_effort,
+                    all_system
+                );
+                const auto n = tokenizer_->encode(
+                    prefix.text, tokens, cancel, byte_limit, prefix.literal_ranges
+                );
+                if (n > 0 && n < prompt_tokens_ && n != static_boundary
+                    && std::equal(tokens.begin(), tokens.begin() + n, prompt_.begin())
+                    && text::images_match_prefix(prompt_images, prompt_images, n))
+                    leading = n;
+            }
         }
+        model_->checkpoint_static_at(static_boundary);
         model_->checkpoint_at(leading);
         // Admission belongs before execution so fresh pressure can release/replan.
         try {
             model_->set_cancel(cancel);
             reused_tokens_ = model_->begin_request(
-                prompt_, input.conversation_id.value_or(""), reuse
+                prompt_, input.conversation_id.value_or(""), reuse, prompt_images
             );
         } catch (const std::exception& error) {
             const std::string reason = error.what();
@@ -245,11 +277,19 @@ public:
     execute(const InferenceRequest& request, const std::atomic_bool& cancel) override {
         if (request.operation == Operation::load)
             return Json::object();
+        const auto milliseconds = [](auto duration) {
+            return std::chrono::duration<double, std::milli>(duration).count();
+        };
         const auto started = std::chrono::steady_clock::now();
-        auto first = started, last = started;
+        auto last = started;
+        std::optional<std::chrono::steady_clock::time_point> first_token_at;
+        std::optional<std::chrono::steady_clock::time_point> first_visible_at;
+        std::optional<std::chrono::steady_clock::time_point> thinking_started_at;
+        std::optional<std::chrono::steady_clock::time_point> thinking_ended_at;
         check_cancel(cancel);
 
         // Encode only images that overlap the uncached suffix.
+        const auto image_started = std::chrono::steady_clock::now();
         std::vector<text::ImageSpan> image_spans;
         for (const auto& img : scheduled_images_) {
             if (img.offset + img.tokens <= reused_tokens_)
@@ -260,17 +300,23 @@ public:
             span.offset = img.offset;
             image_spans.push_back(std::move(span));
         }
+        const auto image_done = std::chrono::steady_clock::now();
+        const double image_encode_ms =
+            image_spans.empty() ? 0.0 : milliseconds(image_done - image_started);
 
         const auto suffix = std::span<const unsigned>(prompt_).subspan(reused_tokens_);
         progress_("prefill_begin", suffix.size());
         model_->set_projection_timing(bool(request.trace));
         model_->take_timing();
+        const auto prefill_started = std::chrono::steady_clock::now();
         Token selected;
         {
             InferenceTrace tracing(request.trace, "prefill");
             selected = model_->prefill(suffix, image_spans, progress_);
             tracing.text_metrics(phase_metrics(suffix.size(), model_->take_timing()));
         }
+        const auto prefill_done = std::chrono::steady_clock::now();
+        const double prefill_ms = milliseconds(prefill_done - prefill_started);
 
         InklingStreamParser parser;
         std::string text, pending, reason = "length";
@@ -280,8 +326,8 @@ public:
         auto emit_visible = [&](const std::string& piece) {
             if (piece.empty())
                 return;
-            if (text.empty())
-                first = last;
+            if (!first_visible_at)
+                first_visible_at = last;
             content_(piece);
             text += piece;
         };
@@ -317,19 +363,35 @@ public:
                 }
                 progress_("decode_token", generated + 1);
                 last = std::chrono::steady_clock::now();
-                if (!generated)
-                    first = last;
+                if (!first_token_at)
+                    first_token_at = last;
 
                 if (const auto sp = match_special(selected.id)) {
                     flush_pending_utf8(true);
+                    const bool was_thinking = parser.in_thinking();
                     parser.on_special(*sp);
+                    if (*sp == InklingStreamParser::Special::content_thinking) {
+                        if (!thinking_started_at)
+                            thinking_started_at = last;
+                        thinking_ended_at = last;
+                    } else if (was_thinking && !parser.in_thinking()) {
+                        thinking_ended_at = last;
+                    }
+                    if (*sp == InklingStreamParser::Special::content_invoke_tool_json
+                        && !first_visible_at) {
+                        first_visible_at = last;
+                    }
                 } else {
                     require(
                         !tokenizer_->is_special(selected.id),
                         "chat_unexpected_control_token"
                     );
-                    if (parser.in_thinking())
+                    if (parser.in_thinking()) {
                         ++thinking_tokens;
+                        if (!thinking_started_at)
+                            thinking_started_at = last;
+                        thinking_ended_at = last;
+                    }
                     pending += tokenizer_->decode(selected.id);
                     flush_pending_utf8(false);
                 }
@@ -340,6 +402,7 @@ public:
                     && id_end_message_ && id_message_model_ && id_content_text_
                     && generated + 4 < max_output_) {
                     forced_close_thinking = true;
+                    thinking_ended_at = last;
                     flush_pending_utf8(true);
                     model_->step(selected.id, false);
                     model_->step(*id_end_message_, false);
@@ -367,10 +430,6 @@ public:
             reason = "tool_calls";
 
         model_->end_request();
-
-        cached_image_hashes_.clear();
-        for (const auto& img : scheduled_images_)
-            cached_image_hashes_.push_back(img.hash);
         scheduled_images_.clear();
 
         Json cache = nullptr;
@@ -394,12 +453,20 @@ public:
                  input.reuse_prefix ? "resident_engine" : "disabled"}
             };
         }
+        const double cache_restore_ms = model_->last_cache_restore_ms();
         restored_ = false;
         std::vector<std::uint32_t>().swap(prompt_);
         request_memory_.reset();
-        const auto milliseconds = [](auto duration) {
-            return std::chrono::duration<double, std::milli>(duration).count();
-        };
+
+        const double reasoning_ms =
+            thinking_started_at && thinking_ended_at
+                ? milliseconds(*thinking_ended_at - *thinking_started_at)
+                : 0.0;
+        const auto ttft_point = first_visible_at ? first_visible_at : first_token_at;
+        const Json decode_tps =
+            first_token_at && generated > 1 && last > *first_token_at
+                ? Json((generated - 1) * 1000.0 / milliseconds(last - *first_token_at))
+                : Json(nullptr);
         return present_chat(
             request,
             Json{
@@ -409,15 +476,19 @@ public:
                 {"cache", std::move(cache)},
                 {"timing",
                  {{"generation_ttft_ms",
-                   generated ? Json(milliseconds(first - started)) : Json(nullptr)},
-                  {"prefill_ms",
-                   generated ? Json(milliseconds(first - started)) : Json(nullptr)},
+                   ttft_point ? Json(milliseconds(*ttft_point - started))
+                              : Json(nullptr)},
+                  {"first_token_ms",
+                   first_token_at ? Json(milliseconds(*first_token_at - started))
+                                  : Json(nullptr)},
+                  {"prefill_ms", Json(prefill_ms)},
+                  {"image_encode_ms", Json(image_encode_ms)},
+                  {"cache_restore_ms", Json(cache_restore_ms)},
+                  {"reasoning_ms", Json(reasoning_ms)},
+                  {"thinking_tokens", thinking_tokens},
                   {"output_tokens", generated},
                   {"prefill_tokens", prompt_tokens_ - reused_tokens_},
-                  {"decode_tokens_per_second",
-                   generated > 1 && last > first
-                       ? Json((generated - 1) * 1000.0 / milliseconds(last - first))
-                       : Json(nullptr)}}}
+                  {"decode_tokens_per_second", decode_tps}}}
             }
         );
     }
@@ -443,14 +514,12 @@ public:
     void discard_cache() override {
         if (model_)
             model_->reset();
-        cached_image_hashes_.clear();
         restored_ = false;
     }
 
     void close() override {
         std::vector<std::uint32_t>().swap(prompt_);
         scheduled_images_.clear();
-        cached_image_hashes_.clear();
         request_memory_.reset();
         tokenizer_.reset();
         if (model_)
@@ -477,7 +546,6 @@ private:
     std::unique_ptr<HostAllocation> request_memory_;
     std::vector<std::uint32_t> prompt_;
     std::vector<ScheduledImage> scheduled_images_;
-    std::vector<std::uint64_t> cached_image_hashes_;
     std::size_t capacity_ = 65536, max_output_ = 65536;
     std::optional<std::size_t> reasoning_tokens_;
 

@@ -81,6 +81,7 @@ class Boundary:
         self.jobs = {}
         self.deliveries = []
         self.delivery_attempts = []
+        self.drafts = []
         self.crash_after_delivery = False
         self.controller = AgentRuns(self)
 
@@ -127,6 +128,10 @@ class Boundary:
         body = kwargs.get("json", {})
         if path == base and method == "GET":
             return self.current.model_dump(mode="json")
+        if path == base + "/draft" and method == "PUT":
+            self.check_owned(body)
+            self.drafts.append(body["content"])
+            return None
         if path == base and method == "PUT":
             if self.current.status not in {"queued", "running"}:
                 raise ServiceError("Terminal run cannot be claimed", 409)
@@ -236,10 +241,14 @@ class Commands:
         self.results = list(results)
         self.calls = []
         self.tools = []
+        self.priorities = []
 
-    async def call(self, messages, model_id, conversation_key, tools):
+    async def call(
+        self, messages, model_id, conversation_key, tools, *, priority="interactive", **kwargs
+    ):
         self.calls.append(messages)
         self.tools.append([tool.name for tool in tools])
+        self.priorities.append(priority)
         result = self.results.pop(0)
         if isinstance(result, BaseException):
             raise result
@@ -762,7 +771,7 @@ def test_cancelling_graph_task_cancels_inflight_inference(boundary):
         started = asyncio.Event()
         cancelled = asyncio.Event()
 
-        async def infer(*args):
+        async def infer(*args, **kwargs):
             started.set()
             try:
                 await asyncio.Event().wait()
@@ -1895,3 +1904,41 @@ def test_plain_messages_that_quote_journal_formats_round_trip_exactly():
         ("human", rows[1].content),
         ("human", rows[2].content),
     ]
+
+
+def test_streaming_draft_publishes_with_interactive_priority(boundary):
+    seen_priorities = []
+
+    async def infer(
+        messages, model_id, conversation_key, tools, *, priority="interactive", on_text_delta=None
+    ):
+        seen_priorities.append(priority)
+        assert on_text_delta is not None
+        await on_text_delta("   ")
+        await on_text_delta("Hello")
+        await on_text_delta(" world")
+        return RunCall(command=send(content="Hello world", end_run=True))
+
+    boundary.controller.inference = SimpleNamespace(call=infer)
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert seen_priorities == ["interactive"]
+    assert boundary.drafts == ["   Hello"]
+    assert [m.content for m in boundary.deliveries] == ["Hello world"]
+    assert boundary.current.status == "completed"
+
+
+def test_streaming_draft_clears_when_model_returns_non_message_tool(boundary):
+    async def infer(
+        messages, model_id, conversation_key, tools, *, priority="interactive", on_text_delta=None
+    ):
+        assert priority == "interactive"
+        assert on_text_delta is not None
+        await on_text_delta("Checking")
+        return RunCall(command=finish())
+
+    boundary.controller.inference = SimpleNamespace(call=infer)
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.drafts == ["Checking", ""]
+    assert boundary.deliveries == []
+    assert boundary.current.status == "completed"
+

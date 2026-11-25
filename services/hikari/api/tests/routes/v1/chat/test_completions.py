@@ -347,3 +347,59 @@ class SubscriptionCompletionTests(unittest.IsolatedAsyncioTestCase):
         ):
             await create_completion(body, request)
         self.assertEqual(error.exception.status_code, 409)
+
+    async def test_priority_and_decomposed_timing_telemetry(self):
+        from api.pydantic_models.inference_task import ChatTask
+        from api.pydantic_models.requests import RequestRecord
+        from api.routes.v1.chat.completions import observe_generation
+
+        body = CompletionRequest(
+            messages=[{"role": "user", "content": "Hello"}],
+            priority="background",
+        )
+        self.assertEqual(body.priority, "background")
+        task = ChatTask(**body.model_dump())
+        self.assertEqual(task.priority, "background")
+
+        measurement = {}
+        observe_generation(
+            measurement,
+            {
+                "timing": {
+                    "generation_ttft_ms": 1200.0,
+                    "first_token_ms": 400.0,
+                    "prefill_ms": 350.0,
+                    "image_encode_ms": 50.0,
+                    "cache_restore_ms": 42.5,
+                    "reasoning_ms": 800.0,
+                    "thinking_tokens": 24,
+                    "output_tokens": 40,
+                    "prefill_tokens": 128,
+                    "decode_tokens_per_second": 32.5,
+                }
+            },
+        )
+        self.assertEqual(measurement["first_token_ms"], 400.0)
+        self.assertEqual(measurement["prefill_ms"], 350.0)
+        self.assertEqual(measurement["image_encode_ms"], 50.0)
+        self.assertEqual(measurement["cache_restore_ms"], 42.5)
+        self.assertEqual(measurement["reasoning_ms"], 800.0)
+        self.assertEqual(measurement["thinking_tokens"], 24)
+        record = RequestRecord(
+            id="req_test",
+            time="2026-11-25T00:00:00Z",
+            type="LLM",
+            status=200,
+            latency="1.200 s",
+            latency_ms=1200.0,
+            endpoint="/v1/chat/completions",
+            prompt="1 message",
+            output="HTTP 200",
+            request_bytes=10,
+            response_bytes=20,
+            **measurement,
+        )
+        self.assertEqual(record.reasoning_ms, 800.0)
+        self.assertEqual(record.thinking_tokens, 24)
+        self.assertEqual(record.cache_restore_ms, 42.5)
+

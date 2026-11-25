@@ -15,6 +15,7 @@ class AgentRunSummary(BaseModel):
     trigger_message_id: UUID | None
     trigger_job_id: UUID | None
     delivered_message_ids: list[UUID]
+    draft: str | None = None
     status: Literal["queued", "running", "completed", "failed", "cancelled"]
     error: str | None
     created_at: datetime

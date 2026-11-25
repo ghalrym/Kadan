@@ -59,6 +59,8 @@ def test_tool_uses_fresh_screenshot_and_only_returns_a_bounded_observation():
     assert call.args == (target.services.settings.hikari_url + "/v1/chat/completions",)
     body = call.kwargs["json"]
     assert body["stream"] is False
+    assert body["reuse_prefix"] is False
+    assert body["priority"] == "background"
     assert "model" not in body
     assert body["messages"] == [
         {

@@ -468,6 +468,42 @@ def test_hikari_chat_model_preserves_multipart_messages():
     ]
 
 
+def test_priority_and_visible_text_deltas():
+    seen = []
+    deltas = []
+
+    async def on_delta(text: str):
+        deltas.append(text)
+
+    async def check():
+        stream = chunk("Hello ") + chunk("world!") + chunk(finish="stop") + "data: [DONE]\n\n"
+
+        def respond(request):
+            seen.append(json.loads(request.content))
+            return httpx.Response(
+                200, text=stream, headers={"content-type": "text/event-stream"}
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            result = await AgentInference(client, "http://hikari").call(
+                [HumanMessage(content="Hi")],
+                "inkling-2-mini-iq4-nl",
+                "kadan:test:conversation",
+                TOOLS,
+                priority="background",
+                on_text_delta=on_delta,
+            )
+            assert result.command == ToolCommand(
+                tool="send_message",
+                arguments={"content": "Hello world!", "end_run": True},
+            )
+
+    asyncio.run(check())
+    assert seen[0]["priority"] == "background"
+    assert deltas == ["Hello ", "world!"]
+
+
+
 def test_hikari_chat_model_rejects_unknown_content_parts():
     with pytest.raises(TypeError):
         HikariChatModel._wire_messages([HumanMessage(content=[{"type": "unknown"}])])

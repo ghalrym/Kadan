@@ -24,19 +24,25 @@ Serves public chat, agent tool-calling turns, and multimodal screenshot vision u
 
 ## Engine
 
-- Dense GGUF multimodal architecture (`inkling2`) with a bundled F16 vision projector (`mmproj`) for native image encoding.
+- Native GGUF looped-MoE architecture (`inkling2_loop`: 24 physical layers, 48 logical slots with 40 sliding-window and 8 full-attention slots) with a bundled vision projector (`mmproj`) for native image encoding.
 - Supports Inkling 2 Mini's chat template, reasoning blocks, tool-call JSON and tool-role history, and multimodal image embeddings.
-- Uses quantized weight projections with in-kernel dequantization (no F32 weight expansion on the decode path).
-- Supports prefix cache reuse and conversation checkpoints across turns in the same conversation, with host-side detachment on offload.
+- **Single-GPU resident fast path:** When the packed weights and FP16 KV + F32 short-conv state fit on the single state GPU (e.g. `inkling-2-mini-iq4-nl` on a 24 GiB GPU), all 48 logical slots execute end-to-end in VRAM with zero host activation round-trips:
+  - Prompt prefill (`m >= 16`) dequantizes packed weight tiles into scratch FP16 and runs FP16 Tensor Core `cublasGemmEx` (`FP16 × FP16 -> FP32` accumulation).
+  - Token decode and small-row experts (`m < 16`) quantize inputs to Q8 blocks and run packed `IQ4_NL`/`Q8_0` `__dp4a` kernels with fused Inkling kernels (`mix_states + rms_norm`, `ctrl_blend + rms_norm`, `qkvr_clip + tau + FP16 KV store`, `attn_fp16 + sigmoid gate`, `post_conv + residual`, indirect-GPU `moe_gate_up + SiTU` and deterministic `moe_down + reduce`, `output + softcap`).
+  - Single-token decode captures and replays all 48 slots plus the output head in a single CUDA Graph reading position from a 64-byte device parameter struct, automatically invalidating on KV mirror growth or request reset.
+- **Strata tiered fallback:** When the model spans multiple GPUs or spills routed experts to host RAM/disk (e.g. `inkling-2-mini-q8-0` or constrained VRAM), execution falls back transparently to batched `GgufWeights::project` with specialized in-kernel `IQ4_NL`/`Q8_0` decoders, TF32 Tensor Core prefill, FP16 KV mirrors, and concurrent host `ggml-cpu` expert execution.
+- Supports prefix cache reuse and a bounded multi-slot compacted checkpoint pool in host RAM (sized to one uncompacted KV/recurrent slot) holding per-conversation boundary and live checkpoints plus cross-conversation static system/tool prefix checkpoints, with image-span fencing so stale multimodal embeddings are never reused across mismatched images. GPU-resident KV/conv state synchronizes lazily to/from host only at checkpoint save/restore boundaries.
+- Reports separate timing telemetry for cache restore, image encoding, prompt prefill, reasoning, first visible token, and decode throughput.
 ## Memory
 
-- **Minimum:** model weights + vision projector + KV cache state + VRAM headroom, plus host RAM for staging and prefix checkpoint state.
+- **Minimum:** model weights + vision projector + FP16 KV mirror and F32 short-conv/parameter device state + VRAM headroom, plus host RAM for staging and prefix checkpoint state.
 - **Context:** sized from the configured `HIKARI_LLM_CONTEXT_LIMIT` (default `65536`) or an explicit request context limit within the checkpoint's supported maximum.
-- **Several GPUs:** the budget may span GPUs where supported, with per-GPU headroom enforced.
+- **Several GPUs:** the budget may span GPUs where supported, with per-GPU headroom enforced. At the default `IQ4_NL` quant and `65536` context, FP16 KV device state (~2.35 GiB) allows the entire model to pack cleanly onto a single 24 GiB GPU, leaving other GPUs free for image/video/audio workloads.
 
 ## Scheduling
 
 - Priority 1, shared with decisions and live voice calls: the highest.
+- Within queued language requests, `interactive` requests (chat turns) run ahead of `background` requests (computer assistant and screenshot turns) between turns, with a fairness bound (at most 3 consecutive interactive turns ahead of waiting background work) and no mid-generation preemption.
 - While it is not loaded, other workers leave its minimum free where possible so chat can start beside an image (Qwen-Image) or video (H3) request.
 - When idle lower-priority workers hold memory, it takes back the VRAM it lacks so GPU sharing between LLM and image/video generation works automatically without manual unloading.
 - Any change to its budget closes the engine cleanly before releasing memory; the next request reloads within the new budget.

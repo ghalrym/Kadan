@@ -37,6 +37,14 @@ InferenceRequest parse_request(const Json& envelope) {
     else
         throw RequestError("Invalid task operation", 422);
     const auto& body = envelope.at("input");
+    if (const auto priority = optional<std::string>(body, "priority")) {
+        if (*priority == "interactive")
+            request.priority = Priority::interactive;
+        else if (*priority == "background")
+            request.priority = Priority::background;
+        else
+            throw RequestError("Invalid task priority", 422);
+    }
     const auto feature = body.at("feature").get<std::string>();
     if (feature == "llm") {
         ChatRequest input;

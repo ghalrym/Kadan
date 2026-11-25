@@ -38,8 +38,13 @@ class RequestRecord(BaseModel):
     ) = None
 
     generation_ttft_ms: float | None = None
+    first_token_ms: float | None = None
     stream_ttft_ms: float | None = None
     prefill_ms: float | None = None
+    image_encode_ms: float | None = None
+    cache_restore_ms: float | None = None
+    reasoning_ms: float | None = None
+    thinking_tokens: int | None = None
     decode_tokens_per_second: float | None = None
     output_tokens: int | None = None
     prefill_tokens: int | None = None

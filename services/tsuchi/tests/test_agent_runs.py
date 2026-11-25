@@ -990,3 +990,105 @@ def test_runs_without_an_event_keep_their_stored_shape(repository):
             "SELECT data FROM agent_runs WHERE id = ?", (str(run.id),)
         ).fetchone()
     assert "trigger_event" not in raw
+
+
+def test_run_draft_streams_ephemerally_and_clears_on_delivery(tmp_path):
+    from fastapi.testclient import TestClient
+    from tsuchi.config import Settings
+    from tsuchi.main import create_app
+
+    app = create_app(Settings(data_dir=tmp_path, static_dir=tmp_path / "missing"))
+    with TestClient(app) as client:
+        assert (
+            client.post("/api/agents", json={"key": "alpha", "name": "Alpha"}).status_code
+            == 201
+        )
+        conv = client.post(
+            "/api/agents/alpha/resources",
+            json={"kind": "conversation", "title": "Chat"},
+        ).json()
+        run = client.post(
+            f"/api/agents/alpha/resources/{conv['id']}/runs",
+            json={
+                "expected_version": conv["version"],
+                "message": message("user", "Hi").model_dump(mode="json"),
+            },
+        ).json()
+        owner = uuid4()
+        assert (
+            client.put(
+                "/api/runners/runner-1",
+                json={"worker_id": str(owner), "capacity": 5},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/api/runners/runner-1/assign",
+                json={"worker_id": str(owner)},
+            ).status_code
+            == 200
+        )
+        # Queued run rejects draft updates.
+        assert (
+            client.put(
+                f"/api/agents/alpha/runs/{run['id']}/draft",
+                json={"worker_id": str(owner), "content": "Early"},
+            ).status_code
+            == 409
+        )
+        # Claim run.
+        claim_response = client.put(
+            f"/api/agents/alpha/runs/{run['id']}",
+            json={
+                "status": "running",
+                "transcript": [],
+                "transcript_format": 2,
+                "owner_id": str(owner),
+                "lease_expires_at": (utc_now() + timedelta(seconds=60)).isoformat(),
+                "error": None,
+                "expected_version": run["version"],
+                "worker_id": str(owner),
+            },
+        )
+        assert claim_response.status_code == 200
+        claimed = claim_response.json()
+        # Owner publishes draft without bumping run version.
+        assert (
+            client.put(
+                f"/api/agents/alpha/runs/{run['id']}/draft",
+                json={"worker_id": str(owner), "content": "Hello "},
+            ).status_code
+            == 204
+        )
+        # Non-owner is fenced with 409 without wiping the owner's draft.
+        assert (
+            client.put(
+                f"/api/agents/alpha/runs/{run['id']}/draft",
+                json={"worker_id": str(uuid4()), "content": "Spoofed"},
+            ).status_code
+            == 409
+        )
+        listed = client.get(
+            f"/api/agents/alpha/resources/{conv['id']}/runs"
+        ).json()
+        assert listed[0]["draft"] == "Hello "
+        assert listed[0]["version"] == claimed["version"]
+        # Delivering the final message clears the ephemeral draft.
+        assert (
+            client.post(
+                f"/api/agents/alpha/runs/{run['id']}/messages",
+                json={
+                    "worker_id": str(owner),
+                    "message": message("assistant", "Hello world!").model_dump(
+                        mode="json"
+                    ),
+                },
+            ).status_code
+            == 200
+        )
+        listed = client.get(
+            f"/api/agents/alpha/resources/{conv['id']}/runs"
+        ).json()
+        assert listed[0]["draft"] is None
+

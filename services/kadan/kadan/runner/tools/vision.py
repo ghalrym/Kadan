@@ -52,6 +52,8 @@ async def computer_look(args: LookArguments, computer: SandboxClient) -> dict:
                     }
                 ],
                 "stream": False,
+                "reuse_prefix": False,
+                "priority": "background",
             },
             timeout=httpx.Timeout(None, connect=3),
         )

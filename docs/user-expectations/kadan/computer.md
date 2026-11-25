@@ -28,7 +28,7 @@ The assistant's own working chat is never shown. The view's header shows only wh
 
 If Kadan cannot identify the last action of an older interrupted task, it marks that task as failed before trying any further action. Later tasks can still proceed.
 
-A request sent just as a task finishes is never lost: it either steers that task before it ends or starts the next one. Requests and tasks wait while Kadan's runner is unavailable. If Hikari is unavailable when the assistant needs it, the task fails and reports that instead of retrying on its own.
+A request sent just as a task finishes is never lost: it either steers that task before it ends or starts the next one. Requests and tasks wait while Kadan's runner is unavailable. When chat and a computer task share the same language model, waiting chat replies take priority over the computer assistant's next step without interrupting a step already running. If Hikari is unavailable when the assistant needs it, the task fails and reports that instead of retrying on its own.
 
 ## Agent actions
 

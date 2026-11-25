@@ -175,12 +175,13 @@ Json worker_requirement(
     }
     const Bytes pinned =
         (layout.packed > experts ? layout.packed - experts : 0) + vision_bytes;
+    const Bytes device_state = layout.device_state ? layout.device_state : layout.host;
     return footprint(
         model,
         layout.host + vision_bytes + text_host_headroom,
         layout.host + layout.packed + vision_bytes + text_host_headroom,
-        pinned + layout.host + device_headroom,
-        layout.packed + vision_bytes + layout.host + device_headroom,
+        pinned + device_state + device_headroom,
+        layout.packed + vision_bytes + device_state + device_headroom,
         device_headroom
     );
 }

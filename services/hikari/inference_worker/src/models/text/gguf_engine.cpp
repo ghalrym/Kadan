@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <limits>
 #include <type_traits>
 #include <variant>
@@ -20,12 +21,18 @@ constexpr std::size_t fixed_bytes = 1024ULL << 20, chunk_rows = 512;
 struct Architecture {
     void (*bind)(GgufWeights&);
     std::size_t (*state)(std::size_t);
+    std::size_t (*device_state)(std::size_t);
     std::unique_ptr<Model> (*model)(const GgufWeights&, DenseCompute&, std::size_t);
 };
 
 Architecture architecture(const std::string& name) {
     if (name == "inkling2_loop")
-        return {bind_inkling2_loop, inkling2_loop_state_bytes, inkling2_loop_model};
+        return {
+            bind_inkling2_loop,
+            inkling2_loop_state_bytes,
+            inkling2_loop_device_state_bytes,
+            inkling2_loop_model
+        };
     throw std::runtime_error("gguf_text_architecture");
 }
 
@@ -35,7 +42,8 @@ std::unique_ptr<GgufWeights> load(const char* root, const std::atomic_bool* canc
     return weights;
 }
 
-// The live state and one conversation checkpoint, each with its tokens.
+// The live state and the compacted checkpoint pool budget, each bounded by one
+// full-context state plus its token buffer.
 std::size_t host_bytes(const std::string& name, std::size_t context) {
     need(
         context && context <= serving::max_resident_capacity, "gguf_text_context_bound"
@@ -44,62 +52,6 @@ std::size_t host_bytes(const std::string& name, std::size_t context) {
            + 2 * (architecture(name).state(context) + context * sizeof(unsigned));
 }
 }  // namespace
-
-// Copies the leading `positions` of every full-context KV buffer; sliding-window
-// ring buffers and short-convolution histories are copied whole. An empty target
-// takes a whole copy, which sizes it for later partial copies.
-void copy_state(
-    const ModelState& from, ModelState& to, std::size_t positions, std::size_t context
-) {
-    if (to.layers.empty()) {
-        to = from;
-        return;
-    }
-    need(to.layers.size() == from.layers.size(), "gguf_text_checkpoint_layers");
-    const auto leading = [&](const Vec& source, Vec& target) {
-        need(source.size() == target.size(), "gguf_text_checkpoint_shape");
-        const auto count = std::min(
-            source.size(), (source.size() * positions + context - 1) / context
-        );
-        std::copy_n(source.begin(), count, target.begin());
-    };
-    for (std::size_t i = 0; i < from.layers.size(); ++i) {
-        need(
-            from.layers[i].index() == to.layers[i].index(),
-            "gguf_text_checkpoint_layers"
-        );
-        std::visit(
-            [&](const auto& source) {
-                using T = std::decay_t<decltype(source)>;
-                auto& target = std::get<T>(to.layers[i]);
-                if constexpr (std::is_same_v<T, AttentionState>) {
-                    leading(source.keys, target.keys);
-                    leading(source.values, target.values);
-                } else {
-                    need(
-                        source.sliding_window == target.sliding_window,
-                        "gguf_text_checkpoint_shape"
-                    );
-                    if (source.sliding_window) {
-                        need(
-                            source.attention.keys.size() == target.attention.keys.size()
-                                && source.attention.values.size()
-                                       == target.attention.values.size(),
-                            "gguf_text_checkpoint_shape"
-                        );
-                        target.attention.keys = source.attention.keys;
-                        target.attention.values = source.attention.values;
-                    } else {
-                        leading(source.attention.keys, target.attention.keys);
-                        leading(source.attention.values, target.attention.values);
-                    }
-                    target.conv = source.conv;
-                }
-            },
-            from.layers[i]
-        );
-    }
-}
 
 std::string validate_metadata(const checkpoint::GgufMetadata& m) {
     const auto name = m.string("general.architecture");
@@ -125,12 +77,15 @@ void validate_config(
 
 Plan plan(const char* root, std::size_t context, const std::atomic_bool* cancel) {
     const auto weights = load(root, cancel);
+    const auto name = weights->gguf().string("general.architecture");
     return {
         context,
-        host_bytes(weights->gguf().string("general.architecture"), context),
+        host_bytes(name, context),
         weights->packed_bytes(),
         weights->gguf().tensor_count(),
-        weights->execution_bytes()
+        weights->execution_bytes(),
+        0,
+        architecture(name).device_state(context)
     };
 }
 
@@ -144,40 +99,47 @@ struct Engine::Impl {
     std::unique_ptr<InklingVision> vision;
     const std::atomic_bool* cancel = nullptr;
     Prefix prefix;
+    CheckpointPool pool;
+    std::vector<ImageTag> live_images, pending_images;
+    std::vector<unsigned> static_tokens;
     Footprint retained_state;
-    std::size_t tokens = 0, boundary = 0;
-    bool active = false, poisoned = false;
+    std::size_t tokens = 0, boundary = 0, static_boundary = 0;
+    double cache_restore_ms = 0.0;
+    bool active = false, poisoned = false, save_static = false;
 
-    // Host state after a conversation's leading prompt tokens.
-    struct Checkpoint {
-        ModelState state;
-        std::vector<unsigned> tokens;
-        std::string conversation;
-    } checkpoint;
-
-    void save_checkpoint() {
-        auto state = model->take_state();
-        copy_state(state, checkpoint.state, tokens, p.context);
-        model->restore_state(std::move(state));
-        const auto committed = prefix.committed();
-        checkpoint.tokens.assign(committed.begin(), committed.end());
-        checkpoint.conversation = prefix.conversation();
+    void save_pool_entry(
+        std::string_view conversation,
+        bool is_static,
+        std::span<const unsigned> entry_tokens,
+        std::span<const ImageTag> entry_images
+    ) {
+        if (!tokens || entry_tokens.size() != tokens || !pool.budget_bytes())
+            return;
+        auto compacted = model->snapshot_state(tokens, p.context);
+        pool.save(
+            conversation, is_static, entry_tokens, entry_images, std::move(compacted)
+        );
     }
 
-    bool
-    resumes(std::span<const unsigned> prompt, std::string_view conversation) const {
-        const auto& c = checkpoint.tokens;
-        return !c.empty() && !conversation.empty()
-               && conversation == checkpoint.conversation && c.size() < prompt.size()
-               && std::equal(c.begin(), c.end(), prompt.begin());
-    }
-
-    void restore_checkpoint() {
+    void restore_pool_entry(const CheckpointPool::Entry& entry) {
+        const auto started = std::chrono::steady_clock::now();
         auto state = model->take_state();
-        copy_state(checkpoint.state, state, checkpoint.tokens.size(), p.context);
+        try {
+            restore_compact_state(entry.state, state, entry.tokens.size(), p.context);
+        } catch (...) {
+            model->restore_state(std::move(state));
+            throw;
+        }
         model->restore_state(std::move(state));
-        tokens = checkpoint.tokens.size();
-        prefix.resume(checkpoint.tokens);
+        tokens = entry.tokens.size();
+        live_images = entry.images;
+        prefix.resume(
+            entry.tokens, entry.is_static ? "static_prefix_hit" : "checkpoint_hit"
+        );
+        cache_restore_ms = std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - started
+                           )
+                               .count();
     }
 
     Impl(
@@ -206,6 +168,9 @@ struct Engine::Impl {
                     && host_bytes(name, p.context) == p.host,
                 "gguf_text_preflight_changed"
             );
+            pool = CheckpointPool(
+                architecture(name).state(p.context) + p.context * sizeof(unsigned)
+            );
             weights->set_ram_budget(p.cache);
             model = architecture(name).model(*weights, *execution.compute, p.context);
             // KV mirrors stay out of the weight bank's reservation.
@@ -225,6 +190,7 @@ struct Engine::Impl {
             vision.reset();
             model.reset();
             weights.reset();
+            pool.clear();
             prefix = Prefix{};
             execution.resources->released(memory);
             memory = 0;
@@ -236,6 +202,7 @@ struct Engine::Impl {
         vision.reset();
         model.reset();
         weights.reset();
+        pool.clear();
         prefix = Prefix{};
         if (memory) {
             execution.resources->begin_eviction(memory);
@@ -287,9 +254,16 @@ serving::Info Engine::info() const {
 void Engine::reset() {
     impl_->execution.idle();
     impl_->model->reset();
-    impl_->checkpoint = {};
+    impl_->pool.clear();
+    impl_->live_images.clear();
+    impl_->pending_images.clear();
+    impl_->static_tokens.clear();
     impl_->tokens = 0;
+    impl_->boundary = 0;
+    impl_->static_boundary = 0;
+    impl_->cache_restore_ms = 0.0;
     impl_->poisoned = false;
+    impl_->save_static = false;
     impl_->prefix.clear();
     impl_->retained_state.clear();
 }
@@ -297,29 +271,79 @@ void Engine::reset() {
 std::size_t Engine::begin_request(
     std::span<const unsigned> prompt, std::string_view conversation, bool reuse_prefix
 ) {
+    return begin_request(prompt, conversation, reuse_prefix, {});
+}
+
+std::size_t Engine::begin_request(
+    std::span<const unsigned> prompt,
+    std::string_view conversation,
+    bool reuse_prefix,
+    std::span<const ImageTag> prompt_images
+) {
     auto& m = *impl_;
     need(!m.active, "gguf_text_request_state");
     m.weights->check_unchanged();
     m.execution.resume();
-    if (m.poisoned)
+    m.cache_restore_ms = 0.0;
+    if (m.poisoned) {
         m.prefix.clear();
+        m.live_images.clear();
+    }
+
+    const auto live_stored = m.prefix.stored();
+    const bool live_images_ok =
+        !live_stored || images_match_prefix(m.live_images, prompt_images, live_stored);
+    const bool will_live_hit =
+        live_stored > 0 && reuse_prefix && !conversation.empty()
+        && conversation == m.prefix.conversation() && live_stored < prompt.size()
+        && live_images_ok
+        && std::equal(
+            m.prefix.committed().begin(), m.prefix.committed().end(), prompt.begin()
+        );
+
+    // Preserve a valid outgoing live conversation in the checkpoint pool before
+    // resetting, so interleaving conversations or disposable non-reusable calls
+    // (such as vision inspections) never clobber cached conversation state.
+    if (!will_live_hit && !m.poisoned && live_stored > 0
+        && !m.prefix.conversation().empty() && live_stored == m.tokens) {
+        m.save_pool_entry(
+            m.prefix.conversation(), false, m.prefix.committed(), m.live_images
+        );
+    }
+    if (!will_live_hit && live_stored > 0 && !live_images_ok) {
+        m.prefix.clear();
+        m.live_images.clear();
+    }
+
     const auto reused = m.prefix.begin(prompt, conversation, reuse_prefix);
     need(!reused || reused == m.tokens, "gguf_text_prefix_position");
+    m.pending_images.assign(prompt_images.begin(), prompt_images.end());
+    m.save_static = reuse_prefix;
+    m.static_tokens.clear();
+    if (reuse_prefix && m.static_boundary > 0 && m.static_boundary < prompt.size()) {
+        m.static_tokens.assign(prompt.begin(), prompt.begin() + m.static_boundary);
+    }
     if (!reused) {
         m.execution.idle();
         m.model->reset();
         m.tokens = 0;
         m.poisoned = false;
         m.retained_state.clear();
+        m.live_images.clear();
         // Released mirrors re-upload the restored keys on first attention.
-        if (reuse_prefix && m.resumes(prompt, conversation))
-            try {
-                m.restore_checkpoint();
-            } catch (...) {
-                m.poisoned = true;
-                m.prefix.clear();
-                throw;
+        if (reuse_prefix) {
+            if (const auto* entry =
+                    m.pool.find_best(prompt, conversation, prompt_images)) {
+                try {
+                    m.restore_pool_entry(*entry);
+                } catch (...) {
+                    m.poisoned = true;
+                    m.prefix.clear();
+                    m.live_images.clear();
+                    throw;
+                }
             }
+        }
     }
     m.active = true;
     return m.tokens;
@@ -329,35 +353,32 @@ void Engine::checkpoint_at(std::size_t tokens) {
     impl_->boundary = tokens;
 }
 
+void Engine::checkpoint_static_at(std::size_t tokens) {
+    impl_->static_boundary = tokens;
+}
+
+double Engine::last_cache_restore_ms() const {
+    return impl_->cache_restore_ms;
+}
+
 void Engine::end_request() {
     auto& m = *impl_;
     need(m.active && !m.poisoned, "gguf_text_request_state");
     m.retained_state = m.execution.idle({}, m.prefix.retaining());
     m.prefix.complete();
     m.boundary = 0;
+    m.static_boundary = 0;
+    m.save_static = false;
+    m.pending_images.clear();
+    m.static_tokens.clear();
     m.active = false;
 }
 
 Bytes PrefixSnapshot::bytes() const {
-    Bytes bytes = sizeof(*this) + prefix.memory_bytes()
-                  + weights.capacity() * sizeof(WeightIdentity)
-                  + state.layers.capacity() * sizeof(decltype(state.layers)::value_type);
-    const auto attention_bytes = [](const AttentionState& s) {
-        return (s.keys.capacity() + s.values.capacity()) * sizeof(float);
-    };
-    for (const auto& layer : state.layers)
-        std::visit(
-            [&](const auto& s) {
-                using T = std::decay_t<decltype(s)>;
-                if constexpr (std::is_same_v<T, AttentionState>)
-                    bytes += attention_bytes(s);
-                else
-                    bytes += attention_bytes(s.attention)
-                             + s.conv.capacity() * sizeof(float);
-            },
-            layer
-        );
-    return bytes;
+    return sizeof(*this) + prefix.memory_bytes()
+           + images.capacity() * sizeof(ImageTag)
+           + weights.capacity() * sizeof(WeightIdentity)
+           + state_memory_bytes(state);
 }
 
 std::unique_ptr<PrefixSnapshot> Engine::take_prefix() {
@@ -373,7 +394,9 @@ std::unique_ptr<PrefixSnapshot> Engine::take_prefix() {
     saved->context = m.p.context;
     saved->state = m.model->take_state();
     saved->prefix = std::move(m.prefix);
+    saved->images = std::move(m.live_images);
     m.prefix = Prefix{};
+    m.live_images.clear();
     return saved;
 }
 
@@ -389,18 +412,26 @@ bool Engine::restore_prefix(std::unique_ptr<PrefixSnapshot> saved) {
             return false;
     m.model->restore_state(std::move(saved->state));
     m.prefix = std::move(saved->prefix);
+    m.live_images = std::move(saved->images);
     m.tokens = m.prefix.stored();
     return true;
 }
 
 Footprint Engine::prefix_memory() const {
     const auto& m = *impl_;
-    if (!m.prefix.stored())
+    const auto pool_bytes = m.pool.used_bytes();
+    if (!m.prefix.stored() && !pool_bytes)
         return Footprint(m.execution.resources->snapshot().used.size());
-    auto bytes = m.retained_state;
-    bytes[0] = architecture(m.weights->gguf().string("general.architecture"))
-                   .state(m.p.context)
-               + m.p.context * sizeof(unsigned);
+    Footprint bytes = m.prefix.stored() && !m.retained_state.empty()
+                          ? m.retained_state
+                          : Footprint(m.execution.resources->snapshot().used.size());
+    const Bytes live_bytes =
+        m.prefix.stored()
+            ? architecture(m.weights->gguf().string("general.architecture"))
+                      .state(m.p.context)
+                  + m.p.context * sizeof(unsigned)
+            : 0;
+    bytes[0] = live_bytes + pool_bytes;
     return bytes;
 }
 
@@ -416,6 +447,10 @@ void Engine::park() {
     need(!impl_->active, "gguf_text_active_park");
     impl_->vision.reset();
     impl_->execution.park();
+    impl_->pool.clear();
+    impl_->live_images.clear();
+    impl_->pending_images.clear();
+    impl_->static_tokens.clear();
     impl_->prefix.clear();
     impl_->retained_state.clear();
 }
@@ -446,6 +481,7 @@ serving::Token Engine::step(unsigned token, bool logits) {
     } catch (...) {
         m.poisoned = true;
         m.prefix.clear();
+        m.live_images.clear();
         throw;
     }
 }
@@ -477,7 +513,10 @@ serving::Token Engine::prefill(
         Vec logits;
         for (std::size_t done = 0; done < prompt.size();) {
             auto count = std::min(chunk_rows, prompt.size() - done);
-            // A chunk ends at the checkpoint so the state is saved exactly there.
+            // A chunk ends at a requested checkpoint boundary so the state is
+            // saved at that exact token offset.
+            if (m.static_boundary > m.tokens && m.static_boundary < m.tokens + count)
+                count = m.static_boundary - m.tokens;
             if (m.boundary > m.tokens && m.boundary < m.tokens + count)
                 count = m.boundary - m.tokens;
             const bool last = done + count == prompt.size();
@@ -487,9 +526,18 @@ serving::Token Engine::prefill(
             m.weights->advance(count);
             m.tokens += count;
             m.prefix.commit(prompt.subspan(done, count));
+            m.live_images = images_within_prefix(m.pending_images, m.tokens);
             done += count;
-            if (!last && m.tokens == m.boundary && m.prefix.retaining())
-                m.save_checkpoint();
+            if (!last && m.static_boundary && m.tokens == m.static_boundary
+                && m.save_static && m.live_images.empty()
+                && m.static_tokens.size() == m.tokens) {
+                m.save_pool_entry("", true, m.static_tokens, {});
+            }
+            if (!last && m.boundary && m.tokens == m.boundary && m.prefix.retaining()) {
+                m.save_pool_entry(
+                    m.prefix.conversation(), false, m.prefix.committed(), m.live_images
+                );
+            }
             if (progress) {
                 progress("prefill_chunk", done);
                 for (std::size_t row = done - count; row < done; ++row)
@@ -500,6 +548,7 @@ serving::Token Engine::prefill(
     } catch (...) {
         m.poisoned = true;
         m.prefix.clear();
+        m.live_images.clear();
         throw;
     }
 }

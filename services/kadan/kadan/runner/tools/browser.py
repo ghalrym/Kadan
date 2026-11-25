@@ -4,14 +4,236 @@ Page tools drive the current tab through Playwright. `browser_execute_action`
 drives the whole display with the mouse and keyboard.
 """
 
-from typing import Annotated, Any, Literal
+import json
+import re
+from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
-from ...api.sandbox_client import SandboxClient, segment
+from ...api.config import ServiceError
+from ...api.sandbox_client import (
+    MAX_RESULT_CHARACTERS,
+    SandboxClient,
+    segment,
+    truncated,
+)
 from .base import Arguments, NoArguments, body, computer_tool
 
 MouseButton = Literal["left", "right", "middle"]
+NAVIGATE_EXCERPT_CHARACTERS = 1000
+NAVIGATE_LINKS_LIMIT = 10
+NAVIGATE_LINKS_MAX_CHARACTERS = 800
+TRUNCATED_LINKS_LIMIT = 15
+PAGE_RESULT_MAX_CHARACTERS = 6000
+LINKS_BLOCK_MAX_CHARACTERS = 1000
+MAX_LINK_URL_CHARACTERS = 220
+MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+NOISE_URL_MARKERS = (
+    "googleadservices.com/",
+    "doubleclick.net/",
+    "googlesyndication.com/",
+    "accounts.google.com/ServiceLogin",
+    "adservice.google.",
+)
+
+
+def _is_noise_url(url: str) -> bool:
+    lowered = url.lower()
+    if any(marker.lower() in lowered for marker in NOISE_URL_MARKERS):
+        return True
+    # Drop giant ad/tracking URLs whose query strings explode token counts.
+    return len(url) > MAX_LINK_URL_CHARACTERS and ("?" in url or "&" in url)
+
+
+def _format_bounded_links(
+    links: list[tuple[str, str]],
+    limit: int,
+    max_characters: int,
+    prefix: str = "",
+) -> list[str]:
+    formatted: list[str] = []
+    used = 0
+    for label, url in links:
+        if len(formatted) >= limit:
+            break
+        if _is_noise_url(url):
+            continue
+        clean_url = (
+            url
+            if len(url) <= MAX_LINK_URL_CHARACTERS
+            else url[:MAX_LINK_URL_CHARACTERS]
+        )
+        entry = f"{prefix}[{label}]({clean_url})" if label else f"{prefix}{clean_url}"
+        cost = len(entry) + (1 if formatted else 0)
+        if formatted and used + cost > max_characters:
+            break
+        if not formatted and len(entry) > max_characters:
+            continue
+        formatted.append(entry)
+        used += cost
+    return formatted
+
+
+def _extract_markdown(result: dict[str, Any]) -> tuple[str | None, dict[str, str]]:
+    """Extract page markdown text and optional metadata from a sandbox response."""
+    raw = result.get("body")
+    if isinstance(raw, str):
+        return raw, {}
+    if not isinstance(raw, dict):
+        return None, {}
+    meta: dict[str, str] = {}
+    sources = [raw]
+    data = raw.get("data")
+    if isinstance(data, dict):
+        sources.append(data)
+    for source in sources:
+        for key in ("title", "url"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip() and key not in meta:
+                meta[key] = value.strip()
+    if isinstance(data, str):
+        return data, meta
+    for source in sources:
+        for key in ("markdown", "content", "text"):
+            value = source.get(key)
+            if isinstance(value, str):
+                return value, meta
+    return None, meta
+
+
+def _extract_links(markdown: str) -> list[tuple[str, str]]:
+    """Return deduplicated (label, url) pairs from Markdown link syntax."""
+    links: list[tuple[str, str]] = []
+    seen: dict[str, int] = {}
+    for raw_label, raw_url in MARKDOWN_LINK_RE.findall(markdown):
+        url = raw_url.strip()
+        if not url or url.startswith(("#", "javascript:", "data:")):
+            continue
+        label = " ".join(raw_label.split())
+        if url in seen:
+            existing_label, _ = links[seen[url]]
+            if not existing_label and label:
+                links[seen[url]] = (label, url)
+            continue
+        seen[url] = len(links)
+        links.append((label, url))
+    return links
+
+
+def _select_top_links(
+    links: list[tuple[str, str]],
+    limit: int,
+    max_characters: int = LINKS_BLOCK_MAX_CHARACTERS,
+) -> list[str]:
+    """Prioritize descriptive content links over navigation chrome and ad trackers."""
+    descriptive: list[tuple[str, str]] = []
+    short: list[tuple[str, str]] = []
+    for label, url in links:
+        if _is_noise_url(url):
+            continue
+        if len(label) >= 12 or len(label.split()) >= 2:
+            descriptive.append((label, url))
+        else:
+            short.append((label, url))
+    return _format_bounded_links([*descriptive, *short], limit, max_characters)
+
+
+def _matches_query(text: str, terms: list[str]) -> bool:
+    lowered = text.lower()
+    return all(term in lowered for term in terms)
+
+
+def _filter_lines_by_query(text: str, query: str, context_lines: int = 3) -> str:
+    """Return matching lines with surrounding context lines."""
+    terms = [term for term in query.lower().split() if term]
+    if not terms:
+        return text
+    lines = text.splitlines()
+    keep: set[int] = set()
+    for index, line in enumerate(lines):
+        if _matches_query(line, terms):
+            keep.update(
+                range(
+                    max(0, index - context_lines),
+                    min(len(lines), index + context_lines + 1),
+                )
+            )
+    sections: list[str] = []
+    last = -2
+    for index in sorted(keep):
+        if sections and index > last + 1:
+            sections.append("...")
+        sections.append(lines[index])
+        last = index
+    return "\n".join(sections)
+
+
+def _filter_markdown_by_query(markdown: str, query: str) -> str:
+    """Return matching lines with surrounding context plus matching clean links."""
+    terms = [term for term in query.lower().split() if term]
+    if not terms:
+        return markdown
+    sections = _filter_lines_by_query(markdown, query, context_lines=3)
+    matched_pairs = [
+        (label, url)
+        for label, url in _extract_links(markdown)
+        if not _is_noise_url(url) and _matches_query(f"{label} {url}", terms)
+    ]
+    matching_links = _format_bounded_links(
+        matched_pairs,
+        TRUNCATED_LINKS_LIMIT,
+        LINKS_BLOCK_MAX_CHARACTERS,
+        prefix="- ",
+    )
+    if matching_links:
+        link_block = "Matching links:\n" + "\n".join(matching_links)
+        return f"{sections}\n\n{link_block}" if sections else link_block
+    return sections
+
+
+def _bounded_result(
+    result: dict[str, Any], max_characters: int = PAGE_RESULT_MAX_CHARACTERS
+) -> dict[str, Any]:
+    """Ensure a raw sandbox result never exceeds max_characters."""
+    raw = result.get("body")
+    if isinstance(raw, str):
+        if len(raw) > max_characters:
+            return {
+                **{k: v for k, v in result.items() if k != "body"},
+                **truncated(raw, max_characters),
+            }
+        return result
+    if isinstance(raw, (dict, list)):
+        serialized = json.dumps(raw, separators=(",", ":"))
+        if len(serialized) > max_characters:
+            return {
+                **{k: v for k, v in result.items() if k != "body"},
+                **truncated(serialized, max_characters),
+            }
+    return result
+
+
+def _compact_page_observation(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Build a compact post-navigation page observation from markdown output."""
+    if not (200 <= result.get("status", 500) < 300):
+        return None
+    markdown, meta = _extract_markdown(result)
+    if markdown is None or not markdown.strip():
+        return None
+    stripped = markdown.strip()
+    observation: dict[str, Any] = {**meta}
+    if len(stripped) <= NAVIGATE_EXCERPT_CHARACTERS:
+        observation["excerpt"] = stripped
+    else:
+        observation["excerpt"] = stripped[:NAVIGATE_EXCERPT_CHARACTERS]
+        observation["truncated"] = True
+        observation["total_characters"] = len(stripped)
+    top_links = _select_top_links(
+        _extract_links(stripped), NAVIGATE_LINKS_LIMIT, NAVIGATE_LINKS_MAX_CHARACTERS
+    )
+    if top_links:
+        observation["links"] = top_links
+    return observation
 
 
 # Page navigation
@@ -27,8 +249,22 @@ class NavigateArguments(Arguments):
 
 @computer_tool("POST")
 async def browser_navigate(args: NavigateArguments, computer: SandboxClient) -> dict:
-    """Navigate the current page to a URL."""
-    return await computer.run("POST", "/v1/browser/page/navigate", json_body=body(args))
+    """Navigate the current page to a URL and include a compact page summary."""
+    result = await computer.run(
+        "POST", "/v1/browser/page/navigate", json_body=body(args)
+    )
+    if 200 <= result.get("status", 500) < 300:
+        try:
+            page_result = await computer.run(
+                "GET", "/v1/browser/page/markdown", max_characters=None
+            )
+        except ServiceError:
+            page_result = None
+        if isinstance(page_result, dict):
+            page = _compact_page_observation(page_result)
+            if page is not None:
+                result = {**result, "page": page}
+    return result
 
 
 @computer_tool("POST")
@@ -56,23 +292,152 @@ async def browser_reload(args: NoArguments, computer: SandboxClient) -> dict:
 async def browser_get_interactive_elements(
     args: NoArguments, computer: SandboxClient
 ) -> dict:
-    """List the page's inputs, buttons and links, each with an index.
+    """List the page's clickable inputs, buttons, and links with indexes."""
+    result = await computer.run(
+        "GET", "/v1/browser/page/elements", max_characters=PAGE_RESULT_MAX_CHARACTERS
+    )
+    return _bounded_result(result, PAGE_RESULT_MAX_CHARACTERS)
 
-    Indexes change as a page loads, so list elements again right before using one.
-    """
-    return await computer.run("GET", "/v1/browser/page/elements")
+
+class GetMarkdownArguments(Arguments):
+    query: str | None = Field(
+        default=None,
+        description="Optional search terms to return matching page sections and links.",
+    )
+    links_only: bool = Field(
+        default=False,
+        description="Return only deduplicated Markdown links from the page.",
+    )
+    offset: int = Field(
+        default=0,
+        ge=0,
+        description="Character offset into the selected content for reading further.",
+    )
 
 
 @computer_tool("GET")
-async def browser_get_markdown(args: NoArguments, computer: SandboxClient) -> dict:
-    """Get the page content as Markdown (Readability and Turndown)."""
-    return await computer.run("GET", "/v1/browser/page/markdown")
+async def browser_get_markdown(
+    args: GetMarkdownArguments, computer: SandboxClient
+) -> dict:
+    """Get page content as Markdown, with optional search, link extraction, or offset."""
+    result = await computer.run(
+        "GET", "/v1/browser/page/markdown", max_characters=None
+    )
+    if not (200 <= result.get("status", 500) < 300) or "body" not in result:
+        return _bounded_result(result)
+    markdown, meta = _extract_markdown(result)
+    if markdown is None:
+        return _bounded_result(result)
+    base = {k: v for k, v in result.items() if k != "body"}
+    query = args.query.strip() if args.query else None
+    links = [(label, url) for label, url in _extract_links(markdown) if not _is_noise_url(url)]
+    if args.links_only:
+        terms = [term for term in query.lower().split() if term] if query else []
+        selected = [
+            f"- [{label}]({url})" if label else f"- {url}"
+            for label, url in links
+            if not terms or _matches_query(f"{label} {url}", terms)
+        ]
+        content = "\n".join(selected)
+        sliced = content[args.offset :]
+        return {
+            **base,
+            **meta,
+            "links_count": len(selected),
+            "total_characters": len(content),
+            "offset": args.offset,
+            **truncated(sliced, PAGE_RESULT_MAX_CHARACTERS),
+        }
+    if query:
+        content = _filter_markdown_by_query(markdown, query)
+        sliced = content[args.offset :]
+        return {
+            **base,
+            **meta,
+            "query": query,
+            "total_characters": len(markdown),
+            "matched_characters": len(content),
+            "offset": args.offset,
+            **truncated(sliced, PAGE_RESULT_MAX_CHARACTERS),
+        }
+    sliced = markdown[args.offset :]
+    if len(sliced) <= PAGE_RESULT_MAX_CHARACTERS:
+        return {
+            **base,
+            **meta,
+            **({"offset": args.offset} if args.offset else {}),
+            "body": sliced,
+        }
+    top_links = (
+        _select_top_links(links, TRUNCATED_LINKS_LIMIT, LINKS_BLOCK_MAX_CHARACTERS)
+        if args.offset == 0
+        else []
+    )
+    links_chars = sum(len(item) + 2 for item in top_links)
+    body_limit = max(1000, PAGE_RESULT_MAX_CHARACTERS - links_chars)
+    response: dict[str, Any] = {
+        **base,
+        **meta,
+        **({"offset": args.offset} if args.offset else {}),
+        "body": sliced[:body_limit],
+        "truncated": True,
+        "characters": len(markdown),
+    }
+    if top_links:
+        response["links"] = top_links
+    return response
+
+
+class GetTextArguments(Arguments):
+    query: str | None = Field(
+        default=None,
+        description="Optional search terms to return matching text lines with surrounding context.",
+    )
+    offset: int = Field(
+        default=0,
+        ge=0,
+        description="Character offset into the text for reading further.",
+    )
 
 
 @computer_tool("GET")
-async def browser_get_text(args: NoArguments, computer: SandboxClient) -> dict:
-    """Get all visible text from the page."""
-    return await computer.run("GET", "/v1/browser/page/text")
+async def browser_get_text(args: GetTextArguments, computer: SandboxClient) -> dict:
+    """Get clean visible text from the page, optionally filtered by query or offset."""
+    result = await computer.run("GET", "/v1/browser/page/text", max_characters=None)
+    if not (200 <= result.get("status", 500) < 300) or "body" not in result:
+        return _bounded_result(result)
+    text, meta = _extract_markdown(result)
+    if text is None:
+        return _bounded_result(result)
+    base = {k: v for k, v in result.items() if k != "body"}
+    query = args.query.strip() if args.query else None
+    if query:
+        content = _filter_lines_by_query(text, query, context_lines=3)
+        sliced = content[args.offset :]
+        return {
+            **base,
+            **meta,
+            "query": query,
+            "total_characters": len(text),
+            "matched_characters": len(content),
+            "offset": args.offset,
+            **truncated(sliced, PAGE_RESULT_MAX_CHARACTERS),
+        }
+    sliced = text[args.offset :]
+    if len(sliced) <= PAGE_RESULT_MAX_CHARACTERS:
+        return {
+            **base,
+            **meta,
+            **({"offset": args.offset} if args.offset else {}),
+            "body": sliced,
+        }
+    return {
+        **base,
+        **meta,
+        **({"offset": args.offset} if args.offset else {}),
+        **truncated(sliced, PAGE_RESULT_MAX_CHARACTERS),
+        "total_characters": len(text),
+    }
 
 
 class GetHtmlArguments(Arguments):
@@ -105,8 +470,14 @@ class EvaluateArguments(Arguments):
 
 @computer_tool("POST")
 async def browser_evaluate(args: EvaluateArguments, computer: SandboxClient) -> dict:
-    """Execute JavaScript in the page and return the result."""
-    return await computer.run("POST", "/v1/browser/page/evaluate", json_body=body(args))
+    """Execute JavaScript in the page and return a compact result."""
+    result = await computer.run(
+        "POST",
+        "/v1/browser/page/evaluate",
+        json_body=body(args),
+        max_characters=PAGE_RESULT_MAX_CHARACTERS,
+    )
+    return _bounded_result(result, PAGE_RESULT_MAX_CHARACTERS)
 
 
 class ConsoleArguments(Arguments):
@@ -608,131 +979,97 @@ async def browser_wait_for_captcha(
 
 # Display mouse and keyboard
 
-
-class MoveTo(Arguments):
-    action_type: Literal["MOVE_TO"] = "MOVE_TO"
-    x: float
-    y: float
-
-
-class MoveRel(Arguments):
-    action_type: Literal["MOVE_REL"] = "MOVE_REL"
-    x_offset: float
-    y_offset: float
-
-
-class Click(Arguments):
-    action_type: Literal["CLICK"] = "CLICK"
-    x: float | None = None
-    y: float | None = None
-    button: MouseButton = "left"
-    num_clicks: Literal[1, 2, 3] = 1
-
-
-class MouseDown(Arguments):
-    action_type: Literal["MOUSE_DOWN"] = "MOUSE_DOWN"
-    button: MouseButton = "left"
-
-
-class MouseUp(Arguments):
-    action_type: Literal["MOUSE_UP"] = "MOUSE_UP"
-    button: MouseButton = "left"
-
-
-class RightClick(Arguments):
-    action_type: Literal["RIGHT_CLICK"] = "RIGHT_CLICK"
-    x: float | None = None
-    y: float | None = None
-
-
-class DoubleClick(Arguments):
-    action_type: Literal["DOUBLE_CLICK"] = "DOUBLE_CLICK"
-    x: float | None = None
-    y: float | None = None
-
-
-class DragTo(Arguments):
-    action_type: Literal["DRAG_TO"] = "DRAG_TO"
-    x: float
-    y: float
-
-
-class DragRel(Arguments):
-    action_type: Literal["DRAG_REL"] = "DRAG_REL"
-    x_offset: float
-    y_offset: float
-
-
-class Scroll(Arguments):
-    action_type: Literal["SCROLL"] = "SCROLL"
-    dx: int = 0
-    dy: int = 0
-
-
-class Typing(Arguments):
-    action_type: Literal["TYPING"] = "TYPING"
-    text: str
-    use_clipboard: bool | None = True
-
-
-class Press(Arguments):
-    action_type: Literal["PRESS"] = "PRESS"
-    key: str
-
-
-class KeyDown(Arguments):
-    action_type: Literal["KEY_DOWN"] = "KEY_DOWN"
-    key: str
-
-
-class KeyUp(Arguments):
-    action_type: Literal["KEY_UP"] = "KEY_UP"
-    key: str
-
-
-class Hotkey(Arguments):
-    action_type: Literal["HOTKEY"] = "HOTKEY"
-    keys: list[str]
-
-
-class Wait(Arguments):
-    action_type: Literal["WAIT"] = "WAIT"
-    duration: float
-
-
-DisplayAction = Annotated[
-    MoveTo
-    | MoveRel
-    | Click
-    | MouseDown
-    | MouseUp
-    | RightClick
-    | DoubleClick
-    | DragTo
-    | DragRel
-    | Scroll
-    | Typing
-    | Press
-    | KeyDown
-    | KeyUp
-    | Hotkey
-    | Wait,
-    Field(discriminator="action_type"),
+DisplayActionType = Literal[
+    "CLICK",
+    "MOVE_TO",
+    "MOVE_REL",
+    "MOUSE_DOWN",
+    "MOUSE_UP",
+    "RIGHT_CLICK",
+    "DOUBLE_CLICK",
+    "DRAG_TO",
+    "DRAG_REL",
+    "SCROLL",
+    "TYPING",
+    "PRESS",
+    "KEY_DOWN",
+    "KEY_UP",
+    "HOTKEY",
+    "WAIT",
 ]
+
+_ACTION_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "MOVE_TO": ("x", "y"),
+    "DRAG_TO": ("x", "y"),
+    "MOVE_REL": ("x_offset", "y_offset"),
+    "DRAG_REL": ("x_offset", "y_offset"),
+    "TYPING": ("text",),
+    "PRESS": ("key",),
+    "KEY_DOWN": ("key",),
+    "KEY_UP": ("key",),
+    "HOTKEY": ("keys",),
+    "WAIT": ("duration",),
+}
+
+_ACTION_DEFAULTS: dict[str, dict[str, Any]] = {
+    "CLICK": {"button": "left", "num_clicks": 1},
+    "MOUSE_DOWN": {"button": "left"},
+    "MOUSE_UP": {"button": "left"},
+    "SCROLL": {"dx": 0, "dy": 0},
+    "TYPING": {"use_clipboard": True},
+}
 
 
 class ExecuteActionArguments(Arguments):
-    action: DisplayAction = Field(description="One mouse or keyboard action.")
+    action_type: DisplayActionType = Field(description="Mouse or keyboard action type.")
+    x: float | None = Field(default=None, description="Display X coordinate.")
+    y: float | None = Field(default=None, description="Display Y coordinate.")
+    x_offset: float | None = Field(default=None, description="Relative X offset.")
+    y_offset: float | None = Field(default=None, description="Relative Y offset.")
+    button: MouseButton | None = Field(
+        default=None, description="Mouse button (left, right, middle)."
+    )
+    num_clicks: Literal[1, 2, 3] | None = Field(
+        default=None, description="Click count for CLICK (1, 2, or 3)."
+    )
+    dx: int | None = Field(default=None, description="Horizontal scroll delta.")
+    dy: int | None = Field(default=None, description="Vertical scroll delta.")
+    text: str | None = Field(default=None, description="Text for TYPING.")
+    use_clipboard: bool | None = Field(
+        default=None, description="Use clipboard for TYPING."
+    )
+    key: str | None = Field(
+        default=None, description="Key name for PRESS, KEY_DOWN, or KEY_UP."
+    )
+    keys: list[str] | None = Field(default=None, description="Key list for HOTKEY.")
+    duration: float | None = Field(default=None, description="Seconds for WAIT.")
+
+    @model_validator(mode="after")
+    def validate_required_fields(self) -> "ExecuteActionArguments":
+        missing = [
+            field
+            for field in _ACTION_REQUIRED_FIELDS.get(self.action_type, ())
+            if getattr(self, field) is None
+        ]
+        if missing:
+            raise ValueError(
+                f"{self.action_type} requires {', '.join(missing)}"
+            )
+        return self
+
+    def to_payload(self) -> dict[str, Any]:
+        payload = {**_ACTION_DEFAULTS.get(self.action_type, {}), **body(self)}
+        return payload
 
 
 @computer_tool("POST")
 async def browser_execute_action(
     args: ExecuteActionArguments, computer: SandboxClient
 ) -> dict:
-    """Perform one mouse or keyboard action on the whole display, outside page
-    automation: move, click, drag, scroll, type, press keys or wait."""
+    """Perform one mouse or keyboard action on the whole display: click, move,
+    drag, scroll, type, press keys, hotkey, or wait."""
     return await computer.run(
-        "POST", "/v1/browser/actions", json_body=body(args)["action"]
+        "POST", "/v1/browser/actions", json_body=args.to_payload()
     )
 
 
@@ -792,12 +1129,12 @@ TOOLS = [
     # browser_go_back,
     # browser_go_forward,
     # browser_reload,
-    # browser_get_interactive_elements,
-    browser_get_markdown,
-    # browser_get_text,
+    browser_get_interactive_elements,
+    # browser_get_markdown,
+    browser_get_text,
     # browser_get_html,
     # browser_find_text,
-    # browser_evaluate,
+    browser_evaluate,
     # browser_get_console_logs,
     # browser_export_console_logs,
     # browser_click,
@@ -816,7 +1153,7 @@ TOOLS = [
     # browser_scroll_to_element,
     # browser_wait,
     # browser_page_screenshot,
-    browser_take_screenshot,
+    # browser_take_screenshot,
     # browser_page_record,
     # browser_list_tabs,
     # browser_create_tab,

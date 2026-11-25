@@ -624,6 +624,34 @@ void GgufWeights::check_unchanged() const {
     gguf_->check_unchanged();
 }
 
+InklingMatrixDesc GgufWeights::describe_matrix(
+    const std::string& name, std::size_t expert
+) const {
+    const auto it = matrices_.find(name);
+    need(it != matrices_.end(), "gguf_text_missing_matrix");
+    const auto& m = it->second;
+    need(expert < m.experts, "gguf_text_projection_shape");
+    const auto& tensor = gguf_->tensor(name);
+    need(tensor.type == 0 || gguf::encoding(tensor.type), "gguf_text_encoding");
+    const Bytes bytes = tensor.bytes / m.experts;
+    const std::size_t row_bytes = bytes / m.rows;
+    SliceKey key{name, expert};
+    auto id_it = identities_.find(key);
+    if (id_it == identities_.end())
+        id_it = identities_.emplace(key, gguf_->identity(name, expert)).first;
+    auto source = [this, key](std::size_t first, std::span<std::byte> to) {
+        gguf_->read_packed_rows(key.tensor, key.expert, first, to, *cancel_);
+    };
+    return InklingMatrixDesc{
+        id_it->second,
+        tensor.type == 0 ? std::nullopt : gguf::encoding(tensor.type),
+        m.columns,
+        m.rows,
+        row_bytes,
+        std::move(source)
+    };
+}
+
 float sigmoid(float x) {
     return 1 / (1 + std::exp(-x));
 }

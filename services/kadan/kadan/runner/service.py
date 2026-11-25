@@ -17,7 +17,7 @@ from .image_jobs import ImageJobs
 from .pet_jobs import PetJobs
 
 logger = logging.getLogger(__name__)
-POLL_SECONDS = 2
+POLL_SECONDS = 0.5
 
 
 class RunnerServices(LocalServices):

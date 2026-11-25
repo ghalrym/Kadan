@@ -2,8 +2,8 @@
 
 import json
 import logging
-from collections.abc import AsyncIterator, Callable, Sequence
-from typing import Any
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from typing import Any, Literal
 
 import httpx
 from kadan_tracing import traced
@@ -105,6 +105,10 @@ class HikariChatModel(BaseChatModel):
     hikari_url: str
     model_id: str | None = None
     conversation_key: str
+    priority: Literal["interactive", "background"] = "interactive"
+    on_text_delta: Callable[[str], Awaitable[None]] | None = Field(
+        default=None, exclude=True
+    )
 
     @property
     def _llm_type(self) -> str:
@@ -198,6 +202,7 @@ class HikariChatModel(BaseChatModel):
             "reasoning_tokens": REASONING_TOKENS,
             "stream": True,
             "conversation_id": self.conversation_key,
+            "priority": self.priority,
         }
         if self.model_id is not None:
             payload["model"] = self.model_id
@@ -276,6 +281,8 @@ class HikariChatModel(BaseChatModel):
                             "command_too_large",
                         )
                     content.append(text)
+                    if text and not calls and self.on_text_delta is not None:
+                        await self.on_text_delta(text)
                     finished = reason in ("stop", "tool_calls")
             if not done or not finished:
                 raise ServiceError(
@@ -310,12 +317,17 @@ class AgentInference:
         model_id: str | None,
         conversation_key: str,
         tools: Sequence[BaseTool],
+        *,
+        priority: Literal["interactive", "background"] = "interactive",
+        on_text_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> RunCall:
         model = HikariChatModel(
             client=self.client,
             hikari_url=self.hikari_url,
             model_id=model_id,
             conversation_key=conversation_key,
+            priority=priority,
+            on_text_delta=on_text_delta,
         ).bind_tools(tools)
         response = await model.ainvoke(messages)
         if not response.tool_calls:

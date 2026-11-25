@@ -11,9 +11,9 @@ Kadan sends the enabled tool schemas to Hikari separately from authored messages
 | --- | ---: | ---: |
 | Chat | 18 | 11,422 |
 | Chat with a computer | 22 | 14,007 |
-| Computer assistant | 14 | 13,736 |
+| Computer assistant | 15 | 11,247 |
 
-Selecting a saved reference adds one tool and 365 characters to a chat request. The shipped agent instructions occupy 2,463 characters before any persona or selected-reference notice. These counts were measured from the tool registry and the instruction file without inference. A changed file, schema or dependency can change them.
+Selecting a saved reference adds one tool and 365 characters to a chat request. The shipped agent instructions occupy 2,463 characters before any persona or selected-reference notice, and the computer assistant instructions occupy 690 characters. These counts were measured from the tool registry and the instruction files without inference. A changed file, schema or dependency can change them.
 
 The runner estimates three characters per token and reserves its generation budgets plus template overhead. Conversation history is limited to the most recent 97 authored messages through the triggering turn. The actual number of prompt tokens and the time spent preparing them depend on the model, history, tool results and prefix reuse.
 

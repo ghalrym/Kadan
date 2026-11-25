@@ -38,6 +38,8 @@ const BREAK_MS = 4 * 60 * 60 * 1000;
 /** Older messages render on request so a long chain opens quickly. */
 const PAGE = 200;
 const NEAR_LATEST = 80;
+const ACTIVE_POLL_MS = 350;
+const IDLE_POLL_MS = 2000;
 const ROLE = { user: "You", assistant: "Assistant", system: "System", tool: "Tool" } as const;
 
 function breakLabel(value: string) {
@@ -157,6 +159,13 @@ export default function Chat({
   const modelLoading = generating && status?.hikari.state === "ready" && status.hikari.model_state === "loading";
   const progress = responseProgress(runs, status?.hikari);
   const typing = runs.some((run) => run.status === "running") && !modelLoading;
+  const conversationRuns = runs.filter((run) => run.conversation_id === chain.id);
+  const streamingRun = [...conversationRuns]
+    .reverse()
+    .find((run) => run.status === "running" && run.draft?.trim());
+  const streamingDraft = streamingRun?.draft ?? "";
+  const activePolling = useRef(false);
+  activePolling.current = generating || sending || imagePending;
   const [mood, react] = useMood(
     !status
       ? "idle"
@@ -213,7 +222,7 @@ export default function Chat({
     }
     previousItems.current = { scope, count: items.length };
     if (!query && followLatest.current) scrollToLatest();
-  }, [scope, items.length, typing]);
+  }, [scope, items.length, typing, streamingDraft]);
   useLayoutEffect(() => {
     if (matchShown > shownCount) setShown((count) => Math.max(count, matchShown));
   }, [matchShown, shownCount]);
@@ -240,6 +249,7 @@ export default function Chat({
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
       const revision = mutation.current;
+      let active = activePolling.current;
       try {
         const snapshot = await api<RunSnapshot>(`${agentPath(agentKey)}/conversations/${chain.id}/runs`);
         if (!closed && revision === mutation.current) {
@@ -248,11 +258,15 @@ export default function Chat({
           setImages(snapshot.images);
           setActivityConversation(chain.id);
           setPollError("");
+          active = sendLock.current || snapshot.runs.some(activeRun) || snapshot.images.some(
+            (job) => cancellableImage(job) || job.status === "cancelling" || (job.status === "completed" && !job.delivered_message_id),
+          );
+          activePolling.current = active;
         }
       } catch (e) {
         if (!closed) setPollError(`Updates unavailable: ${(e as Error).message}`);
       } finally {
-        if (!closed) timer = setTimeout(poll, 2000);
+        if (!closed) timer = setTimeout(poll, active ? ACTIVE_POLL_MS : IDLE_POLL_MS);
       }
     }
     void poll();
@@ -412,7 +426,6 @@ export default function Chat({
     } catch (e) { setError((e as Error).message); }
     finally { setStopping(false); mutation.current++; }
   }
-  const conversationRuns = runs.filter((run) => run.conversation_id === chain.id);
   const outcome = !sending && currentResponseOutcome(chain, conversationRuns);
   const perchStatus = modelLoading
     ? "Loading model…"
@@ -420,7 +433,7 @@ export default function Chat({
       : generating ? "Waiting to respond…"
         : imagePending ? "Image pending…"
           : !ready.chat ? "Notes only" : agentName;
-  const empty = items.length === 0;
+  const empty = items.length === 0 && !streamingDraft;
   const working = modelLoading || typing || generating || imagePending;
   const agentCard = card && (
     <AgentCard
@@ -608,7 +621,14 @@ export default function Chat({
               </Fragment>
             );
           })}
-          {typing && (
+          {streamingDraft ? (
+            <article className="message assistant first last streaming" aria-live="polite">
+              <h3 className="sr-only">{ROLE.assistant}</h3>
+              <div className="body">
+                <Markdown>{streamingDraft}</Markdown>
+              </div>
+            </article>
+          ) : typing && (
             <div className="typing" aria-hidden="true">
               <i />
               <i />

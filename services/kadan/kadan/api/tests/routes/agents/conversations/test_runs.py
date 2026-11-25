@@ -140,6 +140,7 @@ def test_poll_projects_only_display_fields_from_validated_records(polling_bounda
         "delivered_message_ids",
         "status",
         "error",
+        "draft",
         "created_at",
         "updated_at",
     }

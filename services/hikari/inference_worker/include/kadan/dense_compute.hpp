@@ -11,6 +11,7 @@
 
 #include "kadan/gguf_quantization.hpp"
 #include "kadan/image_convolution.hpp"
+#include "kadan/inkling_gpu.hpp"
 #include "kadan/projection_math.hpp"
 #include "kadan/resources.hpp"
 #include "kadan/weight_identity.hpp"
@@ -333,6 +334,14 @@ public:
     virtual bool
     attend_inkling_cached(const InklingAttention&, const std::atomic_bool&) {
         return false;
+    }
+
+    // Optional GPU-resident Inkling 2 Mini executor when a single GPU holds
+    // all packed weights and FP16 KV state. Returns nullptr when unavailable
+    // (CPU mocks, multi-GPU split, or Strata tiered RAM/disk spill).
+    virtual std::unique_ptr<InklingGpuExecutor>
+    create_inkling_gpu(InklingGpuModelDesc, const std::atomic_bool&) {
+        return nullptr;
     }
 
     // One gated delta-net step over `rows` in order (llama.cpp delta-net-base):

@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "../src/models/text/gguf_model.hpp"
+#include "kadan/inkling_gpu.hpp"
 
 namespace {
 using namespace kadan::text;
@@ -145,8 +146,10 @@ void round_trip() {
     // 8 full-context slots across the 48 logical Inkling 2 passes.
     auto model = inkling2_loop_model(weights, compute, 2048);
     const std::size_t expected_device_state =
-        (40ULL * 2 * (2 * 1024) + 8ULL * 2 * 2048) * 1024 * sizeof(float)
-        + 24ULL * 1024 * 16 * sizeof(float);
+        (40ULL * 2 * (2 * 1024) + 8ULL * 2 * 2048) * 1024 * sizeof(std::uint16_t)
+        + 48ULL * 3 * 6656 * sizeof(float)
+        + 24ULL * 1024 * 16 * sizeof(float)
+        + (16ULL * 1024 * 1024);
     check(model->device_state_bytes() == expected_device_state, "inkling_device_state_bytes");
     auto state = model->take_state();
     check(state.layers.size() == 48, "inkling_slot_count");
@@ -195,7 +198,7 @@ void round_trip() {
 
 void checkpoint_copy() {
     ModelState state;
-    // Full-attention slot: 9 positions, 2 floats/position -> prefix 8 copies 16 floats.
+    // Full-attention slot: 9 positions, 2 floats/position -> prefix 8 compacts to 16 floats.
     state.layers.emplace_back(
         InklingLayerState{{Vec(18, 1.f), Vec(18, 2.f)}, Vec{10.f, 11.f}, false}
     );
@@ -203,31 +206,70 @@ void checkpoint_copy() {
     state.layers.emplace_back(
         InklingLayerState{{Vec(8, 3.f), Vec(8, 4.f)}, Vec{12.f, 13.f}, true}
     );
-    ModelState checkpoint;
-    copy_state(state, checkpoint, 8, 9);
-    // Exercise reuse of an already allocated checkpoint as well as first save.
-    for (int round = 0; round < 2; ++round) {
-        const auto& full = std::get<InklingLayerState>(checkpoint.layers[0]);
-        check(!full.sliding_window, "checkpoint_full_flag");
-        check(full.attention.keys[15] == 1.f, "checkpoint_full_key_prefix");
-        check(full.attention.values[15] == 2.f, "checkpoint_full_value_prefix");
-        check(full.conv == Vec({10.f, 11.f}), "checkpoint_full_conv");
-        const auto& swa = std::get<InklingLayerState>(checkpoint.layers[1]);
-        check(swa.sliding_window, "checkpoint_swa_flag");
-        check(swa.attention.keys == Vec(8, 3.f), "checkpoint_swa_keys");
-        check(swa.attention.values == Vec(8, 4.f), "checkpoint_swa_values");
-        check(swa.conv == Vec({12.f, 13.f}), "checkpoint_swa_conv");
-        buffers(checkpoint, [](Vec& buffer) {
-            std::fill(buffer.begin(), buffer.end(), -1.f);
-        });
-        copy_state(state, checkpoint, 8, 9);
-        const auto& reused_full = std::get<InklingLayerState>(checkpoint.layers[0]);
-        check(
-            reused_full.attention.keys.back() == -1.f
-                && reused_full.attention.values.back() == -1.f,
-            "checkpoint_suffix_not_copied"
-        );
+    const auto full_bytes = state_memory_bytes(state);
+    auto compact = compact_state(state, 8, 9);
+    check(state_memory_bytes(compact) < full_bytes, "compact_reduces_bytes");
+    const auto& c_full = std::get<InklingLayerState>(compact.layers[0]);
+    check(!c_full.sliding_window, "checkpoint_full_flag");
+    check(c_full.attention.keys.size() == 16 && c_full.attention.values.size() == 16,
+          "checkpoint_full_compact_size");
+    check(c_full.attention.keys[15] == 1.f, "checkpoint_full_key_prefix");
+    check(c_full.attention.values[15] == 2.f, "checkpoint_full_value_prefix");
+    check(c_full.conv == Vec({10.f, 11.f}), "checkpoint_full_conv");
+    const auto& c_swa = std::get<InklingLayerState>(compact.layers[1]);
+    check(c_swa.sliding_window, "checkpoint_swa_flag");
+    check(c_swa.attention.keys == Vec(8, 3.f), "checkpoint_swa_keys");
+    check(c_swa.attention.values == Vec(8, 4.f), "checkpoint_swa_values");
+    check(c_swa.conv == Vec({12.f, 13.f}), "checkpoint_swa_conv");
+
+    ModelState target;
+    target.layers.emplace_back(
+        InklingLayerState{{Vec(18, -1.f), Vec(18, -1.f)}, Vec{0.f, 0.f}, false}
+    );
+    target.layers.emplace_back(
+        InklingLayerState{{Vec(8, -1.f), Vec(8, -1.f)}, Vec{0.f, 0.f}, true}
+    );
+    restore_compact_state(compact, target, 8, 9);
+    const auto& restored_full = std::get<InklingLayerState>(target.layers[0]);
+    check(restored_full.attention.keys[15] == 1.f, "restored_full_key_prefix");
+    check(restored_full.attention.values[15] == 2.f, "restored_full_value_prefix");
+    check(
+        restored_full.attention.keys.back() == -1.f
+            && restored_full.attention.values.back() == -1.f,
+        "checkpoint_suffix_not_copied"
+    );
+    check(restored_full.conv == Vec({10.f, 11.f}), "restored_full_conv");
+    const auto& restored_swa = std::get<InklingLayerState>(target.layers[1]);
+    check(restored_swa.attention.keys == Vec(8, 3.f), "restored_swa_keys");
+    check(restored_swa.attention.values == Vec(8, 4.f), "restored_swa_values");
+    check(restored_swa.conv == Vec({12.f, 13.f}), "restored_swa_conv");
+}
+
+void inkling_gpu_geometry_and_scratch() {
+    using G = kadan::InklingGeometry;
+    static_assert(G::n_phys == 24);
+    static_assert(G::n_slots == 48);
+    static_assert(G::n_embd == 2304 && G::n_embd % 256 == 0);
+    static_assert(G::n_ff_exp == 1152 && G::n_ff_exp % 32 == 0);
+    std::size_t swa = 0, full = 0;
+    for (std::size_t s = 0; s < G::n_slots; ++s) {
+        if (G::is_swa_phys(G::slot_phys(s)))
+            ++swa;
+        else
+            ++full;
     }
+    check(swa == 40 && full == 8, "inkling_geometry_slot_split");
+    // Both decode (1 row) and max prefill chunk (512 rows) must fit well inside
+    // the 1 GiB LLM scratch envelope.
+    const std::size_t decode_scratch = kadan::inkling_gpu_scratch_bytes(1);
+    const std::size_t prefill_scratch = kadan::inkling_gpu_scratch_bytes(512);
+    check(decode_scratch > 0 && decode_scratch < prefill_scratch, "inkling_scratch_monotonic");
+    check(prefill_scratch < (512ULL << 20), "inkling_prefill_scratch_bounded");
+    // At 65,536 context, FP16 KV mirrors + F32 conv + params must stay well
+    // below 3 GiB so IQ4_NL (16.4 GiB) fits on a single 24 GiB GPU.
+    const std::size_t dev_65k = inkling2_loop_device_state_bytes(65536);
+    check(dev_65k < (3ULL << 30), "inkling_65k_device_state_fits_single_24g");
+    check(dev_65k < inkling2_loop_state_bytes(65536), "inkling_fp16_smaller_than_host_f32");
 }
 }  // namespace
 
@@ -235,6 +277,7 @@ int main() {
     try {
         checkpoint_copy();
         round_trip();
+        inkling_gpu_geometry_and_scratch();
         std::cout << "Same-instance text state round trips passed; no inference\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

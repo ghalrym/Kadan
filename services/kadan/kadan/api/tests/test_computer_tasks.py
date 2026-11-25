@@ -149,9 +149,13 @@ class Commands:
     def __init__(self, *results):
         self.results = list(results)
         self.calls = []
+        self.priorities = []
 
-    async def call(self, messages, model_id, conversation_key, tools):
+    async def call(
+        self, messages, model_id, conversation_key, tools, *, priority="interactive", **kwargs
+    ):
         self.calls.append(messages)
+        self.priorities.append(priority)
         result = self.results.pop(0)
         if isinstance(result, BaseException):
             raise result
@@ -248,7 +252,7 @@ def test_sandbox_errors_become_tool_results(storage):
 
 
 @pytest.mark.parametrize(
-    ("tool", "repeated"), [("bash_exec", False), ("browser_get_markdown", True)]
+    ("tool", "repeated"), [("bash_exec", False), ("browser_get_text", True)]
 )
 def test_restart_never_repeats_an_unconfirmed_side_effect(storage, tool, repeated):
     task = storage.add_task()
@@ -357,7 +361,7 @@ def test_cancellation_during_inference_prevents_dispatch(storage):
     tasks = ComputerTasks(storage)
 
     class CancelDuringInference:
-        async def call(self, *args):
+        async def call(self, *args, **kwargs):
             storage.tasks[task.id] = storage.tasks[task.id].model_copy(
                 update={"status": "cancelled"}
             )
@@ -381,3 +385,18 @@ def test_ambiguous_saved_task_fails_before_replay_and_next_task_can_continue(sto
     assert "could not safely resume" in storage.tasks[first.id].summary
     assert storage.tasks[second.id].status == "completed"
     assert len(calls.calls) == 1
+
+
+def test_finished_tasks_are_folded_and_computer_uses_background_priority(storage):
+    storage.thread.transcript = [
+        *block("a", 5000, status="failed"),
+        *block("b", 5000, status="failed"),
+        *block("c", 5000, status="failed"),
+    ]
+    storage.add_task("Fresh task")
+    calls = serve(storage, finish("Fresh done."))
+    assert calls.priorities == ["background"]
+    prompt_chars = sum(len(str(msg.content)) for msg in calls.calls[0])
+    assert prompt_chars < 2000
+    assert storage.thread.transcript[0].role == "task_history"
+    assert len(storage.thread.transcript[0].tasks) == 3

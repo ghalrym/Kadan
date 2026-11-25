@@ -38,8 +38,10 @@ std::size_t image_token_count(std::span<const std::uint8_t> png_bytes);
 
 // host covers metadata, parameters, state and scratch. cache is host RAM for
 // weight slices that do not win VRAM residency; zero streams them from disk.
+// device_state is the full-context GPU KV/recurrent/parameter state envelope.
 struct Plan {
-    std::size_t context, host, packed, tensors, execution_weights, cache = 0;
+    std::size_t context, host, packed, tensors, execution_weights, cache = 0,
+        device_state = 0;
 };
 
 Plan plan(
@@ -49,6 +51,7 @@ Plan plan(
 struct PrefixSnapshot final : serving::InferenceCache {
     Prefix prefix;
     ModelState state;
+    std::vector<ImageTag> images;
     std::vector<WeightIdentity> weights;
     std::size_t context = 0;
     Bytes bytes() const override;
@@ -71,6 +74,12 @@ public:
         std::string_view conversation,
         bool reuse_prefix
     ) override;
+    std::size_t begin_request(
+        std::span<const unsigned> prompt,
+        std::string_view conversation,
+        bool reuse_prefix,
+        std::span<const ImageTag> prompt_images
+    );
     void end_request() override;
     // Prefill of the next request keeps a host copy of the model state after
     // this many prompt tokens (zero for none). A later request in the same
@@ -78,6 +87,10 @@ public:
     // when the live state has moved past them, as when callers replace the
     // last message each turn.
     void checkpoint_at(std::size_t tokens);
+    // Keeps a cross-conversation static prefix checkpoint (exact token match,
+    // no images) after this many prompt tokens during prefill.
+    void checkpoint_static_at(std::size_t tokens);
+    double last_cache_restore_ms() const;
     Footprint prefix_memory() const;
     std::unique_ptr<PrefixSnapshot> take_prefix();
     bool restore_prefix(std::unique_ptr<PrefixSnapshot>);

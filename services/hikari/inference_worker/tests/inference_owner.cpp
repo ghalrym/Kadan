@@ -1762,7 +1762,60 @@ void resized_budget_drops_snapshot_it_cannot_cover() {
     }
 }
 
+void interactive_priority_with_fairness_and_admission_guard() {
+    FakeState state;
+    std::vector<std::string> executed;
+    InferenceOwner owner(
+        {100, 100},
+        [&](auto, std::shared_ptr<Resources> r) {
+            return std::make_unique<FakeEngine>(state, r);
+        },
+        [] { return Footprint{100, 100}; },
+        [&](auto id, auto kind, auto) {
+            if (kind == JobState::succeeded)
+                executed.push_back(id);
+        }
+    );
+    auto make_llm = [](std::string id, Priority p) {
+        auto r = request(std::move(id), Workload::llm);
+        r.model = "shared-llm";
+        r.priority = p;
+        return r;
+    };
+
+    // 1) Interactive jobs jump ahead of queued background jobs, capped by
+    // fairness streak (3) so background work never starves.
+    owner.submit(make_llm("bg-1", Priority::background));
+    owner.submit(make_llm("bg-2", Priority::background));
+    owner.submit(make_llm("fg-1", Priority::interactive));
+    owner.submit(make_llm("fg-2", Priority::interactive));
+    owner.submit(make_llm("fg-3", Priority::interactive));
+    owner.submit(make_llm("fg-4", Priority::interactive));
+    for (int i = 0; i < 6; ++i)
+        assert(owner.advance());
+    assert(
+        executed
+        == std::vector<std::string>({"fg-1", "fg-2", "fg-3", "bg-1", "fg-4", "bg-2"})
+    );
+
+    // 2) A background job already waiting for admission at the head is never
+    // overtaken by a newly submitted interactive job.
+    executed.clear();
+    state.wait_once = true;
+    auto bg_wait = make_llm("bg-wait", Priority::background);
+    bg_wait.model = "other-llm";
+    owner.submit(bg_wait);
+    assert(!owner.advance());
+    owner.submit(make_llm("fg-late", Priority::interactive));
+    assert(owner.advance());
+    assert(executed == std::vector<std::string>({"bg-wait"}));
+    assert(owner.advance());
+    assert(executed == std::vector<std::string>({"bg-wait", "fg-late"}));
+    owner.shutdown();
+}
+
 int main() {
+    interactive_priority_with_fairness_and_admission_guard();
     resized_budget_drops_snapshot_it_cannot_cover();
     ram_cache_lifecycle();
     explicit_unload_preserves_cache_when_returning_budget();

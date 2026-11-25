@@ -744,6 +744,7 @@ class AgentRun(AgentRunState):
     persona_id: UUID | None = None
     references: list[ReferenceSnapshot] = Field(default_factory=list, max_length=3)
     delivered_message_ids: list[UUID] = Field(default_factory=list)
+    draft: str | None = None
     version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime

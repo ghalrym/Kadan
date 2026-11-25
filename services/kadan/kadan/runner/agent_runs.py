@@ -501,8 +501,13 @@ class AgentRuns(RunClient):
             if error.status == 409:
                 return
             raise
+        now = datetime.now(UTC)
+        queue_wait = max(0.0, (now - run.created_at).total_seconds())
         logger.info(
-            "Agent run claimed run=%s at=%s", run.id, datetime.now(UTC).isoformat()
+            "Agent run claimed run=%s at=%s queue_wait_seconds=%.3f",
+            run.id,
+            now.isoformat(),
+            queue_wait,
         )
         work = asyncio.create_task(self.advance(run))
         heartbeat = asyncio.create_task(self.renew_lease(run))
@@ -724,17 +729,61 @@ class AgentRuns(RunClient):
                 run.id,
                 datetime.now(UTC).isoformat(),
             )
+            tools = self.bound_tools(run)
+            draft_parts: list[str] = []
+            draft_published = False
+            last_draft_at = 0.0
+            draft_path = self.path(run.agent_key, run.id) + "/draft"
+            can_stream_draft = any(tool.name == "send_message" for tool in tools)
+
+            async def publish_draft(text: str) -> None:
+                nonlocal draft_published, last_draft_at
+                if not can_stream_draft:
+                    return
+                draft_parts.append(text)
+                content = "".join(draft_parts)
+                if not content.strip():
+                    return
+                now = monotonic()
+                if draft_published and now - last_draft_at < 0.15:
+                    return
+                try:
+                    await self.services.json_request(
+                        "Tsuchi",
+                        "PUT",
+                        draft_path,
+                        json={"worker_id": str(self.owner), "content": content},
+                    )
+                    draft_published = True
+                    last_draft_at = now
+                except ServiceError:
+                    logger.debug("Skipping transient draft update for run=%s", run.id)
+
+            command = None
             try:
-                tools = self.bound_tools(run)
                 call = await self.inference.call(
                     transcript_messages(run.transcript),
                     status.model_id,
                     f"kadan:{run.agent_key}:{run.conversation_id}",
                     tools,
+                    priority="interactive",
+                    on_text_delta=publish_draft if can_stream_draft else None,
                 )
                 command = call.command
                 rejection = validate(command, tools)
             finally:
+                if draft_published and (
+                    command is None or command.tool != "send_message"
+                ):
+                    try:
+                        await self.services.json_request(
+                            "Tsuchi",
+                            "PUT",
+                            draft_path,
+                            json={"worker_id": str(self.owner), "content": ""},
+                        )
+                    except ServiceError:
+                        logger.debug("Skipping transient draft clear for run=%s", run.id)
                 logger.info(
                     "Agent inference ended run=%s at=%s elapsed_seconds=%.3f",
                     run.id,

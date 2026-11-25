@@ -62,9 +62,18 @@ A completed nonempty plain answer becomes a `send_message` command with `end_run
 
 The Kadan conversation-runs polling response projects validated Tsuchi work records
 into `AgentRunSummary` and `ImageJobSummary`. Run summaries contain identities,
-trigger message/job IDs, delivery receipts, status, error and creation/update times.
+trigger message/job IDs, delivery receipts, status, error, an optional ephemeral
+`draft` preview while running, and creation/update times.
 Image summaries contain identities, prompt, status, error, delivery message ID and
 creation/update times. The conversation resource remains part of the snapshot.
+
+Conversation inference runs at `interactive` priority so chat replies are
+scheduled ahead of background computer assistant turns between turns. While a
+plain text reply streams from Hikari, the runner publishes throttled ephemeral
+draft updates to Tsuchi (`PUT /api/agents/{key}/runs/{run_id}/draft`). Drafts
+live only in Tsuchi process memory—never in SQLite and without incrementing
+run versions—and clear automatically on delivery, cancellation, completion, or
+if the turn resolves to a non-message tool call.
 
 This narrows the polling response contract: internal transcripts, instructions,
 tool results, leases, ownership and image-upload coordination are omitted. Clients

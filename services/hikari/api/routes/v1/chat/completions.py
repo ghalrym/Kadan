@@ -48,6 +48,10 @@ class CompletionRequest(BaseModel):
         description="Reasoning is closed after this many tokens so the reply keeps its share of max_tokens.",
     )
     reasoning_effort: Literal["low", "medium", "high"] | None = None
+    priority: Literal["interactive", "background"] = Field(
+        default="interactive",
+        description="Interactive turns run ahead of queued background turns between requests.",
+    )
 
 
 class OutputFunction(BaseModel):
@@ -135,7 +139,12 @@ def observe_generation(measurement, event):
     timing = event.get("timing") or {}
     for key in (
         "generation_ttft_ms",
+        "first_token_ms",
         "prefill_ms",
+        "image_encode_ms",
+        "cache_restore_ms",
+        "reasoning_ms",
+        "thinking_tokens",
         "decode_tokens_per_second",
         "output_tokens",
         "prefill_tokens",

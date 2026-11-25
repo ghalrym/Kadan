@@ -6,6 +6,7 @@
 #include <optional>
 
 #if defined(__CUDACC__)
+#include <cuda_fp16.h>
 #define KADAN_GGUF_HD __host__ __device__
 #else
 #define KADAN_GGUF_HD
@@ -557,12 +558,16 @@ KADAN_GGUF_HD inline unsigned iq3s_grid(unsigned index, unsigned byte) {
 #endif
 }
 
-KADAN_GGUF_HD inline float iq4nl_value(unsigned index) {
+KADAN_GGUF_HD inline std::int8_t iq4nl_int8(unsigned index) {
 #if defined(__CUDA_ARCH__)
-    return float(iq4nl_values_device[index]);
+    return iq4nl_values_device[index];
 #else
-    return float(iq4nl_values_host[index]);
+    return iq4nl_values_host[index];
 #endif
+}
+
+KADAN_GGUF_HD inline float iq4nl_value(unsigned index) {
+    return float(iq4nl_int8(index));
 }
 
 KADAN_GGUF_HD inline float float_bits(std::uint32_t bits) {
@@ -575,6 +580,9 @@ KADAN_GGUF_HD inline float float_bits(std::uint32_t bits) {
 
 KADAN_GGUF_HD inline float half(const unsigned char* bytes) {
     const unsigned bits = unsigned(bytes[0]) | (unsigned(bytes[1]) << 8);
+#if defined(__CUDA_ARCH__)
+    return __half2float(__ushort_as_half(static_cast<unsigned short>(bits)));
+#else
     const unsigned sign = (bits & 0x8000u) << 16;
     unsigned exponent = (bits >> 10) & 31u;
     unsigned fraction = bits & 1023u;
@@ -590,6 +598,7 @@ KADAN_GGUF_HD inline float half(const unsigned char* bytes) {
         ++shift;
     }
     return float_bits(sign | ((113u - shift) << 23) | ((fraction & 1023u) << 13));
+#endif
 }
 
 // Match the reference's separately rounded products, including Q4's final

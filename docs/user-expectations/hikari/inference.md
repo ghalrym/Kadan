@@ -24,7 +24,7 @@ When requests compete for memory, Hikari uses this priority order, highest first
 4. Image generation.
 5. Video generation.
 
-A higher-priority request does not interrupt inference already running. For example, chat and image generation can overlap when both fit. If a video is already running and occupies the memory chat needs, chat waits rather than cancelling the video.
+A higher-priority request does not interrupt inference already running. For example, chat and image generation can overlap when both fit. If a video is already running and occupies the memory chat needs, chat waits rather than cancelling the video. Within queued language requests, interactive chat replies take priority over background computer work between turns, while ensuring waiting background work still makes progress.
 
 Hikari tries to keep room for chat while other work runs, but chat has no unconditional immediate-start guarantee. Sustained higher-priority demand can delay lower-priority work.
 
@@ -40,8 +40,8 @@ Concurrent throughput, model quality and physical memory fit require manual vali
 
 ## Conversation prefix reuse
 
-Language requests served by Inkling 2 Mini can reuse its last completed prefix when the earlier prompt exactly starts a longer one (up to any image attachment). Direct clients can disable reuse; requests without a conversation identity do not retain a prefix. Edited, shorter or identical prompts, another conversation, cancellation and incompatible model or context settings require a fresh prefill. A different worker may also miss the cache.
+Language requests served by Inkling 2 Mini can reuse an earlier matching prompt prefix (including matching image attachments when identical, or stopping before any differing image). Direct clients can disable reuse; requests without a conversation identity do not retain conversation-specific state, though identical shared system instructions can still be reused. Edited, shorter or identical prompts, cancellation and incompatible model or context settings require a fresh prefill. A different worker may also miss the cache.
 
-When an idle model unloads or yields VRAM, Hikari can keep its reusable KV and recurrent state in RAM. A compatible later request restores that state after loading the model. Each worker retains at most one prefix; it can discard it sooner when RAM is needed for work. No reusable state is written to disk, and restarting the worker loses it.
+When switching between conversations or when an idle model unloads or yields memory, Hikari can keep compacted prefix checkpoints in memory within its fixed memory budget so recent conversations—such as chat and computer work—can resume without starting from scratch. Older checkpoints are evicted as memory fills, and checkpoints can be discarded sooner when memory is needed for active work. No reusable state is written to disk, and restarting loses it.
 
 The prefix cache expires after one hour without reuse by default. Operators can configure this separately from model idle expiry: unloading a model does not restart the cache timer, and discarding its cache does not unload the model. Expiry waits for active and queued work. Conversation history and downloaded checkpoints are unaffected. Responses report actual reused and stored tokens and whether a prefix was restored from RAM; reuse does not guarantee a measured latency improvement.

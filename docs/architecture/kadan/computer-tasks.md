@@ -37,12 +37,15 @@ started from the computer view have no origin, so nobody is woken.
 ## Thread and tasks
 
 Each agent has one `ComputerThread` and an ordered queue of `ComputerTask`
-records. `ComputerTasks` polls Tsuchi every two seconds (or immediately when
+records. `ComputerTasks` polls Tsuchi every 0.5 seconds (or immediately when
 `use_computer` wakes it), and runs one asyncio task per agent with queued work.
 It claims the thread lease (60 seconds, renewed every 10) and works through
 tasks oldest first, releasing the lease when the queue is empty. It does not use
 the per-agent slot that `AgentRunner` holds for conversation runs, so a running
-computer task never blocks a chat response.
+computer task never blocks a chat response. Computer assistant inference runs at
+`background` priority so queued interactive chat turns start first between turns;
+`computer_look` also disables prefix reuse so screenshot reads do not overwrite
+text conversation checkpoints.
 
 Each task has explicit start and outcome records. Commands and results carry a shared call ID. A direct request carries its original user text, and the agent’s delegation reaches the model as a task observation. Commands are persisted before execution, exactly like
 conversation runs. After a restart only GET tools repeat, and an unconfirmed
@@ -50,11 +53,12 @@ change is reported to the model as uncertain. A block left open by a task
 cancelled while no worker held the thread is closed as `stopped` before the next
 task starts. Tsuchi upgrades earlier journals once and retains their original action positions. If a running task’s saved actions cannot be interpreted, the runner reports that task as failed before replay.
 
-Before each inference, the oldest finished blocks are folded into a single
-history record holding their last twenty summaries until the transcript
-fits the context left after the instructions and tool definitions, or under 900
-messages. The current task is never folded. If it alone does not fit, the task
-fails. Each task has an 80-command limit and two argument corrections.
+Finished task blocks are folded promptly into a single history record holding
+their last twenty summaries whenever a new task starts and before each
+inference, so prior failed or completed tasks do not carry verbatim tool calls
+and outputs into subsequent turns. The current task is never folded. If it alone
+does not fit, the task fails. Each task has an 80-command limit and two argument
+corrections.
 
 ## Steering
 

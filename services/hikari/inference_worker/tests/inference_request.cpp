@@ -128,6 +128,22 @@ int main() {
         assert(req.messages[1].tool_calls[0].id == "call_1");
         assert(req.messages[2].tool_call_id == "call_1");
         assert(req.messages[2].name == "bash");
+        assert(parsed_chat.priority == Priority::interactive);
+    }
+    {
+        auto bg = chat;
+        bg["input"]["priority"] = "background";
+        assert(parse_request(bg).priority == Priority::background);
+        bg["input"]["priority"] = "interactive";
+        assert(parse_request(bg).priority == Priority::interactive);
+        bg["input"]["priority"] = "urgent";
+        bool bad_priority = false;
+        try {
+            (void)parse_request(bg);
+        } catch (const RequestError& error) {
+            bad_priority = error.status == 422;
+        }
+        assert(bad_priority);
     }
     auto decisions = envelope;
     decisions["input"] = {

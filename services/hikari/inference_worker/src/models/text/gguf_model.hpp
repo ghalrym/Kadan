@@ -177,6 +177,11 @@ public:
         return execution_;
     }
 
+    // Describes one bound matrix (or expert slice) for GPU-resident admission.
+    InklingMatrixDesc describe_matrix(
+        const std::string& name, std::size_t expert = 0
+    ) const;
+
 private:
     struct Matrix {
         std::size_t rows, columns, experts;
@@ -265,11 +270,6 @@ void delta_rule(
     std::span<float> out
 );
 
-// Copies a checkpoint's valid prefix into reusable host state storage.
-void copy_state(
-    const ModelState&, ModelState&, std::size_t positions, std::size_t context
-);
-
 // One architecture's forward pass over whole token rows; KV and recurrent
 // state live in the model and are sized for its context at construction.
 class Model {
@@ -286,6 +286,20 @@ public:
     virtual void reset() = 0;
     virtual ModelState take_state() = 0;
     virtual void restore_state(ModelState) = 0;
+    // Returns a compacted copy of the live prefix state without invalidating
+    // resident device state (used by CheckpointPool boundary saves).
+    virtual ModelState snapshot_state(std::size_t tokens, std::size_t context) {
+        auto state = take_state();
+        ModelState compacted;
+        try {
+            compacted = compact_state(state, tokens, context);
+        } catch (...) {
+            restore_state(std::move(state));
+            throw;
+        }
+        restore_state(std::move(state));
+        return compacted;
+    }
     // Rows at positions position..position+tokens.size()-1. Image spans whose
     // offset falls within [position, position+tokens.size()) override those
     // rows' input embeddings without applying token_embd_norm. Returns the last
@@ -308,6 +322,10 @@ void bind_inkling2_loop(GgufWeights&);
 
 // Host bytes of KV and short-conv state for a context across all logical slots.
 std::size_t inkling2_loop_state_bytes(std::size_t context);
+
+// Device bytes of FP16 KV mirrors, short-conv state, relative-bias tables and
+// small resident layer parameters for a context across all logical slots.
+std::size_t inkling2_loop_device_state_bytes(std::size_t context);
 
 std::unique_ptr<Model>
 inkling2_loop_model(const GgufWeights&, DenseCompute&, std::size_t context);
