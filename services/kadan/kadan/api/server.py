@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from kadan_tracing import RequestTracing, configure, shutdown
 
 from .config import ServiceError, Settings
-from .routes import agents, calls, computer, health, runners, status, transcriptions
+from .routes import agents, calls, computer, health, mcp, runners, status, transcriptions
 from .routes.agents import (
     assets,
     chain,
@@ -55,6 +55,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         health.router,
         runners.router,
         status.router,
+        mcp.router,
         transcriptions.router,
         calls.router,
         agents.router,

@@ -128,7 +128,7 @@ class AgentRunState(BaseModel):
 
 
 class RunEvent(BaseModel):
-    kind: Literal["codex", "computer"]
+    kind: Literal["codex", "computer", "t3"]
     content: str = Field(min_length=1, max_length=20000)
 
 

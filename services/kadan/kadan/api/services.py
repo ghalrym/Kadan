@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from pydantic_core import from_json
 
 from .config import ServiceError, Settings
+from .mcp_client import McpClient
 from .pet_client import PetClient
 from .pydantic_models.inference import (
     HikariModelLifecycle,
@@ -41,6 +42,7 @@ class LocalServices:
         self.pets = PetClient(self)
         self.runs = RunClient(self)
         self.sandbox = SandboxClient(self)
+        self.mcp = McpClient(self)
         self.chain_locks: dict[str, asyncio.Lock] = {}
 
     async def json_request(

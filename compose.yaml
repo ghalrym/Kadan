@@ -384,6 +384,8 @@ services:
       context: ./services/kadan
     command: [uvicorn, kadan.api.server:app, --host, 0.0.0.0, --port, "8630", --reload, --reload-dir, /app/kadan]
     init: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8630/api/health', timeout=3)"]
       interval: 30s
@@ -424,6 +426,8 @@ services:
       - kadan.runner.__main__.run
       - /app/kadan
     init: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment: &runner_environment
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}

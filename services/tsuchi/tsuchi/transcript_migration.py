@@ -73,6 +73,7 @@ def _run_entries(record: dict, conversation: dict) -> list[TranscriptEntry]:
         trigger = {
             "codex": "Codex thread event: ",
             "computer": "Computer task event: ",
+            "t3": "T3 Code thread event: ",
         }[event["kind"]]
     else:
         trigger = f"Respond to user message {target} in the conversation above. Other user messages have their own queued runs."
@@ -103,6 +104,7 @@ def _run_entries(record: dict, conversation: dict) -> list[TranscriptEntry]:
                     name = {
                         "computer": "computer_task_event",
                         "codex": "codex_thread_event",
+                        "t3": "t3_thread_event",
                     }[event["kind"]]
                     # The durable event is authoritative and can be plain text.
                     try:

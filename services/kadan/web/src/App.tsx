@@ -7,6 +7,7 @@ import {
   MessageCircle,
   Palette,
   Pencil,
+  Plug,
   Server,
   RefreshCw,
   X,
@@ -22,6 +23,7 @@ import { agentHue } from "./pet";
 import PetEditor from "./PetEditor";
 import RenameAgent from "./RenameAgent";
 import RunnerAssignment from "./RunnerAssignment";
+import Integrations from "./Integrations";
 import { PetContext, useAgentPet } from "./PetContext";
 
 /** Animate a view change, letting the agent's pet glide between layouts. */
@@ -61,6 +63,7 @@ export default function App() {
   const [editingPet, setEditingPet] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [assigningRunner, setAssigningRunner] = useState(false);
+  const [integrations, setIntegrations] = useState(false);
   const petSelectionRevision = useRef(0);
   const petReadRevision = useRef(0);
   const pendingPetSelection = useRef(0);
@@ -348,6 +351,10 @@ export default function App() {
             <FolderOpen size={17} />
             Workspace
           </button>
+          <button disabled={!key} onClick={() => { setMenu(false); setIntegrations(true); }}>
+            <Plug size={17} />
+            Integrations
+          </button>
         </nav>
         <nav className="panel-nav" aria-label="Agent settings">
           <h2 className="panel-label">Agent</h2>
@@ -495,6 +502,7 @@ export default function App() {
           restoreFocus();
         }}
       />}
+      {integrations && <Integrations onClose={() => { setIntegrations(false); restoreFocus(); }} />}
       {assigningRunner && agent && <RunnerAssignment
         agent={agent}
         onClose={() => {

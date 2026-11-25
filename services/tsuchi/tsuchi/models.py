@@ -705,7 +705,7 @@ TranscriptEntry = Annotated[
 class RunEvent(Model):
     """An external event that wakes the agent; Kadan owns its content."""
 
-    kind: Literal["codex", "computer"]
+    kind: Literal["codex", "computer", "t3"]
     content: str = Field(min_length=1, max_length=20000)
 
 
@@ -873,6 +873,108 @@ class ComputerThread(ComputerThreadState):
     agent_key: AgentKey
     steering: list[ComputerSteering] = Field(default_factory=list)
     version: int = Field(ge=1)
+    updated_at: datetime
+
+
+McpSlug = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,47}$")]
+
+
+class McpToolInfo(Model):
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=4000)
+    input_schema: dict[str, JsonValue] = Field(default_factory=dict)
+    read_only: bool = False
+    idempotent: bool = False
+    accepts_client_request_id: bool = False
+
+
+class McpAuthState(Model):
+    bearer_token: str | None = Field(default=None, max_length=16000)
+    client_id: str | None = Field(default=None, max_length=2000)
+    client_secret: str | None = Field(default=None, max_length=8000)
+    access_token: str | None = Field(default=None, max_length=16000)
+    refresh_token: str | None = Field(default=None, max_length=16000)
+    token_type: str | None = Field(default=None, max_length=100)
+    expires_at: datetime | None = None
+    authorization_endpoint: str | None = Field(default=None, max_length=2000)
+    token_endpoint: str | None = Field(default=None, max_length=2000)
+    registration_endpoint: str | None = Field(default=None, max_length=2000)
+    scope: str | None = Field(default=None, max_length=1000)
+
+
+class McpServerInput(Model):
+    slug: McpSlug
+    name: Title
+    preset: Literal["t3_code", "custom"] = "custom"
+    url: str = Field(min_length=1, max_length=2000)
+    app_url: str | None = Field(default=None, max_length=2000)
+    auth_type: Literal["oauth", "bearer", "none"] = "oauth"
+    auth_state: McpAuthState = Field(default_factory=McpAuthState)
+    enabled: bool = True
+    status: Literal["disconnected", "connected", "error"] = "disconnected"
+    status_error: str | None = Field(default=None, max_length=4000)
+    pinned_tools: list[str] = Field(default_factory=list, max_length=200)
+    tools: list[McpToolInfo] = Field(default_factory=list, max_length=500)
+    tools_synced_at: datetime | None = None
+
+    @field_validator("name")
+    @classmethod
+    def nonblank_server_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Server name cannot be blank")
+        return value.strip()
+
+
+class McpServerUpdate(McpServerInput):
+    expected_version: int = Field(ge=1)
+
+
+class McpServer(McpServerInput):
+    id: UUID
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
+class McpOAuthState(Model):
+    state: str = Field(min_length=16, max_length=256)
+    server_id: UUID
+    code_verifier: str = Field(min_length=32, max_length=256)
+    redirect_uri: str = Field(min_length=1, max_length=2000)
+    token_endpoint: str = Field(min_length=1, max_length=2000)
+    client_id: str = Field(min_length=1, max_length=2000)
+    client_secret: str | None = Field(default=None, max_length=8000)
+    expires_at: datetime
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class T3ThreadWatchInput(Model):
+    id: UUID
+    server_id: UUID
+    thread_id: str = Field(min_length=1, max_length=256)
+    run_id: str | None = Field(default=None, max_length=256)
+    environment_id: str | None = Field(default=None, max_length=256)
+    thread_link: str | None = Field(default=None, max_length=2000)
+    thread_title: str | None = Field(default=None, max_length=1000)
+    origin_agent_key: AgentKey
+    origin_conversation_id: UUID
+    origin_run_id: UUID
+
+
+class T3ThreadWatchUpdate(Model):
+    status: Literal["watching", "delivered", "dropped"]
+    run_id: str | None = Field(default=None, max_length=256)
+    thread_link: str | None = Field(default=None, max_length=2000)
+    thread_title: str | None = Field(default=None, max_length=1000)
+    last_pending_request_id: str | None = Field(default=None, max_length=256)
+    expected_version: int = Field(ge=1)
+
+
+class T3ThreadWatch(T3ThreadWatchInput):
+    status: Literal["watching", "delivered", "dropped"] = "watching"
+    last_pending_request_id: str | None = Field(default=None, max_length=256)
+    version: int = Field(ge=1)
+    created_at: datetime
     updated_at: datetime
 
 

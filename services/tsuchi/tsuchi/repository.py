@@ -6,6 +6,7 @@ from contextlib import closing, contextmanager
 from datetime import timedelta
 from itertools import islice
 from pathlib import Path
+from typing import Literal
 from uuid import UUID, uuid4, uuid5
 
 from kadan_tracing import carrier, traced
@@ -32,6 +33,10 @@ from .models import (
     ImageJobState,
     MarkdownContent,
     MarkdownResource,
+    McpOAuthState,
+    McpServer,
+    McpServerInput,
+    McpServerUpdate,
     Message,
     Metadata,
     OwnedPersonaUpdate,
@@ -50,6 +55,9 @@ from .models import (
     RunEvent,
     Runner,
     Stats,
+    T3ThreadWatch,
+    T3ThreadWatchInput,
+    T3ThreadWatchUpdate,
     resource_adapter,
     resource_input_adapter,
     utc_now,
@@ -172,6 +180,25 @@ class Repository:
                     agent_key TEXT NOT NULL REFERENCES agents(key), data TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS activity_namespace ON activity(agent_key, sequence);
+                CREATE TABLE IF NOT EXISTS mcp_servers (
+                    id TEXT PRIMARY KEY,
+                    slug TEXT NOT NULL UNIQUE,
+                    updated_at TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS mcp_oauth_states (
+                    state TEXT PRIMARY KEY,
+                    server_id TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS t3_thread_watches (
+                    id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS t3_thread_watches_status ON t3_thread_watches(status, updated_at);
             """)
             # Serialize the additive migration for existing storage volumes.
             db.execute("BEGIN IMMEDIATE")
@@ -2541,3 +2568,197 @@ class Repository:
                 )
             ],
         )
+
+    def list_mcp_servers(self) -> list[McpServer]:
+        with self.connect() as db:
+            return [
+                McpServer.model_validate_json(row[0])
+                for row in db.execute(
+                    "SELECT data FROM mcp_servers ORDER BY slug"
+                )
+            ]
+
+    def get_mcp_server(self, server_id: UUID) -> McpServer:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT data FROM mcp_servers WHERE id = ?", (str(server_id),)
+            ).fetchone()
+            if not row:
+                raise StorageError("MCP server not found", 404)
+            return McpServer.model_validate_json(row[0])
+
+    def create_mcp_server(self, value: McpServerInput) -> McpServer:
+        with self.connect(write=True) as db:
+            if db.execute(
+                "SELECT 1 FROM mcp_servers WHERE slug = ?", (value.slug,)
+            ).fetchone():
+                raise StorageError(
+                    f"An integration with identifier '{value.slug}' already exists", 409
+                )
+            now = utc_now()
+            server = McpServer(
+                id=uuid4(),
+                version=1,
+                created_at=now,
+                updated_at=now,
+                **value.model_dump(),
+            )
+            db.execute(
+                "INSERT INTO mcp_servers (id, slug, updated_at, data) VALUES (?, ?, ?, ?)",
+                (str(server.id), server.slug, now.isoformat(), server.model_dump_json()),
+            )
+            return server
+
+    def update_mcp_server(self, server_id: UUID, value: McpServerUpdate) -> McpServer:
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT data FROM mcp_servers WHERE id = ?", (str(server_id),)
+            ).fetchone()
+            if not row:
+                raise StorageError("MCP server not found", 404)
+            current = McpServer.model_validate_json(row[0])
+            if current.version != value.expected_version:
+                raise StorageError("MCP server changed; reload before saving", 409)
+            if value.slug != current.slug and db.execute(
+                "SELECT 1 FROM mcp_servers WHERE slug = ? AND id != ?",
+                (value.slug, str(server_id)),
+            ).fetchone():
+                raise StorageError(
+                    f"An integration with identifier '{value.slug}' already exists", 409
+                )
+            now = utc_now()
+            updated = McpServer(
+                id=current.id,
+                version=current.version + 1,
+                created_at=current.created_at,
+                updated_at=now,
+                **value.model_dump(exclude={"expected_version"}),
+            )
+            db.execute(
+                "UPDATE mcp_servers SET slug = ?, updated_at = ?, data = ? WHERE id = ?",
+                (
+                    updated.slug,
+                    now.isoformat(),
+                    updated.model_dump_json(),
+                    str(server_id),
+                ),
+            )
+            return updated
+
+    def delete_mcp_server(self, server_id: UUID) -> None:
+        with self.connect(write=True) as db:
+            cursor = db.execute(
+                "DELETE FROM mcp_servers WHERE id = ?", (str(server_id),)
+            )
+            if cursor.rowcount == 0:
+                raise StorageError("MCP server not found", 404)
+            db.execute(
+                "DELETE FROM mcp_oauth_states WHERE server_id = ?", (str(server_id),)
+            )
+
+    def save_mcp_oauth_state(self, value: McpOAuthState) -> McpOAuthState:
+        with self.connect(write=True) as db:
+            now = utc_now()
+            db.execute(
+                "DELETE FROM mcp_oauth_states WHERE expires_at <= ?", (now.isoformat(),)
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO mcp_oauth_states (state, server_id, expires_at, data) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    value.state,
+                    str(value.server_id),
+                    value.expires_at.isoformat(),
+                    value.model_dump_json(),
+                ),
+            )
+            return value
+
+    def consume_mcp_oauth_state(self, state: str) -> McpOAuthState:
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT data FROM mcp_oauth_states WHERE state = ?", (state,)
+            ).fetchone()
+            if not row:
+                raise StorageError("Authorization session expired or not found", 404)
+            db.execute("DELETE FROM mcp_oauth_states WHERE state = ?", (state,))
+            saved = McpOAuthState.model_validate_json(row[0])
+            if saved.expires_at <= utc_now():
+                raise StorageError("Authorization session expired", 410)
+            return saved
+
+    def upsert_t3_watch(self, value: T3ThreadWatchInput) -> T3ThreadWatch:
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT data FROM t3_thread_watches WHERE id = ?", (str(value.id),)
+            ).fetchone()
+            if row:
+                return T3ThreadWatch.model_validate_json(row[0])
+            now = utc_now()
+            watch = T3ThreadWatch(
+                **value.model_dump(),
+                status="watching",
+                last_pending_request_id=None,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            db.execute(
+                "INSERT INTO t3_thread_watches (id, status, updated_at, data) VALUES (?, ?, ?, ?)",
+                (str(watch.id), watch.status, now.isoformat(), watch.model_dump_json()),
+            )
+            return watch
+
+    def list_t3_watches(
+        self, status: Literal["watching", "delivered", "dropped"] | None = None
+    ) -> list[T3ThreadWatch]:
+        with self.connect() as db:
+            if status is None:
+                rows = db.execute(
+                    "SELECT data FROM t3_thread_watches ORDER BY updated_at"
+                )
+            else:
+                rows = db.execute(
+                    "SELECT data FROM t3_thread_watches WHERE status = ? ORDER BY updated_at",
+                    (status,),
+                )
+            return [T3ThreadWatch.model_validate_json(row[0]) for row in rows]
+
+    def update_t3_watch(
+        self, watch_id: UUID, value: T3ThreadWatchUpdate
+    ) -> T3ThreadWatch:
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT data FROM t3_thread_watches WHERE id = ?", (str(watch_id),)
+            ).fetchone()
+            if not row:
+                raise StorageError("T3 thread watch not found", 404)
+            current = T3ThreadWatch.model_validate_json(row[0])
+            if current.version != value.expected_version:
+                raise StorageError("T3 thread watch changed; reload before saving", 409)
+            now = utc_now()
+            updated = current.model_copy(
+                update={
+                    "status": value.status,
+                    "run_id": value.run_id if value.run_id is not None else current.run_id,
+                    "thread_link": value.thread_link
+                    if value.thread_link is not None
+                    else current.thread_link,
+                    "thread_title": value.thread_title
+                    if value.thread_title is not None
+                    else current.thread_title,
+                    "last_pending_request_id": value.last_pending_request_id,
+                    "version": current.version + 1,
+                    "updated_at": now,
+                }
+            )
+            db.execute(
+                "UPDATE t3_thread_watches SET status = ?, updated_at = ?, data = ? WHERE id = ?",
+                (
+                    updated.status,
+                    now.isoformat(),
+                    updated.model_dump_json(),
+                    str(watch_id),
+                ),
+            )
+            return updated

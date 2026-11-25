@@ -26,6 +26,10 @@ from .models import (
     ImageJob,
     ImageJobState,
     MarkdownResource,
+    McpOAuthState,
+    McpServer,
+    McpServerInput,
+    McpServerUpdate,
     Message,
     MessageAppend,
     Metadata,
@@ -44,6 +48,9 @@ from .models import (
     RunEvent,
     Runner,
     Stats,
+    T3ThreadWatch,
+    T3ThreadWatchInput,
+    T3ThreadWatchUpdate,
     VersionInput,
     resource_input_adapter,
 )
@@ -678,5 +685,49 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         return ExportResponse(
             path, media_type="application/zip", filename=f"tsuchi-{key}.zip"
         )
+
+    @router.get("/mcp-servers", response_model=list[McpServer])
+    def list_mcp_servers():
+        return repository.list_mcp_servers()
+
+    @router.post("/mcp-servers", response_model=McpServer, status_code=201)
+    def create_mcp_server(value: McpServerInput):
+        return repository.create_mcp_server(value)
+
+    @router.get("/mcp-servers/{server_id}", response_model=McpServer)
+    def get_mcp_server(server_id: UUID):
+        return repository.get_mcp_server(server_id)
+
+    @router.put("/mcp-servers/{server_id}", response_model=McpServer)
+    def update_mcp_server(server_id: UUID, value: McpServerUpdate):
+        return repository.update_mcp_server(server_id, value)
+
+    @router.delete("/mcp-servers/{server_id}", status_code=204)
+    def delete_mcp_server(server_id: UUID):
+        repository.delete_mcp_server(server_id)
+
+    @router.post("/mcp-oauth-states", response_model=McpOAuthState, status_code=201)
+    def save_mcp_oauth_state(value: McpOAuthState):
+        return repository.save_mcp_oauth_state(value)
+
+    @router.post(
+        "/mcp-oauth-states/{state}/consume", response_model=McpOAuthState
+    )
+    def consume_mcp_oauth_state(state: str):
+        return repository.consume_mcp_oauth_state(state)
+
+    @router.get("/t3-watches", response_model=list[T3ThreadWatch])
+    def list_t3_watches(
+        status: Literal["watching", "delivered", "dropped"] | None = None,
+    ):
+        return repository.list_t3_watches(status)
+
+    @router.post("/t3-watches", response_model=T3ThreadWatch, status_code=201)
+    def upsert_t3_watch(value: T3ThreadWatchInput):
+        return repository.upsert_t3_watch(value)
+
+    @router.put("/t3-watches/{watch_id}", response_model=T3ThreadWatch)
+    def update_t3_watch(watch_id: UUID, value: T3ThreadWatchUpdate):
+        return repository.update_t3_watch(watch_id, value)
 
     return router

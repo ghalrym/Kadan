@@ -1498,9 +1498,26 @@ dialog::backdrop {
   animation: fade 240ms var(--out);
 }
 .rename-agent,
-.runner-assignment {
+.runner-assignment,
+.integrations-dialog {
   overflow-y: auto;
 }
+.integrations-dialog { width: min(640px, calc(100vw - 32px)); }
+.integrations-content { display: flex; flex-direction: column; gap: 16px; padding: 24px; overflow-wrap: anywhere; }
+.integrations-content p, .integrations-content h3 { margin: 0; }
+.integration-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.integration-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.integration-badge { font-size: 0.85rem; font-weight: 600; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line-strong); white-space: nowrap; }
+.integration-badge.connected { border-color: var(--ok, #3a9a5b); color: var(--ok, #3a9a5b); }
+.integration-badge.error { border-color: var(--danger, #c44); color: var(--danger, #c44); }
+.integration-form, .integration-body { display: flex; flex-direction: column; gap: 10px; }
+.integration-form label { display: flex; flex-direction: column; gap: 6px; }
+.integration-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.integration-actions .button-link { display: inline-flex; align-items: center; padding: 0 12px; min-height: 38px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); text-decoration: none; color: inherit; }
+.integration-groups { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.integration-check { display: flex; flex-direction: row !important; align-items: center; gap: 8px; }
+.integration-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.integration-item { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
 .rename-agent form,
 .runner-assignment form {
   display: flex;
