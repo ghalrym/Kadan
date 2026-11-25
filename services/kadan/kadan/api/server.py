@@ -16,12 +16,12 @@ from .routes.agents import (
     memories,
     pets,
     resources,
-    spaces,
     workspace,
 )
 from .routes.agents import computer as agent_computer
 from .routes.agents.assets import content
 from .routes.agents.conversations import notes, results, runs
+from .routes.agents.space import folders, items, pages, slides, trash
 from .routes.computer import screenshot, vnc
 from .services import LocalServices
 
@@ -64,7 +64,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         workspace.router,
         memories.router,
         conversations.router,
-        spaces.router,
         pets.router,
         agent_computer.router,
         assets.router,
@@ -72,6 +71,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         notes.router,
         results.router,
         runs.router,
+        items.router,
+        trash.router,
+        folders.router,
+        pages.router,
+        slides.router,
         computer.router,
         screenshot.router,
         vnc.router,

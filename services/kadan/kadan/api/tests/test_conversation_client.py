@@ -39,11 +39,4 @@ def chat(title, *messages):
     ],
 )
 def test_default_titles_show_the_first_user_message(title, messages, shown):
-    assert summarize(chat(title, *messages), set()).title == shown
-
-
-def test_space_id_is_set_only_for_space_parents():
-    space_id = uuid4()
-    inside = chat("Chat").model_copy(update={"parent_id": space_id})
-    assert summarize(inside, {space_id}).space_id == space_id
-    assert summarize(inside, set()).space_id is None
+    assert summarize(chat(title, *messages)).title == shown

@@ -10,33 +10,27 @@ import {
 } from "./conversations.ts";
 
 const row = (id, updated_at, extra = {}) => ({
-  id, agent_key: "guide", title: id, space_id: null, message_count: 1, preview: "",
+  id, agent_key: "guide", title: id, message_count: 1, preview: "",
   version: 1, created_at: updated_at, updated_at, ...extra,
 });
 
-test("opens the preferred chat while it exists, otherwise the latest outside Spaces", () => {
-  const rows = [
-    row("old", "2026-01-01T00:00:00Z"),
-    row("spaced", "2026-01-03T00:00:00Z", { space_id: "s" }),
-    row("recent", "2026-01-02T00:00:00Z"),
-  ];
+test("opens the preferred chat while it exists, otherwise the latest", () => {
+  const rows = [row("old", "2026-01-01T00:00:00Z"), row("recent", "2026-01-02T00:00:00Z")];
   assert.equal(pickConversation(rows, "old"), "old");
   assert.equal(pickConversation(rows, "gone"), "recent");
-  assert.equal(pickConversation([rows[1]], null), "spaced");
   assert.equal(pickConversation([], null), null);
 });
 
-test("lists started chats in one place plus the open empty chat", () => {
+test("lists started chats plus the open empty chat", () => {
   const rows = [
     row("a", "2026-01-01T00:00:00Z"),
     row("b", "2026-01-02T00:00:00Z", { message_count: 0 }),
     row("c", "2026-01-03T00:00:00Z", { message_count: 0 }),
-    row("d", "2026-01-04T00:00:00Z", { space_id: "s" }),
   ];
-  assert.deepEqual(listedConversations(rows, null, "b").map((item) => item.id), ["b", "a"]);
-  assert.deepEqual(listedConversations(rows, "s", null).map((item) => item.id), ["d"]);
-  assert.equal(emptyConversation(rows, null)?.id, "c");
-  assert.equal(emptyConversation(rows, "s"), null);
+  assert.deepEqual(listedConversations(rows, "b").map((item) => item.id), ["b", "a"]);
+  assert.deepEqual(listedConversations(rows, null).map((item) => item.id), ["a"]);
+  assert.equal(emptyConversation(rows)?.id, "c");
+  assert.equal(emptyConversation([rows[0]]), null);
 });
 
 test("summaries name unnamed chats from their first message and ignore stale versions", () => {
@@ -45,12 +39,11 @@ test("summaries name unnamed chats from their first message and ignore stale ver
     created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-02T00:00:00Z",
     messages: [{ id: "m", role: "user", content: "  Plan   a trip\nto Kyoto " }],
   };
-  const summary = summarize(conversation, "s");
+  const summary = summarize(conversation);
   assert.equal(summary.title, "Plan a trip to Kyoto");
-  assert.equal(summary.space_id, "s");
   assert.equal(summary.message_count, 1);
-  assert.equal(summarize({ ...conversation, title: "Kyoto" }, null).title, "Kyoto");
-  assert.equal(summarize({ ...conversation, messages: [] }, null).title, "New chat");
+  assert.equal(summarize({ ...conversation, title: "Kyoto" }).title, "Kyoto");
+  assert.equal(summarize({ ...conversation, messages: [] }).title, "New chat");
   const rows = [{ ...summary, version: 5, title: "Newer" }];
   assert.equal(upsertConversation(rows, summary)[0].title, "Newer");
   assert.equal(upsertConversation(rows, { ...summary, version: 6, title: "Newest" })[0].title, "Newest");

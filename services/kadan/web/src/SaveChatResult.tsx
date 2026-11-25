@@ -38,25 +38,25 @@ export default function SaveChatResult({ agentKey, conversationId, message, disa
   }
 
   if (saved) return <p className="field-hint" role="status">
-    Saved as a document: <strong>{saved.title}</strong>. Open Tsuchi to read or edit it.
+    Saved to Space as a page: <strong>{saved.title}</strong>. Open Space to read or edit it.
   </p>;
   return <div className="save-chat-result">
     <button type="button" className="text-link" disabled={saving || disabled}
       aria-expanded={open} onClick={() => setOpen(!open)}>
-      {open ? "Close save form" : "Save as document"}
+      {open ? "Close save form" : "Save to Space"}
     </button>
     {open && <form onSubmit={save}>
-      <label>Document title
+      <label>Page title
         <input value={title} maxLength={500} required disabled={saving || disabled}
           onChange={event => setTitle(event.target.value)} />
       </label>
-      <p className="field-hint">Saves the stored reply and its linked files as an editable document.
+      <p className="field-hint">Saves the stored reply and its linked files as an editable page in Space.
         One document per reply; saving again returns that document and preserves any later edits.
         This does not schedule work or add the document to future chat context.</p>
       {error && <p role="alert" className="error">{error} Save was not confirmed.
         Retrying checks or creates the same document.</p>}
       <button type="submit" className="button" disabled={saving || disabled || !title.trim()}>
-        {saving ? "Saving…" : error ? "Retry save" : "Save document"}
+        {saving ? "Saving…" : error ? "Retry save" : "Save page"}
       </button>
     </form>}
   </div>;

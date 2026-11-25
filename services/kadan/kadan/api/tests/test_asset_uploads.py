@@ -178,3 +178,38 @@ def test_rolled_spool_uses_real_async_io_and_is_closed_by_route(failure):
                 asyncio.run(call)
         assert spool.closed
         assert storage.calls[0][-1] == PAYLOAD
+
+
+def test_upload_can_go_straight_into_a_folder():
+    folder_id = uuid4()
+    storage = Storage(changes={"folder_id": str(folder_id)})
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(services=storage))
+    )
+    result = asyncio.run(
+        upload_route("ember", request, uuid4(), upload(), None, folder_id)
+    )
+    assert result.folder_id == folder_id
+    assert storage.calls[0][3]["data"]["folder_id"] == str(folder_id)
+
+
+def test_upload_without_a_folder_sends_no_folder():
+    storage = Storage()
+    source = upload()
+    result = asyncio.run(upload_asset(storage, "ember", uuid4(), source, None))
+    assert result.folder_id is None
+    assert "folder_id" not in storage.calls[0][3]["data"]
+    source.file.close()
+
+
+def test_upload_into_a_deleted_folder_is_explained():
+    storage = Storage(
+        failure=ServiceError("Folder must be an active folder in this namespace", 400)
+    )
+    source = upload()
+    with pytest.raises(
+        ServiceError, match="folder you chose no longer exists"
+    ) as error:
+        asyncio.run(upload_asset(storage, "ember", uuid4(), source, None, uuid4()))
+    assert error.value.status == 404
+    source.file.close()

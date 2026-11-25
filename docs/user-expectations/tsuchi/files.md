@@ -8,4 +8,4 @@ Stored file contents cannot be replaced in place. Upload a new file to change th
 
 The editor offers audio and video controls, but playback depends on the stored format, browser support and whether the file is served for playback or download. Only verified WAV audio is served for inline playback. General files download without an in-app preview. Uploading a PDF or recording does not extract text or transcribe it. Library search matches metadata rather than file contents.
 
-Files used by active content must be unlinked before moving them to [trash](trash.md). Trash retains their bytes. See [Images](images.md) for the image library and [Restore](restore.md) for recovery.
+Files can be kept in a [folder](folders.md) and pinned through Kadan's [Space](../kadan/space.md); editing a file's details in Tsuchi keeps its folder and pin. Files used by active content must be unlinked before moving them to [trash](trash.md). Trash retains their bytes. See [Images](images.md) for the image library and [Restore](restore.md) for recovery.

@@ -1,14 +1,14 @@
 # Kadan user expectations
 
-Kadan is the everyday interface for working with agents. Users can hold many chats, group them into Spaces, ask agents to act on their computer, generate images and connect plugins. Tsuchi keeps durable records; Hikari supplies inference.
+Kadan is the everyday interface for working with agents. Users can hold many chats, keep pages and files in Space, ask agents to act on their computer, generate images and connect plugins. Tsuchi keeps durable records; Hikari supplies inference.
 
 Saved work can continue after the browser closes. A queued message does not promise an immediate response, and stopping work does not undo actions already taken. Each feature page describes its waiting, failure and recovery behavior.
 
 | Feature | What to expect |
 | --- | --- |
-| [Navigation and the Agent page](navigation.md) | Move between chats, Spaces, Plugins and the agent's own settings from the sidebar. |
+| [Navigation and the Agent page](navigation.md) | Move between chats, Space, Plugins and the agent's own settings from the sidebar. |
 | [Agent conversations](agent-conversations.md) | Hatch agents, start, rename, move and delete chats, and return to saved history within bounded response context. |
-| [Spaces](spaces.md) | Group related chats under shared instructions. |
+| [Space](space.md) | Browse, create, organize and restore pages, slides, images and files. |
 | [Reading chat](reading-chat.md) | Keep the current reading position or jump to the latest message. |
 | [Finding chat text](finding-chat-text.md) | Find literal text in the saved conversation. |
 | [Conversation history](conversation-history.md) | Let the agent search and read older delivered chat within explicit limits. |
@@ -28,7 +28,7 @@ Saved work can continue after the browser closes. A queued message does not prom
 | [Pets](pets.md) | Create, import, preview, repair and explicitly select animated pets. |
 | [Voice input](voice-input.md) | Transcribe an utterance into an editable message draft. |
 | [Voice calls](voice-calls.md) | Have a separate spoken conversation with interruption and playback controls. |
-| [File delivery](file-delivery.md) | Save completed computer files in Tsuchi and share their download links. |
+| [File delivery](file-delivery.md) | Save completed computer files in Space and share their download links. |
 | [Opening stored files](opening-workspace-files.md) | Copy a saved file onto the computer for inspection or processing. |
 | [Service status](service-status.md) | Distinguish storage access, inference readiness and model setup needs. |
 | [Runner availability](runner-availability.md) | Inspect and manage runner assignments, with capacity and recovery limits. |

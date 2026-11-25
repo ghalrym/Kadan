@@ -10,6 +10,6 @@ Spaces support tags, sources, attachments and text search. Unsaved edits are dra
 
 Trashing a Space does not automatically trash its children. Active children must first be moved or trashed. Restore a parent before restoring its children, and restore any required attached files first. Invalid links produce an error rather than a partially restored document.
 
-Kadan Spaces, which group Kadan chats under shared instructions, are separate records. Tsuchi labels them **Kadan Spaces**; they hold only conversations, cannot be placed inside a Space and do not appear in the Spaces hierarchy. A Kadan Space with active conversations cannot be trashed until those conversations are moved or trashed.
+A Space can also sit in a [folder](folders.md). Kadan shows Space documents as pages in its [Space](../kadan/space.md) library.
 
 See [Revisions](revisions.md), [Trash](trash.md) and [Restore](restore.md) for recovery behavior.

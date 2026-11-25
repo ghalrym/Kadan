@@ -17,6 +17,7 @@ from .models import (
     AgentRun,
     AgentRunState,
     Asset,
+    AssetMetadata,
     AssetUpdate,
     ChatResultInput,
     ComputerTask,
@@ -32,7 +33,6 @@ from .models import (
     McpServerUpdate,
     Message,
     MessageAppend,
-    Metadata,
     Model,
     OwnedPersonaUpdate,
     PetJob,
@@ -560,9 +560,11 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
 
     @router.put("/agents/{key}/resources/{resource_id}", response_model=Resource)
     def update_resource(key: AgentKey, resource_id: UUID, value: ResourceUpdate):
-        content = resource_input_adapter.validate_python(
-            value.model_dump(exclude={"expected_version"})
-        )
+        fields = value.model_dump(exclude={"expected_version"})
+        if "pinned" not in value.model_fields_set:
+            # Leave it unset so the saved pin is kept.
+            del fields["pinned"]
+        content = resource_input_adapter.validate_python(fields)
         return repository.update_resource(
             key, resource_id, content, value.expected_version
         )
@@ -625,12 +627,14 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         sources: Annotated[str, Form()] = "[]",
         asset_id: Annotated[UUID | None, Form()] = None,
         image_job_id: Annotated[UUID | None, Form()] = None,
+        folder_id: Annotated[UUID | None, Form()] = None,
     ):
         try:
-            metadata = Metadata(
+            metadata = AssetMetadata(
                 title=title or safe_filename(file.filename),
                 tags=json.loads(tags),
                 sources=json.loads(sources),
+                folder_id=folder_id,
             )
         except (json.JSONDecodeError, ValidationError) as error:
             raise StorageError(
@@ -664,9 +668,11 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
 
     @router.put("/agents/{key}/assets/{asset_id}", response_model=Asset)
     def update_asset(key: AgentKey, asset_id: UUID, value: AssetUpdate):
-        metadata = Metadata.model_validate(
-            value.model_dump(exclude={"expected_version"})
-        )
+        fields = value.model_dump(exclude={"expected_version"})
+        for name in {"pinned", "folder_id"} - value.model_fields_set:
+            # Leave it unset so the saved value is kept.
+            del fields[name]
+        metadata = AssetMetadata.model_validate(fields)
         return repository.update_asset(key, asset_id, metadata, value.expected_version)
 
     @router.delete("/agents/{key}/assets/{asset_id}", response_model=Asset)

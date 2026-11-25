@@ -95,8 +95,8 @@ class ResourceKind(StrEnum):
     SPACE = "space"
     DECK = "deck"
     CONVERSATION = "conversation"
-    # Kadan shows projects as "Spaces": a name, instructions and its own chats.
-    PROJECT = "project"
+    # Groups pages, slide decks, files and other folders; it has no content.
+    FOLDER = "folder"
 
 
 class Slide(Model):
@@ -144,6 +144,8 @@ class Metadata(Model):
         default_factory=list, max_length=100
     )
     sources: list[SourceLink] = Field(default_factory=list, max_length=100)
+    # Records saved before pinning existed load as unpinned.
+    pinned: bool = False
 
     @field_validator("title")
     @classmethod
@@ -169,10 +171,16 @@ class MarkdownContent(ResourceContent):
         ResourceKind.PERSONA,
         ResourceKind.MEMORY,
         ResourceKind.SPACE,
-        ResourceKind.PROJECT,
+        ResourceKind.FOLDER,
     ]
     deck: None = None
     messages: list[Message] = Field(default_factory=list, max_length=0)
+
+    @model_validator(mode="after")
+    def empty_folder(self) -> Self:
+        if self.kind == ResourceKind.FOLDER and (self.markdown or self.attachment_ids):
+            raise ValueError("Folders cannot hold text or attachments")
+        return self
 
 
 class DeckContent(ResourceContent):
@@ -268,11 +276,15 @@ class MessageAppend(VersionInput):
     message: Message
 
 
-class AssetUpdate(Metadata):
+class AssetMetadata(Metadata):
+    folder_id: UUID | None = None
+
+
+class AssetUpdate(AssetMetadata):
     expected_version: int = Field(ge=1)
 
 
-class Asset(Metadata):
+class Asset(AssetMetadata):
     id: UUID
     agent_key: AgentKey
     filename: str

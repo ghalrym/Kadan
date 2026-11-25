@@ -16,7 +16,7 @@ export function sortConversations(rows: ConversationSummary[]): ConversationSumm
 }
 
 /** Summarize a loaded conversation so the sidebar can follow it without another read. */
-export function summarize(conversation: Resource, spaceId: string | null): ConversationSummary {
+export function summarize(conversation: Resource): ConversationSummary {
   const first = conversation.messages.find((message) => message.role === "user" && message.content.trim());
   const stored = conversation.title.trim();
   const preview = first ? clip(collapse(first.content), PREVIEW_LENGTH) : "";
@@ -24,7 +24,6 @@ export function summarize(conversation: Resource, spaceId: string | null): Conve
     id: conversation.id,
     agent_key: conversation.agent_key,
     title: DEFAULT_TITLES.has(stored) && first ? clip(collapse(first.content), TITLE_LENGTH) : stored,
-    space_id: spaceId,
     message_count: conversation.messages.length,
     preview,
     version: conversation.version,
@@ -40,26 +39,20 @@ export function upsertConversation(rows: ConversationSummary[], value: Conversat
   return sortConversations([...rows.filter((row) => row.id !== value.id), value]);
 }
 
-/** The chat to open: the preferred one while it exists, else the latest outside Spaces, else the latest. */
+/** The chat to open: the preferred one while it exists, else the latest. */
 export function pickConversation(rows: ConversationSummary[], preferred: string | null): string | null {
   if (preferred && rows.some((row) => row.id === preferred)) return preferred;
-  const sorted = sortConversations(rows);
-  return (sorted.find((row) => !row.space_id) ?? sorted[0])?.id ?? null;
+  return sortConversations(rows)[0]?.id ?? null;
 }
 
 /** Chats shown in a list: started chats plus the open one, even while it is still empty. */
-export function listedConversations(
-  rows: ConversationSummary[],
-  spaceId: string | null,
-  selectedId: string | null,
-): ConversationSummary[] {
-  return sortConversations(rows).filter((row) =>
-    row.space_id === spaceId && (row.message_count > 0 || row.id === selectedId));
+export function listedConversations(rows: ConversationSummary[], selectedId: string | null): ConversationSummary[] {
+  return sortConversations(rows).filter((row) => row.message_count > 0 || row.id === selectedId);
 }
 
-/** An unused chat in the same place, reused instead of piling up empty chats. */
-export function emptyConversation(rows: ConversationSummary[], spaceId: string | null): ConversationSummary | null {
-  return sortConversations(rows).find((row) => row.space_id === spaceId && row.message_count === 0) ?? null;
+/** An unused chat, reused instead of piling up empty chats. */
+export function emptyConversation(rows: ConversationSummary[]): ConversationSummary | null {
+  return sortConversations(rows).find((row) => row.message_count === 0) ?? null;
 }
 
 /** Compact age for list rows: "now", "5m", "3h", "2d", then a short date. */

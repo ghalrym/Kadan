@@ -15,8 +15,8 @@ class ResourceKind(StrEnum):
     SPACE = "space"
     DECK = "deck"
     CONVERSATION = "conversation"
-    # Shown in Kadan as a Space: a name, instructions and its own chats.
-    PROJECT = "project"
+    # Groups Space pages, slides, files and other folders; it has no content.
+    FOLDER = "folder"
 
 
 class SourceLink(BaseModel):
@@ -62,6 +62,7 @@ class Resource(BaseModel):
     attachment_ids: list[UUID] = Field(default_factory=list)
     deck: Deck | None = None
     messages: list[Message] = Field(default_factory=list)
+    pinned: bool = False
     version: int
     created_at: datetime
     updated_at: datetime

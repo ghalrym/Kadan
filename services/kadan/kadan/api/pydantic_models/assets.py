@@ -17,6 +17,8 @@ class Asset(BaseModel):
     is_image: bool
     tags: list[str] = Field(default_factory=list)
     sources: list[SourceLink] = Field(default_factory=list)
+    pinned: bool = False
+    folder_id: UUID | None = None
     version: int = Field(ge=1, strict=True)
     created_at: datetime
     updated_at: datetime

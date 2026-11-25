@@ -36,6 +36,7 @@ async def upload_asset(
     asset_id: UUID,
     source: UploadFile,
     title: str | None,
+    folder_id: UUID | None = None,
 ) -> Asset:
     if source.size is not None and source.size > MAX_UPLOAD_BYTES:
         raise ServiceError("Files cannot exceed 100 MiB.", 413, "file_too_large")
@@ -54,6 +55,9 @@ async def upload_asset(
     except OSError as error:
         raise ServiceError("Kadan could not read the uploaded file.", 503) from error
     filename = upload_filename(source.filename)
+    data = {"asset_id": str(asset_id), "title": title or filename}
+    if folder_id is not None:
+        data["folder_id"] = str(folder_id)
     try:
         async with asyncio.timeout(UPLOAD_SECONDS):
             value = await services.json_request(
@@ -62,9 +66,19 @@ async def upload_asset(
                 f"/api/agents/{key}/assets",
                 timeout=UPLOAD_SECONDS,
                 files={"file": (filename, source.file, "application/octet-stream")},
-                data={"asset_id": str(asset_id), "title": title or filename},
+                data=data,
             )
         asset = Asset.model_validate(value)
+    except ServiceError as error:
+        if (
+            folder_id is not None
+            and error.status == 400
+            and "Folder must" in str(error)
+        ):
+            raise ServiceError(
+                "The folder you chose no longer exists.", 404, "not_found"
+            ) from error
+        raise
     except (TimeoutError, OSError, ValidationError) as error:
         raise ServiceError(
             "The upload could not be confirmed. Check its asset ID before retrying.",

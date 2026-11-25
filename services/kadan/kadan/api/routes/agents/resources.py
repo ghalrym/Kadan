@@ -11,7 +11,7 @@ router = APIRouter()
 
 class ResourceCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    # Conversations and Spaces have their own routes.
+    # Conversations and Space items have their own routes.
     kind: Literal["persona"]
     title: Title
     markdown: str = Field(default="", max_length=48000)

@@ -10,6 +10,7 @@ Saving content does not run an agent or guarantee future recall. Confirmed saves
 | [Personas](personas.md) | Inspect owned and named persona instructions, with revisions and recovery. |
 | [Memories](memories.md) | Create and search saved notes without a promise of automatic agent recall. |
 | [Spaces](spaces.md) | Edit documents and organize resources through parent and child relationships. |
+| [Folders and pins](folders.md) | Keep Kadan's Space folders and pins; a folder holds documents, decks, files and other folders. |
 | [Slide decks](slide-decks.md) | Edit slides, layouts, notes and linked images within the supported deck format. |
 | [Files](files.md) | Upload, describe, attach and download stored files. |
 | [Images](images.md) | Browse verified image previews and reuse artwork in stored content. |

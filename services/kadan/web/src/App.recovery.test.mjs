@@ -41,7 +41,7 @@ const mocks = {
   "./Pet": moduleUrl("export default 'Pet'; export const agentPet = () => null; export const useMood = () => [];"),
   "./pet": moduleUrl("export const agentHue = () => 0;"),
   "./PetContext": moduleUrl("export const PetContext = { Provider: 'Provider' }; export const useAgentPet = () => null;"),
-  ...Object.fromEntries(["Chat", "Hatch", "PetEditor", "RenameAgent", "RunnerAssignment", "Plugins", "Sidebar", "SpacePage", "SpaceDialog", "ConfirmDialog", "AgentPage"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
+  ...Object.fromEntries(["Chat", "Hatch", "PetEditor", "RenameAgent", "RunnerAssignment", "Plugins", "Sidebar", "SpaceLibrary", "ConfirmDialog", "AgentPage"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
 };
 const loader = registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -66,8 +66,8 @@ loader.deregister();
 
 const originals = new Map(["matchMedia", "document"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 // Slots follow App's useState calls; refs and effects do not consume these slots.
-const AGENT = 0, RENAMING = 3, ASSIGNING_RUNNER = 4, SPACE_DIALOG = 5, CONVERSATIONS = 8, SPACES = 9, SELECTION = 10,
-  CHAIN = 11, PAGE = 12, LOADING = 18, BUSY = 19, RESOURCE_OWNER = 25;
+const AGENT = 0, RENAMING = 3, ASSIGNING_RUNNER = 4, CONVERSATIONS = 7, SELECTION = 8,
+  CHAIN = 9, PAGE = 10, LOADING = 15, BUSY = 16, RESOURCE_OWNER = 22;
 const original = { id: "original", agent_key: "agent", title: "New chat", version: 3, messages: [] };
 const replacement = { ...original, id: "replacement", version: 1 };
 const select = (conversation) => {
@@ -183,7 +183,7 @@ test("plugins open while chat is busy and returning keeps the conversation", () 
 });
 
 test("opening a chat from the sidebar selects it and waits for its messages", () => {
-  state[CONVERSATIONS] = [{ id: "replacement", space_id: null, message_count: 1, updated_at: "2026-01-01" }];
+  state[CONVERSATIONS] = [{ id: "replacement", message_count: 1, updated_at: "2026-01-01" }];
   chat().props;
   find("Sidebar").props.onOpenChat("replacement");
   assert.deepEqual(state[SELECTION], { owner: "agent", id: "replacement" });
@@ -193,17 +193,14 @@ test("opening a chat from the sidebar selects it and waits for its messages", ()
   assert.equal(chat().props.chain, replacement);
 });
 
-test("a Space page lists its Space and opens its settings", () => {
-  const space = { id: "space", title: "Garden", instructions: "", version: 1 };
-  state[SPACES] = [space];
-  state[PAGE] = { name: "space", id: "space" };
+test("Space opens the library for the current agent and returning keeps the chat", () => {
+  const previous = chat();
+  find("Sidebar").props.onPage("space");
   render();
-  const page = find("SpacePage");
-  assert.equal(page.props.space, space);
-  page.props.onEdit();
-  assert.deepEqual(state[SPACE_DIALOG], { space });
-  render();
-  assert.equal(find("SpaceDialog").props.space, space);
+  assert.equal(find("SpaceLibrary").props.agentKey, "agent");
+  assert.equal(find("Chat"), undefined);
+  find("Sidebar").props.onOpenChat("original");
+  assert.equal(chat().key, previous.key);
 });
 
 test("chat updates keep the sidebar summary current", () => {

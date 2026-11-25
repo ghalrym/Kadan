@@ -4,7 +4,7 @@ Tsuchi owns content, revisions, trash and file bytes. Kadan exposes separate rea
 
 Workspace documents retain Tsuchi's `space` (Markdown) and `deck` kinds. Memories retain `memory`; personas and conversations belong to neither collection. All records remain scoped by `agent_key`. Existing IDs, kinds, revisions, attachments and parent links are unchanged, with no migration or copying of content. In particular, an existing Memory's `parent_id` does not make it a Workspace document.
 
-Kadan no longer has a document or file browser; Tsuchi is where users read and edit saved documents and files. The document read contract remains because the composer's References picker searches documents and memories together. The Agent page reads Memories on open, search and explicit refresh rather than continuously synchronizing external edits; transient failures stay distinguishable from an empty list.
+Users browse and edit saved pages, slides and files in [Space](space.md), which has its own routes. The document read contract below remains because the composer's References picker searches documents and memories together. The Agent page reads Memories on open, search and explicit refresh rather than continuously synchronizing external edits; transient failures stay distinguishable from an empty list.
 
 ## Read contract
 
@@ -13,7 +13,7 @@ Kadan no longer has a document or file browser; Tsuchi is where users read and e
 - Each collection has a `/{resource_id}` detail route. A record of another kind or a trashed record returns 404. Tsuchi enforces the agent namespace on lookup.
 - Both lists accept `q`, `limit` (1–200, default 100) and `offset` (default 0). Kind, agent, active-state and lexical search filters apply before pagination. Ordering remains most recently updated first, then ID.
 
-These response models retain the existing resource fields, including `kind`, `parent_id` and `version`. Only an active Space in the same agent namespace can parent another document; a deck cannot contain children. Clients build document hierarchies from document records only. Files remain separately available through the existing asset routes.
+These response models retain the existing resource fields, including `kind`, `parent_id` and `version`. A document's parent may be an active `space` document or an active `folder` in the same agent namespace; a deck cannot contain children. Folders are not documents, so a document in a folder has a `parent_id` that this collection does not return. Files remain separately available through the existing asset routes.
 
 Tsuchi's resource list accepts repeated `kinds` query parameters, such as `kinds=space&kinds=deck`, to page the combined document collection in storage. The existing single `kind` filter remains available; when both filters are supplied they intersect. Generic resource routes remain storage-oriented access, not the definition of Workspace membership. Kadan rejects an invalid upstream collection rather than silently dropping records after pagination.
 

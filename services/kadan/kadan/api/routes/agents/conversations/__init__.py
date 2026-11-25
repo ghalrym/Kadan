@@ -14,7 +14,6 @@ router = APIRouter()
 class ConversationCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     title: Title = DEFAULT_CONVERSATION_TITLE
-    space_id: UUID | None = None
 
     @field_validator("title")
     @classmethod
@@ -25,11 +24,10 @@ class ConversationCreate(BaseModel):
 
 
 class ConversationUpdate(BaseModel):
-    """Only fields present in the body change; a null space_id leaves the Space."""
+    """Only fields present in the body change."""
 
     model_config = ConfigDict(extra="forbid")
     title: Title | None = None
-    space_id: UUID | None = None
 
     @field_validator("title")
     @classmethod
@@ -56,9 +54,7 @@ async def list_conversations(
 async def create_conversation(
     key: AgentKey, value: ConversationCreate, request: Request
 ) -> Resource:
-    return await request.app.state.services.conversations.create(
-        key, value.title, value.space_id
-    )
+    return await request.app.state.services.conversations.create(key, value.title)
 
 
 @router.put("/api/agents/{key}/conversations/{conversation_id}")

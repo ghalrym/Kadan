@@ -1,6 +1,6 @@
 # References for one response
 
-Kadan lets users select up to three saved Markdown Spaces or memories belonging to the current agent as references for the next text response. The composer shows the selected titles and versions. Their combined Markdown text must fit within 12,000 characters. File attachments remain separate and can accompany the same message.
+Kadan lets users select up to three saved pages or memories belonging to the current agent as references for the next text response. The composer shows the selected titles and versions. Their combined Markdown text must fit within 12,000 characters. File attachments remain separate and can accompany the same message.
 
 The picker shows each record's kind, version and length, and the composer shows the selection's combined length. Users can select a result by clicking its title or using the keyboard. Clicking outside, moving keyboard focus outside, or pressing Escape closes the picker without clearing the selection. The picker searches up to 200 records from each collection and reports when results may be capped. Narrow the search to find other records. Changing the search immediately removes previous search results while updated results load. Loading and failures must remain distinguishable from an empty result; late results from an earlier search or agent must not replace the current choices.
 

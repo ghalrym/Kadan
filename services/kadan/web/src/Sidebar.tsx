@@ -1,12 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  ChevronRight,
-  Folder,
-  FolderOpen,
-  FolderPlus,
+  LayoutGrid,
   MoreHorizontal,
   Pencil,
-  Plus,
   Puzzle,
   RefreshCw,
   SquarePen,
@@ -16,15 +12,14 @@ import {
 import Pet from "./Pet";
 import { useAgentPet } from "./PetContext";
 import { listedConversations, relativeTime } from "./conversations";
-import type { Agent, ConversationSummary, Space, Status } from "./types";
+import type { Agent, ConversationSummary, Status } from "./types";
 
-export type Page = { name: "chat" } | { name: "space"; id: string } | { name: "plugins" } | { name: "agent" };
+export type Page = { name: "chat" } | { name: "space" } | { name: "plugins" } | { name: "agent" };
 
 interface Props {
   agent: Agent | null;
   page: Page;
   conversations: ConversationSummary[];
-  spaces: Space[];
   selectedId: string | null;
   status: Status | null;
   loading: boolean;
@@ -32,28 +27,20 @@ interface Props {
   closeRef: React.RefObject<HTMLButtonElement | null>;
   onClose: () => void;
   onRefresh: () => void;
-  onNewChat: (spaceId: string | null) => void;
+  onNewChat: () => void;
   onOpenChat: (id: string) => void;
-  onOpenSpace: (id: string) => void;
-  onCreateSpace: () => void;
-  onPage: (page: "plugins" | "agent") => void;
+  onPage: (page: "space" | "plugins" | "agent") => void;
   onRenameChat: (id: string, title: string) => Promise<void>;
-  onMoveChat: (id: string, spaceId: string | null) => Promise<void>;
   onDeleteChat: (id: string) => void;
 }
 
-/** Spaces show a few recent chats in the sidebar; the Space page lists them all. */
-const SPACE_PREVIEW = 5;
-
-function ChatRow({ chat, selected, spaces, disabled, now, onOpen, onRename, onMove, onDelete }: {
+function ChatRow({ chat, selected, disabled, now, onOpen, onRename, onDelete }: {
   chat: ConversationSummary;
   selected: boolean;
-  spaces: Space[];
   disabled: boolean;
   now: number;
   onOpen: () => void;
   onRename: (title: string) => Promise<void>;
-  onMove: (spaceId: string | null) => Promise<void>;
   onDelete: () => void;
 }) {
   const [menu, setMenu] = useState(false);
@@ -90,7 +77,6 @@ function ChatRow({ chat, selected, spaces, disabled, now, onOpen, onRename, onMo
       </form>
     );
   }
-  const elsewhere = spaces.filter((space) => space.id !== chat.space_id);
   return (
     <div ref={row} className={`chat-row ${selected ? "selected" : ""} ${menu ? "menu-open" : ""}`}>
       <button className="chat-row-open" aria-current={selected ? "page" : undefined} onClick={onOpen} title={chat.title}>
@@ -106,17 +92,6 @@ function ChatRow({ chat, selected, spaces, disabled, now, onOpen, onRename, onMo
           <button role="menuitem" onClick={() => { setMenu(false); setTitle(chat.title); setRenaming(true); }}>
             <Pencil size={14} />Rename
           </button>
-          {elsewhere.length > 0 && <p className="menu-label">Move to Space</p>}
-          {elsewhere.map((space) => (
-            <button role="menuitem" key={space.id} onClick={() => { setMenu(false); void onMove(space.id); }}>
-              <Folder size={14} /><span className="menu-text">{space.title}</span>
-            </button>
-          ))}
-          {chat.space_id && (
-            <button role="menuitem" onClick={() => { setMenu(false); void onMove(null); }}>
-              <FolderOpen size={14} />Remove from Space
-            </button>
-          )}
           <hr />
           <button role="menuitem" className="danger" onClick={() => { setMenu(false); onDelete(); }}>
             <Trash2 size={14} />Delete
@@ -128,28 +103,22 @@ function ChatRow({ chat, selected, spaces, disabled, now, onOpen, onRename, onMo
 }
 
 export default function Sidebar(props: Props) {
-  const { agent, page, conversations, spaces, selectedId, status, loading, disabled } = props;
+  const { agent, page, conversations, selectedId, status, loading, disabled } = props;
   const sheet = useAgentPet(agent?.key ?? "");
-  // Spaces open with their active chat; a toggle overrides that until the next visit.
-  const [toggled, setToggled] = useState<Record<string, boolean>>({});
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60000);
     return () => clearInterval(timer);
   }, []);
   const key = agent?.key ?? "";
-  const openSpaceId = page.name === "space" ? page.id
-    : page.name === "chat" ? conversations.find((row) => row.id === selectedId)?.space_id ?? null : null;
-  const chats = listedConversations(conversations, null, page.name === "chat" ? selectedId : null);
+  const chats = listedConversations(conversations, page.name === "chat" ? selectedId : null);
   const rowProps = (chat: ConversationSummary) => ({
     chat,
     selected: page.name === "chat" && chat.id === selectedId,
-    spaces,
     disabled,
     now,
     onOpen: () => props.onOpenChat(chat.id),
     onRename: (title: string) => props.onRenameChat(chat.id, title),
-    onMove: (spaceId: string | null) => props.onMoveChat(chat.id, spaceId),
     onDelete: () => props.onDeleteChat(chat.id),
   });
   return (
@@ -164,9 +133,14 @@ export default function Sidebar(props: Props) {
         </button>
       </header>
       <nav className="panel-nav" aria-label="Views">
-        <button disabled={!key || disabled} onClick={() => props.onNewChat(null)}>
+        <button disabled={!key || disabled} onClick={props.onNewChat}>
           <SquarePen size={16} />
           New chat
+        </button>
+        <button className={page.name === "space" ? "selected" : ""} disabled={!key}
+          aria-current={page.name === "space" ? "page" : undefined} onClick={() => props.onPage("space")}>
+          <LayoutGrid size={16} />
+          Space
         </button>
         <button className={page.name === "plugins" ? "selected" : ""} disabled={!key}
           aria-current={page.name === "plugins" ? "page" : undefined} onClick={() => props.onPage("plugins")}>
@@ -175,54 +149,6 @@ export default function Sidebar(props: Props) {
         </button>
       </nav>
       <div className="panel-scroll">
-        <section className="panel-section" aria-labelledby="spaces-label">
-          <header className="panel-section-head">
-            <h2 className="panel-label" id="spaces-label">Spaces</h2>
-            <button className="icon panel-add" aria-label="New Space" title="New Space" disabled={!key || disabled}
-              onClick={props.onCreateSpace}>
-              <Plus size={15} />
-            </button>
-          </header>
-          {spaces.length === 0 ? (
-            <button className="panel-empty" disabled={!key || disabled} onClick={props.onCreateSpace}>
-              <FolderPlus size={16} />
-              New Space
-            </button>
-          ) : spaces.map((space) => {
-            const inside = listedConversations(conversations, space.id, page.name === "chat" ? selectedId : null);
-            const expanded = toggled[space.id] ?? openSpaceId === space.id;
-            const shown = inside.slice(0, SPACE_PREVIEW);
-            return (
-              <div className="space-group" key={space.id}>
-                <div className={`space-row ${page.name === "space" && page.id === space.id ? "selected" : ""}`}>
-                  <button className="space-toggle" aria-label={expanded ? `Hide chats in ${space.title}` : `Show chats in ${space.title}`}
-                    aria-expanded={expanded} disabled={!inside.length}
-                    onClick={() => setToggled((current) => ({ ...current, [space.id]: !expanded }))}>
-                    <ChevronRight size={12} className="space-chevron" aria-hidden="true" />
-                    {expanded ? <FolderOpen size={16} /> : <Folder size={16} />}
-                  </button>
-                  <button className="space-open" aria-current={page.name === "space" && page.id === space.id ? "page" : undefined}
-                    onClick={() => {
-                      setToggled((current) => ({ ...current, [space.id]: true }));
-                      props.onOpenSpace(space.id);
-                    }}>
-                    {space.title}
-                  </button>
-                </div>
-                {expanded && shown.length > 0 && (
-                  <div className="space-chats">
-                    {shown.map((chat) => <ChatRow key={chat.id} {...rowProps(chat)} />)}
-                    {inside.length > shown.length && (
-                      <button className="panel-more" onClick={() => props.onOpenSpace(space.id)}>
-                        See all {inside.length}
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </section>
         <section className="panel-section" aria-labelledby="chats-label">
           <header className="panel-section-head">
             <h2 className="panel-label" id="chats-label">Chats</h2>

@@ -35,8 +35,11 @@ async def upload_asset(
     title: Annotated[
         str | None, Form(min_length=1, max_length=500, pattern=r"\S")
     ] = None,
+    folder_id: Annotated[UUID | None, Form()] = None,
 ) -> Asset:
     try:
-        return await store_asset(request.app.state.services, key, asset_id, file, title)
+        return await store_asset(
+            request.app.state.services, key, asset_id, file, title, folder_id
+        )
     finally:
         await file.close()

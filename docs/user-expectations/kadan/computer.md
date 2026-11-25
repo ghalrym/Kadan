@@ -32,7 +32,7 @@ A request sent just as a task finishes is never lost: it either steers that task
 
 ## Agent actions
 
-Agents use the same computer for [browser, file and command actions](agent-actions.md) through their computer assistant. Watching or taking control does not enable a separate copy of their environment. Files on that computer are separate from Tsuchi's stored files unless explicitly [saved into Tsuchi](file-delivery.md). Agents can also [copy a stored file onto the computer](opening-workspace-files.md) without changing the stored original.
+Agents use the same computer for [browser, file and command actions](agent-actions.md) through their computer assistant. Watching or taking control does not enable a separate copy of their environment. Files on that computer are separate from Tsuchi's stored files unless explicitly [saved into Space](file-delivery.md). Agents can also [copy a stored file onto the computer](opening-workspace-files.md) without changing the stored original.
 
 A disconnected view offers **Reconnect**. Reconnecting does not undo actions or restart the browser. Some browser failures can require a restart that loses open tabs and page state. A timed-out action may already have happened, so uncertain changes need inspection before retrying.
 

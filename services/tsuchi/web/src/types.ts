@@ -4,7 +4,7 @@ export type Kind =
   | "space"
   | "deck"
   | "conversation"
-  | "project";
+  | "folder";
 export type View =
   | "overview"
   | Kind
@@ -52,9 +52,10 @@ export interface ResourceFields {
   tags: string[];
   sources: SourceLink[];
   attachment_ids: string[];
+  pinned?: boolean;
 }
 export interface MarkdownInput extends ResourceFields {
-  kind: "persona" | "memory" | "space" | "project";
+  kind: "persona" | "memory" | "space" | "folder";
   deck: null;
   messages: [];
 }
@@ -88,6 +89,8 @@ export interface Asset {
   is_image: boolean;
   tags: string[];
   sources: SourceLink[];
+  pinned?: boolean;
+  folder_id?: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -123,7 +126,7 @@ export const kindLabels: Record<Kind, string> = {
   space: "Spaces",
   deck: "Slide decks",
   conversation: "Conversations",
-  project: "Kadan Spaces",
+  folder: "Folders",
 };
 export const singularLabels: Record<Kind, string> = {
   persona: "persona",
@@ -131,7 +134,7 @@ export const singularLabels: Record<Kind, string> = {
   space: "Space",
   deck: "slide deck",
   conversation: "conversation",
-  project: "Kadan Space",
+  folder: "folder",
 };
 export function newResource(kind: Kind): ResourceInput {
   const fields: ResourceFields = {

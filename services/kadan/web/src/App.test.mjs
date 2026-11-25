@@ -16,7 +16,7 @@ runInNewContext(ts.transpileModule(
 const agent = { key: "guide", name: "Guide" };
 const persona = { id: "persona", agent_key: agent.key, kind: "persona", markdown: "Be precise." };
 const chain = { id: "chain", agent_key: agent.key, kind: "conversation", title: "New chat", messages: [] };
-const listed = [{ id: "chain", space_id: null, message_count: 1, updated_at: "2026-01-01T00:00:00Z" }];
+const listed = [{ id: "chain", message_count: 1, updated_at: "2026-01-01T00:00:00Z" }];
 const settle = () => new Promise(resolve => setImmediate(resolve));
 function deferred() {
   let resolve, reject;
@@ -69,8 +69,7 @@ async function app(petResponses = [], agentResponses = [[agent]]) {
     "./RunnerAssignment": { default: "RunnerAssignment" },
     "./Plugins": { default: "Plugins" },
     "./Sidebar": { default: "Sidebar" },
-    "./SpacePage": { default: "SpacePage" },
-    "./SpaceDialog": { default: "SpaceDialog" },
+    "./SpaceLibrary": { default: "SpaceLibrary" },
     "./ConfirmDialog": { default: "ConfirmDialog" },
     "./AgentPage": { default: "AgentPage" },
     "./conversations": conversations,
@@ -87,9 +86,8 @@ async function app(petResponses = [], agentResponses = [[agent]]) {
         return overrides.allResources ? overrides.allResources(key, kind) : [persona];
       },
       async api(path, body, method) {
-        // Every agent lists the one chat below and has no Spaces unless a test says otherwise.
+        // Every agent lists the one chat below unless a test says otherwise.
         if (path.endsWith("/conversations") && !body) return listed;
-        if (path.endsWith("/spaces")) return [];
         if (overrides.api) return overrides.api(path, body, method);
         if (path === "/agents") return agentResponses.shift() ?? [agent];
         if (path.includes("/resources/")) return chain;

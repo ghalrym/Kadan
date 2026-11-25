@@ -6,12 +6,12 @@ Kadan's layout follows coding-assistant apps such as T3 Code and Codex: a sideba
 
 From top to bottom, the sidebar offers:
 
-- **New chat** starts a chat outside any Space. If an unused empty chat already exists there, Kadan reopens it instead of creating another.
+- **New chat** starts a chat. If an unused empty chat already exists, Kadan reopens it instead of creating another.
+- **Space** opens the [Space](space.md) library of pages, slides and files.
 - **Plugins** opens the [Plugins](plugins.md) page.
-- **Spaces** lists the agent's [Spaces](spaces.md), each with a few of its recent chats; **+** creates a Space.
-- **Chats** lists chats outside Spaces, newest first, with how long ago each was last active. Each chat's **…** menu can rename it, move it into or out of a Space, or delete it.
+- **Chats** lists chats newest first, with how long ago each was last active. Each chat's **…** menu can rename or delete it.
 - The agent's name and pet open the **Agent page**.
-- **Tsuchi** and **Hikari** show [service status](service-status.md) and open those apps; the refresh button reloads service status, the agent, its chats and its Spaces.
+- **Tsuchi** and **Hikari** show [service status](service-status.md) and open those apps; the refresh button reloads service status, the agent and its chats.
 
 Lists in the sidebar reflect what Kadan last loaded. Changes made in Tsuchi appear after refreshing.
 

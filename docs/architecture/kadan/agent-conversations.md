@@ -11,7 +11,7 @@ An agent conversation separates durable work, model inference and visible messag
 
 ## Conversation selection and context
 
-Each agent can have many conversations, optionally grouped into Spaces; see [Chats and Spaces](spaces.md) for storage, the list and edit routes, and how a Space's instructions join a run's context. Every run belongs to one conversation, so ownership, queueing and delivery below apply per conversation. Agent keys match `[a-z0-9][a-z0-9_-]{0,63}` and are permanent namespace identifiers; creating an agent stores no model state.
+Each agent can have many conversations; see [Multiple chats](#multiple-chats) for storage and the list and edit routes. Every run belongs to one conversation (`run.conversation_id`), so ownership, queueing and delivery below apply per conversation without change. Agent keys match `[a-z0-9][a-z0-9_-]{0,63}` and are permanent namespace identifiers; creating an agent stores no model state.
 
 Kadan proxies `GET /api/agents/{key}` and `PUT /api/agents/{key}` to Tsuchi for name reconciliation and renaming. The write accepts a normalized, nonblank `name` (at most 500 characters) and required `expected_name`, compared exactly with the current name inside one write transaction. A mismatch returns 409 unless the requested name is already saved, making a repeated successful request harmless. Only the name column changes; namespace keys and associated state remain intact. The browser retains the draft on failure and requires a reload before retrying. Successful saves update the roster name without changing selection or reloading the conversation.
 
@@ -35,6 +35,27 @@ there is no new index, endpoint or independent history store.
 Browser selection is local, and per-agent drafts use the tab's session storage. The outbox retains the original message identity, mode and persona for reconciliation and retry. Browser state is not a durable work queue.
 
 The user expectations for [agent conversations](../../user-expectations/kadan/agent-conversations.md) describe the product behavior. See [Persona instructions](personas.md) for instruction snapshots.
+
+## Multiple chats
+
+Each chat is a Tsuchi `conversation` resource in the agent's namespace; Kadan keeps no separate chat store. Chats are not grouped: a conversation's `parent_id` is left as Tsuchi stored it and Kadan neither reads nor sets it. Saved pages, slides and files live in [Space](space.md), not in chats.
+
+Renaming a chat rewrites the whole conversation resource through Tsuchi's versioned update while runs append messages to it concurrently. Kadan therefore edits Tsuchi's own JSON (keeping fields it does not model), sends the version it read and, on a version conflict, re-reads and retries up to five times before reporting that the chat is busy. A conflict can never overwrite a newer message list. Trashing a chat uses the same retry. Trashing a chat while a reply is running leaves that run unable to save further messages; Tsuchi stops offering runs for trashed conversations.
+
+New chats are stored with the title `New chat`. The single conversation that Kadan created per agent before multiple chats was titled `Chain`. When the stored title, stripped, is one of these defaults and the chat has a user message, the summary title is that first nonblank user message with whitespace collapsed, cut to 60 characters including a trailing `…`. The rule is applied when summaries are built, so the stored title is never rewritten and a renamed chat keeps its name. The preview uses the same first user message, cut to 160 characters, or is empty.
+
+All routes are scoped to `/api/agents/{key}`, reject unknown fields and return plain-language errors as `{detail, code}`:
+
+| Route | Result |
+| --- | --- |
+| `GET /conversations` | `ConversationSummary[]`: every active chat, newest `updated_at` first, then by ID |
+| `POST /conversations` | 201 with the full conversation `Resource`; optional `title` (nonblank, stripped, default `New chat`) |
+| `PUT /conversations/{conversation_id}` | `ConversationSummary`; optional `title`. An empty body returns the current summary without writing, and a `null` title is rejected |
+| `DELETE /conversations/{conversation_id}` | 204; the chat moves to Tsuchi's trash |
+
+`ConversationSummary` has `id`, `agent_key`, `title` (the display title above), `message_count`, `preview`, `version`, `created_at` and `updated_at`. Summaries omit message bodies; the chat view loads the open conversation as a resource and then follows it through the conversation runs snapshot. A conversation ID that is missing, trashed or not a conversation returns 404. The list pages through Tsuchi 200 records at a time and merges pages by ID, keeping the newest version when a concurrent write moves a record between pages.
+
+The frontend loads summaries and personas together, then loads only the open conversation. The selection is remembered with the agent key it belongs to, so a refresh that switches agents never requests the old chat under the new agent. Chat snapshots update the matching summary locally (`conversations.ts` mirrors the display-title rule), so the sidebar follows new messages without listing again. Empty chats are hidden from lists unless open, and **New chat** reuses an empty chat before creating another.
 
 ## Request references
 

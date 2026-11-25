@@ -52,13 +52,18 @@ function resourceInput(resource: ResourceInput): ResourceInput {
     };
   return { ...fields, kind: resource.kind, deck: null, messages: [] };
 }
+// Folders hold folders, Spaces and decks; anything else may sit in a Space.
+function parentKinds(kind: Kind): Kind[] {
+  if (kind === "folder") return ["folder"];
+  if (kind === "space" || kind === "deck") return ["folder", "space"];
+  return ["space"];
+}
 function parentChoices(
   resources: Resource[],
   kind: Kind,
   currentId?: string,
 ) {
-  // Kadan Spaces hold only conversations and never have a parent.
-  if (kind === "project") return [];
+  const allowed = parentKinds(kind);
   const excluded = new Set(currentId ? [currentId] : []);
   let changed = true;
   while (changed) {
@@ -74,10 +79,7 @@ function parentChoices(
       }
   }
   return resources.filter(
-    (resource) =>
-      (resource.kind === "space" ||
-        (kind === "conversation" && resource.kind === "project")) &&
-      !excluded.has(resource.id),
+    (resource) => allowed.includes(resource.kind) && !excluded.has(resource.id),
   );
 }
 export function ResourceEditor({
@@ -289,6 +291,7 @@ export function ResourceEditor({
               </label>
               {tab === "content" &&
                 draft.kind !== "conversation" &&
+                draft.kind !== "folder" &&
                 (draft.deck ? (
                   <DeckEditor
                     deck={draft.deck}
@@ -348,7 +351,7 @@ export function ResourceEditor({
                     <Loading />
                   ) : (
                     <label>
-                      Parent Space
+                      {draft.kind === "folder" ? "Parent folder" : "Parent"}
                       <select
                         value={draft.parent_id || ""}
                         onChange={(event) =>
@@ -362,8 +365,8 @@ export function ResourceEditor({
                           current?.id,
                         ).map((resource) => (
                           <option key={resource.id} value={resource.id}>
-                            {resource.kind === "project"
-                              ? `${resource.title} (Kadan Space)`
+                            {resource.kind === "folder"
+                              ? `${resource.title} (folder)`
                               : resource.title}
                           </option>
                         ))}
@@ -378,12 +381,14 @@ export function ResourceEditor({
                     value={draft.sources}
                     onChange={(sources) => update({ sources })}
                   />
-                  <SelectItems
-                    label="Attachments"
-                    items={data?.assets || []}
-                    selected={draft.attachment_ids}
-                    onChange={(attachment_ids) => update({ attachment_ids })}
-                  />
+                  {draft.kind !== "folder" && (
+                    <SelectItems
+                      label="Attachments"
+                      items={data?.assets || []}
+                      selected={draft.attachment_ids}
+                      onChange={(attachment_ids) => update({ attachment_ids })}
+                    />
+                  )}
                   <div className="link-list">
                     {draft.attachment_ids.map((id) => (
                       <a key={id} href={assetUrl(agentKey, id, true)}>

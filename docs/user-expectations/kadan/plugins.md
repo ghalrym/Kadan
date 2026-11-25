@@ -1,6 +1,6 @@
 # Plugins and T3 Code
 
-Kadan lets you connect external tool services (MCP servers) as **plugins** so your agent can work with them during text conversations. Plugins are set up once on Kadan's **Plugins** page and shared across all chats and Spaces; Tsuchi stores the saved connections and tool lists. Voice calls do not use plugins.
+Kadan lets you connect external tool services (MCP servers) as **plugins** so your agent can work with them during text conversations. Plugins are set up once on Kadan's **Plugins** page and shared across all chats; Tsuchi stores the saved connections and tool lists. Voice calls do not use plugins.
 
 ## Browsing plugins
 

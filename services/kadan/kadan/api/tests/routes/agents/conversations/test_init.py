@@ -20,12 +20,11 @@ def update(**body):
 
 
 def test_list_summarizes_active_chats_newest_first(tsuchi, call):
-    space = tsuchi.add("project", "Garden")
     legacy = tsuchi.add("space", "Notes")
     old = tsuchi.add(title="Chain")
     tsuchi.message(old, "assistant", "Welcome")
     tsuchi.message(old, "user", "  Plan   the\n spring " + "beds " * 40)
-    named = tsuchi.add(title="Seed order", parent_id=space["id"])
+    named = tsuchi.add(title="Seed order")
     tsuchi.message(named, "user", "Which seeds?")
     tsuchi.add(title="Filed", parent_id=legacy["id"])
     tsuchi.add(title="Trashed", deleted_at="2026-11-02T00:00:00+00:00")
@@ -40,9 +39,8 @@ def test_list_summarizes_active_chats_newest_first(tsuchi, call):
         "Plan the spring beds beds beds beds beds beds beds beds bed…",
     ]
     by_title = {item.title: item for item in summaries}
-    assert by_title["Seed order"].space_id == UUID(space["id"])
     assert by_title["Seed order"].preview == "Which seeds?"
-    assert by_title["Filed"].space_id is None
+    assert "space_id" not in by_title["Filed"].model_dump()
     assert by_title["New chat"].id == UUID(empty["id"])
     assert by_title["New chat"].preview == ""
     first = summaries[-1]
@@ -66,65 +64,52 @@ def test_list_pages_through_every_chat(tsuchi, call):
     assert offsets == ["0", "200"]
 
 
-def test_create_chat_outside_and_inside_a_space(tsuchi, call):
+def test_create_chat(tsuchi, call):
     created = call(create_conversation, "alpha", ConversationCreate())
     assert (created.kind, created.title, created.parent_id) == (
         "conversation",
         "New chat",
         None,
     )
-    space = tsuchi.add("project", "Garden")
-    created = call(
-        create_conversation,
-        "alpha",
-        ConversationCreate(title=" Beds ", space_id=space["id"]),
-    )
-    assert (created.title, created.parent_id) == ("Beds", UUID(space["id"]))
+    created = call(create_conversation, "alpha", ConversationCreate(title=" Beds "))
+    assert created.title == "Beds"
+    assert tsuchi.requests[-1][3] == {"kind": "conversation", "title": "Beds"}
 
 
-@pytest.mark.parametrize(
-    "parent",
-    [
-        None,
-        {"kind": "project", "deleted_at": "2026-11-02T00:00:00+00:00"},
-        {"kind": "space"},
-        {"kind": "conversation"},
-    ],
-)
-def test_create_rejects_a_missing_or_invalid_space(tsuchi, call, parent):
-    space_id = tsuchi.add(**parent)["id"] if parent else str(uuid4())
-    with pytest.raises(ServiceError, match="This Space no longer exists") as error:
-        call(create_conversation, "alpha", ConversationCreate(space_id=space_id))
-    assert error.value.status == 404
-    assert tsuchi.writes("POST") == []
+def test_create_rejects_a_space_id():
+    with pytest.raises(ValidationError):
+        ConversationCreate.model_validate({"space_id": str(uuid4())})
 
 
 @pytest.mark.parametrize(
     "body",
-    [{"title": None}, {"title": " "}, {"title": "x" * 501}, {"parent_id": None}],
+    [
+        {"title": None},
+        {"title": " "},
+        {"title": "x" * 501},
+        {"parent_id": None},
+        {"space_id": None},
+    ],
 )
 def test_update_rejects_blank_null_or_unknown_fields(body):
     with pytest.raises(ValidationError):
         update(**body)
 
 
-def test_update_changes_only_fields_in_the_body(tsuchi, call):
-    space = tsuchi.add("project", "Garden")
-    chat = tsuchi.add(title="Chain", parent_id=space["id"], tags=["kept"])
+def test_update_renames_without_touching_other_fields(tsuchi, call):
+    parent = tsuchi.add("space", "Notes")
+    chat = tsuchi.add(title="Chain", parent_id=parent["id"], tags=["kept"])
     tsuchi.message(chat, "user", "Hello")
-    chat_id = UUID(chat["id"])
 
-    renamed = call(update_conversation, "alpha", chat_id, update(title=" Plans "))
-    assert (renamed.title, renamed.space_id) == ("Plans", UUID(space["id"]))
+    renamed = call(
+        update_conversation, "alpha", UUID(chat["id"]), update(title=" Plans ")
+    )
+
+    assert renamed.title == "Plans"
     assert chat["tags"] == ["kept"] and len(chat["messages"]) == 1
-
-    moved_out = call(update_conversation, "alpha", chat_id, update(space_id=None))
-    assert (moved_out.title, moved_out.space_id) == ("Plans", None)
-    assert chat["parent_id"] is None
-
-    moved_in = call(update_conversation, "alpha", chat_id, update(space_id=space["id"]))
-    assert moved_in.space_id == UUID(space["id"])
-    assert chat["parent_id"] == space["id"]
+    assert chat["parent_id"] == parent["id"]
+    [(_, _, _, body)] = [item for item in tsuchi.requests if item[0] == "PUT"]
+    assert body["title"] == "Plans" and "space_id" not in body
 
 
 def test_empty_update_does_not_write(tsuchi, call):
@@ -162,9 +147,9 @@ def test_update_reports_a_busy_chat_after_repeated_conflicts(tsuchi, call):
 
 
 def test_update_rejects_a_missing_chat(tsuchi, call):
-    space = tsuchi.add("project")
+    page = tsuchi.add("space")
     with pytest.raises(ServiceError, match="This chat no longer exists") as error:
-        call(update_conversation, "alpha", UUID(space["id"]), update(title="Hi"))
+        call(update_conversation, "alpha", UUID(page["id"]), update(title="Hi"))
     assert error.value.status == 404
 
 

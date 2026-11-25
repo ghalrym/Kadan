@@ -22,7 +22,7 @@ export interface Message {
 export interface Resource {
   id: string;
   agent_key: string;
-  kind: "persona" | "memory" | "space" | "deck" | "conversation" | "project";
+  kind: "persona" | "memory" | "space" | "deck" | "conversation" | "folder";
   title: string;
   markdown: string;
   parent_id: string | null;
@@ -40,22 +40,40 @@ export interface ConversationSummary {
   id: string;
   agent_key: string;
   title: string;
-  space_id: string | null;
   message_count: number;
   preview: string;
   version: number;
   created_at: string;
   updated_at: string;
 }
-/** A Space groups chats under shared instructions. */
-export interface Space {
+/** Something saved in Space: a folder, page, slide deck, image or file. */
+export interface SpaceItem {
   id: string;
-  agent_key: string;
+  type: "folder" | "page" | "slides" | "image" | "file";
   title: string;
-  instructions: string;
+  parent_id: string | null;
+  pinned: boolean;
+  filename: string | null;
+  media_type: string | null;
+  size_bytes: number | null;
   version: number;
   created_at: string;
   updated_at: string;
+  deleted_at: string | null;
+}
+export interface SpacePageContent extends SpaceItem {
+  markdown: string;
+}
+export interface Slide {
+  id: string;
+  layout: "title" | "text" | "split" | "image";
+  title: string;
+  body: string;
+  notes: string;
+  image_asset_id: string | null;
+}
+export interface SpaceSlides extends SpaceItem {
+  slides: Slide[];
 }
 export interface Asset {
   id: string;

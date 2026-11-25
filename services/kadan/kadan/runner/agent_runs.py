@@ -562,27 +562,6 @@ class AgentRuns(RunClient):
             heartbeat.cancel()
             await asyncio.gather(work, heartbeat, return_exceptions=True)
 
-    async def space_instructions(self, key: str, conversation: Resource) -> str:
-        """Instructions from the Space holding this chat; a missing Space adds none."""
-        if conversation.parent_id is None:
-            return ""
-        try:
-            parent = await self.services.resource(key, conversation.parent_id)
-        except ServiceError as error:
-            if error.status != 404:
-                raise
-            return ""
-        if (
-            parent.kind != ResourceKind.PROJECT
-            or parent.deleted_at is not None
-            or parent.agent_key != key
-        ):
-            return ""
-        text = f'\nThis conversation is in the Space "{parent.title}".'
-        if parent.markdown.strip():
-            text += " Follow the Space instructions:\n" + parent.markdown
-        return text
-
     @traced("kadan.agent_runs.context")
     async def context(
         self, run: AgentRun, limit: int | None = None
@@ -608,7 +587,6 @@ class AgentRuns(RunClient):
             if persona.kind != ResourceKind.PERSONA or persona.deleted_at:
                 raise ServiceError("The selected persona is no longer available.", 409)
             instructions += "\nSelected persona:\n" + persona.markdown
-        instructions += await self.space_instructions(run.agent_key, conversation)
         if run.references:
             instructions += (
                 "\nThis request has user-selected saved references. Use "

@@ -12,22 +12,8 @@ class ConversationSummary(BaseModel):
     id: UUID
     agent_key: AgentKey
     title: str
-    # Set only when the chat's parent is a Space (a Tsuchi project).
-    space_id: UUID | None
     message_count: int
     preview: str
-    version: int
-    created_at: datetime
-    updated_at: datetime
-
-
-class Space(BaseModel):
-    """Kadan's name for a Tsuchi project: a title, instructions and its own chats."""
-
-    id: UUID
-    agent_key: AgentKey
-    title: str
-    instructions: str
     version: int
     created_at: datetime
     updated_at: datetime

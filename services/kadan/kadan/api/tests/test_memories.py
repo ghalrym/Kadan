@@ -219,6 +219,7 @@ def test_update_preserves_other_metadata_and_passes_expected_version(
             "sources": existing["sources"],
             "deck": None,
             "messages": [],
+            "pinned": False,
         }
         return httpx.Response(200, json={**existing, **body, "version": 4})
 

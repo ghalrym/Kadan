@@ -21,6 +21,7 @@ from .routes.agents.resources import PersonaUpdate
 from .routes.status import InferenceState, ServiceState, Status
 from .run_client import RunClient
 from .sandbox_client import SandboxClient
+from .space_client import SpaceClient
 
 
 def response_error(response: httpx.Response, service: str) -> ServiceError:
@@ -43,6 +44,7 @@ class LocalServices:
         self.sandbox = SandboxClient(self)
         self.mcp = McpClient(self)
         self.conversations = ConversationClient(self)
+        self.space = SpaceClient(self)
 
     async def json_request(
         self,

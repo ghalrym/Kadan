@@ -32,9 +32,6 @@ interface Props {
   onEditPet: () => void;
   blocked: boolean;
   refreshStatus: () => Promise<void>;
-  /** A first message typed elsewhere, such as a Space page, sent once this chat can reply. */
-  autoSend?: string;
-  onAutoSent?: () => void;
 }
 /** Messages further apart than this get a timestamp between them. */
 const BREAK_MS = 4 * 60 * 60 * 1000;
@@ -101,8 +98,6 @@ export default function Chat({
   onEditPet,
   blocked,
   refreshStatus,
-  autoSend,
-  onAutoSent,
 }: Props) {
   const petSheet = useAgentPet(agentKey);
   const { draft: draftKey, pending: pendingKey } = chatStorageKeys(agentKey, chain.id);
@@ -291,18 +286,6 @@ export default function Chat({
   useEffect(() => {
     syncPending(chain.messages);
   }, [chain.messages]);
-  const autoSent = useRef(false);
-  useEffect(() => {
-    if (!autoSend || autoSent.current) return;
-    if (draft !== autoSend) {
-      setDraft(autoSend);
-      return;
-    }
-    if (!ready.chat || blocked || sending || pending.current) return;
-    autoSent.current = true;
-    onAutoSent?.();
-    void send(true);
-  }, [autoSend, draft, ready.chat, blocked, sending]);
 
   function syncPending(messages: Resource["messages"]) {
     const stored = readPending(sessionStorage.getItem(pendingKey));

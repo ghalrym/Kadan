@@ -20,6 +20,7 @@ from .models import (
     AgentRun,
     AgentRunState,
     Asset,
+    AssetMetadata,
     ComputerSteering,
     ComputerTask,
     ComputerTaskOrigin,
@@ -38,7 +39,6 @@ from .models import (
     McpServerInput,
     McpServerUpdate,
     Message,
-    Metadata,
     OwnedPersonaUpdate,
     PetJob,
     PetManifest,
@@ -96,6 +96,25 @@ def asset_references(resource: ResourceInput) -> set[UUID]:
             if slide.image_asset_id
         )
     return refs
+
+
+SPACE_PARENTS = frozenset({ResourceKind.SPACE})
+FOLDER_PARENTS = frozenset({ResourceKind.FOLDER})
+PAGE_PARENTS = frozenset({ResourceKind.FOLDER, ResourceKind.SPACE})
+PARENT_ERRORS = {
+    SPACE_PARENTS: "Parent must be an active Space in this namespace",
+    FOLDER_PARENTS: "Parent must be an active folder in this namespace",
+    PAGE_PARENTS: "Parent must be an active folder or Space in this namespace",
+}
+
+
+def parent_kinds(kind: ResourceKind) -> frozenset[ResourceKind]:
+    """Folders hold folders, Spaces and decks; anything else may sit in a Space."""
+    if kind == ResourceKind.FOLDER:
+        return FOLDER_PARENTS
+    if kind in {ResourceKind.SPACE, ResourceKind.DECK}:
+        return PAGE_PARENTS
+    return SPACE_PARENTS
 
 
 class Repository:
@@ -1992,30 +2011,19 @@ class Repository:
         self, db: sqlite3.Connection, key: str, value: ResourceInput, resource_id: UUID
     ) -> None:
         parent_id = value.parent_id
-        if value.kind == ResourceKind.PROJECT and parent_id:
-            raise StorageError("A project cannot be placed inside another resource")
+        allowed = parent_kinds(value.kind)
         visited = {resource_id}
         while parent_id:
             if parent_id in visited:
                 raise StorageError(
-                    "A Space cannot contain itself or one of its ancestors"
+                    "A folder or Space cannot contain itself or one of its ancestors"
                 )
             visited.add(parent_id)
             parent = self._resource(db, key, parent_id)
-            if parent.kind == ResourceKind.PROJECT:
-                # Projects hold only conversations and are never nested.
-                if (
-                    parent_id != value.parent_id
-                    or value.kind != ResourceKind.CONVERSATION
-                ):
-                    raise StorageError("Only conversations can be placed in a project")
-                if parent.deleted_at:
-                    raise StorageError(
-                        "Parent must be an active project in this namespace"
-                    )
-                break
-            if parent.kind != ResourceKind.SPACE or parent.deleted_at:
-                raise StorageError("Parent must be an active Space in this namespace")
+            if parent.kind not in allowed or parent.deleted_at:
+                raise StorageError(PARENT_ERRORS[allowed])
+            # Each ancestor must itself sit where its own kind is allowed.
+            allowed = parent_kinds(parent.kind)
             parent_id = parent.parent_id
         for asset_id in asset_references(value):
             asset = self._asset(db, key, asset_id)
@@ -2174,9 +2182,13 @@ class Repository:
         if value.kind != current.kind:
             raise StorageError("Resource kind cannot change")
         self._validate_links(db, key, value, current.id)
+        content = value.model_dump()
+        if "pinned" not in value.model_fields_set:
+            # Editors that predate pinning must not unpin a record.
+            content["pinned"] = current.pinned
         updated = resource_adapter.validate_python(
             {
-                **value.model_dump(),
+                **content,
                 "id": current.id,
                 "agent_key": key,
                 "version": current.version + 1,
@@ -2198,9 +2210,18 @@ class Repository:
             if db.execute(
                 "SELECT 1 FROM resources WHERE agent_key = ? AND parent_id = ? AND deleted = 0 LIMIT 1",
                 (key, str(resource_id)),
-            ).fetchone():
+            ).fetchone() or (
+                current.kind == ResourceKind.FOLDER
+                and db.execute(
+                    "SELECT 1 FROM assets WHERE agent_key = ? AND deleted = 0 AND json_extract(data, '$.folder_id') = ? LIMIT 1",
+                    (key, str(resource_id)),
+                ).fetchone()
+            ):
                 raise StorageError(
-                    "Move or trash this Space's active children first", 409
+                    "Move or trash this folder's contents first"
+                    if current.kind == ResourceKind.FOLDER
+                    else "Move or trash this Space's active children first",
+                    409,
                 )
             now = utc_now()
             updated = current.model_copy(
@@ -2265,8 +2286,9 @@ class Repository:
             if row is None:
                 raise StorageError("Version not found", 404)
             snapshot = resource_adapter.validate_json(row[0])
+            # Restoring text does not change whether the record is pinned.
             value = resource_input_adapter.validate_python(
-                snapshot.model_dump(exclude=set(ResourceRecord.model_fields))
+                snapshot.model_dump(exclude={*ResourceRecord.model_fields, "pinned"})
             )
             return self._update_resource(
                 db, key, current, value, expected_version, "version_restored"
@@ -2300,6 +2322,26 @@ class Repository:
         if row is None:
             raise StorageError("Asset not found in this namespace", 404)
         return Asset.model_validate_json(row[0])
+
+    def _active_folder(
+        self, db: sqlite3.Connection, key: str, folder_id: UUID
+    ) -> Resource | None:
+        row = db.execute(
+            "SELECT data FROM resources WHERE agent_key = ? AND id = ?",
+            (key, str(folder_id)),
+        ).fetchone()
+        if row is None:
+            return None
+        folder = resource_adapter.validate_json(row[0])
+        if folder.kind != ResourceKind.FOLDER or folder.deleted_at:
+            return None
+        return folder
+
+    def _require_folder(
+        self, db: sqlite3.Connection, key: str, folder_id: UUID | None
+    ) -> None:
+        if folder_id is not None and self._active_folder(db, key, folder_id) is None:
+            raise StorageError("Folder must be an active folder in this namespace")
 
     def get_asset(self, key: str, asset_id: UUID) -> Asset:
         with self.connect() as db:
@@ -2401,6 +2443,7 @@ class Repository:
                     raise StorageError(
                         "Completed image artwork cannot be recreated", 409
                     )
+                self._require_folder(db, asset.agent_key, asset.folder_id)
                 self._save_asset(db, asset)
                 self._activity(
                     db, asset.agent_key, "uploaded", "asset", str(asset.id), asset.title
@@ -2419,16 +2462,20 @@ class Repository:
         return asset
 
     def update_asset(
-        self, key: str, asset_id: UUID, value: Metadata, expected_version: int
+        self, key: str, asset_id: UUID, value: AssetMetadata, expected_version: int
     ) -> Asset:
         with self.connect(write=True) as db:
             current = self._asset(db, key, asset_id)
             self._check_version(current, expected_version)
             self._active(current)
+            # Omitted pin and folder fields keep their saved values.
+            kept = {"pinned", "folder_id"} - value.model_fields_set
+            if "folder_id" not in kept:
+                self._require_folder(db, key, value.folder_id)
             updated = Asset.model_validate(
                 {
                     **current.model_dump(),
-                    **value.model_dump(),
+                    **value.model_dump(exclude=kept),
                     "version": current.version + 1,
                     "updated_at": utc_now(),
                 }
@@ -2475,8 +2522,13 @@ class Repository:
             self._check_version(current, expected_version)
             if not current.deleted_at:
                 raise StorageError("This asset is not in trash", 409)
+            folder_id = current.folder_id
+            if folder_id and self._active_folder(db, key, folder_id) is None:
+                # A file whose folder is gone comes back at the top level.
+                folder_id = None
             updated = current.model_copy(
                 update={
+                    "folder_id": folder_id,
                     "deleted_at": None,
                     "updated_at": utc_now(),
                     "version": current.version + 1,

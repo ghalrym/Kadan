@@ -1,14 +1,13 @@
-"""An agent's chats and Spaces, stored in Tsuchi as conversations and projects."""
+"""An agent's chats, stored in Tsuchi as conversation resources."""
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from .config import ServiceError
-from .pydantic_models.conversations import ConversationSummary, Space
+from .pydantic_models.conversations import ConversationSummary
 from .pydantic_models.resources import Resource, ResourceKind
 
 if TYPE_CHECKING:
@@ -38,7 +37,7 @@ def newest_first(resources: Iterable[Resource]) -> list[Resource]:
     return sorted(by_id, key=lambda resource: resource.updated_at, reverse=True)
 
 
-def summarize(conversation: Resource, space_ids: set[UUID]) -> ConversationSummary:
+def summarize(conversation: Resource) -> ConversationSummary:
     first = next(
         (
             collapse(message.content)
@@ -54,26 +53,11 @@ def summarize(conversation: Resource, space_ids: set[UUID]) -> ConversationSumma
         id=conversation.id,
         agent_key=conversation.agent_key,
         title=title,
-        space_id=conversation.parent_id
-        if conversation.parent_id in space_ids
-        else None,
         message_count=len(conversation.messages),
         preview=shorten(first, PREVIEW_LENGTH),
         version=conversation.version,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
-    )
-
-
-def to_space(project: Resource) -> Space:
-    return Space(
-        id=project.id,
-        agent_key=project.agent_key,
-        title=project.title,
-        instructions=project.markdown,
-        version=project.version,
-        created_at=project.created_at,
-        updated_at=project.updated_at,
     )
 
 
@@ -90,7 +74,6 @@ def content(raw: dict[str, Any], **changes: Any) -> dict[str, Any]:
 
 
 CHAT_MISSING = "This chat no longer exists. Reload your chats."
-SPACE_MISSING = "This Space no longer exists. Reload your Spaces."
 
 
 class ConversationClient:
@@ -126,9 +109,6 @@ class ConversationClient:
             key, conversation_id, ResourceKind.CONVERSATION, CHAT_MISSING
         )
 
-    async def project(self, key: str, space_id: UUID):
-        return await self._read(key, space_id, ResourceKind.PROJECT, SPACE_MISSING)
-
     async def all(self, key: str, kind: ResourceKind) -> list[Resource]:
         found: dict[UUID, Resource] = {}
         offset = 0
@@ -149,42 +129,28 @@ class ConversationClient:
         return newest_first(found.values())
 
     async def list(self, key: str) -> list[ConversationSummary]:
-        conversations, projects = await asyncio.gather(
-            self.all(key, ResourceKind.CONVERSATION),
-            self.all(key, ResourceKind.PROJECT),
-        )
-        space_ids = {project.id for project in projects}
-        return [summarize(conversation, space_ids) for conversation in conversations]
+        return [
+            summarize(conversation)
+            for conversation in await self.all(key, ResourceKind.CONVERSATION)
+        ]
 
-    async def create(self, key: str, title: str, space_id: UUID | None) -> Resource:
-        if space_id is not None:
-            await self.project(key, space_id)
+    async def create(self, key: str, title: str) -> Resource:
         return parse(
             await self.services.json_request(
                 "Tsuchi",
                 "POST",
                 self.path(key),
-                json={
-                    "kind": ResourceKind.CONVERSATION.value,
-                    "title": title,
-                    "parent_id": str(space_id) if space_id else None,
-                },
+                json={"kind": ResourceKind.CONVERSATION.value, "title": title},
             )
         )
 
     async def update(
         self, key: str, conversation_id: UUID, changes: dict[str, Any]
     ) -> ConversationSummary:
-        """Apply only the given title and space_id changes, never losing messages."""
-        space_changed = "space_id" in changes
-        space_id: UUID | None = changes.get("space_id")
-        if space_id is not None:
-            await self.project(key, space_id)
+        """Apply only the given title change, never losing messages."""
         updates: dict[str, Any] = {}
         if "title" in changes:
             updates["title"] = changes["title"]
-        if space_changed:
-            updates["parent_id"] = str(space_id) if space_id else None
         for attempt in range(WRITE_ATTEMPTS):
             current, raw = await self.conversation(key, conversation_id)
             if not updates:
@@ -209,22 +175,7 @@ class ConversationClient:
                         409,
                         "version_conflict",
                     ) from error
-        if updated.parent_id is None:
-            space_ids: set[UUID] = set()
-        elif space_changed:
-            space_ids = {updated.parent_id}
-        else:
-            space_ids = await self._project_ids(key, updated.parent_id)
-        return summarize(updated, space_ids)
-
-    async def _project_ids(self, key: str, parent_id: UUID) -> set[UUID]:
-        try:
-            await self.project(key, parent_id)
-        except ServiceError as error:
-            if error.status == 404:
-                return set()
-            raise
-        return {parent_id}
+        return summarize(updated)
 
     async def trash(self, key: str, conversation_id: UUID) -> None:
         for attempt in range(WRITE_ATTEMPTS):
@@ -243,88 +194,6 @@ class ConversationClient:
                 if attempt == WRITE_ATTEMPTS - 1:
                     raise ServiceError(
                         "This chat is busy saving a reply. Try again in a moment.",
-                        409,
-                        "version_conflict",
-                    ) from error
-
-    async def spaces(self, key: str) -> list[Space]:
-        return [
-            to_space(project) for project in await self.all(key, ResourceKind.PROJECT)
-        ]
-
-    async def space(self, key: str, space_id: UUID) -> Space:
-        project, _ = await self.project(key, space_id)
-        return to_space(project)
-
-    async def create_space(self, key: str, title: str, instructions: str) -> Space:
-        return to_space(
-            parse(
-                await self.services.json_request(
-                    "Tsuchi",
-                    "POST",
-                    self.path(key),
-                    json={
-                        "kind": ResourceKind.PROJECT.value,
-                        "title": title,
-                        "markdown": instructions,
-                    },
-                )
-            )
-        )
-
-    async def update_space(
-        self,
-        key: str,
-        space_id: UUID,
-        title: str,
-        instructions: str,
-        expected_version: int,
-    ) -> Space:
-        _, raw = await self.project(key, space_id)
-        # Tsuchi checks the version and reports a conflict in its own words.
-        return to_space(
-            parse(
-                await self.services.json_request(
-                    "Tsuchi",
-                    "PUT",
-                    self.path(key, space_id),
-                    json=content(
-                        raw,
-                        title=title,
-                        markdown=instructions,
-                        expected_version=expected_version,
-                    ),
-                )
-            )
-        )
-
-    async def delete_space(self, key: str, space_id: UUID) -> None:
-        """Trash the Space's chats first; Tsuchi refuses to trash a parent of active chats."""
-        for attempt in range(WRITE_ATTEMPTS):
-            project, _ = await self.project(key, space_id)
-            for conversation in await self.all(key, ResourceKind.CONVERSATION):
-                if conversation.parent_id != space_id:
-                    continue
-                try:
-                    await self.trash(key, conversation.id)
-                except ServiceError as error:
-                    if error.status != 404:
-                        raise
-            try:
-                await self.services.json_request(
-                    "Tsuchi",
-                    "DELETE",
-                    self.path(key, space_id),
-                    params={"expected_version": project.version},
-                )
-                return
-            except ServiceError as error:
-                # A chat was added or the Space changed meanwhile; look again.
-                if error.status != 409:
-                    raise
-                if attempt == WRITE_ATTEMPTS - 1:
-                    raise ServiceError(
-                        "This Space changed while it was being deleted. Try again.",
                         409,
                         "version_conflict",
                     ) from error

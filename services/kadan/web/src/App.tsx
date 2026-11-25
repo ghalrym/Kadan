@@ -4,7 +4,7 @@ import { Egg, Menu } from "lucide-react";
 import { agentPath, allResources, api } from "./api";
 import { latestConversation } from "./agentRuns";
 import { emptyConversation, pickConversation, summarize, upsertConversation } from "./conversations";
-import type { Agent, ConversationSummary, PetJob, Resource, Space, Status } from "./types";
+import type { Agent, ConversationSummary, PetJob, Resource, Status } from "./types";
 import Chat from "./Chat";
 import Hatch from "./Hatch";
 import Pet, { agentPet } from "./Pet";
@@ -14,8 +14,7 @@ import RenameAgent from "./RenameAgent";
 import RunnerAssignment from "./RunnerAssignment";
 import Plugins from "./Plugins";
 import Sidebar, { type Page } from "./Sidebar";
-import SpacePage from "./SpacePage";
-import SpaceDialog from "./SpaceDialog";
+import SpaceLibrary from "./SpaceLibrary";
 import ConfirmDialog from "./ConfirmDialog";
 import AgentPage from "./AgentPage";
 import { PetContext } from "./PetContext";
@@ -34,20 +33,16 @@ export default function App() {
   const [editingPet, setEditingPet] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [assigningRunner, setAssigningRunner] = useState(false);
-  const [spaceDialog, setSpaceDialog] = useState<{ space?: Space } | null>(null);
   const [confirm, setConfirm] = useState<{ title: string; message: string; confirm: string; run: () => Promise<void> } | null>(null);
   const petSelectionRevision = useRef(0);
   const petReadRevision = useRef(0);
   const pendingPetSelection = useRef(0);
   const [personas, setPersonas] = useState<Resource[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [spaces, setSpaces] = useState<Space[]>([]);
   /** The open chat, remembered with the agent it belongs to. */
   const [selection, setSelection] = useState<{ owner: string; id: string } | null>(null);
   const [chain, setChain] = useState<Resource | null>(null);
   const [page, setPage] = useState<Page>({ name: "chat" });
-  /** A first message from a Space page, sent when its new chat opens. */
-  const [autoSend, setAutoSend] = useState<{ id: string; text: string } | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState("");
   const [petError, setPetError] = useState<{ key: string; message: string } | null>(null);
@@ -177,7 +172,6 @@ export default function App() {
         setEditingPet(false);
         setRenaming(false);
         setAssigningRunner(false);
-        setSpaceDialog(null);
         setConfirm(null);
         setPage({ name: "chat" });
       }
@@ -208,7 +202,7 @@ export default function App() {
     void refreshPetSelection(key, () => current, true).catch(() => {});
     return () => { current = false; };
   }, [key, refreshPetSelection, petRetry]);
-  // Chats, Spaces and personas load together; the open chat loads separately below.
+  // Chats and personas load together; the open chat loads separately below.
   useEffect(() => {
     if (!key) return;
     let current = true;
@@ -217,21 +211,19 @@ export default function App() {
     setLoading(true);
     Promise.all([
       api<ConversationSummary[]>(`${agentPath(key)}/conversations`),
-      api<Space[]>(`${agentPath(key)}/spaces`),
       allResources(key, "persona"),
     ])
-      .then(async ([rows, saved, profiles]) => {
+      .then(async ([rows, profiles]) => {
         if (!isCurrent()) return;
         const preferred = selectedRef.current?.owner === key ? selectedRef.current.id : null;
         let id = pickConversation(rows, preferred);
         if (!id) {
           const created = await api<Resource>(`${agentPath(key)}/conversations`, {}, "POST");
           if (!isCurrent()) return;
-          rows = [summarize(created, null)];
+          rows = [summarize(created)];
           id = created.id;
         }
         setConversations(rows);
-        setSpaces(saved);
         setPersonas(profiles);
         setSelection((value) => value?.owner === key && value.id === id ? value : { owner: key, id });
       })
@@ -269,15 +261,10 @@ export default function App() {
     };
   }, [key, selectedId, resourceRevision]);
 
-  function spaceOf(conversationId: string, parentId: string | null) {
-    const listed = conversations.find((row) => row.id === conversationId);
-    if (listed) return listed.space_id;
-    return parentId && spaces.some((space) => space.id === parentId) ? parentId : null;
-  }
   function updateChain(value: Resource) {
     if (agentKey.current !== key) return;
     setChain((current) => current ? latestConversation(current, value) : current);
-    setConversations((rows) => upsertConversation(rows, summarize(value, spaceOf(value.id, value.parent_id))));
+    setConversations((rows) => upsertConversation(rows, summarize(value)));
   }
   function show(next: Page) {
     setMenu(false);
@@ -287,24 +274,23 @@ export default function App() {
     setSelection({ owner: key, id });
     show({ name: "chat" });
   }
-  async function newChat(spaceId: string | null) {
-    const reuse = emptyConversation(conversations, spaceId);
+  async function newChat() {
+    const reuse = emptyConversation(conversations);
     if (reuse) {
       openChat(reuse.id);
-      return reuse.id;
+      return;
     }
-    const created = await api<Resource>(`${agentPath(key)}/conversations`, { space_id: spaceId }, "POST");
-    if (agentKey.current !== created.agent_key) return null;
-    setConversations((rows) => upsertConversation(rows, summarize(created, spaceId)));
+    const created = await api<Resource>(`${agentPath(key)}/conversations`, {}, "POST");
+    if (agentKey.current !== created.agent_key) return;
+    setConversations((rows) => upsertConversation(rows, summarize(created)));
     setChain(created);
     setResourceOwner(key);
     openChat(created.id);
-    return created.id;
   }
-  function startNewChat(spaceId: string | null) {
-    newChat(spaceId).catch((e) => setError((e as Error).message));
+  function startNewChat() {
+    newChat().catch((e) => setError((e as Error).message));
   }
-  async function updateConversation(id: string, change: { title?: string; space_id?: string | null }) {
+  async function updateConversation(id: string, change: { title: string }) {
     try {
       const saved = await api<ConversationSummary>(`${agentPath(key)}/conversations/${encodeURIComponent(id)}`, change, "PUT");
       setConversations((rows) => upsertConversation(rows, saved));
@@ -317,7 +303,7 @@ export default function App() {
   function reopenAfterRemoval(remaining: ConversationSummary[]) {
     const next = pickConversation(remaining.filter((row) => row.message_count > 0), null);
     if (next) openChat(next);
-    else startNewChat(null);
+    else startNewChat();
   }
   function deleteChat(id: string) {
     const chat = conversations.find((row) => row.id === id);
@@ -332,26 +318,6 @@ export default function App() {
         if (selectedId === id) reopenAfterRemoval(remaining);
       },
     });
-  }
-  function deleteSpace(space: Space) {
-    const count = conversations.filter((row) => row.space_id === space.id && row.message_count > 0).length;
-    setConfirm({
-      title: "Delete Space?",
-      message: `“${space.title}”${count ? ` and its ${count} chat${count === 1 ? "" : "s"}` : ""} will be moved to Tsuchi’s trash, where ${count ? "they" : "it"} can be restored.`,
-      confirm: "Delete Space",
-      run: async () => {
-        await api<void>(`${agentPath(key)}/spaces/${encodeURIComponent(space.id)}`, undefined, "DELETE");
-        const remaining = conversations.filter((row) => row.space_id !== space.id);
-        setSpaces((rows) => rows.filter((row) => row.id !== space.id));
-        setConversations(remaining);
-        const inside = conversations.some((row) => row.id === selectedId && row.space_id === space.id);
-        if (inside || (page.name === "space" && page.id === space.id)) reopenAfterRemoval(remaining);
-      },
-    });
-  }
-  async function startInSpace(spaceId: string, text: string) {
-    const id = await newChat(spaceId);
-    if (id) setAutoSend({ id, text });
   }
   function restoreFocus() {
     if (mobile && !menu) openNavigation.current?.focus();
@@ -405,7 +371,6 @@ export default function App() {
           agent={agent}
           page={page}
           conversations={key && resourceOwner === key ? conversations : []}
-          spaces={key && resourceOwner === key ? spaces : []}
           selectedId={selectedId}
           status={status}
           loading={loading}
@@ -418,11 +383,8 @@ export default function App() {
           }}
           onNewChat={startNewChat}
           onOpenChat={openChat}
-          onOpenSpace={(id) => show({ name: "space", id })}
-          onCreateSpace={() => { setMenu(false); setSpaceDialog({}); }}
           onPage={(name) => show({ name })}
           onRenameChat={(id, title) => updateConversation(id, { title })}
-          onMoveChat={(id, spaceId) => updateConversation(id, { space_id: spaceId })}
           onDeleteChat={deleteChat}
         />
       </aside>
@@ -481,25 +443,7 @@ export default function App() {
             onRunner={() => setAssigningRunner(true)}
           />
         ) : page.name === "space" ? (
-          (() => {
-            const space = resourceOwner === key ? spaces.find((row) => row.id === page.id) : undefined;
-            return space ? (
-              <SpacePage
-                key={space.id}
-                space={space}
-                conversations={conversations}
-                disabled={disabled}
-                onStart={(text) => startInSpace(space.id, text)}
-                onOpenChat={openChat}
-                onEdit={() => setSpaceDialog({ space })}
-                onDelete={() => deleteSpace(space)}
-              />
-            ) : (
-              <div className="center-empty">
-                <p className="center-hint">{loading ? "Loading Space…" : "This Space is no longer available."}</p>
-              </div>
-            );
-          })()
+          <SpaceLibrary key={key} agentKey={key} />
         ) : chain && resourceOwner === key && chain.id === selectedId ? (
           <Chat
             key={`${key}:${chain.id}`}
@@ -514,8 +458,6 @@ export default function App() {
             onEditPet={() => setEditingPet(true)}
             blocked={loading}
             refreshStatus={refreshStatus}
-            autoSend={autoSend?.id === chain.id ? autoSend.text : undefined}
-            onAutoSent={() => setAutoSend(null)}
           />
         ) : (
           <div className="center-empty" role="status">
@@ -533,18 +475,6 @@ export default function App() {
         onUpdated={(saved) => setAgent((current) => current?.key === saved.key ? { ...current, name: saved.name } : current)}
         onClose={() => {
           setRenaming(false);
-          restoreFocus();
-        }}
-      />}
-      {spaceDialog && key && <SpaceDialog
-        agentKey={key}
-        space={spaceDialog.space}
-        onSaved={(saved) => {
-          setSpaces((rows) => [saved, ...rows.filter((row) => row.id !== saved.id)]);
-          if (!spaceDialog.space) show({ name: "space", id: saved.id });
-        }}
-        onClose={() => {
-          setSpaceDialog(null);
           restoreFocus();
         }}
       />}
