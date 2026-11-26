@@ -8,10 +8,12 @@ import typer
 from bin.process import ROOT, run
 
 app = typer.Typer(no_args_is_help=True)
+# Hikari's pages live in the shared frontend app.
+FRONTEND = ROOT.parent / "frontend"
 
 
 @app.command()
-def schema(output: Path = ROOT / "frontend/openapi.json") -> None:
+def schema(output: Path = FRONTEND / "openapi.json") -> None:
     """Write the API's OpenAPI schema without starting the server."""
     # API dependencies are needed only for schema generation, not CLI help or other tools.
     from api.server import app as api
@@ -23,8 +25,8 @@ def schema(output: Path = ROOT / "frontend/openapi.json") -> None:
 
 @app.command()
 def client() -> None:
-    """Regenerate the TypeScript client from frontend/openapi.json."""
-    run(["npm", "exec", "--", "openapi-ts"], cwd=ROOT / "frontend")
+    """Regenerate the TypeScript client from services/frontend/openapi.json."""
+    run(["npm", "exec", "--", "openapi-ts"], cwd=FRONTEND)
     run(
         [
             "npm",
@@ -34,9 +36,9 @@ def client() -> None:
             "--write",
             "--single-quote",
             "--no-semi",
-            "src/api/generated",
+            "src/hikari/api/generated",
         ],
-        cwd=ROOT / "frontend",
+        cwd=FRONTEND,
     )
 
 

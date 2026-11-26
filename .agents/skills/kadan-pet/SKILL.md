@@ -56,8 +56,8 @@ Omit `spriteVersionNumber` (or use `1`) for a 9-row sheet. Codex loads pets from
 
 ## Kadan integration
 
-- Player: `services/kadan/web/src/Pet.tsx` renders any v1 or v2 sheet with the official timings. `services/kadan/web/src/pet.ts` holds the row contract and look-direction math.
-- Default: agents without a real pet get a procedural hatchling from `services/kadan/web/src/hatchling.ts`, tinted by `agentHue(key)`. Its review pose holds a magnifying glass, which the contract above discourages.
+- Player: `services/frontend/src/kadan/Pet.tsx` renders any v1 or v2 sheet with the official timings. `services/frontend/src/kadan/pet.ts` holds the row contract and look-direction math.
+- Default: agents without a real pet get a procedural hatchling from `services/frontend/src/kadan/hatchling.ts`, tinted by `agentHue(key)`. Its review pose holds a magnifying glass, which the contract above discourages.
 - Selection: `PetContext.tsx` resolves the selected Tsuchi candidate for roster, home and chat. `agentPet(key)` supplies the procedural fallback. Generated artwork is never selected automatically; only the user's **Use pet** or **Use hatchling** action changes selection.
 - Storage: Tsuchi owns immutable artwork files, the candidate's v2 manifest, generation provenance, durable job progress and the agent's `selected_pet_id`. Jobs use version checks and worker leases. Trashing referenced artwork clears selection. Exports include candidates and their assets.
 - Import: an existing Codex/ChatGPT pet folder, zip or spritesheet can be imported through **Edit pet → New pet → Import** (`POST /api/agents/{key}/pets/imports`). Kadan validates the atlas size and stores a ready, unselected candidate with `origin: "imported"`.

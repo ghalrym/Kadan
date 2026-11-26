@@ -1,12 +1,12 @@
 # Service status
 
-Kadan shows connection information for Tsuchi and Hikari and provides links to their management interfaces. The indicators refresh periodically and can lag a change. Loading and connection failures must remain distinguishable from readiness.
+Kadan shows connection information for Tsuchi and Hikari and links to their pages, which open in the same window inside Kadan's web app. Those pages offer **Back to Kadan**. The indicators refresh periodically and can lag a change. Loading and connection failures must remain distinguishable from readiness.
 
 Tsuchi availability means Kadan can reach storage. If storage is unavailable, Kadan cannot reliably load agents or confirm new saved messages. An error must not be presented as an empty collection or a successful save.
 
 Hikari can require a user-approved model download or attention to an unavailable inference worker. Open Hikari Settings to resolve those states. Language readiness does not mean the model is already loaded or that speech, images and other inference types are ready. A later request can still wait or fail.
 
-When the fixed LFM3 conversation model needs downloading, Kadan links to Hikari Settings and keeps the composer available for notes. The Settings link opens in another tab and preserves the current draft, persona and any unsent message. Opening Settings does not download a model or send the draft. Replies become available after Kadan observes the connected worker's completed checkpoint.
+When the fixed LFM3 conversation model needs downloading, Kadan links to Hikari Settings and keeps the composer available for notes. The Settings link opens Hikari Settings in the same window. Returning to Kadan in that browser tab restores the chat's draft, chosen persona and any unsent message; a persona deleted in the meantime falls back to the default. Opening Settings does not download a model or send the draft. Replies become available after Kadan observes the connected worker's completed checkpoint.
 
 When language inference is unavailable, users can [save chat notes](saving-chat-notes.md) if storage is working. Restoring inference does not automatically answer those notes. Readiness also does not prove that an agent has an available [runner](runner-availability.md).
 

@@ -6,9 +6,9 @@ Users expect to start Kadan with one Docker Compose file and zero custom configu
 docker compose up --build -d
 ```
 
-Startup must work without creating a `.env` file, generating secrets, selecting build targets or combining Compose files. Every parameter needed by the baseline system must have a working default. The browser interfaces must be available at their documented default addresses.
+Startup must work without creating a `.env` file, generating secrets, selecting build targets or combining Compose files. Every parameter needed by the baseline system must have a working default. One web app must be available at its documented default address, with Kadan as the home page and Tsuchi's and Hikari's pages inside it.
 
-Users can optionally create a `.env` file to override default parameters, such as ports, credentials and remote worker connections. `.env.example` documents the available overrides. Customization must remain optional for the baseline system.
+Users can optionally create a `.env` file to override default parameters, such as the web app port, credentials and remote worker connections. `.env.example` documents the available overrides. Customization must remain optional for the baseline system.
 
 Hot reload is the standard behavior. Source edits must reach the running services through automatic reloads or incremental worker rebuilds, without selecting a separate mode.
 

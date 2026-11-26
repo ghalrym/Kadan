@@ -1,6 +1,6 @@
 # Tsuchi user expectations
 
-Tsuchi stores each agent's personas, memories, documents, slide decks, files and conversations. Its management interface lets users edit saved content, inspect history, recover trashed items and export records. Kadan uses the same stored content.
+Tsuchi stores each agent's personas, memories, documents, slide decks, files and conversations. Its pages, opened from Kadan's sidebar inside the same web app, let users edit saved content, inspect history, recover trashed items and export records. **Back to Kadan** returns to chats. Kadan uses the same stored content.
 
 Saving content does not run an agent or guarantee future recall. Confirmed saves persist in the data store; unsaved drafts do not. Edits must report conflicts, and trash retains data rather than reclaiming disk space.
 

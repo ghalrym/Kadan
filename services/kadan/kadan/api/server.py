@@ -1,11 +1,9 @@
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from kadan_tracing import RequestTracing, configure, shutdown
 
 from .config import ServiceError, Settings
@@ -75,10 +73,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         slides.router,
     ):
         app.include_router(router)
-
-    frontend = Path(config.frontend_directory)
-    if frontend.is_dir():
-        app.mount("/", StaticFiles(directory=frontend, html=True), name="frontend")
     return app
 
 

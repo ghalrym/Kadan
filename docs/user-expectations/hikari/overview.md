@@ -1,6 +1,6 @@
 # Hikari user expectations
 
-Hikari supplies chat, decisions, images, video, speech and transcription for Kadan and direct clients. Its management interface lets users download its fixed models, try inference and inspect recent requests.
+Hikari supplies chat, decisions, images, video, speech and transcription for Kadan and direct clients. Its pages, opened from Kadan's sidebar inside the same web app, let users download its fixed models, try inference and inspect recent requests. **Back to Kadan** returns to chats.
 
 Downloading, loading and successful generation are separate states. Requests can wait for hardware or fail when their requirements cannot be met. Playground results generally belong to the open page; each feature describes what survives navigation or a service restart.
 

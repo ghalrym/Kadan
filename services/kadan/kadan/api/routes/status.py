@@ -11,7 +11,6 @@ router = APIRouter()
 class ServiceState(BaseModel):
     state: Literal["ready", "unavailable"]
     message: str
-    browser_url: str
 
 
 class InferenceState(BaseModel):
@@ -26,7 +25,6 @@ class InferenceState(BaseModel):
         Literal["unloaded", "loading", "ready", "offloaded", "unloading", "error"]
         | None
     ) = None
-    settings_url: str
 
 
 class Status(BaseModel):

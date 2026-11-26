@@ -28,7 +28,7 @@ def _first_header_value(value: str | None) -> str | None:
 
 
 def _callback_url(request: Request) -> str:
-    # Prefer forwarded browser origin (through reverse proxy or kadan-frontend Vite proxy)
+    # Prefer forwarded browser origin (through reverse proxy or frontend Vite proxy)
     # so OAuth returns to the user's browser URL.
     fwd_proto = _first_header_value(request.headers.get("x-forwarded-proto"))
     fwd_host = _first_header_value(request.headers.get("x-forwarded-host"))

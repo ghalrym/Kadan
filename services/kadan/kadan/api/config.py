@@ -11,18 +11,10 @@ class Settings(BaseSettings):
     )
 
     tsuchi_url: str = "http://127.0.0.1:8620"
-    hikari_url: str = "http://127.0.0.1:8088"
-    tsuchi_browser_url: str = "http://127.0.0.1:8620"
-    hikari_browser_url: str = "http://127.0.0.1:8088"
-    frontend_directory: str = "web/dist"
+    hikari_url: str = "http://127.0.0.1:8000"
     agent_instruction_file: str = str(Path(__file__).resolve().parents[2] / "AGENT.md")
 
-    @field_validator(
-        "tsuchi_url",
-        "hikari_url",
-        "tsuchi_browser_url",
-        "hikari_browser_url",
-    )
+    @field_validator("tsuchi_url", "hikari_url")
     @classmethod
     def service_url(cls, value: str) -> str:
         parsed = urlsplit(value)

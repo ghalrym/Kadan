@@ -4,15 +4,7 @@ from pydantic import ValidationError
 from kadan.api.config import Settings
 
 
-@pytest.mark.parametrize(
-    "field",
-    [
-        "tsuchi_url",
-        "hikari_url",
-        "tsuchi_browser_url",
-        "hikari_browser_url",
-    ],
-)
+@pytest.mark.parametrize("field", ["tsuchi_url", "hikari_url"])
 @pytest.mark.parametrize(
     "url",
     [

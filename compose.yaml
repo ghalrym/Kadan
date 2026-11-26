@@ -309,30 +309,6 @@ services:
       hikari-api:
         condition: service_healthy
 
-  hikari-frontend:
-    build:
-      context: ./services/hikari/frontend
-    init: true
-    ports:
-      - "0.0.0.0:${HIKARI_FRONTEND_PORT:-8088}:8080"
-    depends_on:
-      hikari-api:
-        condition: service_healthy
-    restart: unless-stopped
-    environment:
-      WATCH_POLLING: "true"
-      API_PROXY_TARGET: http://hikari-api:8000
-    volumes:
-      - ./services/hikari/frontend:/app
-      - frontend_node_modules:/app/node_modules
-    command: [sh, -c, "npm ci && exec npm run dev -- --host 0.0.0.0 --port 8080 --strictPort"]
-    healthcheck:
-      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
-      interval: 30s
-      timeout: 5s
-      start_period: 30s
-      retries: 3
-
   tsuchi-api:
     build:
       additional_contexts:
@@ -352,30 +328,6 @@ services:
       - /tmp:size=256m,mode=1777
     restart: unless-stopped
     command: [uvicorn, tsuchi.main:app, --host, 0.0.0.0, --port, "8000", --reload, --reload-dir, /app/tsuchi]
-
-  tsuchi-frontend:
-    build:
-      context: ./services/tsuchi/web
-    init: true
-    ports:
-      - "0.0.0.0:${TSUCHI_PORT:-8620}:8080"
-    depends_on:
-      tsuchi-api:
-        condition: service_healthy
-    restart: unless-stopped
-    environment:
-      WATCH_POLLING: "true"
-      API_PROXY_TARGET: http://tsuchi-api:8000
-    volumes:
-      - ./services/tsuchi/web:/app
-      - tsuchi_frontend_node_modules:/app/node_modules
-    command: [sh, -c, "npm ci --no-audit --no-fund && exec npx vite --host 0.0.0.0 --port 8080 --strictPort"]
-    healthcheck:
-      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
-      interval: 30s
-      timeout: 5s
-      start_period: 30s
-      retries: 3
 
   kadan-api:
     build:
@@ -398,8 +350,6 @@ services:
       KADAN_TRACE_SAMPLE_RATIO: ${KADAN_TRACE_SAMPLE_RATIO:-0.1}
       KADAN_TSUCHI_URL: http://tsuchi-api:8000
       KADAN_HIKARI_URL: http://hikari-api:8000
-      KADAN_TSUCHI_BROWSER_URL: http://127.0.0.1:${TSUCHI_PORT:-8620}
-      KADAN_HIKARI_BROWSER_URL: http://127.0.0.1:${HIKARI_FRONTEND_PORT:-8088}
     depends_on:
       tsuchi-api:
         condition: service_healthy
@@ -449,22 +399,29 @@ services:
     volumes:
       - ./services/kadan/kadan:/app/kadan
 
-  kadan-frontend:
+  # One web app: Kadan at /, Tsuchi at /tsuchi and Hikari at /hikari.
+  frontend:
     build:
-      context: ./services/kadan/web
+      context: ./services/frontend
     init: true
     ports:
       - "0.0.0.0:${KADAN_PORT:-8630}:8080"
     depends_on:
       kadan-api:
         condition: service_healthy
+      tsuchi-api:
+        condition: service_healthy
+      hikari-api:
+        condition: service_healthy
     restart: unless-stopped
     environment:
       WATCH_POLLING: "true"
-      API_PROXY_TARGET: http://kadan-api:8630
+      KADAN_API_URL: http://kadan-api:8630
+      TSUCHI_API_URL: http://tsuchi-api:8000
+      HIKARI_API_URL: http://hikari-api:8000
     volumes:
-      - ./services/kadan/web:/app
-      - kadan_frontend_node_modules:/app/node_modules
+      - ./services/frontend:/app
+      - frontend_node_modules:/app/node_modules
     command: [sh, -c, "npm ci --no-audit --no-fund && exec npx vite --host 0.0.0.0 --port 8080 --strictPort"]
     healthcheck:
       test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
@@ -490,8 +447,6 @@ volumes:
   tsuchi_data:
     # Reuse the standalone Tsuchi store when the owner switches to combined Compose.
     name: ${TSUCHI_DATA_VOLUME:-tsuchi_tsuchi_data}
-  tsuchi_frontend_node_modules:
-  kadan_frontend_node_modules:
   hikari_worker_llm_build:
   # Retain the old native Decisions build volume; no existing data is removed.
   hikari_worker_decision_build:

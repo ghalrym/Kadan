@@ -11,9 +11,9 @@ From top to bottom, the sidebar offers:
 - **Plugins** opens the [Plugins](plugins.md) page.
 - **Chats** lists chats newest first, with how long ago each was last active. Each chat's **…** menu can rename or delete it.
 - The agent's name and pet open the **Agent page**.
-- **Tsuchi** and **Hikari** show [service status](service-status.md) and open those apps; the refresh button reloads service status, the agent and its chats.
+- **Tsuchi** and **Hikari** show [service status](service-status.md) and open Tsuchi's storage pages and Hikari Settings in the same window. Those pages keep their own navigation and offer **Back to Kadan**. The refresh button reloads service status, the agent and its chats.
 
-Lists in the sidebar reflect what Kadan last loaded. Changes made in Tsuchi appear after refreshing.
+Lists in the sidebar reflect what Kadan last loaded. Changes made on Tsuchi's pages appear after returning to Kadan or refreshing.
 
 ## Agent page
 

@@ -192,24 +192,6 @@ def api() -> None:
     )
 
 
-@app.command("frontend-lint")
-def frontend_lint() -> None:
-    """Lint frontend source."""
-    run(["npm", "--prefix", "frontend", "run", "lint"])
-
-
-@app.command("frontend-build")
-def frontend_build() -> None:
-    """Type-check and build the frontend."""
-    run(["npm", "--prefix", "frontend", "run", "build"])
-
-
-@app.command("frontend-unit")
-def frontend_unit() -> None:
-    """Run frontend unit tests."""
-    run(["npm", "--prefix", "frontend", "run", "test:unit"])
-
-
 @app.command()
 def inference_worker(
     build_dir: Path = ROOT / "build/inference-worker-unit", sanitize: bool = False

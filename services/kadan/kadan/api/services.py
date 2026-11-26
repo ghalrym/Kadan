@@ -168,7 +168,6 @@ class LocalServices:
         return resource
 
     async def inference_status(self) -> InferenceState:
-        settings_url = self.settings.hikari_browser_url + "/settings"
         try:
             providers = HikariSubscriptions.model_validate(
                 await self.json_request("Hikari", "GET", "/v1/subscriptions")
@@ -178,7 +177,6 @@ class LocalServices:
                 return InferenceState(
                     state="ready",
                     model_id=None,
-                    settings_url=settings_url,
                     message=f"Language uses your {providers.capabilities.language.title()} subscription in Hikari.",
                 )
             catalog = HikariModels.model_validate(
@@ -206,7 +204,6 @@ class LocalServices:
                     model_id=model.id
                     if model is not None
                     else catalog.selected_model_id,
-                    settings_url=settings_url,
                     message="The Inkling 2 Mini language worker is unavailable. Check Hikari Settings.",
                 )
             return InferenceState(
@@ -214,7 +211,6 @@ class LocalServices:
                 model_id=model.id,
                 download_state=model.status,
                 context_limit=model.context_limit or model.architecture_context_limit,
-                settings_url=settings_url,
                 message=(
                     "Inkling 2 Mini is downloaded. Hikari loads it when chat starts."
                     if model.status == "complete"
@@ -227,9 +223,7 @@ class LocalServices:
                 if isinstance(error, ServiceError)
                 else "Hikari returned invalid model status."
             )
-            return InferenceState(
-                state="unavailable", message=message, settings_url=settings_url
-            )
+            return InferenceState(state="unavailable", message=message)
 
     async def storage_status(self) -> ServiceState:
         try:
@@ -239,13 +233,11 @@ class LocalServices:
             return ServiceState(
                 state="ready",
                 message="Tsuchi stores agents, conversations and workspace files.",
-                browser_url=self.settings.tsuchi_browser_url,
             )
         except ServiceError as error:
             return ServiceState(
                 state="unavailable",
                 message=str(error),
-                browser_url=self.settings.tsuchi_browser_url,
             )
 
     async def model_state(self, model_id: str | None):

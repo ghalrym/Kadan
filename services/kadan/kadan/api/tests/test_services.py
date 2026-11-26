@@ -159,7 +159,6 @@ def test_readiness_uses_actual_active_language_checkpoint(settings, state):
     boundary = Boundary(settings=settings)
     status = run(boundary, lambda service: service.inference_status())
     assert status.state == state
-    assert status.settings_url == "http://127.0.0.1:8088/settings"
     assert boundary.requests == [("GET", "/v1/subscriptions"), ("GET", "/v1/models")]
 
 
@@ -354,8 +353,6 @@ def test_docker_status_requests_internal_origins_and_returns_browser_links(unava
         settings = Settings(
             tsuchi_url="http://tsuchi-api:8000",
             hikari_url="http://hikari-api:8000",
-            tsuchi_browser_url="http://localhost:18620",
-            hikari_browser_url="http://localhost:18088",
             _env_file=None,
         )
         async with httpx.AsyncClient(transport=httpx.MockTransport(boundary)) as client:
@@ -369,8 +366,6 @@ def test_docker_status_requests_internal_origins_and_returns_browser_links(unava
     }
     assert result.tsuchi.state == ("unavailable" if unavailable else "ready")
     assert result.hikari.state == "unavailable"
-    assert result.tsuchi.browser_url == "http://localhost:18620"
-    assert result.hikari.settings_url == "http://localhost:18088/settings"
 
 
 @pytest.mark.parametrize(

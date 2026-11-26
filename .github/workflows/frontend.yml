@@ -1,0 +1,35 @@
+name: Frontend
+on:
+  push:
+    paths:
+      - 'services/frontend/**'
+      - '.github/workflows/frontend.yml'
+  pull_request:
+    paths:
+      - 'services/frontend/**'
+      - '.github/workflows/frontend.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: frontend-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  web:
+    name: Lint, unit tests and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: services/frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.22.1'
+          cache: npm
+          cache-dependency-path: services/frontend/package-lock.json
+      - run: npm ci --no-audit
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
