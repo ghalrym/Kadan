@@ -3,16 +3,12 @@
 fn main() {
     #[cfg(target_os = "linux")]
     {
-        // Prevent WebKitGTK 4.1 GPU/DMABUF compositor crashes on Wayland + NVIDIA
-        // (e.g., when animated <canvas> layers mount). Respect explicit overrides.
-        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        // Avoid Wayland Error 71 (Protocol error) on NVIDIA drivers without
+        // disabling WebKitGTK's DMA-BUF renderer (which triggers a WebKitGTK 2.52
+        // DrawingAreaProxy segfault on interaction).
+        if std::env::var_os("__NV_DISABLE_EXPLICIT_SYNC").is_none() {
             unsafe {
-                std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-            }
-        }
-        if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
-            unsafe {
-                std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+                std::env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
             }
         }
     }
