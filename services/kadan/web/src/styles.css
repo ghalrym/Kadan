@@ -1218,6 +1218,32 @@ main:focus {
   background: none;
   border: 0;
 }
+.markdown-table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.markdown table {
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+.markdown th,
+.markdown td {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: normal;
+}
+.markdown th {
+  background: var(--surface);
+  font-weight: 600;
+}
+.markdown del {
+  color: var(--muted);
+}
+.markdown input[type="checkbox"] {
+  margin: 0 6px 0 0;
+}
 .markdown blockquote {
   margin-left: 0;
   padding-left: 12px;

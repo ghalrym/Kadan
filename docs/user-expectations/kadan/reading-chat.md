@@ -7,3 +7,5 @@ Kadan opens each agent's conversation at its latest message. While the reader st
 Sending a message or saving a note returns to the latest content unless a [Find](finding-chat-text.md) query is active. Find navigation keeps control of the reading position. **Close find and jump to latest** clears the search and selected match before returning to the bottom; closing Find alone leaves the current reading position in place.
 
 Changing agents or conversations resets this position and opens at the latest message. The reading position is local to the open view and is not saved in the conversation.
+
+Kadan's web app shows agent replies as formatted text. Headings, lists, task lists, links, code, quotes, strikethrough and tables appear formatted instead of as raw symbols. A wide table scrolls sideways inside its message so the rest of the conversation keeps its layout. Images inside a reply are not loaded and appear as a short placeholder.
