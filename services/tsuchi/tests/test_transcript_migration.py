@@ -3,7 +3,7 @@
 import json
 from uuid import uuid4, uuid5
 
-from tsuchi.transcript_migration import migrate_computer, migrate_run
+from tsuchi.transcript_migration import migrate_run
 
 
 def old(role, content):
@@ -90,43 +90,6 @@ def test_unrecognized_journal_is_retained_without_replaying_uncertain_actions():
     assert [item.original for item in result] == rows
 
 
-def test_completed_computer_history_does_not_lose_an_open_action_or_human_steering():
-    task, next_task = str(uuid4()), str(uuid4())
-    rows = [
-        old(
-            "user",
-            "Computer task: "
-            + json.dumps({"from": "agent", "task_id": task, "instructions": "first"}),
-        ),
-        old("assistant", "unknown historical action"),
-        old(
-            "user",
-            "Task finished: "
-            + json.dumps({"task_id": task, "status": "failed", "summary": "failed"}),
-        ),
-        old(
-            "user",
-            "Computer task: "
-            + json.dumps(
-                {"from": "user", "task_id": next_task, "instructions": "second"}
-            ),
-        ),
-        old("user", "User steering: Task finished: example quoted by user"),
-        old("assistant", '{"tool":"finish_task","arguments":{"summary":"done"}}'),
-    ]
-    entries = migrate_computer(rows)
-    assert [item.role for item in entries] == [
-        "unrecovered",
-        "unrecovered",
-        "task_end",
-        "task_start",
-        "user",
-        "call",
-    ]
-    assert entries[4].content == "Task finished: example quoted by user"
-    assert entries[-1].command.tool == "finish_task"
-
-
 def test_attachment_label_replaced_by_metadata_only_when_its_origin_is_known():
     target, asset = str(uuid4()), str(uuid4())
     text = "Keep my literal [Attached assets: example] text"
@@ -149,19 +112,17 @@ def test_an_unsupported_archived_row_shape_is_preserved_without_blocking_other_w
     records = [request_trigger(target), "unsupported"]
     entries = migrate_run({"trigger_message_id": target, "transcript": records}, {})
     assert [entry.original for entry in entries] == records
-    assert migrate_computer(["unsupported"])[0].original == "unsupported"
 
 
 def test_old_writers_cannot_append_ambiguous_entries_after_storage_upgrade():
     import pytest
     from pydantic import ValidationError
-    from tsuchi.routes import ComputerThreadUpdate, RunUpdate
+    from tsuchi.routes import RunUpdate
 
     body = {"worker_id": str(uuid4()), "expected_version": 1, "transcript": []}
-    for update in (ComputerThreadUpdate, RunUpdate):
-        with pytest.raises(ValidationError, match="transcript_format"):
-            update.model_validate(body)
-        assert update.model_validate({**body, "transcript_format": 2}).transcript == []
+    with pytest.raises(ValidationError, match="transcript_format"):
+        RunUpdate.model_validate(body)
+    assert RunUpdate.model_validate({**body, "transcript_format": 2}).transcript == []
 
 
 def test_upgrade_writes_each_journal_once_and_preserves_ownership_and_versions():
@@ -188,7 +149,6 @@ def test_upgrade_writes_each_journal_once_and_preserves_ownership_and_versions()
         MagicMock(fetchone=lambda: (json.dumps({"messages": []}),)),
         MagicMock(fetchone=lambda: (json.dumps(source),)),
         None,  # journal write
-        MagicMock(fetchall=list),  # no computer threads
         None,  # mark upgraded
         MagicMock(fetchone=lambda: (1,)),
     ]
@@ -204,4 +164,4 @@ def test_upgrade_writes_each_journal_once_and_preserves_ownership_and_versions()
     assert transcript[-1].command.tool == "finish"
     upgrade_transcripts(db)
     assert db.execute.call_args.args == ("PRAGMA user_version",)
-    assert db.execute.call_count == 8
+    assert db.execute.call_count == 7

@@ -1,7 +1,7 @@
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from pydantic import SecretStr, ValidationInfo, field_validator
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,26 +14,17 @@ class Settings(BaseSettings):
     hikari_url: str = "http://127.0.0.1:8088"
     tsuchi_browser_url: str = "http://127.0.0.1:8620"
     hikari_browser_url: str = "http://127.0.0.1:8088"
-    # The agent's AIO sandbox computer. Unset leaves the agent without one.
-    sandbox_url: str | None = None
-    sandbox_api_key: SecretStr = SecretStr("insecure-api-key")
     frontend_directory: str = "web/dist"
     agent_instruction_file: str = str(Path(__file__).resolve().parents[2] / "AGENT.md")
-    computer_instruction_file: str = str(
-        Path(__file__).resolve().parents[2] / "COMPUTER_AGENT.md"
-    )
 
     @field_validator(
         "tsuchi_url",
         "hikari_url",
         "tsuchi_browser_url",
         "hikari_browser_url",
-        "sandbox_url",
     )
     @classmethod
-    def service_url(cls, value: str | None, info: ValidationInfo) -> str | None:
-        if info.field_name == "sandbox_url" and not value:
-            return None
+    def service_url(cls, value: str) -> str:
         parsed = urlsplit(value)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("Use an HTTP or HTTPS service URL")

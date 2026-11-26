@@ -1,21 +1,15 @@
-"""Copy completed computer files into the running agent's durable Workspace."""
+"""Read and list file metadata in the running agent's durable Workspace."""
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
-from collections.abc import Awaitable, Callable
 from datetime import datetime
-from tempfile import TemporaryFile
-from typing import TYPE_CHECKING, BinaryIO
+from typing import TYPE_CHECKING
 from uuid import UUID
 
-import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 from ..api.config import ServiceError
 from ..api.pydantic_models.resources import AgentKey
-from ..api.sandbox_client import MAX_FILE_BYTES, OPERATION_SECONDS
 
 if TYPE_CHECKING:
     from ..api.services import LocalServices
@@ -36,16 +30,6 @@ class WorkspaceFile(BaseModel):
 class WorkspaceFileListing(WorkspaceFile):
     created_at: datetime
     updated_at: datetime
-
-
-def file_name(path: str) -> str:
-    name = path.replace("\\", "/").rsplit("/", 1)[-1]
-    name = "".join(character for character in name if character.isprintable())[
-        :255
-    ].strip()
-    # Multipart encodes quotes as %22; use a stable display name at both ends.
-    name = name.replace('"', "_")
-    return name if name not in {"", ".", ".."} else "attachment"
 
 
 class WorkspaceFiles:
@@ -116,184 +100,3 @@ class WorkspaceFiles:
             ],
             "next_offset": offset + limit if len(assets) > limit else None,
         }
-
-    async def download(self, asset: WorkspaceFile, output: BinaryIO) -> None:
-        size = 0
-        digest = hashlib.sha256()
-        try:
-            async with asyncio.timeout(OPERATION_SECONDS):
-                async with self.services.client.stream(
-                    "GET",
-                    self.services.settings.tsuchi_url
-                    + f"{self.path}/{asset.id}/content",
-                    headers={"Accept-Encoding": "identity"},
-                    timeout=httpx.Timeout(OPERATION_SECONDS, connect=3),
-                ) as response:
-                    if response.status_code != 200:
-                        raise ServiceError(
-                            f"Tsuchi could not download the file (HTTP {response.status_code}).",
-                            502,
-                        )
-                    if (
-                        response.headers.get("content-encoding", "identity").lower()
-                        != "identity"
-                    ):
-                        raise ServiceError(
-                            "Tsuchi returned an encoded file download.", 502
-                        )
-                    length = response.headers.get("content-length")
-                    if length is not None:
-                        try:
-                            if not length.isascii() or not length.isdigit():
-                                raise ValueError
-                            if int(length) != asset.size_bytes:
-                                raise ValueError
-                        except ValueError as error:
-                            raise ServiceError(
-                                "Tsuchi's file length does not match its saved metadata.",
-                                502,
-                            ) from error
-                    async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
-                        size += len(chunk)
-                        if size > min(asset.size_bytes, MAX_FILE_BYTES):
-                            raise ServiceError(
-                                "Tsuchi returned more file bytes than expected.", 502
-                            )
-                        output.write(chunk)
-                        digest.update(chunk)
-                    if size != asset.size_bytes or digest.hexdigest() != asset.sha256:
-                        raise ServiceError(
-                            "Tsuchi's file contents do not match its saved metadata.",
-                            502,
-                        )
-        except (httpx.RequestError, TimeoutError) as error:
-            raise ServiceError(
-                "Tsuchi did not complete the file download.", 503
-            ) from error
-        output.seek(0)
-
-    async def existing_copy(self, asset: WorkspaceFile, path: str) -> bool:
-        with TemporaryFile("w+b") as output:
-            try:
-                downloaded = await self.services.sandbox.download_file(path, output)
-            except ServiceError as error:
-                if error.code == "file_not_found":
-                    return False
-                raise
-        if (
-            downloaded.size_bytes != asset.size_bytes
-            or downloaded.sha256 != asset.sha256
-        ):
-            raise ServiceError(
-                f"The computer file at {path} differs from the saved file. It has been left unchanged.",
-                409,
-            )
-        return True
-
-    async def open(
-        self,
-        file_id: UUID,
-        action_id: UUID,
-        check_ownership: Callable[[], Awaitable[object]],
-        *,
-        replayed: bool,
-    ) -> dict:
-        await check_ownership()
-        value = await self.services.json_request(
-            "Tsuchi", "GET", f"{self.path}/{file_id}"
-        )
-        asset = self.checked(value, file_id)
-        if asset.size_bytes > MAX_FILE_BYTES:
-            raise ServiceError("Files cannot exceed 100 MiB.", 413, "file_too_large")
-        name = (
-            file_name(asset.filename)
-            .encode("utf-8")[:160]
-            .decode("utf-8", errors="ignore")
-        )
-        path = f"/tmp/kadan-workspace-{action_id}-{name}"
-        result = {"opened": True, "path": path, **self.summary(asset)}
-        if replayed:
-            try:
-                if await self.existing_copy(asset, path):
-                    return result
-                raise ServiceError("The computer copy is missing.", 404)
-            except ServiceError as error:
-                raise ServiceError(
-                    f"The earlier copy to {path} could not be confirmed. Nothing was uploaded again. "
-                    + str(error),
-                    error.status,
-                ) from error
-        with TemporaryFile("w+b") as source:
-            await self.download(asset, source)
-            if await self.existing_copy(asset, path):
-                return result
-            await check_ownership()
-            upload_error = None
-            try:
-                await self.services.sandbox.upload_file(path, source)
-            except (ServiceError, OSError) as error:
-                upload_error = error
-            try:
-                if not await self.existing_copy(asset, path):
-                    raise ServiceError(
-                        "The computer copy is missing after upload.", 502
-                    )
-            except (ServiceError, OSError) as error:
-                raise ServiceError(
-                    f"The copy to {path} is unconfirmed and may have completed. "
-                    "Inspect that path before starting another copy. "
-                    + str(upload_error or error),
-                    getattr(error, "status", 503),
-                ) from error
-        return result
-
-    async def save(
-        self,
-        file_id: UUID,
-        source_path: str,
-        title: str | None,
-        check_ownership: Callable[[], Awaitable[object]],
-        *,
-        replayed: bool,
-    ) -> dict:
-        await check_ownership()
-        if replayed:
-            try:
-                return {"saved": True, **await self.read(file_id)}
-            except ServiceError as error:
-                raise ServiceError(
-                    "The earlier file save could not be confirmed. The source has not been read or uploaded again. "
-                    "Use read_workspace_file with this file_id to check before starting another save. "
-                    + str(error),
-                    error.status,
-                ) from error
-        filename = file_name(source_path)
-        with TemporaryFile("w+b") as output:
-            downloaded = await self.services.sandbox.download_file(source_path, output)
-            await check_ownership()
-            try:
-                async with asyncio.timeout(OPERATION_SECONDS):
-                    value = await self.services.json_request(
-                        "Tsuchi",
-                        "POST",
-                        self.path,
-                        timeout=OPERATION_SECONDS,
-                        files={"file": (filename, output, "application/octet-stream")},
-                        data={"title": title or filename, "asset_id": str(file_id)},
-                    )
-                asset = self.checked(value, file_id)
-                if (
-                    asset.filename != filename
-                    or asset.size_bytes != downloaded.size_bytes
-                    or asset.sha256 != downloaded.sha256
-                ):
-                    raise ServiceError(
-                        "Tsuchi did not confirm the complete file contents.", 502
-                    )
-            except (ServiceError, TimeoutError) as error:
-                raise ServiceError(
-                    "The file save is unconfirmed and may have completed. Use read_workspace_file "
-                    "with this file_id before trying another save. " + str(error),
-                    getattr(error, "status", 503),
-                ) from error
-        return {"saved": True, **self.summary(asset)}

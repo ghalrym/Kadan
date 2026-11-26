@@ -17,7 +17,7 @@ Kadan proxies `GET /api/agents/{key}` and `PUT /api/agents/{key}` to Tsuchi for 
 
 The runner includes at most 97 recent user and assistant messages, subject to the selected model's context budget and bound tool definitions. Older history remains in Tsuchi. This separates durable records from the bounded input to one run.
 
-A user-triggered run ends its history at the triggering record. Attachments on that turn and background events are separate observations. An ordinary turn has no extra routing message or task dump. The agent can query image and computer records for its conversation through `read_task_status`. This includes terminal outcomes and excludes tasks started directly in the computer view.
+A user-triggered run ends its history at the triggering record. Attachments on that turn and background events are separate observations. An ordinary turn has no extra routing message or task dump. The agent can query image job records for its conversation through `read_task_status`. This includes terminal outcomes.
 
 Before converting the reported context window into a character budget, the runner reserves `REASONING_TOKENS + REPLY_TOKENS + 1024` tokens for generation and template overhead. Input sizing uses a three-characters-per-token estimate, not exact tokenization; Hikari remains responsible for the actual token limit.
 
@@ -67,7 +67,7 @@ The durable run stores each selected resource's identity, kind, title, version a
 
 The runner adds a static selection hint and offers `read_request_references`. Saved Markdown is returned as a tool result with reference-data provenance and an explicit statement that it grants no authorization and overrides no instructions. It is not concatenated into the user's message or system instructions. The established tool-response rendering remains unchanged. The model decides whether to read and use the references; selection does not guarantee use. Reading spends one command and its returned data consumes the ordinary context budget, so a request can still reach the existing command or context limit.
 
-`bound_tools(run)` omits only `read_request_references` when the run has no selections, consistently for context preparation, transcript budgeting, inference binding and fresh-command validation. Computer availability scopes `use_computer`, while connected [Remote MCP integrations](mcp-integrations.md) dynamically supply pinned MCP tools and the two-tool MCP gateway; sandbox tools belong to the [computer agent](computer-tasks.md). The global registry retains the reader so checkpointed calls can replay through existing ownership and cancellation fencing. No other useful tools are pruned to fit context.
+`bound_tools(run)` omits only `read_request_references` when the run has no selections, consistently for context preparation, transcript budgeting, inference binding and fresh-command validation. Connected [Remote MCP integrations](mcp-integrations.md) dynamically supply pinned MCP tools and the two-tool MCP gateway. The global registry retains the reader so checkpointed calls can replay through existing ownership and cancellation fencing. No other useful tools are pruned to fit context.
 
 ## Model decisions and delivery
 
@@ -95,7 +95,7 @@ Image summaries contain identities, prompt, status, error, delivery message ID a
 creation/update times. The conversation resource remains part of the snapshot.
 
 Conversation inference runs at `interactive` priority so chat replies are
-scheduled ahead of background computer assistant turns between turns. While a
+scheduled ahead of background Hikari requests between turns. While a
 plain text reply streams from Hikari, the runner publishes throttled ephemeral
 draft updates to Tsuchi (`PUT /api/agents/{key}/runs/{run_id}/draft`). Drafts
 live only in Tsuchi process memory—never in SQLite and without incrementing
@@ -115,7 +115,7 @@ delivery; it does not establish that external actions succeeded.
 
 Tsuchi saves a user's message and its queued run atomically. One run at a time owns a conversation; leases and version checks fence stale owners. Commands are saved before execution, and stable action IDs and delivery receipts let recovery distinguish work already delivered from work still pending. Run progress belongs in Tsuchi rather than only in process memory, so a restarted runner can resume saved work while preserving the conversation.
 
-These receipts do not make every external effect repeatable. The [agent computer](agent-computer.md) has a separate replay constraint because its sandbox API has no idempotency keys. Changes to tool recovery must preserve that distinction.
+These receipts do not make every external effect repeatable. Tools without an idempotent storage key, such as Space document creation and persona saves, report an uncertain outcome after a restart instead of replaying. Changes to tool recovery must preserve that distinction.
 
 Image generation is a separate durable job. Submission ends its initiating run instead of holding an agent turn open while Hikari works. A terminal image event queues another run in the same conversation, allowing ordinary messages to continue and the agent to deliver the eventual result. Idle conversations do not require model polling.
 

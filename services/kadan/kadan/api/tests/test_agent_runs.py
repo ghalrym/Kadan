@@ -23,7 +23,6 @@ from kadan.api.pydantic_models.agent_runs import (
     RunResult,
     UnrecoveredRecord,
 )
-from kadan.api.pydantic_models.computer import ComputerTask, ComputerTaskOrigin
 from kadan.api.pydantic_models.resources import Message, Resource, ResourceKind
 from kadan.runner.agent_inference import (
     REASONING_TOKENS,
@@ -41,12 +40,7 @@ from kadan.runner.agent_runs import (
     RunState,
     context_characters,
 )
-from kadan.runner.tools import (
-    ALL_TOOLS,
-    CONVERSATION_TOOLS,
-    MEMORY_TOOLS,
-    PERSONA_TOOLS,
-)
+from kadan.runner.tools import ALL_TOOLS
 
 
 class Boundary:
@@ -57,9 +51,6 @@ class Boundary:
             hikari_url="http://unused", agent_instruction_file=str(instruction_file)
         )
         self.images = SimpleNamespace(wakeup=asyncio.Event())
-        self.computer = SimpleNamespace(wakeup=asyncio.Event())
-        self.computer_tasks = {}
-        self.sandbox = SimpleNamespace(configured=False)
         user = Message(role="user", content="Hello")
         self.conversation = Resource(
             id=uuid4(),
@@ -202,30 +193,6 @@ class Boundary:
             return [job.model_dump(mode="json") for job in self.jobs.values()]
         if "/image-jobs/" in path and method == "GET":
             return self.jobs[UUID(path.rsplit("/", 1)[1])].model_dump(mode="json")
-        if path == "/api/agents/test/computer-tasks" and method == "GET":
-            return [
-                task.model_dump(mode="json")
-                for task in self.computer_tasks.values()
-                if task.status in {"queued", "running"}
-            ]
-        if path == "/api/agents/test/computer-tasks" and method == "POST":
-            self.check_owned(body)
-            task_id = UUID(body["id"])
-            if task_id not in self.computer_tasks:
-                self.computer_tasks[task_id] = ComputerTask(
-                    id=task_id,
-                    agent_key="test",
-                    instructions=body["instructions"],
-                    origin=ComputerTaskOrigin(
-                        conversation_id=self.conversation.id,
-                        run_id=UUID(body["origin_run_id"]),
-                    ),
-                    event_run_id=uuid5(task_id, "event"),
-                    version=1,
-                    created_at=datetime.now(UTC),
-                    updated_at=datetime.now(UTC),
-                )
-            return self.computer_tasks[task_id].model_dump(mode="json")
         raise AssertionError(f"Unexpected {method} {path}")
 
 
@@ -990,41 +957,11 @@ def test_runner_restores_durable_trace_parent(boundary, monkeypatch):
     provider.shutdown()
 
 
-class Computer:
-    """The sandbox client boundary; records calls instead of reaching a computer."""
-
-    configured = True
-
-    def __init__(self, error=None):
-        self.calls = []
-        self.error = error
-
-    async def run(self, method, path, **request):
-        self.calls.append((method, path, request))
-        if self.error:
-            raise self.error
-        return {"status": 200, "body": {"output": "hi"}}
-
-
 def tool_result(boundary, index=-1):
     return boundary.current.transcript[index].data
 
 
-def test_every_conversation_and_computer_tool_is_bound(boundary):
-    boundary.controller.inference = Commands(finish())
-    asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.controller.inference.tools == [
-        [
-            tool.name
-            for tool in [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]
-            if tool.name != "read_request_references"
-        ]
-    ]
-
-    boundary.sandbox = Computer()
-    boundary.current = boundary.current.model_copy(
-        update={"status": "queued", "transcript": []}
-    )
+def test_every_conversation_tool_is_bound(boundary):
     boundary.controller.inference = Commands(finish())
     asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.controller.inference.tools == [
@@ -1032,26 +969,9 @@ def test_every_conversation_and_computer_tool_is_bound(boundary):
     ]
 
 
-def test_use_computer_hands_over_tells_the_user_and_ends_the_run(boundary):
-    boundary.sandbox = Computer()
-    boundary.controller.inference = Commands(
-        command("use_computer", instructions="Open the docs", message="On it!")
-    )
-    asyncio.run(boundary.controller.process(boundary.current))
-    [task] = boundary.computer_tasks.values()
-    assert task.instructions == "Open the docs"
-    assert task.origin.run_id == boundary.current.id
-    assert boundary.computer.wakeup.is_set()
-    assert [message.content for message in boundary.deliveries] == ["On it!"]
-    assert boundary.current.status == "completed"
-    assert boundary.sandbox.calls == []
-    assert tool_result(boundary)["task_id"] == str(task.id)
-
-
-def test_computer_work_is_read_only_on_request_in_the_current_conversation(boundary):
-    boundary.sandbox = Computer()
+def test_task_status_is_read_only_on_request_in_the_current_conversation(boundary):
     status = {
-        "tasks": [{"status": "failed", "request_excerpt": "Open the docs"}],
+        "tasks": [{"status": "failed", "request_excerpt": "A little blue bird"}],
         "next_offset": None,
     }
     reads = []
@@ -1084,8 +1004,7 @@ def test_computer_work_is_read_only_on_request_in_the_current_conversation(bound
     assert json.loads(result.content) == status
 
 
-def test_computer_tools_are_not_available_to_the_conversation_agent(boundary):
-    boundary.sandbox = Computer()
+def test_removed_computer_tools_are_not_available(boundary):
     boundary.controller.inference = Commands(
         *[command("bash_exec", command="ls")] * (MAX_ERROR_RETRIES + 1),
         ServiceError("Recovery unavailable", 503),
@@ -1093,22 +1012,20 @@ def test_computer_tools_are_not_available_to_the_conversation_agent(boundary):
     asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.current.status == "completed"
     assert "unknown tool" in boundary.current.error
-    assert boundary.sandbox.calls == []
     assert [item.content for item in boundary.deliveries] == [FALLBACK_FAILURE_REPLY]
 
 
 @pytest.mark.parametrize("loss", ["cancelled", "another_owner", "expired"])
-def test_ownership_lost_after_command_saved_prevents_computer_dispatch(boundary, loss):
-    boundary.sandbox = Computer()
+def test_ownership_lost_after_command_saved_prevents_image_dispatch(boundary, loss):
     boundary.controller.inference = Commands(
-        command("use_computer", instructions="Run a command", message="On it")
+        command("generate_image", prompt="A little blue bird")
     )
 
     async def check():
         state = await boundary.controller.infer_command(
             RunState(
                 run=boundary.start_owned(
-                    transcript=[RunMessage(role="user", content="Run a command")]
+                    transcript=[RunMessage(role="user", content="Draw a bird")]
                 )
             )
         )
@@ -1126,7 +1043,7 @@ def test_ownership_lost_after_command_saved_prevents_computer_dispatch(boundary,
             await boundary.controller.invoke_tool(RunState(**state))
 
     asyncio.run(check())
-    assert boundary.computer_tasks == {}
+    assert boundary.jobs == {}
     assert boundary.current.transcript[-1].role == "call"
 
 
@@ -1136,7 +1053,7 @@ def persisted_action(boundary, command, *, replayed=False):
 
 
 @pytest.mark.parametrize("parent_id", [None, uuid4()])
-def test_workspace_creation_uses_the_run_agent_without_a_computer(boundary, parent_id):
+def test_workspace_creation_uses_the_run_agent(boundary, parent_id):
     document_id = uuid4()
     saved = boundary.conversation.model_copy(
         update={
@@ -1429,18 +1346,15 @@ def test_argument_diagnostics_are_bounded_and_redact_unconventional_keys(boundar
 
 
 def test_invalid_mutations_have_no_effect_before_correction(boundary):
-    boundary.sandbox = Computer()
     boundary.controller.inference = Commands(
         send(content="Must not deliver"),
-        command(
-            "use_computer", instructions="Do it", message="On it", unsupported=True
-        ),
+        command("generate_image", prompt="A little blue bird", unsupported=True),
         finish(),
     )
     asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.current.status == "completed"
     assert boundary.deliveries == []
-    assert boundary.computer_tasks == {}
+    assert boundary.jobs == {}
 
 
 @pytest.mark.parametrize("loss", ["cancelled", "owner", "expired"])
@@ -1539,16 +1453,6 @@ def test_transcript_budget_follows_the_models_context_window(tokens, expected):
 
 def test_transcript_budget_leaves_room_for_the_bound_tools(boundary):
     status = SimpleNamespace(context_limit=65536)
-    assert boundary.controller.transcript_limit(
-        status, boundary.current
-    ) == context_characters(65536) - tool_characters(
-        [
-            tool
-            for tool in [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]
-            if tool.name != "read_request_references"
-        ]
-    )
-    boundary.controller.services.sandbox.configured = True
     assert boundary.controller.transcript_limit(
         status, boundary.current
     ) == context_characters(65536) - tool_characters(
@@ -1892,18 +1796,13 @@ def selected_reference(markdown="Saved selected text"):
     )
 
 
-@pytest.mark.parametrize("computer", [False, True])
 @pytest.mark.parametrize("selected", [False, True])
 def test_reference_scope_matches_budget_preparation_binding_and_validation(
-    boundary, computer, selected
+    boundary, selected
 ):
-    boundary.sandbox.configured = computer
     boundary.current.references = [selected_reference()] if selected else []
-    expected = (
-        ALL_TOOLS if computer else [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]
-    )
     expected = [
-        tool for tool in expected if tool.name != "read_request_references" or selected
+        tool for tool in ALL_TOOLS if tool.name != "read_request_references" or selected
     ]
     assert boundary.controller.bound_tools(boundary.current) == expected
     status = SimpleNamespace(context_limit=65536)

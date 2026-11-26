@@ -5,7 +5,6 @@ import RequestReferences, { type SelectedReference } from "./RequestReferences";
 import Composer, { readiness } from "./Composer";
 import Pet, { useMood } from "./Pet";
 import AgentCard from "./AgentCard";
-import ComputerViewer from "./ComputerViewer";
 import ChatExport from "./ChatExport";
 import Activity from "./Activity";
 import { useVoiceCall } from "./VoiceCallControl";
@@ -139,7 +138,6 @@ export default function Chat({
   const jumpRequested = useRef(false);
   const [away, setAway] = useState(false);
   const [card, setCard] = useState(false);
-  const [computer, setComputer] = useState(false);
   const closeCard = useCallback(() => setCard(false), []);
   // Tool activity saved by the retired plugin system is history the model no longer sees.
   const saved = chain.messages.filter((message) => message.role !== "tool");
@@ -448,10 +446,6 @@ export default function Chat({
         setCard(false);
         voiceCall.start();
       }}
-      onOpenComputer={() => {
-        setCard(false);
-        setComputer(true);
-      }}
       activity={<Activity
         conversation={chain}
         runs={runs}
@@ -485,7 +479,6 @@ export default function Chat({
     jumpRequested.current = true;
   }
   return (
-    <div className={`chat-split ${computer ? "with-computer" : ""}`}>
     <section className={`chat ${find.open ? "finding" : ""}`} aria-label={`Messages with ${agentName}`}>
       {!empty && !find.open && (
         <div className={`lookout ${(generating || imagePending) ? "working" : ""}`}>
@@ -714,7 +707,5 @@ export default function Chat({
         onDictating={setDictating}
       />
     </section>
-    {computer && <ComputerViewer agentKey={agentKey} agentName={agentName} onClose={() => setComputer(false)} />}
-    </div>
   );
 }

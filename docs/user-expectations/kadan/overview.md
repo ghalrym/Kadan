@@ -1,6 +1,6 @@
 # Kadan user expectations
 
-Kadan is the everyday interface for working with agents. Users can hold many chats, keep pages and files in Space, ask agents to act on their computer, generate images and connect plugins. Tsuchi keeps durable records; Hikari supplies inference.
+Kadan is the everyday interface for working with agents. Users can hold many chats, keep pages and files in Space, generate images and connect plugins. Tsuchi keeps durable records; Hikari supplies inference.
 
 Saved work can continue after the browser closes. A queued message does not promise an immediate response, and stopping work does not undo actions already taken. Each feature page describes its waiting, failure and recovery behavior.
 
@@ -21,15 +21,13 @@ Saved work can continue after the browser closes. A queued message does not prom
 | [Stopping chat work](stopping-chat-work.md) | Cancel response work and image jobs with separate controls. |
 | [Personas](personas.md) | Let agents maintain saved response instructions, with optional additional named personas. |
 | [Shared agent instructions](agent-instructions.md) | Change operator-maintained instructions for subsequent agent work. |
-| [Agent actions](agent-actions.md) | Ask agents to browse, change files and run commands, with explicit limits on recovery. |
+| [Agent actions](agent-actions.md) | Know which tools agents use during chat, with explicit limits on recovery. |
 | [Plugins and T3 Code](plugins.md) | Connect T3 Code and other remote MCP tool services, let the agent delegate coding threads and receive background updates. |
-| [Computer](computer.md) | Watch or control the shared computer, and request or steer its assistant's work. |
 | [Images in conversations](image-generation.md) | Continue chatting while images generate and receive saved results later. |
 | [Pets](pets.md) | Create, import, preview, repair and explicitly select animated pets. |
 | [Voice input](voice-input.md) | Transcribe an utterance into an editable message draft. |
 | [Voice calls](voice-calls.md) | Have a separate spoken conversation with interruption and playback controls. |
-| [File delivery](file-delivery.md) | Save completed computer files in Space and share their download links. |
-| [Opening stored files](opening-workspace-files.md) | Copy a saved file onto the computer for inspection or processing. |
+| [File delivery](file-delivery.md) | Let agents find stored files and share their download links. |
 | [Service status](service-status.md) | Distinguish storage access, inference readiness and model setup needs. |
 | [Runner availability](runner-availability.md) | Inspect and manage runner assignments, with capacity and recovery limits. |
 

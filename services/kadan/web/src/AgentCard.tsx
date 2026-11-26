@@ -1,17 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Monitor, Phone } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
+import { Phone } from "lucide-react";
 import Pet from "./Pet";
-import { api } from "./api";
 import type { PetSheet, PetState } from "./pet";
-import type { ComputerStatus } from "./types";
 
-const COMPUTER_STATES: Record<ComputerStatus["state"], string> = {
-  ready: "Ready",
-  unavailable: "Unavailable",
-  not_configured: "Not set up",
-};
-/** The thumbnail is a still; the live view is one click away. */
-const REFRESH_MS = 5000;
 /** Space kept between the card and the bottom of the window. */
 const VIEWPORT_MARGIN = 16;
 
@@ -24,16 +15,12 @@ interface Props {
   callDisabled: boolean;
   callTitle: string;
   onCall: () => void;
-  onOpenComputer: () => void;
   activity: ReactNode;
 }
 
-/** The agent's contact card, opened from its pet: presence, calling, its computer and conversation activity. */
-export default function AgentCard({ agentName, sheet, mood, presence, onClose, callDisabled, callTitle, onCall, onOpenComputer, activity }: Props) {
+/** The agent's contact card, opened from its pet: presence, calling and conversation activity. */
+export default function AgentCard({ agentName, sheet, mood, presence, onClose, callDisabled, callTitle, onCall, activity }: Props) {
   const card = useRef<HTMLDivElement>(null);
-  const [computer, setComputer] = useState<ComputerStatus | null>(null);
-  const [frame, setFrame] = useState(0);
-  const [thumbnail, setThumbnail] = useState(false);
 
   useEffect(() => {
     card.current?.focus();
@@ -64,25 +51,7 @@ export default function AgentCard({ agentName, sheet, mood, presence, onClose, c
     window.addEventListener("resize", fit);
     return () => window.removeEventListener("resize", fit);
   }, []);
-  useEffect(() => {
-    let closed = false;
-    async function refresh() {
-      try {
-        const value = await api<ComputerStatus>("/computer");
-        if (!closed) {
-          setComputer(value);
-          setFrame((count) => count + 1);
-        }
-      } catch (error) {
-        if (!closed) setComputer({ state: "unavailable", message: (error as Error).message });
-      }
-    }
-    void refresh();
-    const timer = setInterval(() => void refresh(), REFRESH_MS);
-    return () => { closed = true; clearInterval(timer); };
-  }, []);
 
-  const ready = computer?.state === "ready";
   return (
     <div ref={card} className="agent-card" role="dialog" aria-label={agentName} tabIndex={-1}>
       <header className="agent-card-head">
@@ -98,25 +67,6 @@ export default function AgentCard({ agentName, sheet, mood, presence, onClose, c
           Call
         </button>
       </div>
-      <section className="agent-card-computers" aria-labelledby="agent-card-computers">
-        <h3 id="agent-card-computers">Computers</h3>
-        <button className="computer-row" disabled={!ready} onClick={onOpenComputer}
-          title={computer?.message ?? "Checking"}>
-          <span className={`computer-icon ${computer?.state ?? ""}`} aria-hidden="true">
-            <Monitor size={20} />
-            <i />
-          </span>
-          <span className="computer-text">
-            <span>{agentName}’s computer</span>
-            <span className="computer-state">{computer ? COMPUTER_STATES[computer.state] : "Checking…"}</span>
-          </span>
-          <span className="computer-thumb" aria-hidden="true">
-            {ready && <img src={`/api/computer/screenshot?frame=${frame}`} alt=""
-              className={thumbnail ? "loaded" : ""}
-              onLoad={() => setThumbnail(true)} onError={() => setThumbnail(false)} />}
-          </span>
-        </button>
-      </section>
       {activity}
     </div>
   );

@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from kadan_tracing import RequestTracing, configure, shutdown
 
 from .config import ServiceError, Settings
-from .routes import agents, calls, computer, health, mcp, runners, status, transcriptions
+from .routes import agents, calls, health, mcp, runners, status, transcriptions
 from .routes.agents import (
     assets,
     conversations,
@@ -18,11 +18,9 @@ from .routes.agents import (
     resources,
     workspace,
 )
-from .routes.agents import computer as agent_computer
 from .routes.agents.assets import content
 from .routes.agents.conversations import notes, results, runs
 from .routes.agents.space import folders, items, pages, slides, trash
-from .routes.computer import screenshot, vnc
 from .services import LocalServices
 
 
@@ -65,7 +63,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         memories.router,
         conversations.router,
         pets.router,
-        agent_computer.router,
         assets.router,
         content.router,
         notes.router,
@@ -76,9 +73,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         folders.router,
         pages.router,
         slides.router,
-        computer.router,
-        screenshot.router,
-        vnc.router,
     ):
         app.include_router(router)
 

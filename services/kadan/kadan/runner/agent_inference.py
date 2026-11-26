@@ -331,21 +331,15 @@ class AgentInference:
         ).bind_tools(tools)
         response = await model.ainvoke(messages)
         if not response.tool_calls:
-            if response.content.strip():
-                if any(tool.name == "send_message" for tool in tools):
-                    return RunCall(
-                        command=ToolCommand(
-                            tool="send_message",
-                            arguments={"content": response.content, "end_run": True},
-                        )
+            if response.content.strip() and any(
+                tool.name == "send_message" for tool in tools
+            ):
+                return RunCall(
+                    command=ToolCommand(
+                        tool="send_message",
+                        arguments={"content": response.content, "end_run": True},
                     )
-                if any(tool.name == "finish_task" for tool in tools):
-                    return RunCall(
-                        command=ToolCommand(
-                            tool="finish_task",
-                            arguments={"summary": response.content[:6000]},
-                        )
-                    )
+                )
             # Not responding is allowed: an empty reply or unbound plain reply ends the run.
             logger.info("Agent reply had no tool call: %r", response.content[:2000])
             return RunCall(command=ToolCommand(tool="finish"))

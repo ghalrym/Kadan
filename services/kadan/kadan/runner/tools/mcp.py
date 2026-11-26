@@ -57,6 +57,4 @@ async def mcp_call_tool(
     return await conversation.call_mcp_tool(args)
 
 
-# Keep empty so COMPUTER_TOOLS does not bind legacy sandbox MCP tools.
-TOOLS: list = []
 MCP_GATEWAY_TOOLS = [mcp_search_tools, mcp_call_tool]

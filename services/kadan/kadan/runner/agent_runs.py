@@ -37,7 +37,6 @@ from ..api.pydantic_models.agent_runs import (
     TranscriptEntry,
     UnrecoveredRecord,
 )
-from ..api.pydantic_models.computer import ComputerTask
 from ..api.pydantic_models.mcp import McpServerRecord
 from ..api.pydantic_models.resources import Message, Resource, ResourceKind
 from ..api.run_client import RunClient
@@ -66,21 +65,17 @@ from .memories import AgentMemories
 from .tools import (
     ALL_TOOLS,
     CONVERSATION_TOOLS,
-    DELEGATION_TOOLS,
     MEMORY_TOOLS,
     PERSONA_TOOLS,
     TOOLS_BY_NAME,
 )
-from .tools.computer import UseComputerArguments
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
 from .tools.mcp import MCP_GATEWAY_TOOLS, McpCallArguments, McpSearchArguments
 from .tools.persona import UpdatePersonaArguments
 from .tools.workspace import (
     CreateWorkspaceDocumentArguments,
     ListWorkspaceFilesArguments,
-    OpenWorkspaceFileArguments,
     ReadWorkspaceFileArguments,
-    SaveWorkspaceFileArguments,
 )
 from .transcript import entry_characters, transcript_messages
 from .workspace_files import WorkspaceFiles
@@ -226,30 +221,6 @@ class RunConversation:
             ),
         )
 
-    async def use_computer(self, args: UseComputerArguments) -> dict:
-        if not self.runs.services.sandbox.configured:
-            return {"error": "No computer is configured for this agent."}
-        # Keyed by this action ID, so a replay after a restart returns the
-        # original task instead of queuing another.
-        task = ComputerTask.model_validate(
-            await self.runs.services.json_request(
-                "Tsuchi",
-                "POST",
-                f"/api/agents/{self.run.agent_key}/computer-tasks",
-                json={
-                    "id": str(self.action_id),
-                    "instructions": args.instructions,
-                    "origin_run_id": str(self.run.id),
-                    "worker_id": str(self.runs.owner),
-                },
-            )
-        )
-        self.runs.services.computer.wakeup.set()
-        await self.send_message(
-            SendMessageArguments(content=args.message, end_run=True)
-        )
-        return {"tool": "use_computer", "task_id": str(task.id), "status": task.status}
-
     async def send_message(self, args: SendMessageArguments) -> dict:
         message = Message(id=self.action_id, role="assistant", content=args.content)
         async with self.runs.lock:
@@ -369,40 +340,6 @@ class RunConversation:
                 mode="json", include={"id", "title", "markdown", "version"}
             )
         }
-
-    async def save_workspace_file(self, args: SaveWorkspaceFileArguments) -> dict:
-        result = {"tool": "save_workspace_file", "file_id": str(self.action_id)}
-        files = WorkspaceFiles(self.runs.services, self.run.agent_key)
-        try:
-            saved = await files.save(
-                self.action_id,
-                args.path,
-                args.title,
-                lambda: self.runs.owned(self.run),
-                replayed=self.replayed,
-            )
-        except ServiceError as error:
-            return {**result, "error": str(error)}
-        except OSError as error:
-            return {
-                **result,
-                "error": "The file transfer could not be confirmed. Check this file_id "
-                "with read_workspace_file before retrying. " + str(error),
-            }
-        return {**result, **saved}
-
-    async def open_workspace_file(self, args: OpenWorkspaceFileArguments) -> dict:
-        result = {"tool": "open_workspace_file", "file_id": str(args.file_id)}
-        try:
-            opened = await WorkspaceFiles(self.runs.services, self.run.agent_key).open(
-                args.file_id,
-                self.action_id,
-                lambda: self.runs.owned(self.run),
-                replayed=self.replayed,
-            )
-        except (ServiceError, OSError) as error:
-            return {**result, "error": str(error)}
-        return {**result, **opened}
 
     async def read_workspace_file(self, args: ReadWorkspaceFileArguments) -> dict:
         await self.runs.owned(self.run)
@@ -867,6 +804,7 @@ class AgentRuns(RunClient):
                 detail = run.trigger_event.content
             event = RunObservation(
                 name={
+                    # Legacy: computer results queued before its removal.
                     "computer": "computer_task_event",
                     "codex": "codex_thread_event",
                     "t3": "t3_thread_event",
@@ -1228,14 +1166,9 @@ class AgentRuns(RunClient):
         run: AgentRun,
         mcp_servers: list[McpServerRecord] | None = None,
     ) -> list[StructuredTool]:
-        tools = (
-            ALL_TOOLS
-            if self.services.sandbox.configured
-            else [*CONVERSATION_TOOLS, *MEMORY_TOOLS, *PERSONA_TOOLS]
-        )
         base = [
             tool
-            for tool in tools
+            for tool in ALL_TOOLS
             if tool.name != "read_request_references" or run.references
         ]
         if mcp_servers:
@@ -1304,7 +1237,7 @@ class AgentRuns(RunClient):
 
         elif tool in MEMORY_TOOLS:
             result = await self.use_memory(tool, command, run, state.replayed)
-        elif tool in CONVERSATION_TOOLS or tool in DELEGATION_TOOLS:
+        elif tool in CONVERSATION_TOOLS:
             result = await tool.ainvoke(
                 command.arguments,
                 config={"configurable": {"conversation": conversation}},

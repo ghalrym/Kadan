@@ -1,6 +1,6 @@
 # Agent access to conversation history
 
-Kadan agents can search and read older delivered user and assistant messages from their current saved conversation during text work. These tools do not require a computer. They supplement the recent history included automatically in a response; they do not expand the model's context window or guarantee that the agent consults older messages.
+Kadan agents can search and read older delivered user and assistant messages from their current saved conversation during text work. They supplement the recent history included automatically in a response; they do not expand the model's context window or guarantee that the agent consults older messages.
 
 Search matches literal text without regard to letter case. It is not semantic recall. Each read or search returns bounded pages and reports whether more messages or cut message text remain. A partial search, an empty page or a storage error must not be described as proof that information never appeared in the conversation. Continuing after the saved conversation changes requires restarting from current history.
 

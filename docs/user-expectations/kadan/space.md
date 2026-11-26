@@ -6,7 +6,7 @@
 
 - **Pages** are editable Markdown documents. A page can contain subpages, which show beneath it.
 - **Slides** are slide decks the agent or Tsuchi created.
-- **Images** and **Files** are anything uploaded to chat, uploaded to Space, or saved by the agent from its computer.
+- **Images** and **Files** are anything uploaded to chat or uploaded to Space.
 - **Folders** group any of these, and can hold other folders.
 
 Replies saved with **Save to Space** in chat become pages, and pages the agent writes during a chat appear here too.
@@ -29,6 +29,6 @@ Opening a page shows it formatted; **Edit** changes its title and text. Saving r
 
 ## Limits
 
-Space belongs to one agent and has no sharing. Kadan does not continuously sync items, edit slides, preview arbitrary file contents, or read text inside uploaded PDFs or recordings. Opening an item does not add it to the agent's next reply; use [references](request-references.md) for that. Agents can [copy a stored file onto the computer](opening-workspace-files.md) to work on it.
+Space belongs to one agent and has no sharing. Kadan does not continuously sync items, edit slides, preview arbitrary file contents, or read text inside uploaded PDFs or recordings. Opening an item does not add it to the agent's next reply; use [references](request-references.md) for that. Agents can [find stored files and share their links](file-delivery.md).
 
 See [Space design](../../architecture/kadan/space.md).

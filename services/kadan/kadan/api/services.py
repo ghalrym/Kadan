@@ -20,7 +20,6 @@ from .routes.agents.memories import MemoryUpdate
 from .routes.agents.resources import PersonaUpdate
 from .routes.status import InferenceState, ServiceState, Status
 from .run_client import RunClient
-from .sandbox_client import SandboxClient
 from .space_client import SpaceClient
 
 
@@ -41,7 +40,6 @@ class LocalServices:
         self.settings = settings
         self.pets = PetClient(self)
         self.runs = RunClient(self)
-        self.sandbox = SandboxClient(self)
         self.mcp = McpClient(self)
         self.conversations = ConversationClient(self)
         self.space = SpaceClient(self)

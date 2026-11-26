@@ -2,7 +2,7 @@
 
 Kadan agents manage their own durable memories; Tsuchi stores the records. The agent decides what to retain and keeps that saved context useful for its work with the user. Users should be able to inspect what their agent retained without having to maintain its notes. Memories are separate from saved documents, which are work products users and agents work on.
 
-During text chat, an agent can list, search, read, create and update its own memories, or move an outdated memory to recoverable Trash. These tools are available without an agent computer. Their use depends on the model choosing them; storage does not provide automatic recall in every response or scheduled background curation. Voice calls have no memory tools.
+During text chat, an agent can list, search, read, create and update its own memories, or move an outdated memory to recoverable Trash. Their use depends on the model choosing them; storage does not provide automatic recall in every response or scheduled background curation. Voice calls have no memory tools.
 
 Users can search and read the agent's saved memories under **Memories** on the [Agent page](navigation.md). Choose **Correct memory** to edit its title and Markdown in Kadan. Links, tags, attachments, identity and revision history stay intact; other metadata and revision restoration remain in Tsuchi. The sidebar's **Tsuchi** link opens that storage editor. **Refresh** checks saved changes. Opening a memory does not add it to the response's context. Users can select its saved version as a [reference for one response](request-references.md); the agent must still choose to read it.
 

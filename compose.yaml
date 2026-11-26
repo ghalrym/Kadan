@@ -400,8 +400,6 @@ services:
       KADAN_HIKARI_URL: http://hikari-api:8000
       KADAN_TSUCHI_BROWSER_URL: http://127.0.0.1:${TSUCHI_PORT:-8620}
       KADAN_HIKARI_BROWSER_URL: http://127.0.0.1:${HIKARI_FRONTEND_PORT:-8088}
-      KADAN_SANDBOX_URL: http://kadan-sandbox:8080
-      KADAN_SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:-insecure-api-key}
     depends_on:
       tsuchi-api:
         condition: service_healthy
@@ -436,8 +434,6 @@ services:
       KADAN_HIKARI_URL: http://hikari-api:8000
       KADAN_RUNNER_ID: ${KADAN_RUNNER_ID:-runner-1}
       KADAN_RUNNER_CAPACITY: ${KADAN_RUNNER_CAPACITY:-5}
-      KADAN_SANDBOX_URL: http://kadan-sandbox:8080
-      KADAN_SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:-insecure-api-key}
       WATCHFILES_FORCE_POLLING: "true"
     depends_on:
       tsuchi-api:
@@ -452,23 +448,6 @@ services:
     restart: unless-stopped
     volumes:
       - ./services/kadan/kadan:/app/kadan
-
-  # The agent computer shares the Compose network with the other services.
-  kadan-sandbox:
-    build: ./services/kadan/sandbox
-    environment:
-      SANDBOX_API_KEY: ${KADAN_SANDBOX_API_KEY:-insecure-api-key}
-      TZ: ${TZ:-UTC}
-      DISPLAY_WIDTH: "1280"
-      DISPLAY_HEIGHT: "800"
-    # Chromium's own sandbox needs these, as in the upstream Compose file.
-    security_opt: [seccomp:unconfined]
-    shm_size: 2gb
-    mem_limit: 4g
-    cpus: 2
-    volumes:
-      - sandbox_home:/home/gem
-    restart: unless-stopped
 
   kadan-frontend:
     build:
@@ -504,7 +483,6 @@ services:
 
 volumes:
   lfm3_audio_model_data:
-  sandbox_home:
   model_data:
     name: ${HIKARI_MODEL_VOLUME:-${COMPOSE_PROJECT_NAME}_model_data}
   postgres_data:

@@ -10,7 +10,6 @@ from ..api.pydantic_models.agent_runs import AgentRun
 from ..api.pydantic_models.runners import Runner
 from ..api.services import LocalServices
 from .agent_runs import AgentRuns
-from .computer_tasks import ComputerTasks
 from .config import RunnerSettings
 from .image_jobs import ImageJobs
 from .pet_jobs import PetJobs
@@ -27,7 +26,6 @@ class RunnerServices(LocalServices):
         self.images = ImageJobs(self)
         self.pets = PetJobs(self)
         self.t3 = T3ThreadEvents(self)
-        self.computer = ComputerTasks(self)
 
 
 class AgentRunner:
@@ -127,11 +125,9 @@ async def serve(client, settings, runner_settings: RunnerSettings, stop: asyncio
     services.images.start()
     services.pets.start()
     services.t3.start()
-    services.computer.start()
     try:
         await runner.run(stop)
     finally:
         await services.images.close()
         await services.pets.close()
         await services.t3.close()
-        await services.computer.close()

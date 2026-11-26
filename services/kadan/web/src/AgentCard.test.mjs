@@ -23,7 +23,7 @@ test("the agent card exposes one ordinary Call action without a trial flag or ba
   const calls = [];
   const tree = exports.default({
     agentName: "Guide", sheet: null, mood: "idle", presence: "Ready", onClose() {},
-    callDisabled: false, callTitle: "Start a voice call", onCall: (...args) => calls.push(args), onOpenComputer() {}, activity: null,
+    callDisabled: false, callTitle: "Start a voice call", onCall: (...args) => calls.push(args), activity: null,
   });
   const actions = tree.props.children.find(child => child.props?.className === "agent-card-actions");
   const buttons = [actions.props.children].flat();

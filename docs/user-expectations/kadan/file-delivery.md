@@ -1,11 +1,9 @@
 # File delivery
 
-Kadan agents can copy a completed file from their computer into their [Space](space.md), then send a download link in chat. Tsuchi stores the copy. Saving a file does not itself send a message, and a chat claim without a confirmed save does not prove the file exists.
+Kadan agents can find files stored in their [Space](space.md) and share them in chat as download links. Files reach Space when users upload them to chat or Space, for example. Agents cannot create files from scratch, but they can write Space documents.
 
-Each transfer supports up to 100 MiB; an operator's storage limit can be lower. The computer and Tsuchi must be available. A failed or interrupted transfer must not be reported as a completed save. After an uncertain result, the agent can check the saved file without uploading again. Restart recovery never rereads a potentially changed source to repeat a save automatically.
+An agent can list or search its active files by title, filename, tags or source details. It cannot search file contents. It can also read a file's details and download link without loading its contents into the conversation. Missing or trashed files are reported as errors and never recreated. Finding a file does not itself send a message, and a link in chat does not keep the file from being moved to Trash later.
 
-The original file stays on the shared computer. Later edits to it do not update the saved copy. A new explicit save creates another file. The stored copy can be downloaded from its chat link or from Space; refresh Space if it was already open when the file was saved.
+Users manage stored files and Trash in Tsuchi. Refresh Space if it was already open when a file changed.
 
-Kadan checks for cancellation before uploading. Stopping a response cannot undo an upload already in progress. A saved file can remain even if the response stops before delivering its link. Users manage saved files and Trash in Tsuchi. A trashed file is not recreated automatically.
-
-See [Computer](computer.md) and [File transfer design](../../architecture/kadan/file-delivery.md).
+See [File lookup design](../../architecture/kadan/file-delivery.md).

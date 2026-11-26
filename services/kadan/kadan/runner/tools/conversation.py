@@ -104,7 +104,7 @@ async def read_request_references(
 async def read_task_status(
     args: TaskStatusArguments, conversation: Conversation
 ) -> dict:
-    """Check recorded image and computer work in this conversation before reporting its status or resubmitting it."""
+    """Check recorded image work in this conversation before reporting its status or resubmitting it."""
     return await conversation.read_task_status(args.offset)
 
 

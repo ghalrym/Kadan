@@ -17,10 +17,9 @@ from kadan.runner.agent_inference import (
     ToolCommand,
 )
 from kadan.runner.tools import CONVERSATION_TOOLS
-from kadan.runner.tools.file import file_read_file
-from kadan.runner.tools.shell import shell_exec_command
 
-TOOLS = [*CONVERSATION_TOOLS, shell_exec_command, file_read_file]
+TOOLS = CONVERSATION_TOOLS
+FILE_ID = "00000000-0000-4000-8000-000000000001"
 
 
 def chunk(content="", finish=None):
@@ -94,18 +93,18 @@ def invoke(
 def test_plain_answer_after_tool_uses_existing_reply_action():
     history = [
         SystemMessage(content="Instructions"),
-        HumanMessage(content="What is on the screen?"),
+        HumanMessage(content="What is the report called?"),
         AIMessage(
             content="",
             tool_calls=[
                 {
-                    "name": "computer_look",
-                    "args": {"question": "Describe the screen"},
+                    "name": "read_workspace_file",
+                    "args": {"file_id": FILE_ID},
                     "id": "call_0",
                 }
             ],
         ),
-        ToolMessage(content="Google search page", tool_call_id="call_0"),
+        ToolMessage(content="Google search report", tool_call_id="call_0"),
     ]
     answer = 'One clearly visible word is **"Google"**.'
     assert invoke(completed(answer), history=history).command == ToolCommand(
@@ -133,7 +132,7 @@ def test_empty_answer_and_explicit_finish_remain_silent(answer):
 def test_plain_answer_cannot_create_unbound_reply_action():
     assert invoke(
         completed("A plain answer"),
-        bound_tools=[shell_exec_command],
+        bound_tools=[tool for tool in TOOLS if tool.name == "read_task_status"],
     ).command == ToolCommand(tool="finish")
 
 
@@ -172,8 +171,8 @@ def test_sends_structured_tools_and_true_tool_result_roles():
                         content="",
                         tool_calls=[
                             {
-                                "name": "file_read_file",
-                                "args": {"file": "/tmp/a"},
+                                "name": "read_workspace_file",
+                                "args": {"file_id": FILE_ID},
                                 "id": "call_0",
                             }
                         ],
@@ -194,7 +193,7 @@ def test_sends_structured_tools_and_true_tool_result_roles():
         "tool_call_id": "call_0",
     }
     assert body["messages"][-2]["tool_calls"][0]["function"]["arguments"] == {
-        "file": "/tmp/a"
+        "file_id": FILE_ID
     }
     assert body["tools"] == [convert_to_openai_tool(tool) for tool in TOOLS]
 
@@ -216,11 +215,8 @@ def test_sends_structured_tools_and_true_tool_result_roles():
         ),
         (call("finish"), ToolCommand(tool="finish")),
         (
-            call("shell_exec_command", command="ls -la", timeout=30),
-            ToolCommand(
-                tool="shell_exec_command",
-                arguments={"command": "ls -la", "timeout": 30},
-            ),
+            call("read_task_status", offset=30),
+            ToolCommand(tool="read_task_status", arguments={"offset": 30}),
         ),
     ],
 )
@@ -230,8 +226,8 @@ def test_tool_calls_are_parsed_with_schema_typed_arguments(reply, expected):
 
 @pytest.mark.parametrize("value", ["42", "null", "true"])
 def test_string_parameters_stay_strings_even_when_they_look_like_json(value):
-    reply = call("shell_exec_command", command=value)
-    assert invoke(completed(reply)).command.arguments == {"command": value}
+    reply = call("create_workspace_document", title=value)
+    assert invoke(completed(reply)).command.arguments == {"title": value}
 
 
 @pytest.mark.parametrize("image_job_id", [None, "10000000-0000-4000-8000-000000000001"])
@@ -259,7 +255,7 @@ def test_strings_with_reserved_markup_and_newlines_round_trip():
 
 @pytest.mark.parametrize("value", ['{"file":1,"file":2}', "[]", "{", "null"])
 def test_invalid_structured_arguments_reject_the_step(value):
-    calls = call("file_read_file")
+    calls = call("read_workspace_file")
     calls[0]["function"]["arguments"] = value
     with pytest.raises(ServiceError) as error:
         invoke(completed(calls))
@@ -284,7 +280,7 @@ def test_multiple_actions_are_rejected_before_execution():
 )
 def test_replies_without_a_tool_call_finish_the_run_when_unbound(reply):
     assert invoke(
-        completed(reply), bound_tools=[shell_exec_command]
+        completed(reply), bound_tools=[tool for tool in TOOLS if tool.name == "read_task_status"]
     ).command == ToolCommand(tool="finish")
 
 
@@ -513,7 +509,7 @@ def test_provider_identity_survives_persistence_and_pairs_the_result_after_repla
     from kadan.api.pydantic_models.agent_runs import AgentRunState, RunResult
     from kadan.runner.transcript import transcript_messages
 
-    reply = call("file_read_file", file="/tmp/saved")
+    reply = call("read_workspace_file", file_id=FILE_ID)
     reply[0]["id"] = "provider-session-412-step-8"
     selected = invoke(completed(reply))
     assert selected.call_id == reply[0]["id"]

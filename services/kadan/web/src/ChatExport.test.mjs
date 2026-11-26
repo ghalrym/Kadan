@@ -121,7 +121,7 @@ test("Chat passes saved history to export while its draft and optimistic outgoin
     "./attachments": { ChatAttachments: class { entries = []; } },
     "./SaveChatResult": {},
     "./RequestReferences": { default: "RequestReferences" },
-    "./AgentCard": {}, "./ComputerViewer": {}, "./ChatExport": { default: "ChatExport" },
+    "./AgentCard": {}, "./ChatExport": { default: "ChatExport" },
     "./VoiceCallControl": { useVoiceCall: () => ({ active: false }) },
     "./presence": {}, "./PetContext": { useAgentPet: () => null },
     "./api": {}, "./uuid": {},

@@ -4,17 +4,12 @@ import json
 import re
 import sqlite3
 
-from pydantic import ValidationError
-
 from .models import (
     MigratedMarker,
     RunCall,
     RunMessage,
     RunObservation,
     RunResult,
-    TaskEnd,
-    TaskHistory,
-    TaskStart,
     ToolCommand,
     TranscriptEntry,
     UnrecoveredRecord,
@@ -139,62 +134,6 @@ def _run_entries(record: dict, conversation: dict) -> list[TranscriptEntry]:
     return result
 
 
-def _ends_computer_task(row: object) -> bool:
-    return (
-        isinstance(row, dict)
-        and row.get("role") == "user"
-        and isinstance(row.get("content"), str)
-        and row["content"].startswith("Task finished: ")
-    )
-
-
-def _computer_block(rows: list[dict], offset: int) -> list[TranscriptEntry]:
-    entries: list[TranscriptEntry] = []
-    try:
-        for index, row in enumerate(rows, offset):
-            text = row["content"]
-            if row["role"] == "user" and text.startswith("Computer task: "):
-                task = json.loads(text.removeprefix("Computer task: "))
-                item = TaskStart(origin=task.pop("from"), **task)
-            elif row["role"] == "user" and text.startswith("User steering: "):
-                item = RunMessage(
-                    role="user", content=text.removeprefix("User steering: ")
-                )
-            elif row["role"] == "user" and text.startswith("Task finished: "):
-                item = TaskEnd.model_validate_json(text.removeprefix("Task finished: "))
-            elif row["role"] == "user" and text.startswith("Earlier tasks: "):
-                item = TaskHistory(
-                    tasks=json.loads(text.removeprefix("Earlier tasks: "))
-                )
-            else:
-                item = _action(row, index, entries[-1] if entries else None)
-            entries.append(item)
-        return entries
-    except (ValueError, TypeError, KeyError, AttributeError):
-        entries = [UnrecoveredRecord(original=row) for row in rows]
-        last = rows[-1]
-        if _ends_computer_task(last):
-            try:
-                entries[-1] = TaskEnd.model_validate_json(
-                    last["content"].removeprefix("Task finished: ")
-                )
-            except ValidationError:
-                pass
-        return entries
-
-
-def migrate_computer(rows: list[dict]) -> list[TranscriptEntry]:
-    result: list[TranscriptEntry] = []
-    start = 0
-    for i, row in enumerate(rows):
-        if _ends_computer_task(row):
-            result.extend(_computer_block(rows[start : i + 1], start))
-            start = i + 1
-    if start < len(rows):
-        result.extend(_computer_block(rows[start:], start))
-    return result
-
-
 def upgrade_transcripts(db: sqlite3.Connection) -> None:
     if db.execute("PRAGMA user_version").fetchone()[0] >= 1:
         return
@@ -215,18 +154,4 @@ def upgrade_transcripts(db: sqlite3.Connection) -> None:
         entries = migrate_run(record, conversation)
         record["transcript"] = [entry.model_dump(mode="json") for entry in entries]
         db.execute("UPDATE agent_runs SET data=? WHERE id=?", (json.dumps(record), key))
-    thread_keys = db.execute(
-        "SELECT agent_key FROM computer_threads WHERE json_array_length(data, '$.transcript') > 0"
-    ).fetchall()
-    for (key,) in thread_keys:
-        raw = db.execute(
-            "SELECT data FROM computer_threads WHERE agent_key=?", (key,)
-        ).fetchone()[0]
-        record = json.loads(raw)
-        entries = migrate_computer(record["transcript"])
-        record["transcript"] = [entry.model_dump(mode="json") for entry in entries]
-        db.execute(
-            "UPDATE computer_threads SET data=? WHERE agent_key=?",
-            (json.dumps(record), key),
-        )
     db.execute("PRAGMA user_version=1")

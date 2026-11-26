@@ -27,7 +27,7 @@ Changing the owner atomically expires its assigned running conversation leases
 while preserving their transcripts. Storage rejects the old session's subsequent
 worker-owned run updates and new message delivery. This does not stop the old process,
 cancel actions already in progress or undo their external effects. Recovery is
-not seamless continuation: inspect unconfirmed computer actions before retrying.
+not seamless continuation: inspect unconfirmed actions before retrying.
 
 A different runner does not automatically inherit a stopped runner’s agents.
 Inspect `GET /api/runners`, then explicitly move an agent with

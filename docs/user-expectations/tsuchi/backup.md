@@ -6,6 +6,6 @@ Stop Tsuchi and keep it stopped while copying the store so that records and file
 
 Restoration should use a new empty store, preserving the original until the restored copy has been inspected. It recovers the saved state at backup time; later changes and unsaved drafts are absent. Restoring storage does not undo external actions or prove that interrupted work has completed.
 
-Tsuchi backups do not include Hikari's model downloads, the agent computer's files or deployment configuration stored elsewhere. Those need separate preservation when recovering the whole system. Stopping or rebuilding containers preserves Tsuchi's persistent store, but deleting its data volume does not.
+Tsuchi backups do not include Hikari's model downloads or deployment configuration stored elsewhere. Those need separate preservation when recovering the whole system. Stopping or rebuilding containers preserves Tsuchi's persistent store, but deleting its data volume does not.
 
 The [operator backup and restore procedure](../../architecture/tsuchi/backup.md) describes how to copy and inspect the store.

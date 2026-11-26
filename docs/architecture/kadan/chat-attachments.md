@@ -6,6 +6,6 @@ The browser keeps a serial upload queue scoped to agent and conversation, with s
 
 `NoteInput` and `RunInput` accept ordered, unique `attachment_ids` with at most 100 entries. The API builds those references into the user message. Tsuchi validates active same-agent asset references inside the existing write transaction that appends the note or creates its run. Uploading alone creates neither a message nor agent work. Nonblank text remains required.
 
-The conversation-scoped outbox snapshots attachment IDs with the original message ID, content, persona and generation choice. Send retries reuse that snapshot; newer draft uploads stay separate. Confirmed upload references survive failed submissions, and optimistic chat rendering uses the same IDs. Agent history already includes attachment references; `open_workspace_file` provides a checked copy on the computer without injecting binary content into text context.
+The conversation-scoped outbox snapshots attachment IDs with the original message ID, content, persona and generation choice. Send retries reuse that snapshot; newer draft uploads stay separate. Confirmed upload references survive failed submissions, and optimistic chat rendering uses the same IDs. Agent history already includes attachment references; `read_workspace_file` returns their metadata and download link without injecting binary content into text context.
 
 See [Chat attachment expectations](../../user-expectations/kadan/chat-attachments.md) and [File delivery](file-delivery.md).

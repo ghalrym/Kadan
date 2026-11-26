@@ -1,6 +1,6 @@
 # Remote MCP integrations and T3 Code
 
-The [plugin expectations](../../user-expectations/kadan/plugins.md) describe the user experience. Kadan connects to remote MCP servers over Streamable HTTP so the conversation agent can delegate coding work to T3 Code (and call any other remote MCP service) without embedding coding harnesses inside `kadan-sandbox`.
+The [plugin expectations](../../user-expectations/kadan/plugins.md) describe the user experience. Kadan connects to remote MCP servers over Streamable HTTP so the conversation agent can delegate coding work to T3 Code (and call any other remote MCP service) without embedding coding harnesses in Kadan.
 
 ## Data ownership (`tsuchi`)
 

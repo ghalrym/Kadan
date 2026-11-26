@@ -56,28 +56,6 @@ class RunObservation(BaseModel):
     data: dict[str, JsonValue] | list[JsonValue]
 
 
-class TaskStart(BaseModel):
-    role: Literal["task_start"] = "task_start"
-    task_id: UUID
-    origin: Literal["user", "agent"]
-    instructions: str = Field(max_length=10000)
-
-
-class TaskOutcome(BaseModel):
-    task_id: UUID
-    status: Literal["completed", "failed", "cancelled", "stopped"]
-    summary: str = Field(max_length=10000)
-
-
-class TaskEnd(TaskOutcome):
-    role: Literal["task_end"] = "task_end"
-
-
-class TaskHistory(BaseModel):
-    role: Literal["task_history"] = "task_history"
-    tasks: list[TaskOutcome] = Field(max_length=20)
-
-
 class MigratedMarker(BaseModel):
     """Occupies a retired scheduling row so saved side-effect identities stay valid."""
 
@@ -96,9 +74,6 @@ TranscriptEntry = Annotated[
     | RunCall
     | RunResult
     | RunObservation
-    | TaskStart
-    | TaskEnd
-    | TaskHistory
     | MigratedMarker
     | UnrecoveredRecord,
     Field(discriminator="role"),
@@ -128,6 +103,7 @@ class AgentRunState(BaseModel):
 
 
 class RunEvent(BaseModel):
+    # "computer" remains readable for events saved before the computer was removed.
     kind: Literal["codex", "computer", "t3"]
     content: str = Field(min_length=1, max_length=20000)
 

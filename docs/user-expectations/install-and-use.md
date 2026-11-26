@@ -20,4 +20,4 @@ Stopping, rebuilding or replacing containers preserves data when the same persis
 
 Upgrades and service restarts can interrupt requests. Saved conversations and durable work can recover according to their feature's rules, while browser-only playground state and temporary monitoring records can be lost. Hikari API restarts cancel in-flight inference; recovery does not promise transparent continuation of every request. Refresh saved state before retrying uncertain work.
 
-Back up data before replacing an installation, and inspect a restored copy before relying on it. [Tsuchi backups](tsuchi/backup.md) preserve its store; model downloads, deployment settings and the agent computer's files have separate lifetimes. No automatic backup or complete-system recovery is provided.
+Back up data before replacing an installation, and inspect a restored copy before relying on it. [Tsuchi backups](tsuchi/backup.md) preserve its store; model downloads and deployment settings have separate lifetimes. No automatic backup or complete-system recovery is provided.

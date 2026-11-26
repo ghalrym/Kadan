@@ -21,7 +21,6 @@ concurrency:
 # Compose needs these placeholders to parse the configuration.
 env:
   HIKARI_WORKER_TOKEN: ci-placeholder-not-a-secret
-  KADAN_SANDBOX_API_KEY: ci-placeholder-not-a-secret
 jobs:
   compose:
     name: Compose configuration

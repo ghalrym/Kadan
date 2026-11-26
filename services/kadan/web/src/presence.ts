@@ -26,7 +26,3 @@ export function activeLabel(messages: Pick<Message, "role" | "created_at">[], no
   }
   return "Active";
 }
-
-export function vncUrl(location: Pick<Location, "protocol" | "host">) {
-  return `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/computer/vnc`;
-}

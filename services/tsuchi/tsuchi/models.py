@@ -672,28 +672,6 @@ class RunObservation(Model):
     data: dict[str, JsonValue] | list[JsonValue]
 
 
-class TaskStart(Model):
-    role: Literal["task_start"] = "task_start"
-    task_id: UUID
-    origin: Literal["user", "agent"]
-    instructions: str = Field(max_length=10000)
-
-
-class TaskOutcome(Model):
-    task_id: UUID
-    status: Literal["completed", "failed", "cancelled", "stopped"]
-    summary: str = Field(max_length=10000)
-
-
-class TaskEnd(TaskOutcome):
-    role: Literal["task_end"] = "task_end"
-
-
-class TaskHistory(Model):
-    role: Literal["task_history"] = "task_history"
-    tasks: list[TaskOutcome] = Field(max_length=20)
-
-
 class MigratedMarker(Model):
     """Occupies a retired scheduling row so saved side-effect identities stay valid."""
 
@@ -712,9 +690,6 @@ TranscriptEntry = Annotated[
     | RunCall
     | RunResult
     | RunObservation
-    | TaskStart
-    | TaskEnd
-    | TaskHistory
     | MigratedMarker
     | UnrecoveredRecord,
     Field(discriminator="role"),
@@ -823,30 +798,9 @@ class ImageJob(ImageJobState):
     updated_at: datetime
 
 
-class ComputerTaskOrigin(Model):
-    """The conversation run that handed a task to the computer agent."""
-
-    conversation_id: UUID
-    run_id: UUID
-
-
-class ComputerTask(Model):
-    id: UUID
-    agent_key: AgentKey
-    instructions: str = Field(min_length=1, max_length=10000)
-    # None when the user asked from the computer panel; nobody is woken.
-    origin: ComputerTaskOrigin | None = None
-    status: Literal["queued", "running", "completed", "failed", "cancelled"] = "queued"
-    summary: str | None = Field(default=None, max_length=10000)
-    event_run_id: UUID | None = None
-    version: int = Field(ge=1)
-    created_at: datetime
-    updated_at: datetime
-
-
 class ConversationTaskStatus(Model):
     id: UUID
-    kind: Literal["image", "computer"]
+    kind: Literal["image"]
     status: Literal[
         "queued", "running", "cancelling", "completed", "failed", "cancelled"
     ]
@@ -858,41 +812,6 @@ class ConversationTaskStatus(Model):
 class ConversationTaskPage(Model):
     tasks: list[ConversationTaskStatus]
     next_offset: int | None
-
-
-class ComputerSteering(Model):
-    """A user request waiting to be read by the running computer task."""
-
-    task_id: UUID
-    id: UUID
-    content: str = Field(min_length=1, max_length=10000)
-    created_at: datetime
-
-
-class ComputerThreadState(Model):
-    transcript: list[TranscriptEntry] = Field(default_factory=list, max_length=1000)
-    owner_id: UUID | None = None
-    lease_expires_at: datetime | None = None
-
-    @model_validator(mode="after")
-    def valid_lease(self) -> Self:
-        if (self.owner_id is None) != (self.lease_expires_at is None):
-            raise ValueError("A computer thread lease requires an owner and expiry")
-        if (
-            self.lease_expires_at is not None
-            and self.lease_expires_at.utcoffset() is None
-        ):
-            raise ValueError("Lease timestamps require a timezone")
-        return self
-
-
-class ComputerThread(ComputerThreadState):
-    """The computer agent's one long-lived transcript for an agent."""
-
-    agent_key: AgentKey
-    steering: list[ComputerSteering] = Field(default_factory=list)
-    version: int = Field(ge=1)
-    updated_at: datetime
 
 
 McpSlug = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,47}$")]

@@ -66,7 +66,6 @@ function chat(chain, storageValues = {}) {
     "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true }) },
     "./Pet": { default: "Pet", useMood: () => ["idle", reactToMood] },
     "./AgentCard": { default: "AgentCard" },
-    "./ComputerViewer": { default: "ComputerViewer" },
     "./VoiceCallControl": { useVoiceCall: () => ({}) },
     "./presence": { activeLabel: () => "idle" },
     "./PetContext": { useAgentPet: () => null },

@@ -6,7 +6,7 @@ Users expect Hikari to run chat, decisions, speech synthesis, transcription and 
 
 ### Inkling 2 Mini language and vision model
 
-The standard deployment uses Inkling 2 Mini running natively on Hikari's Strata MoE engine for Hikari Chat, Kadan agent conversations, and computer screenshot observations. Unavailable workers and incomplete user-approved downloads produce an error, with no substitution. Every other capability also uses its fixed assignment, independent of the computer serving it.
+The standard deployment uses Inkling 2 Mini running natively on Hikari's Strata MoE engine for Hikari Chat and Kadan agent conversations. Unavailable workers and incomplete user-approved downloads produce an error, with no substitution. Every other capability also uses its fixed assignment, independent of the computer serving it.
 
 Generation includes private reasoning that is separated from the visible reply. By default, generation can use the space remaining after the complete prompt; clients can set smaller generation and reasoning budgets. Reaching the generation budget returns an incomplete response. Prompts leaving no reply space fail without truncating history. Long replies can take longer and can still fail if memory is insufficient. A worker reconnects after losing the service connection, but interrupted work is not automatically replayed. Model quality, latency and physical fit require owner validation on the target computer; a connected worker or downloaded checkpoint does not prove successful inference.
 

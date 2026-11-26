@@ -178,7 +178,3 @@ export interface PetJob {
   error: string | null;
   manifest: PetManifest | null;
 }
-export interface ComputerStatus {
-  state: "ready" | "unavailable" | "not_configured";
-  message: string;
-}

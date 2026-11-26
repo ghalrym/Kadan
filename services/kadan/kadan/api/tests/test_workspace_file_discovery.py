@@ -200,17 +200,13 @@ def test_discovery_schema_bounds_query_pages_and_scope(name, arguments):
 @pytest.mark.parametrize(
     "changes", [{"agent_key": "other"}, {"deleted_at": "2026-10-23T00:00:00Z"}]
 )
-def test_open_rechecks_selected_file_after_discovery(changes):
+def test_read_rechecks_selected_file_after_discovery(changes):
     storage = boundary([asset()])
     result = invoke("list_workspace_files", storage)
     file_id = UUID(result["files"][0]["file_id"])
     storage.json_request.return_value = asset(**changes)
     with pytest.raises(ServiceError):
-        asyncio.run(
-            WorkspaceFiles(storage, "ember").open(
-                file_id, uuid4(), AsyncMock(), replayed=False
-            )
-        )
+        asyncio.run(WorkspaceFiles(storage, "ember").read(file_id))
     assert storage.json_request.call_args.args == (
         "Tsuchi",
         "GET",

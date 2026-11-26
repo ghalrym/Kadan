@@ -17,9 +17,6 @@ from ..api.pydantic_models.agent_runs import (
     RunMessage,
     RunObservation,
     RunResult,
-    TaskEnd,
-    TaskHistory,
-    TaskStart,
     TranscriptEntry,
     UnrecoveredRecord,
 )
@@ -80,27 +77,9 @@ def transcript_messages(transcript: list[TranscriptEntry]) -> list[BaseMessage]:
                 )
             )
             continue
-        elif isinstance(item, TaskStart) and item.origin == "user":
-            messages.append(HumanMessage(content=item.instructions))
-            continue
-        elif isinstance(item, RunObservation):
-            name, data = item.name, item.data
-        elif isinstance(item, TaskStart):
-            name, data = (
-                "read_computer_task",
-                item.model_dump(mode="json", exclude={"role"}),
-            )
-        elif isinstance(item, TaskEnd):
-            name, data = (
-                "read_computer_task_outcome",
-                item.model_dump(mode="json", exclude={"role"}),
-            )
         else:
-            assert isinstance(item, TaskHistory)
-            name, data = (
-                "read_computer_task_history",
-                item.model_dump(mode="json")["tasks"],
-            )
+            assert isinstance(item, RunObservation)
+            name, data = item.name, item.data
         # The runner obtained this information on the agent's behalf. An atomic
         # call/result pair also represents a failed validation without retaining
         # the rejected arguments.

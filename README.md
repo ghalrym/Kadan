@@ -68,7 +68,7 @@ API container and a frontend container, named after the app:
 
 | App | Containers |
 | --- | --- |
-| Kadan | `kadan-api`, `kadan-frontend`, `kadan-runner`, plus `kadan-sandbox` (the agent's computer) |
+| Kadan | `kadan-api`, `kadan-frontend`, `kadan-runner` |
 | Tsuchi | `tsuchi-api`, `tsuchi-frontend` |
 | Hikari | `hikari-api`, `hikari-frontend`, plus `hikari-postgres` and the one-shot `hikari-migrate` |
 
@@ -86,7 +86,7 @@ URLs above. Each frontend container runs Vite and proxies its API paths, includi
 responses, through the same browser origin. Only the frontends and Hikari's API publish ports.
 
 Optionally copy `.env.example` to `.env` to change browser ports, credentials or
-the Tsuchi upload limit. The worker bearer API key and sandbox API key both default to
+the Tsuchi upload limit. The worker bearer API key defaults to
 `insecure-api-key`.
 `KADAN_PORT`, `TSUCHI_PORT` and `HIKARI_FRONTEND_PORT` keep Kadan's operator links
 in sync with the published ports. The inference API retains its local port 8000.

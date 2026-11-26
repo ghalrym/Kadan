@@ -8,7 +8,7 @@ Assignments survive restarts. Stopping a runner does not release its agents or a
 
 An operator can explicitly reassign an agent to another runner with capacity. Adding a runner alone does not take over a stopped runner's existing assignments.
 
-Recovery can take time. Saved conversations and delivered messages remain, cancelled responses must stay cancelled, and unconfirmed computer actions require inspection before retrying. Releasing an assignment makes the agent eligible for assignment again; it is not a pause control.
+Recovery can take time. Saved conversations and delivered messages remain, cancelled responses must stay cancelled, and unconfirmed actions require inspection before retrying. Releasing an assignment makes the agent eligible for assignment again; it is not a pause control.
 
 Choose **Manage runner** on the [Agent page](navigation.md) to inspect its assigned runner, heartbeat status and occupied slots. **Refresh assignments** reads the current state; the view does not update automatically. A failed read must remain distinguishable from an unassigned agent. An expired heartbeat means the runner has not renewed its availability, not that its process has necessarily stopped.
 
