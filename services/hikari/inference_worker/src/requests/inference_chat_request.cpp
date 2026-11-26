@@ -54,7 +54,13 @@ void prepare_input(
     const auto text = config.value("text_config", config);
     const auto supported = text.at("max_position_embeddings").get<std::size_t>();
     auto configured = input.context_limit;
-    if (request.operation != Operation::load || !input.context_supplied) {
+    if (request.model == "lfm3-1.7b-bf16") {
+        if (!input.context_supplied || !configured) {
+            const auto saved = store.context(request.model);
+            configured =
+                saved.is_null() ? std::nullopt : std::optional(saved.get<std::size_t>());
+        }
+    } else if (request.operation != Operation::load || !input.context_supplied) {
         const auto saved = store.context(request.model);
         configured =
             saved.is_null() ? std::nullopt : std::optional(saved.get<std::size_t>());

@@ -3,15 +3,19 @@
 #include <array>
 #include <chrono>
 #include <csignal>
-#include <dlfcn.h>
-#include <fcntl.h>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
-#include <sys/file.h>
-#include <sys/statvfs.h>
 #include <thread>
-#include <unistd.h>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
+#include "kadan/platform.hpp"
 #include "kadan/websocket.hpp"
 
 namespace kadan::serving {
@@ -22,11 +26,19 @@ void stop_signal(int) {
     stopping.store(true);
 }
 
+#ifdef _WIN32
+BOOL WINAPI win32_ctrl_handler(DWORD) {
+    stopping.store(true);
+    return TRUE;
+}
+#endif
+
 class PhysicalMemory {
 public:
     // CPU-only programs run without an NVIDIA driver and report no GPUs.
-    explicit PhysicalMemory(bool uses_gpu) {
-        library_ = dlopen("libnvidia-ml.so.1", RTLD_NOW);
+    explicit PhysicalMemory(bool uses_gpu, std::optional<int> selected_gpu = std::nullopt)
+        : selected_gpu_(selected_gpu) {
+        library_ = platform::DynamicLibrary(platform::nvml_library_name());
         if (!library_) {
             require(!uses_gpu, "nvml_unavailable");
             return;
@@ -37,95 +49,64 @@ public:
         device_ = symbol<int (*)(unsigned, void**)>("nvmlDeviceGetHandleByIndex_v2");
         memory_ = symbol<int (*)(void*, Memory*)>("nvmlDeviceGetMemoryInfo");
         uuid_ = symbol<int (*)(void*, char*, unsigned)>("nvmlDeviceGetUUID");
+        unsigned total = 0;
         require(
-            initialize_() == 0 && count_(&devices_) == 0
-                && devices_ <= Resources::max_devices,
+            initialize_() == 0 && count_(&total) == 0 && total <= Resources::max_devices,
             "nvml_initialize"
         );
+        if (selected_gpu_) {
+            require(
+                *selected_gpu_ >= 0 && static_cast<unsigned>(*selected_gpu_) < total,
+                "invalid_gpu_index"
+            );
+            device_indices_.push_back(static_cast<unsigned>(*selected_gpu_));
+        } else {
+            for (unsigned i = 0; i < total; ++i)
+                device_indices_.push_back(i);
+        }
     }
 
     ~PhysicalMemory() {
         if (shutdown_)
             shutdown_();
-        if (library_)
-            dlclose(library_);
     }
 
     Footprint probe(bool container_limit = true) const {
-        Footprint available(devices_ + 1);
-        std::ifstream meminfo("/proc/meminfo");
-        std::string line;
-        while (std::getline(meminfo, line)) {
-            if (line.starts_with("MemAvailable:")) {
-                available[0] = std::stoull(line.substr(13)) * 1024;
-                break;
-            }
-        }
-        require(available[0] > 0, "host_memory_probe");
-        std::ifstream limit_file("/sys/fs/cgroup/memory.max"),
-            current_file("/sys/fs/cgroup/memory.current");
-        std::string limit;
-        Bytes current = 0;
-        if (container_limit && limit_file >> limit && current_file >> current
-            && limit != "max") {
-            const auto maximum = std::stoull(limit);
-            available[0] = std::min<Bytes>(
-                available[0], maximum > current ? maximum - current : 0
-            );
-        }
-        constexpr Bytes host_margin = 1024ULL * 1024 * 1024;
-        available[0] = available[0] > host_margin ? available[0] - host_margin : 0;
-        for (unsigned index = 0; index < devices_; ++index) {
+        Footprint available(device_indices_.size() + 1);
+        const auto mem = platform::probe_memory(container_limit);
+        available[0] = mem.ram_free;
+        for (std::size_t i = 0; i < device_indices_.size(); ++i) {
             void* device = nullptr;
             Memory memory{};
             require(
-                device_(index, &device) == 0 && memory_(device, &memory) == 0,
+                device_(device_indices_[i], &device) == 0 && memory_(device, &memory) == 0,
                 "device_memory_probe"
             );
             constexpr Bytes margin = 512ULL * 1024 * 1024;
-            available[index + 1] = memory.free > margin ? memory.free - margin : 0;
+            available[i + 1] = memory.free > margin ? memory.free - margin : 0;
         }
         return available;
     }
 
     std::size_t devices() const {
-        return devices_;
+        return device_indices_.size();
     }
 
     // Computer shape and current free memory for the API's ledger. Workers on
-    // one computer share its RAM and GPUs: the kernel boot ID identifies the
-    // computer across containers, and each GPU's UUID identifies the GPU.
+    // one computer share its RAM and GPUs: the host boot/machine ID identifies
+    // the computer across processes, and each GPU's UUID identifies the GPU.
     Json machine(const std::string& name, const std::filesystem::path& models) const {
-        std::string boot;
-        std::ifstream("/proc/sys/kernel/random/boot_id") >> boot;
+        const std::string boot = platform::machine_boot_id();
         require(!boot.empty(), "computer_identity");
-        // A container's hostname names the container, not the computer.
         const auto label = name.empty() ? "computer-" + boot.substr(0, 8) : name;
-        Bytes ram_total = 0;
-        std::ifstream meminfo("/proc/meminfo");
-        std::string line;
-        while (std::getline(meminfo, line))
-            if (line.starts_with("MemTotal:")) {
-                ram_total = std::stoull(line.substr(9)) * 1024;
-                break;
-            }
-        std::ifstream limit_file("/sys/fs/cgroup/memory.max");
-        const auto physical_ram_total = ram_total;
-        Json ram_limit = nullptr;
-        std::string limit;
-        if (limit_file >> limit && limit != "max") {
-            const auto maximum = std::stoull(limit);
-            ram_total = std::min<Bytes>(ram_total, maximum);
-            constexpr Bytes host_margin = 1024ULL * 1024 * 1024;
-            ram_limit = maximum > host_margin ? maximum - host_margin : 0;
-        }
+        const auto mem = platform::probe_memory(true);
         const auto free = probe();
         Json devices = Json::array();
-        for (unsigned index = 0; index < devices_; ++index) {
+        for (std::size_t i = 0; i < device_indices_.size(); ++i) {
             void* device = nullptr;
             Memory memory{};
             require(
-                device_(index, &device) == 0 && memory_(device, &memory) == 0,
+                device_(device_indices_[i], &device) == 0 && memory_(device, &memory) == 0,
                 "device_memory_probe"
             );
             std::array<char, 96> uuid{};
@@ -133,25 +114,24 @@ public:
                 uuid_(device, uuid.data(), unsigned(uuid.size())) == 0, "device_uuid"
             );
             devices.push_back(
-                {{"index", index},
+                {{"index", static_cast<unsigned>(i)},
                  {"uuid", std::string(uuid.data())},
                  {"vram_total", memory.total},
                  {"vram_used", memory.used},
-                 {"vram_free", free[index + 1]}}
+                 {"vram_free", free[i + 1]}}
             );
         }
-        struct statvfs disk{};
-        require(statvfs(models.c_str(), &disk) == 0, "disk_probe");
+        const auto disk = platform::probe_disk(models);
         return {
             {"id", boot},
             {"name", label},
-            {"ram_total", ram_total},
+            {"ram_total", mem.ram_total},
             {"ram_free", free[0]},
-            {"ram_limit", ram_limit},
-            {"physical_ram_total", physical_ram_total},
-            {"physical_ram_free", probe(false)[0]},
-            {"disk_total", Bytes(disk.f_blocks) * disk.f_frsize},
-            {"disk_free", Bytes(disk.f_bavail) * disk.f_frsize},
+            {"ram_limit", mem.ram_limit ? Json(*mem.ram_limit) : Json(nullptr)},
+            {"physical_ram_total", mem.physical_ram_total},
+            {"physical_ram_free", mem.physical_ram_free},
+            {"disk_total", disk.total},
+            {"disk_free", disk.available},
             {"devices", devices}
         };
     }
@@ -162,30 +142,25 @@ private:
     };
 
     template <class Function> Function symbol(const char* name) {
-        auto function = reinterpret_cast<Function>(dlsym(library_, name));
+        auto function = library_.symbol<Function>(name);
         require(function, "nvml_symbol");
         return function;
     }
 
-    void* library_ = nullptr;
+    std::optional<int> selected_gpu_;
+    platform::DynamicLibrary library_;
     int (*initialize_)() = nullptr;
     int (*shutdown_)() = nullptr;
     int (*count_)(unsigned*) = nullptr;
     int (*device_)(unsigned, void**) = nullptr;
     int (*memory_)(void*, Memory*) = nullptr;
     int (*uuid_)(void*, char*, unsigned) = nullptr;
-    unsigned devices_ = 0;
+    std::vector<unsigned> device_indices_;
 };
 
 std::string environment(const char* name, std::string fallback = {}) {
     const char* value = std::getenv(name);
     return value && *value ? value : fallback;
-}
-
-std::string host_name() {
-    std::array<char, 256> host{};
-    gethostname(host.data(), host.size() - 1);
-    return host.data();
 }
 
 std::unique_ptr<websocket::Client>
@@ -208,23 +183,48 @@ connect(const websocket::Url& url, const std::string& token) {
     return nullptr;
 }
 
-int serve(const WorkerProgram& program) {
+int serve(const WorkerProgram& program, const WorkerConfig& config) {
     const auto name = std::string(worker_name(program.workload));
-    const auto token = environment("HIKARI_WORKER_TOKEN", "insecure-api-key");
-    const auto url = websocket::Url::parse(environment("HIKARI_API_URL"));
-    const auto models = std::filesystem::path(environment(
-        "KADAN_MODEL_DIR", environment("HOME", "/tmp") + "/.local/share/kadan/models"
-    ));
-    // Replicas share the model volume, so each process owns its own
-    // workspace, named after its container, and locks it.
-    const auto instance = environment("HIKARI_WORKER_INSTANCE", host_name());
+    const auto token = !config.token.empty()
+                           ? config.token
+                           : environment("HIKARI_WORKER_TOKEN", "insecure-api-key");
+    const auto api_url =
+        !config.api_url.empty() ? config.api_url : environment("HIKARI_API_URL");
+    const auto url = websocket::Url::parse(api_url);
+    std::filesystem::path models = config.model_dir;
+    if (models.empty()) {
+        const auto env_dir = environment("KADAN_MODEL_DIR");
+        models = env_dir.empty() ? platform::default_model_dir()
+                                 : std::filesystem::path(env_dir);
+    }
+    const auto machine_name = !config.machine_name.empty()
+                                  ? config.machine_name
+                                  : environment("HIKARI_WORKER_MACHINE");
+    const auto instance = !config.instance.empty()
+                              ? config.instance
+                              : environment("HIKARI_WORKER_INSTANCE", platform::host_name());
+
+    std::thread stdin_watcher;
+    if (config.watch_stdin) {
+        stdin_watcher = std::thread([] {
+            char buf[64];
+            while (std::cin.read(buf, sizeof(buf)) || std::cin.gcount() > 0) {
+            }
+            stopping.store(true);
+        });
+        stdin_watcher.detach();
+    }
+
+    // Each worker process owns its own job workspace and locks it.
     const auto workspace = models / "inference" / "jobs" / (name + "-" + instance);
     std::filesystem::create_directories(workspace.parent_path());
-    const auto lock_path = workspace.string() + ".lock";
-    int lock = open(lock_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
-    require(lock >= 0 && flock(lock, LOCK_EX | LOCK_NB) == 0, "worker_already_running");
+    platform::FileLock process_lock;
+    require(
+        process_lock.acquire(workspace.string() + ".lock", true),
+        "worker_already_running"
+    );
     JobWorkspace files(workspace);
-    PhysicalMemory memory(program.uses_gpu);
+    PhysicalMemory memory(program.uses_gpu, config.gpu_index);
     auto client = connect(url, token);
     if (!client)
         return 0;
@@ -258,8 +258,8 @@ int serve(const WorkerProgram& program) {
     };
     hooks.factory =
         [&](Workload, std::shared_ptr<Resources> resources, WorkerChannel& channel) {
-            WorkerEnvironment environment{std::move(resources), channel, store};
-            return program.engine(environment);
+            WorkerEnvironment env{std::move(resources), channel, store};
+            return program.engine(env);
         };
     hooks.prepare = [&](InferenceRequest& request,
                         const std::atomic_bool& cancel,
@@ -294,7 +294,7 @@ int serve(const WorkerProgram& program) {
         return worker_requirement(kind, model, store, context);
     };
     hooks.machine = [&] {
-        return memory.machine(environment("HIKARI_WORKER_MACHINE"), models);
+        return memory.machine(machine_name, models);
     };
     hooks.models = [&] {
         return store.status();
@@ -303,16 +303,17 @@ int serve(const WorkerProgram& program) {
         files.cleanup(id);
     };
     WorkerHost host(program.workload, memory.devices(), hooks);
+    const auto pid = platform::process_id();
     send(
         {{"state", "hello"},
          {"protocol", 5},
-         {"pid", getpid()},
+         {"pid", pid},
          {"worker", name},
          {"instance", instance},
          {"machine", hooks.machine()}}
     );
     send({{"state", "models"}, {"models", store.status()}});
-    send({{"state", "ready"}, {"protocol", 5}, {"pid", getpid()}});
+    send({{"state", "ready"}, {"protocol", 5}, {"pid", pid}});
     host.start();
     int status = 0;
     try {
@@ -341,21 +342,100 @@ int serve(const WorkerProgram& program) {
         status = 1;
     }
     client->close();
-    close(lock);
+    process_lock.release();
     return status;
 }
 }  // namespace
 
-int run_worker(const WorkerProgram& program) {
+WorkerConfig parse_worker_config(int argc, char** argv) {
+    WorkerConfig cfg;
+    std::string config_path;
+    auto take_value = [&](int& i, std::string_view arg, std::string_view prefix) -> std::optional<std::string> {
+        if (arg == prefix) {
+            if (i + 1 >= argc)
+                throw std::invalid_argument(std::string("missing value for ") + std::string(prefix));
+            return std::string(argv[++i]);
+        }
+        const std::string eq = std::string(prefix) + "=";
+        if (arg.starts_with(eq))
+            return std::string(arg.substr(eq.size()));
+        return std::nullopt;
+    };
+
+    // First pass: check for --config so CLI flags override JSON file values.
+    for (int i = 1; i < argc; ++i) {
+        if (auto val = take_value(i, argv[i], "--config"))
+            config_path = *val;
+    }
+    if (!config_path.empty()) {
+        const auto doc = read_document(config_path);
+        if (doc.contains("workload") && doc["workload"].is_string())
+            cfg.workload = doc["workload"].get<std::string>();
+        if (doc.contains("api_url") && doc["api_url"].is_string())
+            cfg.api_url = doc["api_url"].get<std::string>();
+        if (doc.contains("worker_token") && doc["worker_token"].is_string())
+            cfg.token = doc["worker_token"].get<std::string>();
+        if (doc.contains("token") && doc["token"].is_string())
+            cfg.token = doc["token"].get<std::string>();
+        if (doc.contains("model_dir") && doc["model_dir"].is_string())
+            cfg.model_dir = doc["model_dir"].get<std::string>();
+        if (doc.contains("machine_name") && doc["machine_name"].is_string())
+            cfg.machine_name = doc["machine_name"].get<std::string>();
+        if (doc.contains("instance") && doc["instance"].is_string())
+            cfg.instance = doc["instance"].get<std::string>();
+        if (doc.contains("gpu_index") && doc["gpu_index"].is_number_integer())
+            cfg.gpu_index = doc["gpu_index"].get<int>();
+        if (doc.contains("cpu_threads") && doc["cpu_threads"].is_number_integer())
+            cfg.cpu_threads = doc["cpu_threads"].get<int>();
+    }
+
+    // Second pass: CLI flags override config file.
+    for (int i = 1; i < argc; ++i) {
+        std::string_view arg = argv[i];
+        if (auto v = take_value(i, arg, "--config")) {
+            (void)v;
+        } else if (auto v = take_value(i, arg, "--workload")) {
+            cfg.workload = *v;
+        } else if (auto v = take_value(i, arg, "--api-url")) {
+            cfg.api_url = *v;
+        } else if (auto v = take_value(i, arg, "--token")) {
+            cfg.token = *v;
+        } else if (auto v = take_value(i, arg, "--model-dir")) {
+            cfg.model_dir = *v;
+        } else if (auto v = take_value(i, arg, "--machine-name")) {
+            cfg.machine_name = *v;
+        } else if (auto v = take_value(i, arg, "--instance")) {
+            cfg.instance = *v;
+        } else if (auto v = take_value(i, arg, "--gpu")) {
+            cfg.gpu_index = std::stoi(*v);
+        } else if (auto v = take_value(i, arg, "--cpu-threads")) {
+            cfg.cpu_threads = std::stoi(*v);
+        } else if (arg == "--watch-stdin") {
+            cfg.watch_stdin = true;
+        }
+    }
+    return cfg;
+}
+
+int run_worker(const WorkerProgram& program, const WorkerConfig& config) {
+    stopping.store(false);
     std::signal(SIGTERM, stop_signal);
     std::signal(SIGINT, stop_signal);
+#ifndef _WIN32
     std::signal(SIGPIPE, SIG_IGN);
+#else
+    SetConsoleCtrlHandler(win32_ctrl_handler, TRUE);
+#endif
     try {
-        return serve(program);
+        return serve(program, config);
     } catch (const std::exception& error) {
         std::cerr << "worker " << worker_name(program.workload) << ": " << error.what()
                   << '\n';
         return 1;
     }
+}
+
+int run_worker(const WorkerProgram& program) {
+    return run_worker(program, WorkerConfig{});
 }
 }  // namespace kadan::serving

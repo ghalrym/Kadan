@@ -4,26 +4,39 @@
 #include <chrono>
 #include <cstdlib>
 #include <curl/curl.h>
-#include <fcntl.h>
 #include <fstream>
 #include <memory>
 #include <openssl/evp.h>
 #include <regex>
 #include <set>
-#include <sys/file.h>
 #include <thread>
-#include <unistd.h>
 
 #include "../weights/metadata_json.hpp"
 #include "kadan/gguf_text.hpp"
+#include "kadan/platform.hpp"
 #include "kadan/preparation.hpp"
 
 namespace kadan::serving {
 namespace {
 void validate_text_checkpoint(const fs::path& checkpoint) {
     try {
+        const auto doc = read_document(checkpoint / "config.json");
+        const auto text = doc.value("text_config", doc);
+        const std::string model_type = text.value("model_type", doc.value("model_type", std::string{}));
+        if (model_type == "lfm3" || model_type == "lfm2") {
+            preparation_check(
+                text.at("max_position_embeddings").get<std::size_t>() > 0
+                    && text.at("hidden_size").get<std::size_t>() > 0
+                    && text.at("num_hidden_layers").get<std::size_t>() > 0,
+                "Invalid LFM3 checkpoint config.json",
+                422
+            );
+            return;
+        }
         auto budget = std::make_shared<checkpoint::MemoryBudget>(4ULL * 1024 * 1024);
         text::validate_config(checkpoint.string().c_str(), budget);
+    } catch (const RequestError&) {
+        throw;
     } catch (const std::exception& error) {
         throw RequestError(
             std::string("Unsupported text checkpoint: ") + error.what(), 422
@@ -147,33 +160,21 @@ std::int64_t fetch(
 }
 
 struct StoreLock {
-    int descriptor;
+    platform::FileLock lock;
 
     StoreLock(
         const fs::path& path, const std::atomic_bool& cancel = std::atomic_bool{false}
-    )
-        : descriptor(
-              open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600)
-          ) {
-        preparation_check(descriptor >= 0, "Cannot lock model storage", 503);
-        try {
-            while (flock(descriptor, LOCK_EX | LOCK_NB) != 0) {
-                preparation_check(
-                    errno == EWOULDBLOCK || errno == EAGAIN,
-                    "Model storage lock failed",
-                    503
-                );
-                preparation_cancel(cancel);
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    ) {
+        for (;;) {
+            try {
+                if (lock.acquire(path, true))
+                    return;
+            } catch (const std::exception&) {
+                throw RequestError("Cannot lock model storage", 503);
             }
-        } catch (...) {
-            close(descriptor);
-            throw;
+            preparation_cancel(cancel);
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
-    }
-
-    ~StoreLock() {
-        close(descriptor);
     }
 
     StoreLock(const StoreLock&) = delete;
@@ -516,22 +517,38 @@ void ModelStore::validate_files(
 }
 
 std::optional<Bytes> ModelStore::completed_bytes(const CatalogEntry& model) const {
-    const auto directory = root_ / (model.id + "-" + model.revision);
-    if (!fs::exists(directory / "complete.json"))
-        return std::nullopt;
+    auto directory = root_ / (model.id + "-" + model.revision);
+    bool legacy_experimental = false;
+    if (!fs::exists(directory / "complete.json")) {
+        const auto legacy = root_ / "experimental" / model.id / model.revision;
+        if (fs::exists(legacy / ".verified.json")) {
+            directory = legacy;
+            legacy_experimental = true;
+        } else {
+            return std::nullopt;
+        }
+    }
     try {
-        const auto marker = read_document(directory / "complete.json");
-        if (marker.at("revision") != model.revision)
-            return std::nullopt;
-        const auto files = parse_manifest(marker.at("files"));
-        validate_files(model, files);
-        if ((model.layout == "composite" || model.layout == "gguf")
-            && files != model.manifest)
-            return std::nullopt;
-        if (model.layout == "single_file"
-            && (files.size() != 1 || files.front().algorithm != "sha256"
-                || files.front().digest != model.revision))
-            return std::nullopt;
+        std::vector<ManifestFile> files;
+        if (legacy_experimental) {
+            const auto marker = read_document(directory / ".verified.json");
+            if (marker.value("revision", std::string{}) != model.revision)
+                return std::nullopt;
+            files = model.manifest;
+        } else {
+            const auto marker = read_document(directory / "complete.json");
+            if (marker.at("revision") != model.revision)
+                return std::nullopt;
+            files = parse_manifest(marker.at("files"));
+            validate_files(model, files);
+            if ((model.layout == "composite" || model.layout == "gguf")
+                && files != model.manifest)
+                return std::nullopt;
+            if (model.layout == "single_file"
+                && (files.size() != 1 || files.front().algorithm != "sha256"
+                    || files.front().digest != model.revision))
+                return std::nullopt;
+        }
         Bytes total = 0;
         for (const auto& file : files) {
             if (file.size > UINT64_MAX - total)
@@ -637,7 +654,12 @@ ModelStore::require_local(const std::string& model, const std::atomic_bool& canc
         "Download the checkpoint in Hikari Settings before inference.",
         409
     );
-    const auto destination = root_ / (catalog.id + "-" + catalog.revision);
+    auto destination = root_ / (catalog.id + "-" + catalog.revision);
+    if (!fs::exists(destination / "complete.json")) {
+        const auto legacy = root_ / "experimental" / catalog.id / catalog.revision;
+        if (fs::exists(legacy / ".verified.json"))
+            destination = legacy;
+    }
     if (catalog.layout == "gguf")
         prepare_gguf(catalog, destination, cancel);
     else if (catalog.kind == "llm")
@@ -648,23 +670,34 @@ ModelStore::require_local(const std::string& model, const std::atomic_bool& canc
 fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& cancel) {
     const auto& catalog = entry(model);
     const auto revision = catalog.revision;
+    auto existing_destination = [&]() {
+        auto dir = root_ / (model + "-" + revision);
+        if (!fs::exists(dir / "complete.json")) {
+            const auto legacy = root_ / "experimental" / model / revision;
+            if (fs::exists(legacy / ".verified.json"))
+                return legacy;
+        }
+        return dir;
+    };
     const auto destination = root_ / (model + "-" + revision);
     preparation_cancel(cancel);
     if (complete(catalog)) {
+        const auto resolved = existing_destination();
         if (catalog.layout == "gguf")
-            prepare_gguf(catalog, destination, cancel);
+            prepare_gguf(catalog, resolved, cancel);
         else if (catalog.kind == "llm")
-            validate_text_checkpoint(destination);
-        return destination;
+            validate_text_checkpoint(resolved);
+        return resolved;
     }
     fs::create_directories(root_);
     StoreLock lock(root_ / ".download.lock", cancel);
     if (complete(catalog)) {
+        const auto resolved = existing_destination();
         if (catalog.layout == "gguf")
-            prepare_gguf(catalog, destination, cancel);
+            prepare_gguf(catalog, resolved, cancel);
         else if (catalog.kind == "llm")
-            validate_text_checkpoint(destination);
-        return destination;
+            validate_text_checkpoint(resolved);
+        return resolved;
     }
     preparation_check(
         !fs::exists(destination),
@@ -826,6 +859,15 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
 }
 
 std::string ModelStore::selected_llm_id() const {
+    const auto selection_path = root_ / "llm-selection.json";
+    if (fs::exists(selection_path)) {
+        const auto saved = read_document(selection_path).value("model_id", std::string{});
+        if (saved == "inkling-2-mini-iq4-nl" || saved == "inkling-2-mini-q8-0"
+            || saved == "inkling-2-mini-abliterated-iq4-nl"
+            || saved == "inkling-2-mini-abliterated-q8-0") {
+            return saved;
+        }
+    }
     const auto lowercase_env = [](const char* name) {
         const char* raw = std::getenv(name);
         std::string value = raw ? raw : "";
@@ -854,6 +896,20 @@ std::string ModelStore::selected_llm_id() const {
     if (quant == "q8_0" || quant == "q8-0" || quant == "q8")
         return abliterated ? "inkling-2-mini-abliterated-q8-0" : "inkling-2-mini-q8-0";
     throw RequestError("Unsupported HIKARI_LLM_QUANT; expected IQ4_NL or Q8_0.", 422);
+}
+
+void ModelStore::set_selected_llm_id(const std::string& model) {
+    preparation_check(
+        model == "inkling-2-mini-iq4-nl" || model == "inkling-2-mini-q8-0"
+            || model == "inkling-2-mini-abliterated-iq4-nl"
+            || model == "inkling-2-mini-abliterated-q8-0",
+        "Unsupported language model variant.",
+        422
+    );
+    (void)entry(model);
+    fs::create_directories(root_);
+    StoreLock lock(root_ / ".settings.lock");
+    atomic_document(root_ / "llm-selection.json", {{"model_id", model}});
 }
 
 std::size_t ModelStore::default_llm_context() const {
@@ -892,7 +948,8 @@ std::string ModelStore::whisper_selected() const {
 }
 
 Json ModelStore::context(const std::string& model) const {
-    const auto fallback = Json(default_llm_context());
+    const auto fallback =
+        (model == "lfm3-1.7b-bf16") ? Json(262144) : Json(default_llm_context());
     if (!fs::exists(root_ / "context.json"))
         return fallback;
     return read_document(root_ / "context.json").value(model, fallback);
@@ -937,6 +994,14 @@ void ModelStore::set_whisper_formatting(bool enabled) {
 
 Json ModelStore::architecture_context(const std::string& model) const {
     const auto& item = entry(model);
+    if (item.id == "lfm3-1.7b-bf16")
+        return 262144;
+    if (item.id == "lfm3-vl-2b-bf16")
+        return 128000;
+    if (item.id == "lfm3-audio-2b-bf16")
+        return 32768;
+    if (item.id == "d1-2b-cpu-f32")
+        return 128000;
     if (item.kind != "llm" || !complete(item))
         return nullptr;
     const auto config =
@@ -982,7 +1047,16 @@ Json ModelStore::status() const {
         model["context_limit"] = nullptr;
         model["architecture_context_limit"] = nullptr;
         try {
-            model["context_limit"] = item.kind == "llm" ? context(id) : Json(nullptr);
+            if (item.kind == "llm")
+                model["context_limit"] = context(id);
+            else if (item.id == "lfm3-vl-2b-bf16")
+                model["context_limit"] = 128000;
+            else if (item.id == "lfm3-audio-2b-bf16")
+                model["context_limit"] = 32768;
+            else if (item.id == "d1-2b-cpu-f32")
+                model["context_limit"] = 65536;
+            else
+                model["context_limit"] = Json(nullptr);
             model["architecture_context_limit"] = architecture_context(id);
         } catch (const std::exception& error) {
             model["status"] = "failed";

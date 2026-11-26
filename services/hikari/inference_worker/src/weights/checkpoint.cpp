@@ -7,14 +7,23 @@
 #include <charconv>
 #include <cmath>
 #include <cstring>
-#include <fcntl.h>
+#include <filesystem>
 #include <limits>
 #include <new>
 #include <stdexcept>
 #include <string>
+#include <utility>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <utility>
+#endif
 
 #include "kadan/checkpoint_cache.hpp"
 
@@ -35,6 +44,75 @@ std::uint64_t mul(std::uint64_t a, std::uint64_t b) {
     return a * b;
 }
 
+#ifdef _WIN32
+struct FileIdentity {
+    std::uint64_t st_dev = 0;
+    std::uint64_t st_ino = 0;
+    std::uint64_t st_size = 0;
+    std::uint64_t mtime_lo = 0;
+    std::uint64_t mtime_hi = 0;
+    std::uint64_t ctime_lo = 0;
+    std::uint64_t ctime_hi = 0;
+};
+
+class Fd {
+public:
+    explicit Fd(HANDLE h) : value(h) {
+        if (h == INVALID_HANDLE_VALUE || h == nullptr)
+            throw std::runtime_error("open_failed");
+    }
+
+    ~Fd() {
+        if (value != INVALID_HANDLE_VALUE && value != nullptr)
+            CloseHandle(value);
+    }
+
+    Fd(Fd&& other) noexcept
+        : value(std::exchange(other.value, INVALID_HANDLE_VALUE)) {
+    }
+
+    Fd(const Fd&) = delete;
+    Fd& operator=(const Fd&) = delete;
+    HANDLE value;
+};
+
+FileIdentity regular_file(HANDLE h) {
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (!GetFileInformationByHandle(h, &info))
+        throw std::runtime_error("stat_failed");
+    const std::uint64_t size =
+        (static_cast<std::uint64_t>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+    require(
+        (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 && size >= 8,
+        "not_safetensors_file"
+    );
+    FileIdentity id;
+    id.st_dev = info.dwVolumeSerialNumber;
+    id.st_ino =
+        (static_cast<std::uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+    id.st_size = size;
+    id.mtime_lo = info.ftLastWriteTime.dwLowDateTime;
+    id.mtime_hi = info.ftLastWriteTime.dwHighDateTime;
+    id.ctime_lo = info.ftCreationTime.dwLowDateTime;
+    id.ctime_hi = info.ftCreationTime.dwHighDateTime;
+    return id;
+}
+
+void read_at(HANDLE h, std::uint64_t offset, std::span<std::uint8_t> bytes) {
+    while (!bytes.empty()) {
+        const DWORD chunk =
+            static_cast<DWORD>(std::min(bytes.size(), std::size_t{1024 * 1024}));
+        OVERLAPPED ov{};
+        ov.Offset = static_cast<DWORD>(offset & 0xFFFFFFFFULL);
+        ov.OffsetHigh = static_cast<DWORD>(offset >> 32);
+        DWORD got = 0;
+        if (!ReadFile(h, bytes.data(), chunk, &got, &ov) || got == 0)
+            throw std::runtime_error("short_or_failed_read");
+        offset += got;
+        bytes = bytes.subspan(got);
+    }
+}
+#else
 class Fd {
 public:
     explicit Fd(int fd) : value(fd) {
@@ -80,6 +158,7 @@ void read_at(int fd, std::uint64_t offset, std::span<std::uint8_t> bytes) {
         bytes = bytes.subspan(static_cast<std::size_t>(n));
     }
 }
+#endif
 
 std::uint64_t little64(const std::array<std::uint8_t, 8>& bytes) {
     std::uint64_t value = 0;
@@ -403,7 +482,11 @@ struct Shard::Impl {
     std::shared_ptr<ReadCache> cache;
     const std::atomic_bool* cancel = nullptr;
     Fd file;
+#ifdef _WIN32
+    FileIdentity identity;
+#else
     struct stat identity;
+#endif
     std::uint64_t data_begin = 0;
     std::pmr::vector<Tensor> tensors;
 
@@ -414,6 +497,14 @@ struct Shard::Impl {
 
     void unchanged() const {
         const auto s = regular_file(file.value);
+#ifdef _WIN32
+        require(
+            s.st_size == identity.st_size && s.mtime_lo == identity.mtime_lo
+                && s.mtime_hi == identity.mtime_hi && s.ctime_lo == identity.ctime_lo
+                && s.ctime_hi == identity.ctime_hi,
+            "checkpoint_changed"
+        );
+#else
         require(
             s.st_size == identity.st_size && s.st_mtim.tv_sec == identity.st_mtim.tv_sec
                 && s.st_mtim.tv_nsec == identity.st_mtim.tv_nsec
@@ -421,6 +512,7 @@ struct Shard::Impl {
                 && s.st_ctim.tv_nsec == identity.st_ctim.tv_nsec,
             "checkpoint_changed"
         );
+#endif
     }
 
     const Tensor& find(std::string_view name) const {
@@ -456,6 +548,19 @@ Shard::Shard(
         "invalid_reader_limits"
     );
     basename(shard_name);
+#ifdef _WIN32
+    const auto full = std::filesystem::path(root) / std::string(shard_name);
+    require(!std::filesystem::is_symlink(full), "not_safetensors_file");
+    Fd source(CreateFileW(
+        full.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    ));
+#else
     Fd directory(::open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
     std::array<char, 256> name{};
     std::copy(shard_name.begin(), shard_name.end(), name.begin());
@@ -465,6 +570,7 @@ Shard::Shard(
             directory.value, name.data(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
         )
     );
+#endif
     // make_unique allocates before moving the guard into Impl; all failure paths
     // retain a descriptor owner, including allocation and metadata exceptions.
     impl_ = std::make_unique<Impl>(std::move(source), budget);

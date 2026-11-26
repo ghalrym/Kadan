@@ -23,6 +23,14 @@ std::string default_model(Workload workload, const ModelStore& store) {
     switch (workload) {
     case Workload::llm:
         return store.selected_llm_id();
+    case Workload::lfm3_llm:
+        return "lfm3-1.7b-bf16";
+    case Workload::lfm3_vision:
+        return "lfm3-vl-2b-bf16";
+    case Workload::lfm3_audio:
+        return "lfm3-audio-2b-bf16";
+    case Workload::lfm3_decision:
+        return "d1-2b-cpu-f32";
     case Workload::formatting:
         return "superwhisper-s1-mini";
     case Workload::speech:
@@ -127,6 +135,14 @@ Json worker_requirement(
             video_device_floor
         );
     }
+    case Workload::lfm3_llm:
+        return footprint(model, 16 * gib, 16 * gib, 20 * gib, 20 * gib, 20 * gib);
+    case Workload::lfm3_vision:
+        return footprint(model, 8 * gib, 8 * gib, 16 * gib, 16 * gib, 16 * gib);
+    case Workload::lfm3_audio:
+        return footprint(model, 8 * gib, 8 * gib, 16 * gib, 16 * gib, 16 * gib);
+    case Workload::lfm3_decision:
+        return footprint(model, 15 * gib, 15 * gib, 0, 0, 0);
     case Workload::llm:
         break;
     }

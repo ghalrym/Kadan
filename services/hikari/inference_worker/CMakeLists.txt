@@ -7,6 +7,7 @@ if(KADAN_TRACE_WEIGHT_CACHE)
   add_compile_definitions(KADAN_TRACE_WEIGHT_CACHE)
 endif()
 option(KADAN_ENABLE_CUDA "Build original SM86 NVFP4/FP8 projections" OFF)
+option(KADAN_ALLOW_MULTI_ARCH "Allow multi-architecture CUDA builds for release packaging" OFF)
 option(KADAN_ENABLE_IMAGE_GENERATION "Build C++ ATen CUDA image generation" OFF)
 if(KADAN_ENABLE_IMAGE_GENERATION AND NOT KADAN_ENABLE_CUDA)
   message(FATAL_ERROR "Image generation requires KADAN_ENABLE_CUDA=ON and LibTorch 2.14.1+cu130; no CPU image backend is supported")
@@ -15,7 +16,7 @@ if(KADAN_ENABLE_CUDA)
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES 86)
   endif()
-  if(NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "86")
+  if(NOT KADAN_ALLOW_MULTI_ARCH AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "86")
     message(FATAL_ERROR "The first native GPU path requires explicit SM86 (86), never native device probing")
   endif()
   enable_language(CUDA)
@@ -25,6 +26,23 @@ if(KADAN_ENABLE_CUDA)
   target_link_libraries(kadan_cuda INTERFACE CUDA::cudart)
   target_compile_features(kadan_cuda INTERFACE cuda_std_20)
 endif()
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  set(KADAN_STRICT_CXX_FLAGS -Wall -Wextra -Wpedantic -Werror)
+elseif(MSVC)
+  set(KADAN_STRICT_CXX_FLAGS /W3 /permissive- /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS)
+else()
+  set(KADAN_STRICT_CXX_FLAGS)
+endif()
+
+if(WIN32)
+  add_library(kadan_platform src/platform/platform_win32.cpp)
+  target_link_libraries(kadan_platform PUBLIC kadan_resources PRIVATE psapi ws2_32)
+else()
+  add_library(kadan_platform src/platform/platform_posix.cpp)
+  target_link_libraries(kadan_platform PUBLIC kadan_resources PRIVATE ${CMAKE_DL_LIBS})
+endif()
+target_compile_options(kadan_platform PRIVATE ${KADAN_STRICT_CXX_FLAGS})
 find_package(Threads REQUIRED)
 # GGUF metadata, row dequantization and ggml-cpu's quantized dot kernels for
 # host-resident experts, vendored from llama.cpp. Kadan retains execution,
@@ -44,14 +62,15 @@ add_library(kadan_preparation src/preparation/preparation_io.cpp src/preparation
   src/preparation/gguf_assets.cpp
   src/preparation/preparation.cpp src/preparation/whisper_export.cpp src/preparation/tokenizer_assets.cpp
   src/requests/inference_request.cpp src/preparation/audio_input.cpp src/preparation/image_upload.cpp
-  src/requests/inference_chat_request.cpp src/requests/inference_image_request.cpp
+  src/requests/inference_chat_request.cpp src/requests/inference_lfm3_request.cpp
+  src/requests/inference_image_request.cpp
   src/requests/inference_speech_request.cpp
   src/requests/inference_whisper_request.cpp src/requests/inference_video_request.cpp
   src/preparation/worker_requirement.cpp)
-target_link_libraries(kadan_preparation PUBLIC kadan_resources nlohmann_json::nlohmann_json
+target_link_libraries(kadan_preparation PUBLIC kadan_resources kadan_platform nlohmann_json::nlohmann_json
   PRIVATE kadan_metadata kadan_gguf_text kadan_h3_profile CURL::libcurl OpenSSL::Crypto LibArchive::LibArchive PNG::PNG)
 target_compile_definitions(kadan_preparation PRIVATE KADAN_WORKER_SOURCE_DATA="${CMAKE_CURRENT_SOURCE_DIR}")
-target_compile_options(kadan_preparation PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_options(kadan_preparation PRIVATE ${KADAN_STRICT_CXX_FLAGS})
 
 # Shared by every worker program: the WebSocket transport to the API, the
 # worker contract (one inference lane plus a store lane), and the runtime that
@@ -59,17 +78,17 @@ target_compile_options(kadan_preparation PRIVATE -Wall -Wextra -Wpedantic -Werro
 add_library(kadan_transport src/transport/websocket.cpp)
 target_include_directories(kadan_transport PUBLIC include)
 target_compile_features(kadan_transport PUBLIC cxx_std_20)
-target_link_libraries(kadan_transport PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-target_compile_options(kadan_transport PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(kadan_transport PRIVATE OpenSSL::SSL OpenSSL::Crypto $<$<BOOL:${WIN32}>:ws2_32>)
+target_compile_options(kadan_transport PRIVATE ${KADAN_STRICT_CXX_FLAGS})
 
 add_library(kadan_worker_host src/worker/worker_host.cpp)
 target_link_libraries(kadan_worker_host PUBLIC kadan_resources PRIVATE kadan_preparation)
-target_compile_options(kadan_worker_host PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_options(kadan_worker_host PRIVATE ${KADAN_STRICT_CXX_FLAGS})
 
 add_library(kadan_worker_runtime src/worker/worker_runtime.cpp)
-target_link_libraries(kadan_worker_runtime PUBLIC kadan_worker_host kadan_preparation
+target_link_libraries(kadan_worker_runtime PUBLIC kadan_worker_host kadan_preparation kadan_platform
   PRIVATE kadan_transport ${CMAKE_DL_LIBS})
-target_compile_options(kadan_worker_runtime PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_options(kadan_worker_runtime PRIVATE ${KADAN_STRICT_CXX_FLAGS})
 
 add_library(kadan_media_residency src/media/media_residency.cpp)
 target_link_libraries(kadan_media_residency PUBLIC kadan_resources)
@@ -180,7 +199,7 @@ if(KADAN_ENABLE_CUDA)
   target_link_libraries(kadan_gguf_text PUBLIC kadan_h3_cuda)
 
   target_link_libraries(kadan_h3_cuda PUBLIC kadan_resources kadan_checkpoint CUDA::cudart CUDA::cublas CUDA::cuda_driver)
-  set_target_properties(kadan_h3_cuda PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES 86)
+  set_target_properties(kadan_h3_cuda PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
   target_compile_options(kadan_h3_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--default-stream=legacy;--ftz=false;--fmad=false>)
   if(TARGET kadan_h3_generation)
     target_compile_definitions(kadan_h3_generation PRIVATE KADAN_WORKER_CUDA=1)
@@ -243,7 +262,39 @@ target_link_libraries(kadan_text_tokenizer PUBLIC kadan_resources PRIVATE nlohma
 target_compile_options(kadan_text_tokenizer PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_library(kadan_transcription_formatting src/inference/inference_transcription_formatting.cpp)
 target_link_libraries(kadan_transcription_formatting PUBLIC kadan_s1_mini kadan_text_tokenizer kadan_preparation)
-target_compile_options(kadan_transcription_formatting PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_options(kadan_transcription_formatting PRIVATE ${KADAN_STRICT_CXX_FLAGS})
+
+# Pure C++20/CUDA LFM3 + d1 inference engines (text, vision, audio, decisions).
+add_library(kadan_lfm3
+  src/models/lfm3/lfm3_model.cpp
+  src/models/lfm3/lfm3_prompt.cpp
+  src/models/lfm3/lfm3_vision.cpp
+  src/models/lfm3/lfm3_audio.cpp
+  src/models/lfm3/lfm3_d1.cpp)
+target_link_libraries(kadan_lfm3 PUBLIC kadan_checkpoint kadan_resources kadan_text_tokenizer
+  PRIVATE PNG::PNG)
+find_library(KADAN_LFM3_BLAS_LIBRARY openblas)
+if(KADAN_LFM3_BLAS_LIBRARY)
+  target_compile_definitions(kadan_lfm3 PRIVATE KADAN_LFM3_BLAS=1)
+  target_link_libraries(kadan_lfm3 PRIVATE ${KADAN_LFM3_BLAS_LIBRARY})
+endif()
+if(KADAN_ENABLE_CUDA)
+  target_compile_definitions(kadan_lfm3 PRIVATE KADAN_WORKER_CUDA=1)
+  target_link_libraries(kadan_lfm3 PRIVATE kadan_h3_cuda)
+endif()
+target_compile_options(kadan_lfm3 PRIVATE ${KADAN_STRICT_CXX_FLAGS})
+
+add_library(kadan_lfm3_engines
+  src/inference/inference_lfm3_text.cpp
+  src/inference/inference_lfm3_vision.cpp
+  src/inference/inference_lfm3_audio.cpp
+  src/inference/inference_d1.cpp)
+target_link_libraries(kadan_lfm3_engines PUBLIC kadan_lfm3 kadan_preparation kadan_text_tokenizer)
+if(KADAN_ENABLE_CUDA)
+  target_compile_definitions(kadan_lfm3_engines PRIVATE KADAN_WORKER_CUDA=1)
+  target_link_libraries(kadan_lfm3_engines PRIVATE kadan_h3_cuda)
+endif()
+target_compile_options(kadan_lfm3_engines PRIVATE ${KADAN_STRICT_CXX_FLAGS})
 
 if(KADAN_ENABLE_IMAGE_GENERATION)
   # Avoid Torch's native GPU probing and keep toolkit/library versions coherent.
@@ -470,9 +521,9 @@ endif()
 function(kadan_install_worker target)
   install(TARGETS ${target}
     RUNTIME_DEPENDENCIES
-      # The NVIDIA runtime supplies the host driver; never bundle its link stub.
+      # The NVIDIA runtime supplies the host driver; never bundle its link stub or glibc core libs.
       PRE_EXCLUDE_REGEXES "^linux-vdso" "^ld-linux" "^libcuda[.]so[.]1$"
-      POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*"
+      POST_EXCLUDE_REGEXES ".*/libc[.]so[.].*" ".*/libm[.]so[.].*" ".*/ld-linux.*" ".*/libdl[.]so[.].*" ".*/libpthread[.]so[.].*" ".*/libresolv[.]so[.].*" ".*/librt[.]so[.].*" ".*/libutil[.]so[.].*"
     RUNTIME DESTINATION libexec COMPONENT ${target}
     LIBRARY DESTINATION lib COMPONENT ${target})
   install(FILES catalog.json DESTINATION share/kadan COMPONENT ${target})
@@ -512,6 +563,37 @@ target_link_libraries(kadan-worker-formatting PRIVATE kadan_worker_runtime
   kadan_transcription_formatting)
 kadan_install_worker(kadan-worker-formatting)
 
+# Unified multi-workload worker binary: runs any compiled workload via
+# `--workload=<kind>` for desktop tray supervision and single-binary releases.
+add_executable(kadan-worker workers/unified/main.cpp)
+target_link_libraries(kadan-worker PRIVATE kadan_worker_runtime
+  kadan_lfm3_engines kadan_transcription_formatting)
+target_compile_options(kadan-worker PRIVATE ${KADAN_STRICT_CXX_FLAGS})
+if(KADAN_ENABLE_CUDA)
+  target_sources(kadan-worker PRIVATE
+    src/inference/inference_chat.cpp
+    src/inference/inference_whisper.cpp)
+  target_compile_definitions(kadan-worker PRIVATE KADAN_WORKER_CUDA=1)
+  target_link_libraries(kadan-worker PRIVATE kadan_gguf_text kadan_whisper
+    kadan_stt kadan_text_tokenizer kadan_h3_cuda)
+  if(KADAN_ENABLE_TTS_WORKER)
+    target_sources(kadan-worker PRIVATE src/inference/inference_speech.cpp)
+    target_compile_definitions(kadan-worker PRIVATE KADAN_HAS_TTS_ENGINE=1)
+    target_link_libraries(kadan-worker PRIVATE kadan_tts_generator kadan_tts_audio)
+  endif()
+  if(KADAN_ENABLE_IMAGE_GENERATION)
+    target_sources(kadan-worker PRIVATE src/inference/inference_image.cpp)
+    target_compile_definitions(kadan-worker PRIVATE KADAN_HAS_IMAGE_ENGINE=1)
+    target_link_libraries(kadan-worker PRIVATE kadan_image_generation)
+  endif()
+  if(KADAN_ENABLE_H3_GENERATION)
+    target_sources(kadan-worker PRIVATE src/inference/inference_video.cpp)
+    target_compile_definitions(kadan-worker PRIVATE KADAN_HAS_VIDEO_ENGINE=1)
+    target_link_libraries(kadan-worker PRIVATE kadan_h3_generation kadan_h3_profile)
+  endif()
+endif()
+kadan_install_worker(kadan-worker)
+
 if(KADAN_ENABLE_IMAGE_GENERATION)
   add_executable(kadan-worker-image workers/image/main.cpp src/inference/inference_image.cpp)
   target_compile_definitions(kadan-worker-image PRIVATE KADAN_WORKER_CUDA=1)
@@ -544,6 +626,13 @@ if(BUILD_TESTING AND TARGET kadan_text_tokenizer)
   add_executable(text-tokenizer-tests tests/text_tokenizer.cpp)
   target_link_libraries(text-tokenizer-tests PRIVATE kadan_text_tokenizer nlohmann_json::nlohmann_json ICU::uc)
   add_test(NAME text-tokenizer COMMAND text-tokenizer-tests)
+endif()
+
+if(BUILD_TESTING AND TARGET kadan_lfm3)
+  add_executable(lfm3-components-tests tests/lfm3_components.cpp)
+  target_link_libraries(lfm3-components-tests PRIVATE kadan_lfm3)
+  target_compile_options(lfm3-components-tests PRIVATE ${KADAN_STRICT_CXX_FLAGS})
+  add_test(NAME lfm3-components COMMAND lfm3-components-tests)
 endif()
 
 option(KADAN_BUILD_TOOLS "Build developer tools exposed by bin/kadan.py" OFF)

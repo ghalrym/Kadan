@@ -3,8 +3,8 @@
 #include <fstream>
 #include <memory>
 #include <openssl/evp.h>
-#include <unistd.h>
 
+#include "kadan/platform.hpp"
 #include "kadan/preparation.hpp"
 
 namespace kadan::serving {
@@ -126,14 +126,14 @@ std::string file_digest(const fs::path& path, const std::atomic_bool& cancel) {
 fs::path worker_data_directory() {
     if (const auto* configured = std::getenv("KADAN_WORKER_DATA"))
         return configured;
-    std::array<char, 4096> executable{};
-    const auto size = readlink("/proc/self/exe", executable.data(), executable.size());
-    if (size > 0 && std::size_t(size) < executable.size()) {
-        auto installed =
-            fs::path(std::string(executable.data(), size)).parent_path().parent_path()
-            / "share/kadan";
+    const auto exe = platform::executable_path();
+    if (!exe.empty()) {
+        auto installed = exe.parent_path().parent_path() / "share/kadan";
         if (fs::is_regular_file(installed / "catalog.json"))
             return installed;
+        auto beside = exe.parent_path() / "share/kadan";
+        if (fs::is_regular_file(beside / "catalog.json"))
+            return beside;
     }
     return KADAN_WORKER_SOURCE_DATA;
 }

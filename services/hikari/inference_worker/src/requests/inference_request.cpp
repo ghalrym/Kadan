@@ -53,15 +53,18 @@ InferenceRequest parse_request(const Json& envelope) {
             input.model = optional<std::string>(body, "model");
         input.conversation_id = optional<std::string>(body, "conversation_id");
         input.reuse_prefix = body.value("reuse_prefix", true);
+        input.stream = body.value("stream", false);
         input.context_supplied = body.contains("context_limit");
         input.context_limit = optional<std::size_t>(body, "context_limit");
         input.max_output_tokens = optional<std::size_t>(body, "max_tokens");
         if (!input.max_output_tokens)
             input.max_output_tokens = optional<std::size_t>(body, "max_output_tokens");
+        input.max_tokens = input.max_output_tokens;
         input.reasoning_tokens = optional<std::size_t>(body, "reasoning_tokens");
         input.reasoning_effort = optional<std::string>(body, "reasoning_effort");
 
         if (body.contains("tools") && !body.at("tools").is_null()) {
+            input.lfm3_tools = body.at("tools");
             preparation_check(
                 body.at("tools").is_array() && body.at("tools").size() <= 256,
                 "Invalid chat tools list",
@@ -215,6 +218,186 @@ InferenceRequest parse_request(const Json& envelope) {
         }
         request.input = std::move(input);
         request.workload = Workload::llm;
+    } else if (feature == "audio_call") {
+        AudioCallRequest input;
+        if (const auto m = optional<std::string>(body, "model_id"))
+            input.model = *m;
+        else if (const auto m2 = optional<std::string>(body, "model"))
+            input.model = *m2;
+        input.mode = body.value("mode", std::string{});
+        preparation_check(
+            input.mode == "transcribe" || input.mode == "reply"
+                || input.mode == "answer" || input.mode == "tts"
+                || input.mode == "turn",
+            "Unknown audio call operation",
+            422
+        );
+        input.audio = optional<std::string>(body, "audio");
+        input.script = optional<std::string>(body, "script");
+        input.sentence_tts = body.value("sentence_tts", false);
+        input.codec_streaming_probe = body.value("codec_streaming_probe", false);
+        preparation_check(
+            !input.sentence_tts || (input.mode == "turn" && !input.codec_streaming_probe),
+            "Sentence TTS requires a complete turn without the private codec probe",
+            422
+        );
+        preparation_check(
+            !input.codec_streaming_probe || input.mode == "turn",
+            "The private codec probe requires a complete audio turn",
+            422
+        );
+        for (const auto& message : body.value("messages", Json::array())) {
+            const std::string role = message.at("role").get<std::string>();
+            const std::string text = message.at("text").get<std::string>();
+            preparation_check(
+                (role == "system" || role == "user" || role == "assistant") && !text.empty(),
+                "Audio call history must contain text messages without tools",
+                422
+            );
+            input.messages.push_back({role, text, Json::array(), ""});
+        }
+        request.input = std::move(input);
+        request.workload = Workload::lfm3_audio;
+    } else if (feature == "decisions") {
+        DecisionRequest input;
+        if (const auto m = optional<std::string>(body, "model_id"))
+            input.model = *m;
+        else if (const auto m2 = optional<std::string>(body, "model"))
+            input.model = *m2;
+        preparation_check(
+            body.contains("state") && body.at("state").is_string(),
+            "d1 requires state to be a valid string.",
+            422
+        );
+        input.state = body.at("state").get<std::string>();
+        preparation_check(
+            input.state.find_first_not_of(" \t\r\n") != std::string::npos
+                && input.state.size() <= 8000,
+            "d1 state must fit 8000 characters.",
+            422
+        );
+        preparation_check(
+            body.contains("questions") && body.at("questions").is_array()
+                && body.at("questions").size() >= 1 && body.at("questions").size() <= 8,
+            "d1 requires one to eight questions.",
+            422
+        );
+        Json serialized_questions = Json::array();
+        std::vector<std::string> seen_keys;
+        for (const auto& q : body.at("questions")) {
+            preparation_check(q.is_object(), "d1 questions must be mappings.", 422);
+            lfm3::D1Question parsed_q;
+            preparation_check(
+                q.contains("key") && q.at("key").is_string()
+                    && q.at("key").get<std::string>().find_first_not_of(" \t\r\n")
+                           != std::string::npos,
+                "d1 requires question key to be a valid string.",
+                422
+            );
+            parsed_q.key = q.at("key").get<std::string>();
+            preparation_check(
+                std::find(seen_keys.begin(), seen_keys.end(), parsed_q.key)
+                    == seen_keys.end(),
+                "d1 question keys must be unique.",
+                422
+            );
+            seen_keys.push_back(parsed_q.key);
+            preparation_check(
+                q.contains("instructions") && q.at("instructions").is_string()
+                    && q.at("instructions").get<std::string>().find_first_not_of(" \t\r\n")
+                           != std::string::npos,
+                "d1 requires instructions to be a valid string.",
+                422
+            );
+            parsed_q.instructions = q.at("instructions").get<std::string>();
+            const std::string kind = q.value("type", std::string{});
+            Json wire = {
+                {"key", parsed_q.key},
+                {"instructions", parsed_q.instructions},
+                {"type", kind}
+            };
+            if (kind == "Choice") {
+                parsed_q.kind = lfm3::D1Question::Kind::choice;
+                preparation_check(
+                    q.contains("options") && q.at("options").is_array()
+                        && !q.at("options").empty(),
+                    "d1 Choice requires options.",
+                    422
+                );
+                Json wire_opts = Json::array();
+                std::vector<std::string> opt_keys;
+                for (const auto& opt : q.at("options")) {
+                    preparation_check(opt.is_object(), "d1 options must be mappings.", 422);
+                    preparation_check(
+                        opt.contains("key") && opt.at("key").is_string()
+                            && opt.at("key").get<std::string>().find_first_not_of(" \t\r\n")
+                                   != std::string::npos,
+                        "d1 requires option key to be a valid string.",
+                        422
+                    );
+                    const std::string ok = opt.at("key").get<std::string>();
+                    preparation_check(
+                        std::find(opt_keys.begin(), opt_keys.end(), ok) == opt_keys.end(),
+                        "d1 option keys must be unique.",
+                        422
+                    );
+                    opt_keys.push_back(ok);
+                    preparation_check(
+                        opt.contains("description") && opt.at("description").is_string(),
+                        "d1 requires option description to be a valid string.",
+                        422
+                    );
+                    const std::string desc = opt.at("description").get<std::string>();
+                    parsed_q.options.emplace_back(ok, desc);
+                    wire_opts.push_back({{"key", ok}, {"description", desc}});
+                }
+                wire["options"] = std::move(wire_opts);
+            } else if (kind == "Score") {
+                parsed_q.kind = lfm3::D1Question::Kind::score;
+                preparation_check(
+                    q.contains("levels") && q.at("levels").is_array()
+                        && q.at("levels").size() >= 2 && q.at("levels").size() <= 10,
+                    "d1 supports Score rubrics of 2 to 10 levels.",
+                    422
+                );
+                for (const auto& lv : q.at("levels")) {
+                    preparation_check(
+                        lv.is_string()
+                            && lv.get<std::string>().find_first_not_of(" \t\r\n")
+                                   != std::string::npos,
+                        "d1 requires Score level to be a valid string.",
+                        422
+                    );
+                    parsed_q.levels.push_back(lv.get<std::string>());
+                }
+                wire["levels"] = parsed_q.levels;
+            } else if (kind == "Noul") {
+                parsed_q.kind = lfm3::D1Question::Kind::noul;
+                if (q.contains("trueWhen") && q.at("trueWhen").is_string())
+                    parsed_q.true_when = q.at("trueWhen").get<std::string>();
+                else if (q.contains("true_when") && q.at("true_when").is_string())
+                    parsed_q.true_when = q.at("true_when").get<std::string>();
+                if (q.contains("falseWhen") && q.at("falseWhen").is_string())
+                    parsed_q.false_when = q.at("falseWhen").get<std::string>();
+                else if (q.contains("false_when") && q.at("false_when").is_string())
+                    parsed_q.false_when = q.at("false_when").get<std::string>();
+                wire["true_when"] = parsed_q.true_when;
+                wire["false_when"] = parsed_q.false_when;
+            } else {
+                throw RequestError("d1 supports Choice, Score and Noul questions only.", 422);
+            }
+            serialized_questions.push_back(std::move(wire));
+            input.questions.push_back(std::move(parsed_q));
+        }
+        const std::string payload =
+            Json{{"state", input.state}, {"questions", serialized_questions}}.dump();
+        preparation_check(
+            payload.size() <= 16000,
+            "The d1 request must fit 16000 characters.",
+            422
+        );
+        request.input = std::move(input);
+        request.workload = Workload::lfm3_decision;
     } else if (feature == "image") {
         ImageRequest input;
         input.prompt = body.at("prompt");
@@ -326,13 +509,16 @@ InferenceRequest parse_request(const Json& envelope) {
         };
     } else if (feature == "whisper_formatting") {
         request.input = WhisperFormattingRequest{body.at("enabled")};
+    } else if (feature == "llm_selection") {
+        request.input = LlmSelectionRequest{body.at("model_id")};
     } else if (feature == "models") {
         request.input = DownloadRequest{
             body.at("model_id"), body.value("license_acknowledged", false)
         };
     } else
         throw RequestError("Invalid task feature", 422);
-    const bool settings = feature == "model_context" || feature == "whisper_formatting";
+    const bool settings = feature == "model_context" || feature == "whisper_formatting"
+                          || feature == "llm_selection";
     preparation_check(
         settings == (request.operation == Operation::configure),
         "Invalid settings operation",

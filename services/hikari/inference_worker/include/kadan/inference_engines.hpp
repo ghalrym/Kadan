@@ -62,4 +62,14 @@ std::unique_ptr<InferenceEngine> speech_engine(std::shared_ptr<Resources>, Progr
 std::unique_ptr<InferenceEngine> chat_engine(
     std::shared_ptr<Resources>, Progress, std::function<void(const std::string&)>
 );
+std::unique_ptr<InferenceEngine> lfm3_text_engine(
+    std::shared_ptr<Resources>, Progress, std::function<void(const std::string&)>
+);
+std::unique_ptr<InferenceEngine>
+    lfm3_vision_engine(std::shared_ptr<Resources>, Progress);
+std::unique_ptr<InferenceEngine> lfm3_audio_engine(
+    std::shared_ptr<Resources>, Progress, std::function<void(const Json&)>
+);
+std::unique_ptr<InferenceEngine>
+    lfm3_decision_engine(std::shared_ptr<Resources>, Progress);
 }  // namespace kadan::serving

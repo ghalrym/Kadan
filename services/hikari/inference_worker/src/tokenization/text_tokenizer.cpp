@@ -102,6 +102,9 @@ struct Tokenizer::Impl {
     std::unordered_map<std::string, std::uint32_t> vocab;
     std::unordered_map<std::string, std::size_t> merges;
     std::vector<std::pair<std::string, std::uint32_t>> added;
+    std::unordered_map<std::string, std::uint32_t> added_lookup;
+    std::unordered_map<std::uint32_t, std::string> added_text;
+    std::vector<std::string> specials;
     std::unique_ptr<pcre2_code, decltype(&pcre2_code_free)> pattern{
         nullptr, pcre2_code_free
     };
@@ -264,7 +267,7 @@ struct Tokenizer::Impl {
 
     void load_added_tokens(const Json& j, std::vector<bool>& ids) {
         check(
-            j.at("added_tokens").size() <= (fixed_vocabulary ? 256 : 2048),
+            j.at("added_tokens").size() <= (fixed_vocabulary ? 256 : 4096),
             "text_tokenizer_added_limit"
         );
         special.resize(ids.size());
@@ -290,6 +293,10 @@ struct Tokenizer::Impl {
             );
             ids[id] = true;
             special[id] = item.value("special", false);
+            if (item.value("special", false))
+                specials.push_back(text);
+            added_lookup.emplace(text, id);
+            added_text.emplace(id, text);
             added.emplace_back(std::move(text), id);
         }
     }
@@ -595,8 +602,12 @@ std::size_t Tokenizer::encode(
     return impl_->encode(text, output, cancel, literal_ranges);
 }
 
-std::string Tokenizer::decode(std::uint32_t token) const {
+std::string Tokenizer::decode(std::uint32_t token, bool skip_special_tokens) const {
     check(bool(impl_) && token < impl_->decoded.size(), "text_tokenizer_decode_id");
+    if (!skip_special_tokens) {
+        if (const auto it = impl_->added_text.find(token); it != impl_->added_text.end())
+            return it->second;
+    }
     return impl_->decoded[token];
 }
 
@@ -611,5 +622,20 @@ std::optional<std::uint32_t> Tokenizer::added_token_id(std::string_view token) c
         if (entry.first == token)
             return entry.second;
     return std::nullopt;
+}
+
+std::optional<std::uint32_t> Tokenizer::find_token(std::string_view text) const {
+    check(bool(impl_), "text_tokenizer_not_loaded");
+    const std::string key(text);
+    if (const auto it = impl_->added_lookup.find(key); it != impl_->added_lookup.end())
+        return it->second;
+    if (const auto it = impl_->vocab.find(key); it != impl_->vocab.end())
+        return it->second;
+    return std::nullopt;
+}
+
+std::vector<std::string> Tokenizer::special_tokens() const {
+    check(bool(impl_), "text_tokenizer_not_loaded");
+    return impl_->specials;
 }
 }  // namespace kadan::text

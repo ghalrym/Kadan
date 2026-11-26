@@ -3,7 +3,6 @@
 #include <fstream>
 #include <iostream>
 #include <thread>
-#include <unistd.h>
 
 #include "kadan/image_aten_plan.hpp"
 #include "kadan/image_batch_memory.hpp"
@@ -12,16 +11,16 @@
 #include "kadan/image_generation.hpp"
 #include "kadan/image_upload.hpp"
 #include "kadan/inference_engines.hpp"
+#include "kadan/platform.hpp"
 #include "kadan/preparation.hpp"
 
 namespace kadan::serving {
 namespace {
 Bytes resident_bytes() {
-    std::ifstream stat("/proc/self/statm");
-    Bytes pages = 0, resident = 0;
-    if (!(stat >> pages >> resident))
+    const Bytes rss = platform::process_rss_bytes();
+    if (!rss)
         throw std::runtime_error("image_host_memory_probe");
-    return resident * static_cast<Bytes>(sysconf(_SC_PAGESIZE));
+    return rss;
 }
 
 // RSS is sampled only around a batch, including its preparation and output

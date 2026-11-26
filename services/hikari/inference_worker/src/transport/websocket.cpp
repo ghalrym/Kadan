@@ -3,23 +3,101 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
-#include <fcntl.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <openssl/ssl.h>
-#include <poll.h>
 #include <random>
 #include <stdexcept>
+#include <vector>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <vector>
+#endif
 
 namespace kadan::serving::websocket {
 namespace {
+#ifdef _WIN32
+void ensure_winsock() {
+    static const bool ok = [] {
+        WSADATA data{};
+        return WSAStartup(MAKEWORD(2, 2), &data) == 0;
+    }();
+    if (!ok)
+        throw std::runtime_error("websocket_winsock_init");
+}
+
+int close_socket(int s) {
+    return ::closesocket(static_cast<SOCKET>(s));
+}
+
+void shutdown_socket(int s) {
+    ::shutdown(static_cast<SOCKET>(s), SD_BOTH);
+}
+
+bool set_nonblocking(int s) {
+    u_long mode = 1;
+    return ioctlsocket(static_cast<SOCKET>(s), FIONBIO, &mode) == 0;
+}
+
+bool would_block() {
+    const int err = WSAGetLastError();
+    return err == WSAEWOULDBLOCK || err == WSAEINTR;
+}
+
+int poll_socket(int s, short events, int timeout_ms, short* revents_out = nullptr) {
+    WSAPOLLFD fd{};
+    fd.fd = static_cast<SOCKET>(s);
+    fd.events = events;
+    const int rc = WSAPoll(&fd, 1, timeout_ms);
+    if (revents_out)
+        *revents_out = fd.revents;
+    return rc;
+}
+
+constexpr int kSendFlags = 0;
+#else
+void ensure_winsock() {}
+
+int close_socket(int s) {
+    return ::close(s);
+}
+
+void shutdown_socket(int s) {
+    ::shutdown(s, SHUT_RDWR);
+}
+
+bool set_nonblocking(int s) {
+    const auto flags = fcntl(s, F_GETFL);
+    return flags >= 0 && fcntl(s, F_SETFL, flags | O_NONBLOCK) == 0;
+}
+
+bool would_block() {
+    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+}
+
+int poll_socket(int s, short events, int timeout_ms, short* revents_out = nullptr) {
+    pollfd fd{s, events, 0};
+    const int rc = poll(&fd, 1, timeout_ms);
+    if (revents_out)
+        *revents_out = fd.revents;
+    return rc;
+}
+
+constexpr int kSendFlags = MSG_NOSIGNAL;
+#endif
 void need(bool value, const char* message) {
     if (!value)
         throw std::runtime_error(message);
@@ -266,6 +344,7 @@ void check_handshake_response(std::string_view response, std::string_view key) {
 
 Client::Client(const Url& url, const std::string& token, std::size_t maximum)
     : reader_(maximum), assembler_(maximum) {
+    ensure_winsock();
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -275,6 +354,14 @@ Client::Client(const Url& url, const std::string& token, std::size_t maximum)
         "websocket_resolve"
     );
     for (auto* address = addresses; address; address = address->ai_next) {
+#ifdef _WIN32
+        const SOCKET s = ::socket(
+            address->ai_family, address->ai_socktype, address->ai_protocol
+        );
+        if (s == INVALID_SOCKET)
+            continue;
+        socket_ = static_cast<int>(s);
+#else
         socket_ = ::socket(
             address->ai_family,
             address->ai_socktype | SOCK_CLOEXEC,
@@ -282,16 +369,23 @@ Client::Client(const Url& url, const std::string& token, std::size_t maximum)
         );
         if (socket_ < 0)
             continue;
-        if (::connect(socket_, address->ai_addr, address->ai_addrlen) == 0)
+#endif
+        if (::connect(socket_, address->ai_addr, static_cast<int>(address->ai_addrlen)) == 0)
             break;
-        ::close(socket_);
+        close_socket(socket_);
         socket_ = -1;
     }
     freeaddrinfo(addresses);
     need(socket_ >= 0, "websocket_connect");
     try {
         const int enabled = 1;
-        setsockopt(socket_, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled));
+        setsockopt(
+            socket_,
+            IPPROTO_TCP,
+            TCP_NODELAY,
+            reinterpret_cast<const char*>(&enabled),
+            sizeof(enabled)
+        );
         if (url.secure) {
             auto* context = SSL_CTX_new(TLS_client_method());
             need(context, "websocket_tls_context");
@@ -320,8 +414,8 @@ Client::Client(const Url& url, const std::string& token, std::size_t maximum)
                      : ::send(
                            socket_,
                            request.data() + sent,
-                           request.size() - sent,
-                           MSG_NOSIGNAL
+                           static_cast<int>(request.size() - sent),
+                           kSendFlags
                        );
             need(count > 0, "websocket_handshake_write");
             sent += std::size_t(count);
@@ -333,18 +427,14 @@ Client::Client(const Url& url, const std::string& token, std::size_t maximum)
             need(response.size() < 64 * 1024, "websocket_handshake_bound");
             const auto count =
                 tls_ ? SSL_read(tls(tls_), buffer.data(), int(buffer.size()))
-                     : ::recv(socket_, buffer.data(), buffer.size(), 0);
+                     : ::recv(socket_, buffer.data(), static_cast<int>(buffer.size()), 0);
             need(count > 0, "websocket_handshake_read");
             response.append(buffer.data(), std::size_t(count));
             header_end = response.find("\r\n\r\n");
         }
         check_handshake_response(response.substr(0, header_end + 2), key);
         reader_.feed(std::string_view(response).substr(header_end + 4));
-        const auto flags = fcntl(socket_, F_GETFL);
-        need(
-            flags >= 0 && fcntl(socket_, F_SETFL, flags | O_NONBLOCK) == 0,
-            "websocket_nonblocking"
-        );
+        need(set_nonblocking(socket_), "websocket_nonblocking");
     } catch (...) {
         close();
         throw;
@@ -366,8 +456,8 @@ void Client::close() noexcept {
         context_ = nullptr;
     }
     if (socket_ >= 0) {
-        ::shutdown(socket_, SHUT_RDWR);
-        ::close(socket_);
+        shutdown_socket(socket_);
+        close_socket(socket_);
         socket_ = -1;
     }
 }
@@ -406,19 +496,24 @@ void Client::write_all(std::string_view bytes) {
             );
             wait_read = error == SSL_ERROR_WANT_READ;
         } else {
-            const auto count =
-                ::send(socket_, bytes.data() + offset, remaining, MSG_NOSIGNAL);
+            const auto count = ::send(
+                socket_,
+                bytes.data() + offset,
+                static_cast<int>(std::min<std::size_t>(remaining, 1 << 30)),
+                kSendFlags
+            );
             if (count > 0) {
                 offset += std::size_t(count);
                 continue;
             }
-            need(count < 0 && (errno == EAGAIN || errno == EINTR), "websocket_write");
+            need(count < 0 && would_block(), "websocket_write");
         }
-        pollfd descriptor{socket_, short(wait_read ? POLLIN : POLLOUT), 0};
-        const auto ready = poll(&descriptor, 1, 100);
-        need(ready >= 0 || errno == EINTR, "websocket_write_poll");
+        short revents = 0;
+        const auto ready =
+            poll_socket(socket_, short(wait_read ? POLLIN : POLLOUT), 100, &revents);
+        need(ready >= 0 || would_block(), "websocket_write_poll");
         need(
-            ready <= 0 || !(descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)),
+            ready <= 0 || !(revents & (POLLERR | POLLHUP | POLLNVAL)),
             "websocket_closed"
         );
     }
@@ -431,9 +526,8 @@ bool Client::wait_readable(std::chrono::milliseconds wait) {
         if (tls_ && SSL_pending(tls(tls_)) > 0)
             return true;
     }
-    pollfd descriptor{socket_, POLLIN, 0};
-    const auto ready = poll(&descriptor, 1, int(wait.count()));
-    if (ready < 0 && errno == EINTR)
+    const auto ready = poll_socket(socket_, POLLIN, int(wait.count()));
+    if (ready < 0 && would_block())
         return false;
     need(ready >= 0, "websocket_read_poll");
     return ready > 0;
@@ -459,10 +553,10 @@ std::size_t Client::read_some(char* buffer, std::size_t size) {
         socket = socket_;
     }
     // Non-blocking: wait_readable() polls first, and only this thread closes.
-    const auto count = ::recv(socket, buffer, size, 0);
+    const auto count = ::recv(socket, buffer, static_cast<int>(size), 0);
     if (count > 0)
         return std::size_t(count);
-    need(count < 0 && (errno == EAGAIN || errno == EINTR), "websocket_closed");
+    need(count < 0 && would_block(), "websocket_closed");
     return 0;
 }
 

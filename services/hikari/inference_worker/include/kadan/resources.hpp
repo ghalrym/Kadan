@@ -21,7 +21,11 @@ enum class Workload {
     video,
     speech,
     formatting,
-    tts
+    tts,
+    lfm3_llm,
+    lfm3_vision,
+    lfm3_audio,
+    lfm3_decision
 };
 enum class State {
     loading,

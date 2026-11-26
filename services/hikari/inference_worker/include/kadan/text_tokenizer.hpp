@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "kadan/resources.hpp"
 
@@ -29,9 +30,11 @@ public:
     Tokenizer& operator=(const Tokenizer&) = delete;
     void load(const std::string& tokenizer_json, const std::atomic_bool&);
     void unload();
-    std::string decode(std::uint32_t token) const;
+    std::string decode(std::uint32_t token, bool skip_special_tokens = true) const;
     bool is_special(std::uint32_t token) const;
     std::optional<std::uint32_t> added_token_id(std::string_view token) const;
+    std::optional<std::uint32_t> find_token(std::string_view text) const;
+    std::vector<std::string> special_tokens() const;
     // Verbatim prompt presentation, NFC/regex/byte-level BPE, no template or
     // inserted special tokens. Caller owns/admitted output storage.
     std::size_t encode(

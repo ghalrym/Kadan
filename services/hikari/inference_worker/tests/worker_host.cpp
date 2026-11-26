@@ -244,6 +244,25 @@ void each_program_runs_only_its_own_type() {
     );
     assert(image.last(id('b'))["worker"] == "image");
     image.host->stop();
+
+    Harness lfm3(Workload::lfm3_llm);
+    lfm3.command(chat(id('c')));
+    assert(lfm3.last(id('c'))["worker"] == "lfm3_llm");
+    lfm3.host->stop();
+
+    Harness d1(Workload::lfm3_decision);
+    d1.command(
+        {{"id", id('d')},
+         {"command", "submit"},
+         {"operation", "generate"},
+         {"input",
+          {{"feature", "decisions"},
+           {"state", "hi"},
+           {"questions",
+            {{{"key", "q1"}, {"type", "Noul"}, {"instructions", "Test?"}}}}}}}
+    );
+    assert(d1.last(id('d'))["worker"] == "lfm3_decision");
+    d1.host->stop();
 }
 
 void sampled_phases_share_context_without_changing_results() {

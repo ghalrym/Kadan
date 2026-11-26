@@ -90,6 +90,7 @@ public:
     fs::path acquire(const std::string& model, const std::atomic_bool& cancel);
     fs::path require_local(const std::string& model, const std::atomic_bool& cancel);
     std::string selected_llm_id() const;
+    void set_selected_llm_id(const std::string& model);
     std::size_t default_llm_context() const;
     std::string whisper_selected() const;
     std::string whisper_model(const std::string& name) const;
@@ -189,6 +190,15 @@ void prepare_input(
     ChatRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
+    VisionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
+);
+void prepare_input(
+    AudioCallRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
+);
+void prepare_input(
+    DecisionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
+);
+void prepare_input(
     ImageRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
@@ -214,6 +224,9 @@ void prepare_input(
 );
 void prepare_input(
     WhisperFormattingRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
+);
+void prepare_input(
+    LlmSelectionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 Json present_chat(const InferenceRequest&, Json result);
 Json present_image(const InferenceRequest&, const std::vector<fs::path>& images);

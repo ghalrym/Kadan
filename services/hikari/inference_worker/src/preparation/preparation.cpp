@@ -95,4 +95,14 @@ void prepare_input(
 ) {
     store.set_whisper_formatting(input.enabled);
 }
+
+void prepare_input(
+    LlmSelectionRequest& input,
+    InferenceRequest& request,
+    ModelStore& store,
+    const std::atomic_bool&
+) {
+    request.model = input.model;
+    store.set_selected_llm_id(input.model);
+}
 }  // namespace kadan::serving

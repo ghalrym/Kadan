@@ -12,6 +12,7 @@
 #include "kadan/h3_generation.hpp"
 #include "kadan/image_upload.hpp"
 #include "kadan/inference_trace.hpp"
+#include "kadan/lfm3.hpp"
 #include "kadan/resources.hpp"
 
 namespace kadan::serving {
@@ -61,13 +62,41 @@ struct ChatMessage {
 struct ChatRequest {
     std::vector<ChatMessage> messages;
     std::vector<ChatTool> tools;
+    std::vector<lfm3::Lfm3ChatMessage> lfm3_messages;
+    Json lfm3_tools;
     std::optional<std::string> model, conversation_id;
     bool reuse_prefix = true;
+    bool stream = false;
     bool context_supplied = false;
     std::optional<std::size_t> context_limit;
     std::optional<std::size_t> max_output_tokens;
+    std::optional<std::size_t> max_tokens;
     std::optional<std::size_t> reasoning_tokens;
     std::optional<std::string> reasoning_effort;
+};
+
+struct VisionRequest {
+    std::string model = "lfm3-vl-2b-bf16";
+    std::string question;
+    std::string media_type;
+    std::string image_base64;
+    std::optional<std::size_t> max_new_tokens;
+};
+
+struct AudioCallRequest {
+    std::string model = "lfm3-audio-2b-bf16";
+    std::string mode;
+    std::optional<std::string> audio;
+    std::optional<std::string> script;
+    std::vector<lfm3::Lfm3ChatMessage> messages;
+    bool sentence_tts = false;
+    bool codec_streaming_probe = false;
+};
+
+struct DecisionRequest {
+    std::string model = "d1-2b-cpu-f32";
+    std::string state;
+    std::vector<lfm3::D1Question> questions;
 };
 
 struct ImageRequest {
@@ -123,8 +152,15 @@ struct WhisperFormattingRequest {
     bool enabled;
 };
 
+struct LlmSelectionRequest {
+    std::string model;
+};
+
 using TaskInput = std::variant<
     ChatRequest,
+    VisionRequest,
+    AudioCallRequest,
+    DecisionRequest,
     ImageRequest,
     SpeechRequest,
     TranscriptionRequest,
@@ -132,7 +168,8 @@ using TaskInput = std::variant<
     VideoRequest,
     DownloadRequest,
     ContextRequest,
-    WhisperFormattingRequest>;
+    WhisperFormattingRequest,
+    LlmSelectionRequest>;
 
 struct EngineConfiguration {
     std::filesystem::path checkpoint;

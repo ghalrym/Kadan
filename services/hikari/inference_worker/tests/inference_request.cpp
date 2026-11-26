@@ -149,12 +149,42 @@ int main() {
     decisions["input"] = {
         {"feature", "decisions"}, {"state", "text"}, {"questions", Json::array()}
     };
-    bool retired_decisions_rejected = false;
+    bool empty_decisions_rejected = false;
     try {
         (void)parse_request(decisions);
     } catch (const RequestError& error) {
-        retired_decisions_rejected = error.status == 422;
+        empty_decisions_rejected = error.status == 422;
     }
-    assert(retired_decisions_rejected);
+    assert(empty_decisions_rejected);
+
+    decisions["input"]["questions"] = Json::array({
+        {{"key", "urgent"},
+         {"type", "Noul"},
+         {"instructions", "Is this urgent?"},
+         {"trueWhen", "Needs action now"},
+         {"falseWhen", "Can wait"}}
+    });
+    const auto parsed_d1 = parse_request(decisions);
+    assert(parsed_d1.workload == kadan::Workload::lfm3_decision);
+    assert(std::get<DecisionRequest>(parsed_d1.input).questions.size() == 1);
+
+    auto audio_call = envelope;
+    audio_call["input"] = {
+        {"feature", "audio_call"},
+        {"mode", "tts"},
+        {"script", "Hello world"}
+    };
+    const auto parsed_a = parse_request(audio_call);
+    assert(parsed_a.workload == kadan::Workload::lfm3_audio);
+
+    auto llm_sel = envelope;
+    llm_sel["operation"] = "configure";
+    llm_sel["input"] = {
+        {"feature", "llm_selection"},
+        {"model_id", "inkling-2-mini-abliterated-q8-0"}
+    };
+    const auto parsed_sel = parse_request(llm_sel);
+    assert(std::get<LlmSelectionRequest>(parsed_sel.input).model == "inkling-2-mini-abliterated-q8-0");
+
     std::cout << "Inference request parser units passed\n";
 }

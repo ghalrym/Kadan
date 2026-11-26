@@ -5,10 +5,14 @@
 #include <cerrno>
 #include <charconv>
 #include <cmath>
-#include <fcntl.h>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
+#ifndef _WIN32
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 namespace kadan::checkpoint::json {
 namespace {
@@ -17,6 +21,7 @@ void require(bool ok, const char* message) {
         throw std::invalid_argument(message);
 }
 
+#ifndef _WIN32
 struct Fd {
     int value;
 
@@ -31,6 +36,7 @@ struct Fd {
 
     Fd(const Fd&) = delete;
 };
+#endif
 
 class Parser {
     std::string_view input;
@@ -288,6 +294,21 @@ Value read(
         );
     std::array<char, 256> path{};
     std::copy(name.begin(), name.end(), path.begin());
+#ifdef _WIN32
+    const auto full = std::filesystem::path(root) / std::string(name);
+    require(
+        !std::filesystem::is_symlink(full) && std::filesystem::is_regular_file(full),
+        "metadata_file_size"
+    );
+    const auto fsize = std::filesystem::file_size(full);
+    require(fsize > 0 && fsize <= limit, "metadata_file_size");
+    std::pmr::string text(budget.get());
+    text.resize(static_cast<std::size_t>(fsize));
+    std::ifstream in(full, std::ios::binary);
+    if (!in || !in.read(text.data(), static_cast<std::streamsize>(text.size())))
+        throw std::runtime_error("metadata_short_read");
+    return Parser(text, budget.get()).parse();
+#else
     Fd directory(::open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
     Fd file(
         ::openat(
@@ -327,5 +348,6 @@ Value read(
         "metadata_changed"
     );
     return Parser(text, budget.get()).parse();
+#endif
 }
 }  // namespace kadan::checkpoint::json
