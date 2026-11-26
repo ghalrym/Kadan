@@ -57,6 +57,10 @@ def test_mcp_server_crud_and_version_conflict(client):
             "preset": "t3_code",
             "url": "http://127.0.0.1:3773/mcp",
             "auth_type": "oauth",
+            "auth_state": {
+                "client_id": "dyn-client-1",
+                "registered_redirect_uri": "http://localhost:8630/api/mcp/oauth/callback",
+            },
             "status": "connected",
             "pinned_tools": ["t3_thread_launch"],
             "tools": [
@@ -78,6 +82,10 @@ def test_mcp_server_crud_and_version_conflict(client):
     assert updated.status_code == 200
     assert updated.json()["version"] == 2
     assert updated.json()["status"] == "connected"
+    assert (
+        updated.json()["auth_state"]["registered_redirect_uri"]
+        == "http://localhost:8630/api/mcp/oauth/callback"
+    )
 
     stale = client.put(
         f"/api/mcp-servers/{server['id']}",

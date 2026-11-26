@@ -22,11 +22,19 @@ from kadan.api.services import LocalServices
 class FakeTsuchiAndMcp:
     """In-memory mock for both Tsuchi MCP storage and a Streamable HTTP MCP server."""
 
-    def __init__(self, *, require_oauth: bool = False, use_sse: bool = False):
+    def __init__(
+        self,
+        *,
+        require_oauth: bool = False,
+        use_sse: bool = False,
+        strict_redirect_uris: bool = False,
+    ):
         self.servers: dict[str, dict] = {}
         self.oauth_states: dict[str, dict] = {}
         self.require_oauth = require_oauth
         self.use_sse = use_sse
+        self.strict_redirect_uris = strict_redirect_uris
+        self.registrations: list[dict] = []
         self.valid_token = "tok-initial"
         self.refreshed_token = "tok-refreshed"
         self.tools = [
@@ -128,10 +136,31 @@ class FakeTsuchiAndMcp:
                     "authorization_endpoint": "https://t3.example/oauth/authorize",
                     "token_endpoint": "https://t3.example/oauth/token",
                     "registration_endpoint": "https://t3.example/oauth/register",
+                    "grant_types_supported": ["authorization_code"],
                 },
             )
         if path == "/oauth/register":
-            return httpx.Response(201, json={"client_id": "dyn-client-1"})
+            body = json.loads(request.content)
+            self.registrations.append(body)
+            uris = body.get("redirect_uris") or []
+            if self.strict_redirect_uris:
+                for uri in uris:
+                    parsed = urlsplit(uri)
+                    allowed = parsed.scheme == "https" or (
+                        parsed.scheme == "http"
+                        and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+                    )
+                    if not allowed:
+                        return httpx.Response(
+                            400,
+                            json={
+                                "error": "invalid_redirect_uri",
+                                "error_description": "Redirect URIs must be https, or http on localhost, 127.0.0.1 or [::1].",
+                            },
+                        )
+            return httpx.Response(
+                201, json={"client_id": f"dyn-client-{len(self.registrations)}"}
+            )
         if path == "/oauth/token":
             body_text = request.content.decode()
             parsed = parse_qs(body_text)
@@ -166,12 +195,27 @@ class FakeTsuchiAndMcp:
             rpc = json.loads(request.content)
             method = rpc.get("method")
             if method == "initialize":
-                payload = {"jsonrpc": "2.0", "id": rpc["id"], "result": {"protocolVersion": "2025-03-26"}}
+                payload = {"jsonrpc": "2.0", "id": rpc["id"], "result": {"protocolVersion": "2026-07-28"}}
             elif method == "notifications/initialized":
+                if request.headers.get("mcp-protocol-version") != "2026-07-28":
+                    return httpx.Response(
+                        400,
+                        json={"jsonrpc": "2.0", "id": None, "error": {"code": -32022, "message": "Unsupported protocol version"}},
+                    )
                 return httpx.Response(202)
             elif method == "tools/list":
+                if request.headers.get("mcp-protocol-version") != "2026-07-28":
+                    return httpx.Response(
+                        400,
+                        json={"jsonrpc": "2.0", "id": rpc["id"], "error": {"code": -32022, "message": "Unsupported protocol version"}},
+                    )
                 payload = {"jsonrpc": "2.0", "id": rpc["id"], "result": {"tools": self.tools}}
             elif method == "tools/call":
+                if request.headers.get("mcp-protocol-version") != "2026-07-28":
+                    return httpx.Response(
+                        400,
+                        json={"jsonrpc": "2.0", "id": rpc["id"], "error": {"code": -32022, "message": "Unsupported protocol version"}},
+                    )
                 name = rpc["params"]["name"]
                 args = rpc["params"].get("arguments", {})
                 self.calls.append((name, args))
@@ -298,3 +342,97 @@ def test_mcp_routes_expose_redacted_servers_and_oauth_callback():
         assert connected.json()["authorize_url"] is None
         assert connected.json()["server"]["status"] == "connected"
         assert len(connected.json()["server"]["tools"]) == 3
+
+
+def test_lan_http_dcr_400_falls_back_to_localhost_and_completes_from_pasted_url():
+    mock = FakeTsuchiAndMcp(require_oauth=True, strict_redirect_uris=True)
+    app = create_app(Settings(tsuchi_url="http://tsuchi.test", hikari_url="http://hikari.test"))
+
+    with TestClient(app) as client:
+        app.state.services = make_services(mock)
+        created = client.post(
+            "/api/mcp/servers",
+            json={
+                "name": "T3 Code",
+                "url": "https://t3.example/mcp",
+                "preset": "t3_code",
+                "auth_type": "oauth",
+            },
+        )
+        assert created.status_code == 201
+        server_id = created.json()["id"]
+
+        # Simulate browser accessing Kadan over LAN HTTP (e.g. http://192.168.0.19:8630).
+        started = client.post(
+            f"/api/mcp/servers/{server_id}/connect",
+            headers={"Host": "192.168.0.19:8630", "Origin": "http://192.168.0.19:8630"},
+        )
+        assert started.status_code == 200
+        payload = started.json()
+        assert payload["manual_callback"] is True
+        assert payload["authorize_url"] is not None
+
+        # First DCR attempt used LAN IP and was rejected; fallback used localhost:8630.
+        assert len(mock.registrations) == 2
+        assert mock.registrations[0]["redirect_uris"] == [
+            "http://192.168.0.19:8630/api/mcp/oauth/callback"
+        ]
+        assert mock.registrations[0]["grant_types"] == ["authorization_code"]
+        assert mock.registrations[1]["redirect_uris"] == [
+            "http://localhost:8630/api/mcp/oauth/callback"
+        ]
+
+        query = parse_qs(urlsplit(payload["authorize_url"]).query)
+        assert query["redirect_uri"] == ["http://localhost:8630/api/mcp/oauth/callback"]
+        state = query["state"][0]
+
+        # Complete OAuth by pasting the localhost callback URL from another device.
+        completed = client.post(
+            "/api/mcp/oauth/complete",
+            json={
+                "callback_url": f"http://localhost:8630/api/mcp/oauth/callback?code=code-123&state={state}"
+            },
+        )
+        assert completed.status_code == 200
+        assert completed.json()["status"] == "connected"
+        assert len(completed.json()["tools"]) == 3
+
+
+def test_callback_url_prefers_https_origin_and_re_registers_when_origin_changes():
+    mock = FakeTsuchiAndMcp(require_oauth=True, strict_redirect_uris=True)
+    app = create_app(Settings(tsuchi_url="http://tsuchi.test", hikari_url="http://hikari.test"))
+
+    with TestClient(app) as client:
+        app.state.services = make_services(mock)
+        created = client.post(
+            "/api/mcp/servers",
+            json={
+                "name": "T3 Code",
+                "url": "https://t3.example/mcp",
+                "preset": "t3_code",
+                "auth_type": "oauth",
+            },
+        )
+        server_id = created.json()["id"]
+
+        # Reverse proxy without X-Forwarded-Proto still sends browser Origin: https://...
+        first = client.post(
+            f"/api/mcp/servers/{server_id}/connect",
+            headers={"Host": "kadan.example.com", "Origin": "https://kadan.example.com"},
+        )
+        assert first.status_code == 200
+        assert first.json()["manual_callback"] is False
+        assert mock.registrations[-1]["redirect_uris"] == [
+            "https://kadan.example.com/api/mcp/oauth/callback"
+        ]
+
+        # Switching to localhost re-registers so client_id matches the new redirect_uri.
+        second = client.post(
+            f"/api/mcp/servers/{server_id}/connect",
+            headers={"Host": "localhost:8630", "Origin": "http://localhost:8630"},
+        )
+        assert second.status_code == 200
+        assert len(mock.registrations) == 2
+        assert mock.registrations[-1]["redirect_uris"] == [
+            "http://localhost:8630/api/mcp/oauth/callback"
+        ]

@@ -37,8 +37,37 @@ export default function Plugins({ agentName }: Props) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [pendingAuthUrl, setPendingAuthUrl] = useState<string | null>(null);
+  const [manualCallback, setManualCallback] = useState(false);
+  const [callbackUrl, setCallbackUrl] = useState("");
   const [query, setQuery] = useState("");
   const [selection, setSelection] = useState<Selection>({ name: "catalog" });
+
+  function savePendingAuth(serverId: string, authorizeUrl: string, manual: boolean) {
+    setPendingAuthUrl(authorizeUrl);
+    setManualCallback(manual);
+    setCallbackUrl("");
+    try {
+      sessionStorage.setItem(
+        `kadan:mcp-pending-auth:${serverId}`,
+        JSON.stringify({ authorizeUrl, manual }),
+      );
+    } catch {
+      // Ignore storage errors.
+    }
+  }
+
+  function clearPendingAuth(serverId?: string) {
+    setPendingAuthUrl(null);
+    setManualCallback(false);
+    setCallbackUrl("");
+    if (serverId) {
+      try {
+        sessionStorage.removeItem(`kadan:mcp-pending-auth:${serverId}`);
+      } catch {
+        // Ignore storage errors.
+      }
+    }
+  }
 
   const [t3Url, setT3Url] = useState("");
   const [customName, setCustomName] = useState("");
@@ -71,6 +100,8 @@ export default function Plugins({ agentName }: Props) {
       if (event.origin !== window.location.origin) return;
       if (event.data?.type === "kadan:mcp-oauth") {
         setPendingAuthUrl(null);
+        setManualCallback(false);
+        setCallbackUrl("");
         setNotice(event.data.ok ? "Connected." : "Sign-in did not complete. Try signing in again.");
         void refresh();
       }
@@ -82,10 +113,55 @@ export default function Plugins({ agentName }: Props) {
     };
   }, []);
 
+  useEffect(() => {
+    if (selection.name !== "server") return;
+    try {
+      const raw = sessionStorage.getItem(`kadan:mcp-pending-auth:${selection.id}`);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as { authorizeUrl?: string; manual?: boolean };
+      if (typeof saved.authorizeUrl === "string" && saved.authorizeUrl) {
+        setPendingAuthUrl(saved.authorizeUrl);
+        setManualCallback(Boolean(saved.manual));
+      }
+    } catch {
+      // Ignore invalid saved state.
+    }
+  }, [selection]);
+
+  useEffect(() => {
+    if (!pendingAuthUrl) return;
+    const checkConnected = async () => {
+      try {
+        const list = await api<McpServer[]>("/mcp/servers");
+        if (!active.current) return;
+        setServers(list);
+        const target = selection.name === "server" ? list.find((s) => s.id === selection.id) : null;
+        if (target?.status === "connected") {
+          clearPendingAuth(target.id);
+          setNotice(`${target.name} is connected.`);
+        }
+      } catch {
+        // Ignore transient poll errors while waiting for browser approval.
+      }
+    };
+    const onFocus = () => {
+      if (document.visibilityState !== "hidden") void checkConnected();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [pendingAuthUrl, selection]);
+
   function open(next: Selection) {
     setSelection(next);
     setError("");
     setNotice("");
+    setPendingAuthUrl(null);
+    setManualCallback(false);
+    setCallbackUrl("");
   }
 
   /** Run one plugin action, keeping its message visible and reloading the list afterwards. */
@@ -106,14 +182,33 @@ export default function Plugins({ agentName }: Props) {
   }
 
   async function connect(server: McpServer) {
-    setPendingAuthUrl(null);
+    clearPendingAuth(server.id);
     const result = await api<McpConnectResponse>(`/mcp/servers/${server.id}/connect`, {}, "POST");
     if (result.authorize_url) {
-      setPendingAuthUrl(result.authorize_url);
-      window.open(result.authorize_url, "_blank", "noopener");
-      return `Approve ${server.name} in the new browser tab, then come back here.`;
+      const manual = Boolean(result.manual_callback);
+      savePendingAuth(server.id, result.authorize_url, manual);
+      if (!manual) {
+        window.open(result.authorize_url, "_blank", "noopener");
+        return `Approve ${server.name} in the new browser tab, then come back here.`;
+      }
+      return `Follow the two steps below to finish connecting ${server.name}.`;
     }
     return `${result.server.name} is connected.`;
+  }
+
+  function finishManualCallback(event: React.FormEvent) {
+    event.preventDefault();
+    if (!callbackUrl.trim()) return;
+    void run(async () => {
+      const connected = await api<McpServer>(
+        "/mcp/oauth/complete",
+        { callback_url: callbackUrl.trim() },
+        "POST",
+      );
+      if (!active.current) return;
+      clearPendingAuth(connected.id);
+      return `${connected.name} is connected.`;
+    });
   }
 
   function addT3(event: React.FormEvent) {
@@ -126,6 +221,7 @@ export default function Plugins({ agentName }: Props) {
         "POST",
       );
       if (!active.current) return;
+      setServers((prev) => [...prev.filter((s) => s.id !== created.id), created]);
       setT3Url("");
       setSelection({ name: "server", id: created.id });
       return connect(created);
@@ -148,6 +244,7 @@ export default function Plugins({ agentName }: Props) {
         "POST",
       );
       if (!active.current) return;
+      setServers((prev) => [...prev.filter((s) => s.id !== created.id), created]);
       setCustomName("");
       setCustomUrl("");
       setCustomToken("");
@@ -163,10 +260,41 @@ export default function Plugins({ agentName }: Props) {
     <>
       {error && <p className="error" role="alert">{error}</p>}
       {notice && <p className="plugin-notice" role="status">{notice}</p>}
-      {pendingAuthUrl && (
+      {pendingAuthUrl && !manualCallback && (
         <a className="text-link" href={pendingAuthUrl} target="_blank" rel="noreferrer">
           Open the approval page again <ArrowUpRight size={14} />
         </a>
+      )}
+      {pendingAuthUrl && manualCallback && (
+        <form className="plugin-form" onSubmit={finishManualCallback}>
+          <p>
+            <strong>Step 1:</strong>{" "}
+            <a className="text-link" href={pendingAuthUrl} target="_blank" rel="noreferrer">
+              Open the approval page <ArrowUpRight size={14} />
+            </a>{" "}
+            and approve access.
+          </p>
+          <label>
+            Step 2: Paste the final address from that tab
+            <input
+              type="text"
+              autoComplete="off"
+              required
+              placeholder="http://localhost:8630/api/mcp/oauth/callback?code=...&state=..."
+              value={callbackUrl}
+              disabled={busy}
+              onChange={(e) => setCallbackUrl(e.target.value)}
+            />
+          </label>
+          <p className="field-hint">
+            Over a local network address without HTTPS, sign-in redirects to localhost, which won&apos;t load on another device. That&apos;s expected — copy the full address from that tab&apos;s address bar and paste it here.
+          </p>
+          <div className="form-actions">
+            <button className="primary" disabled={busy || !callbackUrl.trim()}>
+              {busy ? "Finishing…" : "Finish sign-in"}
+            </button>
+          </div>
+        </form>
       )}
     </>
   );
@@ -272,7 +400,7 @@ export default function Plugins({ agentName }: Props) {
             <span className={`plugin-badge ${server.enabled ? server.status : "paused"}`}>{statusLabel(server)}</span>
           </header>
           {messages}
-          {server.status_error && <p className="error">{server.status_error}</p>}
+          {!pendingAuthUrl && server.status_error && <p className="error">{server.status_error}</p>}
           <div className="plugin-actions">
             {server.status !== "connected" && (
               <button className="primary" disabled={busy} onClick={() => void run(() => connect(server))}>

@@ -1,6 +1,7 @@
 """Global Remote MCP server setup, OAuth 2.1 callback, and tool sync routes."""
 
 from html import escape
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Request
@@ -10,6 +11,7 @@ from ..config import ServiceError
 from ..mcp_presets import T3_CODE_TOOL_GROUPS
 from ..pydantic_models.mcp import (
     McpConnectResponse,
+    McpOAuthCompleteRequest,
     McpServerCreate,
     McpServerPatch,
     McpServerPublic,
@@ -18,11 +20,26 @@ from ..pydantic_models.mcp import (
 router = APIRouter(prefix="/api/mcp")
 
 
+def _first_header_value(value: str | None) -> str | None:
+    if not value:
+        return None
+    first = value.split(",", 1)[0].strip()
+    return first or None
+
+
 def _callback_url(request: Request) -> str:
-    # Prefer forwarded browser origin (through kadan-frontend Vite proxy) so OAuth
-    # returns to the user's browser URL.
-    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
-    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    # Prefer forwarded browser origin (through reverse proxy or kadan-frontend Vite proxy)
+    # so OAuth returns to the user's browser URL.
+    fwd_proto = _first_header_value(request.headers.get("x-forwarded-proto"))
+    fwd_host = _first_header_value(request.headers.get("x-forwarded-host"))
+    if not fwd_proto:
+        origin = _first_header_value(request.headers.get("origin"))
+        if origin:
+            parsed_origin = urlsplit(origin)
+            if parsed_origin.scheme in {"http", "https"} and parsed_origin.netloc:
+                return f"{parsed_origin.scheme}://{parsed_origin.netloc}/api/mcp/oauth/callback"
+    proto = fwd_proto or request.url.scheme
+    host = fwd_host or _first_header_value(request.headers.get("host"))
     if host:
         return f"{proto}://{host}/api/mcp/oauth/callback"
     return str(request.url_for("mcp_oauth_callback"))
@@ -79,6 +96,16 @@ async def refresh_mcp_server(request: Request, server_id: UUID) -> McpServerPubl
 async def disconnect_mcp_server(request: Request, server_id: UUID) -> McpServerPublic:
     cleared = await request.app.state.services.mcp.disconnect(server_id)
     return cleared.to_public()
+
+
+@router.post("/oauth/complete", response_model=McpServerPublic)
+async def complete_mcp_oauth(
+    request: Request, payload: McpOAuthCompleteRequest
+) -> McpServerPublic:
+    server = await request.app.state.services.mcp.complete_oauth_from_url(
+        payload.callback_url
+    )
+    return server.to_public()
 
 
 @router.get("/oauth/callback", name="mcp_oauth_callback", response_class=HTMLResponse)

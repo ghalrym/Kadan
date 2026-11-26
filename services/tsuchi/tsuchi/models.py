@@ -918,6 +918,7 @@ class McpAuthState(Model):
     authorization_endpoint: str | None = Field(default=None, max_length=2000)
     token_endpoint: str | None = Field(default=None, max_length=2000)
     registration_endpoint: str | None = Field(default=None, max_length=2000)
+    registered_redirect_uri: str | None = Field(default=None, max_length=2000)
     scope: str | None = Field(default=None, max_length=1000)
 
 

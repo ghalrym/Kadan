@@ -38,6 +38,7 @@ class McpAuthState(BaseModel):
     authorization_endpoint: str | None = Field(default=None, max_length=2000)
     token_endpoint: str | None = Field(default=None, max_length=2000)
     registration_endpoint: str | None = Field(default=None, max_length=2000)
+    registered_redirect_uri: str | None = Field(default=None, max_length=2000)
     scope: str | None = Field(default=None, max_length=1000)
 
 
@@ -181,6 +182,13 @@ class McpServerPatch(BaseModel):
 class McpConnectResponse(BaseModel):
     server: McpServerPublic
     authorize_url: str | None = None
+    manual_callback: bool = False
+
+
+class McpOAuthCompleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    callback_url: str = Field(min_length=1, max_length=8000)
 
 
 class McpOAuthStateRecord(BaseModel):

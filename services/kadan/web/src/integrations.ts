@@ -28,6 +28,7 @@ export interface McpServer {
 export interface McpConnectResponse {
   server: McpServer;
   authorize_url: string | null;
+  manual_callback?: boolean;
 }
 
 export const T3_TOOL_GROUPS: { id: string; label: string; tools: string[] }[] = [

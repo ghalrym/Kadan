@@ -12,7 +12,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 from uuid import UUID
 
 import httpx
@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-MCP_PROTOCOL_VERSION = "2025-03-26"
+MCP_PROTOCOL_VERSION = "2025-06-18"
 OAUTH_STATE_TTL_MINUTES = 15
 MCP_TIMEOUT_SECONDS = 45.0
 TOKEN_REFRESH_MARGIN = timedelta(seconds=60)
@@ -59,6 +59,37 @@ def transport_url(url: str) -> str:
 def _origin(url: str) -> str:
     parsed = urlsplit(url)
     return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+
+
+def _is_oauth_allowed_redirect_uri(uri: str) -> bool:
+    parsed = urlsplit(uri)
+    if parsed.scheme == "https":
+        return True
+    return parsed.scheme == "http" and parsed.hostname in {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+    }
+
+
+def _loopback_callback_uri(uri: str) -> str:
+    parsed = urlsplit(uri)
+    port = f":{parsed.port}" if parsed.port else ""
+    return urlunsplit(("http", f"localhost{port}", parsed.path, "", ""))
+
+
+def _oauth_error_detail(resp: httpx.Response) -> str:
+    try:
+        data = resp.json()
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    for key in ("error_description", "message", "detail", "error"):
+        val = data.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()[:300]
+    return ""
 
 
 def _pkce_pair() -> tuple[str, str]:
@@ -358,7 +389,10 @@ class McpClient:
         )
 
     async def _register_oauth_client(
-        self, registration_endpoint: str, redirect_uri: str
+        self,
+        registration_endpoint: str,
+        redirect_uri: str,
+        grant_types: list[str] | None = None,
     ) -> tuple[str, str | None]:
         try:
             resp = await self.services.client.post(
@@ -366,7 +400,7 @@ class McpClient:
                 json={
                     "client_name": "Kadan",
                     "redirect_uris": [redirect_uri],
-                    "grant_types": ["authorization_code", "refresh_token"],
+                    "grant_types": grant_types or ["authorization_code", "refresh_token"],
                     "response_types": ["code"],
                     "token_endpoint_auth_method": "none",
                 },
@@ -377,11 +411,21 @@ class McpClient:
                 "Could not register Kadan with the MCP server.", 502, "mcp_oauth_error"
             ) from error
         if not resp.is_success:
-            raise ServiceError(
-                f"The MCP server rejected client registration (HTTP {resp.status_code}).",
+            detail = _oauth_error_detail(resp)
+            logger.warning(
+                "MCP OAuth client registration rejected (HTTP %s) for redirect_uri=%s: %s",
+                resp.status_code,
+                redirect_uri,
+                detail or resp.text[:300],
+            )
+            suffix = f" ({detail})" if detail else f" (HTTP {resp.status_code})"
+            err = ServiceError(
+                f"The MCP server rejected client registration{suffix}.",
                 502,
                 "mcp_oauth_error",
             )
+            err.upstream_status = resp.status_code  # type: ignore[attr-defined]
+            raise err
         try:
             data = resp.json()
         except ValueError as error:
@@ -429,10 +473,40 @@ class McpClient:
             else None
         )
         scope = meta.get("_scope")
+        supported_grants = meta.get("grant_types_supported")
+        if isinstance(supported_grants, list) and supported_grants:
+            grant_types = [
+                g
+                for g in ("authorization_code", "refresh_token")
+                if g in supported_grants
+            ] or ["authorization_code"]
+        else:
+            grant_types = ["authorization_code", "refresh_token"]
+
+        effective_redirect_uri = redirect_uri
+        manual_callback = False
+        loopback_fallback = (
+            None
+            if _is_oauth_allowed_redirect_uri(redirect_uri)
+            else _loopback_callback_uri(redirect_uri)
+        )
 
         client_id = server.auth_state.client_id
         client_secret = server.auth_state.client_secret
-        if not client_id:
+        registered_redirect_uri = server.auth_state.registered_redirect_uri
+
+        can_reuse_client = False
+        if client_id:
+            if registered_redirect_uri == effective_redirect_uri:
+                can_reuse_client = True
+            elif loopback_fallback and registered_redirect_uri == loopback_fallback:
+                effective_redirect_uri = loopback_fallback
+                manual_callback = True
+                can_reuse_client = True
+            elif registered_redirect_uri is None and not reg_endpoint:
+                can_reuse_client = True
+
+        if not can_reuse_client:
             if not reg_endpoint:
                 raise ServiceError(
                     "This MCP server requires OAuth but does not support automatic client registration. "
@@ -440,9 +514,22 @@ class McpClient:
                     422,
                     "mcp_oauth_no_dcr",
                 )
-            client_id, client_secret = await self._register_oauth_client(
-                reg_endpoint, redirect_uri
-            )
+            try:
+                client_id, client_secret = await self._register_oauth_client(
+                    reg_endpoint, effective_redirect_uri, grant_types
+                )
+            except ServiceError as error:
+                if loopback_fallback and getattr(error, "upstream_status", None) == 400:
+                    # Strict OAuth 2.1 servers reject plain-HTTP LAN redirect URIs (RFC 8252).
+                    # Retry with the matching localhost callback URI; works automatically on the
+                    # same machine and via paste-URL fallback from another device on the LAN.
+                    client_id, client_secret = await self._register_oauth_client(
+                        reg_endpoint, loopback_fallback, grant_types
+                    )
+                    effective_redirect_uri = loopback_fallback
+                    manual_callback = True
+                else:
+                    raise
 
         updated_auth = server.auth_state.model_copy(
             update={
@@ -451,6 +538,7 @@ class McpClient:
                 "authorization_endpoint": auth_endpoint,
                 "token_endpoint": token_endpoint,
                 "registration_endpoint": reg_endpoint,
+                "registered_redirect_uri": effective_redirect_uri,
                 "scope": scope,
             }
         )
@@ -467,7 +555,7 @@ class McpClient:
                 "state": state,
                 "server_id": str(server.id),
                 "code_verifier": verifier,
-                "redirect_uri": redirect_uri,
+                "redirect_uri": effective_redirect_uri,
                 "token_endpoint": token_endpoint,
                 "client_id": client_id,
                 "client_secret": client_secret,
@@ -478,7 +566,7 @@ class McpClient:
         params: dict[str, str] = {
             "response_type": "code",
             "client_id": client_id,
-            "redirect_uri": redirect_uri,
+            "redirect_uri": effective_redirect_uri,
             "state": state,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
@@ -489,8 +577,33 @@ class McpClient:
         sep = "&" if "?" in auth_endpoint else "?"
         authorize_url = f"{auth_endpoint}{sep}{urlencode(params)}"
         return McpConnectResponse(
-            server=server.to_public(), authorize_url=authorize_url
+            server=server.to_public(),
+            authorize_url=authorize_url,
+            manual_callback=manual_callback,
         )
+
+    async def complete_oauth_from_url(self, callback_url: str) -> McpServerRecord:
+        cleaned = callback_url.strip()
+        parsed = urlsplit(cleaned)
+        raw_query = parsed.query or (
+            cleaned.lstrip("?") if "code=" in cleaned and "state=" in cleaned else ""
+        )
+        query = parse_qs(raw_query)
+        error = (query.get("error") or [None])[0]
+        if error:
+            detail = (query.get("error_description") or [error])[0]
+            raise ServiceError(
+                f"Sign-in was not completed: {detail}", 400, "mcp_oauth_error"
+            )
+        state = (query.get("state") or [None])[0]
+        code = (query.get("code") or [None])[0]
+        if not state or not code:
+            raise ServiceError(
+                "Paste the full address from the approval tab (it should include code and state).",
+                400,
+                "mcp_oauth_invalid_callback",
+            )
+        return await self.complete_oauth(state, code)
 
     async def complete_oauth(self, state: str, code: str) -> McpServerRecord:
         saved = McpOAuthStateRecord.model_validate(
@@ -521,8 +634,10 @@ class McpClient:
                 "mcp_oauth_error",
             ) from error
         if not resp.is_success:
+            detail = _oauth_error_detail(resp)
+            suffix = f" ({detail})" if detail else f" (HTTP {resp.status_code})"
             raise ServiceError(
-                f"Sign-in was rejected by the MCP server (HTTP {resp.status_code}).",
+                f"Sign-in was rejected by the MCP server{suffix}.",
                 502,
                 "mcp_oauth_error",
             )
@@ -636,7 +751,6 @@ class McpClient:
         headers = {
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
-            "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
         }
         token: str | None = None
         if server.auth_type == "bearer":
@@ -683,11 +797,15 @@ class McpClient:
         headers = self._auth_headers(server)
 
         async def post(
-            payload: dict[str, Any], session_id: str | None = None
+            payload: dict[str, Any],
+            session_id: str | None = None,
+            protocol_version: str | None = None,
         ) -> httpx.Response:
             req_headers = dict(headers)
             if session_id:
                 req_headers["Mcp-Session-Id"] = session_id
+            if protocol_version:
+                req_headers["MCP-Protocol-Version"] = protocol_version
             try:
                 return await self.services.client.post(
                     url,
@@ -702,7 +820,7 @@ class McpClient:
                     "mcp_unavailable",
                 ) from error
 
-        # 1. Initialize handshake
+        # 1. Initialize handshake (negotiate protocol version per MCP Streamable HTTP spec)
         init_resp = await post(
             {
                 "jsonrpc": "2.0",
@@ -717,15 +835,17 @@ class McpClient:
         )
         if init_resp.status_code == 401:
             err = ServiceError(
-                f"'{server.name}' requires sign-in. Open Integrations to connect it.",
+                f"'{server.name}' requires sign-in. Open Plugins to connect it.",
                 401,
                 "mcp_unauthorized",
             )
             err.www_authenticate = init_resp.headers.get("www-authenticate", "")  # type: ignore[attr-defined]
             raise err
         if not init_resp.is_success:
+            detail = _oauth_error_detail(init_resp)
+            suffix = f": {detail}" if detail else ""
             raise ServiceError(
-                f"MCP server '{server.name}' returned HTTP {init_resp.status_code}.",
+                f"MCP server '{server.name}' returned HTTP {init_resp.status_code}{suffix}.",
                 502,
                 "mcp_error",
             )
@@ -734,11 +854,20 @@ class McpClient:
             msg = init_msg["error"].get("message", "Initialize failed")
             raise ServiceError(f"MCP error: {msg}", 502, "mcp_error")
         session_id = init_resp.headers.get("mcp-session-id")
+        init_result = init_msg.get("result")
+        negotiated_version = (
+            init_result.get("protocolVersion")
+            if isinstance(init_result, dict)
+            and isinstance(init_result.get("protocolVersion"), str)
+            else None
+        ) or init_resp.headers.get("mcp-protocol-version") or MCP_PROTOCOL_VERSION
 
         # 2. Best-effort notifications/initialized
         try:
             await post(
-                {"jsonrpc": "2.0", "method": "notifications/initialized"}, session_id
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                session_id,
+                negotiated_version,
             )
         except ServiceError:
             pass
@@ -752,18 +881,27 @@ class McpClient:
                 "params": params or {},
             },
             session_id,
+            negotiated_version,
         )
         if resp.status_code == 401:
             err = ServiceError(
-                f"'{server.name}' sign-in expired. Reconnect it in Integrations.",
+                f"'{server.name}' sign-in expired. Reconnect it in Plugins.",
                 401,
                 "mcp_unauthorized",
             )
             err.www_authenticate = resp.headers.get("www-authenticate", "")  # type: ignore[attr-defined]
             raise err
         if not resp.is_success:
+            detail = ""
+            try:
+                err_body = resp.json()
+                if isinstance(err_body, dict) and isinstance(err_body.get("error"), dict):
+                    detail = str(err_body["error"].get("message") or "")
+            except ValueError:
+                pass
+            suffix = f": {detail}" if detail else ""
             raise ServiceError(
-                f"MCP server '{server.name}' returned HTTP {resp.status_code}.",
+                f"MCP server '{server.name}' returned HTTP {resp.status_code}{suffix}.",
                 502,
                 "mcp_error",
             )
