@@ -3613,3 +3613,84 @@ button.danger:not(.primary) {
 .save-chat-result form { max-width: 520px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-sm); }
 .save-chat-result label { display: grid; gap: 6px; }
 .save-chat-result input { width: 100%; }
+
+/* Kadan Desktop server connection settings */
+.server-settings-trigger {
+  width: 100%;
+  justify-content: flex-start;
+  padding: 7px 10px;
+  border-radius: var(--r-sm);
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.server-settings-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.25;
+}
+.server-settings-nav small {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--mono);
+  max-width: 165px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+dialog.server-settings {
+  width: min(500px, calc(100vw - 32px));
+}
+.server-test-ok {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ok) 30%, transparent);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  margin: 0;
+  font-size: 13px;
+}
+.saved-servers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.saved-servers ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.saved-servers li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 4px 6px;
+}
+.saved-servers li.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.saved-server-pick {
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 4px 6px;
+}
+.saved-server-pick code {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--mono);
+}

@@ -91,3 +91,11 @@ pnpm-debug.log*
 
 # Archives from the documented local Tsuchi backup procedure
 /tsuchi-backup*.tar.gz
+
+# Desktop apps (Kadan Server & Kadan Desktop)
+apps/*/dist/
+apps/*/node_modules/
+apps/*/src-tauri/target/
+apps/*/src-tauri/gen/
+apps/*/src-tauri/binaries/
+apps/*/src-tauri/resources/runtime/

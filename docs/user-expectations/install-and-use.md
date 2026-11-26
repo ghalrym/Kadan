@@ -1,23 +1,14 @@
 # Install and use
 
-Users expect to start Kadan with one Docker Compose file and zero custom configuration. Once the required hardware, drivers, Docker and NVIDIA Container Toolkit are available, running this command from the repository root must start the baseline system:
+Kadan ships as two desktop applications that run directly on your computer without a separate database:
 
-```sh
-docker compose up --build -d
-```
+- **Kadan Server** runs everything Kadan needs in the background (agent conversations, storage, and local AI models) and lives in your system tray. Its management window provides the **Overview** (with the host address to connect to, service status, hardware summary, and server settings), **Hikari** (model downloads, licenses, and AI preferences), **Tsuchi** (agent memory, documents, and files), and **Logs**.
+- **Kadan** is the everyday desktop app for working with your agent. Open **Server settings** in the sidebar to enter or switch the host address of any **Kadan Server** running on the same computer or on your local network, test the connection, and save multiple servers.
 
-Startup must work without creating a `.env` file, generating secrets, selecting build targets or combining Compose files. Every parameter needed by the baseline system must have a working default. One web app must be available at its documented default address, with Kadan as the home page and Tsuchi's and Hikari's pages inside it.
+Starting Kadan Server and downloading model checkpoints are separate steps. Open the **Hikari** tab in Kadan Server after startup to download the models you need; startup never runs inference or acquires models automatically. Hikari owns all model downloads, license acknowledgements, and provider settings.
 
-Users can optionally create a `.env` file to override default parameters, such as the web app port, credentials and remote worker connections. `.env.example` documents the available overrides. Customization must remain optional for the baseline system.
+Kadan Server stores its settings, database, files, and downloaded models in a single data folder that you can change from **Overview → Server Settings**. Stopping or restarting Kadan Server preserves all saved data.
 
-Hot reload is the standard behavior. Source edits must reach the running services through automatic reloads or incremental worker rebuilds, without selecting a separate mode. Kadan, Tsuchi and Hikari share one API service, so an edit to any of them restarts all three and cancels inference in progress.
+Upgrades and service restarts can interrupt active requests. Saved conversations and durable work recover according to their feature's rules, while in-flight inference cancels cleanly when Hikari restarts. Refresh saved state before retrying uncertain work.
 
-Starting the system and downloading model checkpoints are separate steps. Users select and download the checkpoints they need through Hikari Settings after startup; startup must not require manual model configuration or run inference.
-
-Kadan is the everyday agent interface; Tsuchi manages saved content and Hikari manages inference. Kadan reports [service availability](kadan/service-status.md). A running interface does not establish that models, inference workers or agent runners are ready. Optional [remote workers](hikari/remote-workers.md) and [performance tracing](tracing.md) require additional operator configuration.
-
-Stopping, rebuilding or replacing containers preserves data when the same persistent stores and deployment identity are retained. Deleting data volumes removes that protection. Existing installations must keep their storage settings when upgrading; a fresh project or volume can appear empty while the old data still exists elsewhere. The [startup and upgrade procedure](../../README.md#existing-installations-and-data) explains the operator steps.
-
-Upgrades and service restarts can interrupt requests. Saved conversations and durable work can recover according to their feature's rules, while browser-only playground state and temporary monitoring records can be lost. Hikari API restarts cancel in-flight inference; recovery does not promise transparent continuation of every request. Refresh saved state before retrying uncertain work.
-
-Back up data before replacing an installation, and inspect a restored copy before relying on it. [Tsuchi backups](tsuchi/backup.md) preserve its store; model downloads and deployment settings have separate lifetimes. No automatic backup or complete-system recovery is provided.
+Back up your data folder before replacing an installation or moving machines. [Tsuchi backups](tsuchi/backup.md) preserve agent memory and files; downloaded models can always be re-downloaded through Hikari. No automatic cloud backup is provided.

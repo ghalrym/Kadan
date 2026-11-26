@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { Egg, Menu } from "lucide-react";
 import { agentPath, allResources, api } from "./api";
+import { getDesktopServerConfig, isDesktopApp } from "./desktop";
 import { latestConversation } from "./agentRuns";
 import { emptyConversation, pickConversation, summarize, upsertConversation } from "./conversations";
 import type { Agent, ConversationSummary, PetJob, Resource, Status } from "./types";
@@ -17,6 +18,7 @@ import Sidebar, { type Page } from "./Sidebar";
 import SpaceLibrary from "./SpaceLibrary";
 import ConfirmDialog from "./ConfirmDialog";
 import AgentPage from "./AgentPage";
+import ServerSettings from "./ServerSettings";
 import { PetContext } from "./PetContext";
 
 /** Animate a view change, letting the agent's pet glide between layouts. */
@@ -59,6 +61,9 @@ export default function App() {
   const [resourceRevision, setResourceRevision] = useState(0);
   const key = agent?.key ?? "";
   const [resourceOwner, setResourceOwner] = useState("");
+  const [serverSettingsOpen, setServerSettingsOpen] = useState(false);
+  const [desktopHost, setDesktopHost] = useState("");
+  const desktopMode = isDesktopApp();
   const currentAgentKey = useRef(key);
   const agentKey = currentAgentKey;
   const refreshRevision = useRef(0);
@@ -115,6 +120,13 @@ export default function App() {
     }
   }, []);
   const refreshEditedPet = useCallback(async () => { await refreshPetSelection(key); }, [key, refreshPetSelection]);
+
+  useEffect(() => {
+    if (!desktopMode) return;
+    void getDesktopServerConfig()
+      .then((cfg) => setDesktopHost(cfg.active_host))
+      .catch(() => {});
+  }, [desktopMode]);
 
   useEffect(() => {
     const query = matchMedia("(max-width: 760px)");
@@ -376,6 +388,8 @@ export default function App() {
           onPage={(name) => show({ name })}
           onRenameChat={(id, title) => updateConversation(id, { title })}
           onDeleteChat={deleteChat}
+          desktopHost={desktopHost}
+          onServerSettings={desktopMode ? () => { setMenu(false); setServerSettingsOpen(true); } : undefined}
         />
       </aside>
       <main id="main" tabIndex={-1} inert={mobile && menu}>
@@ -392,6 +406,11 @@ export default function App() {
         {error && (
           <div className="banner" role="alert">
             {error}
+            {desktopMode && (
+              <button onClick={() => setServerSettingsOpen(true)}>
+                Server settings
+              </button>
+            )}
             <button disabled={disabled} onClick={() => void refreshAgent()}>
               Retry
             </button>
@@ -489,6 +508,18 @@ export default function App() {
         onSelect={(id) => selectPet(key, id)}
         onRefreshSelection={refreshEditedPet}
         onClose={() => setEditingPet(false)}
+      />}
+      {serverSettingsOpen && <ServerSettings
+        onConnected={(nextHost) => {
+          setDesktopHost(nextHost);
+          setAgent(null);
+          setChain(null);
+          setConversations([]);
+          setError("");
+          void refreshAgent();
+          void refreshStatus();
+        }}
+        onClose={() => { setServerSettingsOpen(false); restoreFocus(); }}
       />}
       {!agent && <Hatch
         open={creating}

@@ -72,6 +72,11 @@ async function app(petResponses = [], agentResponses = [[agent]]) {
     "./SpaceLibrary": { default: "SpaceLibrary" },
     "./ConfirmDialog": { default: "ConfirmDialog" },
     "./AgentPage": { default: "AgentPage" },
+    "./ServerSettings": { default: "ServerSettings" },
+    "./desktop": {
+      isDesktopApp: () => false,
+      getDesktopServerConfig: async () => ({ active_host: "http://127.0.0.1:8000", saved_servers: [] }),
+    },
     "./conversations": conversations,
     "./agentRuns": { latestConversation: (current, incoming) => current.id === incoming.id && incoming.version > current.version ? incoming : current },
     "./Hatch": { default: "Hatch" },

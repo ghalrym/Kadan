@@ -5,6 +5,7 @@ import {
   Pencil,
   Puzzle,
   RefreshCw,
+  Settings,
   SquarePen,
   Trash2,
   X,
@@ -33,6 +34,8 @@ interface Props {
   onPage: (page: "space" | "plugins" | "agent") => void;
   onRenameChat: (id: string, title: string) => Promise<void>;
   onDeleteChat: (id: string) => void;
+  desktopHost?: string;
+  onServerSettings?: () => void;
 }
 
 function ChatRow({ chat, selected, disabled, now, onOpen, onRename, onDelete }: {
@@ -160,6 +163,21 @@ export default function Sidebar(props: Props) {
         </section>
       </div>
       <footer className="panel-foot">
+        {props.onServerSettings && (
+          <button
+            className="server-settings-trigger"
+            onClick={props.onServerSettings}
+            title="Change Kadan Server host"
+          >
+            <Settings size={15} />
+            <span className="server-settings-nav">
+              <span>Server settings</span>
+              {props.desktopHost && (
+                <small>{props.desktopHost.replace(/^https?:\/\//, "")}</small>
+              )}
+            </span>
+          </button>
+        )}
         {agent && (
           <button className={`agent-link ${page.name === "agent" ? "selected" : ""}`}
             aria-current={page.name === "agent" ? "page" : undefined} onClick={() => props.onPage("agent")}>

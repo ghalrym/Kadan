@@ -38,10 +38,11 @@ const mocks = {
   "react-dom": moduleUrl("export const flushSync = callback => callback();"),
   "lucide-react": moduleUrl("export const Egg='', Menu='';"),
   "./api": moduleUrl("export const agentPath = () => ''; export const api = () => { throw Error('Unexpected request'); }; export const allResources = api;"),
+  "./desktop": moduleUrl("export const isDesktopApp = () => false; export const getDesktopServerConfig = async () => ({ active_host: '', saved_servers: [] });"),
   "./Pet": moduleUrl("export default 'Pet'; export const agentPet = () => null; export const useMood = () => [];"),
   "./pet": moduleUrl("export const agentHue = () => 0;"),
   "./PetContext": moduleUrl("export const PetContext = { Provider: 'Provider' }; export const useAgentPet = () => null;"),
-  ...Object.fromEntries(["Chat", "Hatch", "PetEditor", "RenameAgent", "RunnerAssignment", "Plugins", "Sidebar", "SpaceLibrary", "ConfirmDialog", "AgentPage"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
+  ...Object.fromEntries(["Chat", "Hatch", "PetEditor", "RenameAgent", "RunnerAssignment", "Plugins", "Sidebar", "SpaceLibrary", "ConfirmDialog", "AgentPage", "ServerSettings"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
 };
 const loader = registerHooks({
   resolve(specifier, context, nextResolve) {

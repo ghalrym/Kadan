@@ -2,9 +2,34 @@
 
 from collections.abc import Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
+import os
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from kadan_tracing import configure, shutdown
+
+
+_API_PREFIXES = (
+    "/kadan/api",
+    "/kadan/docs",
+    "/kadan/openapi.json",
+    "/tsuchi/api",
+    "/tsuchi/docs",
+    "/tsuchi/openapi.json",
+    "/hikari/v1",
+    "/hikari/model-lifecycle",
+    "/hikari/health",
+    "/hikari/docs",
+    "/hikari/openapi.json",
+)
+
+
+def _is_api_path(path: str) -> bool:
+    return any(
+        path == prefix or path.startswith(f"{prefix}/")
+        for prefix in _API_PREFIXES
+    )
 
 
 def lifespan_for(apps: Mapping[str, FastAPI]):
@@ -28,6 +53,31 @@ def lifespan_for(apps: Mapping[str, FastAPI]):
     return lifespan
 
 
+def _wrap_frontend_spa(app: FastAPI, frontend_root: Path):
+    """Serve built unified frontend for browser routes without intercepting API prefixes."""
+
+    async def asgi(scope, receive, send):
+        if scope["type"] == "http" and scope.get("method") in {"GET", "HEAD"}:
+            path = scope.get("path", "/")
+            if not _is_api_path(path):
+                rel = path.lstrip("/")
+                if rel:
+                    candidate = (frontend_root / rel).resolve()
+                    if candidate.is_file() and frontend_root in candidate.parents:
+                        response = FileResponse(candidate)
+                        await response(scope, receive, send)
+                        return
+                index = frontend_root / "index.html"
+                if index.is_file():
+                    response = FileResponse(index)
+                    await response(scope, receive, send)
+                    return
+                raise HTTPException(status_code=404, detail="Frontend not built")
+        await app(scope, receive, send)
+
+    return asgi
+
+
 def create_app(apps: Mapping[str, FastAPI]) -> FastAPI:
     app = FastAPI(
         title="Kadan services",
@@ -39,4 +89,9 @@ def create_app(apps: Mapping[str, FastAPI]) -> FastAPI:
     )
     for name, service in apps.items():
         app.mount(f"/{name}", service, name=name)
+    frontend_dir = os.environ.get("KADAN_FRONTEND_DIR", "").strip()
+    if frontend_dir:
+        root = Path(frontend_dir).resolve()
+        if root.is_dir():
+            return _wrap_frontend_spa(app, root)
     return app

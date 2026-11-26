@@ -1,0 +1,29 @@
+[package]
+name = "kadan-server"
+version = "0.1.0"
+description = "Kadan Server — all-in-one local host for Kadan, Hikari, Tsuchi, and native C++ inference workers"
+authors = ["Kadan"]
+edition = "2021"
+
+[lib]
+name = "kadan_server_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+directories = "6"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sysinfo = "0.33"
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+tokio = { version = "1", features = ["full"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
