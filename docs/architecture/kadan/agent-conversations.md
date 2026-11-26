@@ -77,7 +77,13 @@ An enabled tool's schema-validation failure is saved as a validation diagnostic 
 
 Only the `send_message` tool delivers an agent message to the conversation. Completing inference, returning a tool result or finishing a run does not itself deliver a reply. This distinction prevents internal reasoning and command output from becoming user messages, and lets a run end silently when it has nothing further to communicate.
 
-A completed nonempty plain answer becomes a `send_message` command with `end_run=true` only when that tool is bound. The existing run owner validates, records and delivers it through the ordinary action path. Empty output and an explicit `finish` call remain silent; malformed structured tool output fails before delivery. Literal markup in ordinary replies is preserved.
+A completed nonempty plain answer becomes a `send_message` command with `end_run=true` only when that tool is bound. The existing run owner validates, records and delivers it through the ordinary action path. Empty output and an explicit `finish` call remain silent; malformed structured tool output is never executed or delivered raw. Literal markup in ordinary replies is preserved.
+
+### Error retries and recovery replies
+
+Transient preparation errors and inference/command errors (including multi-action tool steps, unknown tools, malformed commands, output-limit errors and upstream service errors) are retried up to `MAX_ERROR_RETRIES` (3) times while verifying lease ownership before each retry. Command and output-limit retries include an ephemeral `step_retry_feedback` observation in the retry prompt without mutating the durable transcript. Ownership loss (`lease_lost`) and user cancellation are never retried.
+
+If a run still cannot complete after retries (or hits a non-retryable limit such as `MAX_COMMANDS`, `MAX_ARGUMENT_CORRECTIONS`, context limits, unreadable instructions or an unrecovered historical transcript), `handle_failure` delivers an assistant reply under a deterministic message ID (`uuid5(run.id, "failure_reply")`) and completes the run while preserving the internal failure detail on `AgentRun.error`. When a valid transcript exists and inference is ready, Kadan runs a single recovery inference bound only to `send_message` with a `run_failure_context` observation instructing the agent to tell the user it struggled without volunteering exact error details unless asked; otherwise (or if recovery inference fails) it delivers `FALLBACK_FAILURE_REPLY`. Subsequent runs in the same conversation read recent errored runs via `GET /api/agents/{key}/resources/{conversation_id}/runs` and attach up to three recent errors (within the remaining context budget) as a `recent_run_errors` observation so the agent can explain what happened if the user asks for details. The web UI never renders `Response failed` notices in Chat or Activity.
 
 ## Conversation work snapshots
 

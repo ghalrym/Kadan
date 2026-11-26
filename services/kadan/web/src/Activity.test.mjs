@@ -84,7 +84,7 @@ test("retained image failures cannot displace queued or running responses and im
   assert.ok(rows.some(row => text(row).includes("Generating image")));
 });
 
-test("current and earlier failures expose their full error through a disclosure", () => {
+test("image failures expose their full error through a disclosure while failed responses stay hidden", () => {
   const detail = `${"Worker failed during preparation. ".repeat(30)}Free memory and retry.`;
   const tree = view({
     runs: [{ ...run("failed", "failed"), error: detail }, run("newer", "running")],
@@ -94,15 +94,14 @@ test("current and earlier failures expose their full error through a disclosure"
     }],
   });
   const disclosures = elements(tree).filter(node => node.type === "details" && node.props.className === "activity-error-details");
-  assert.equal(disclosures.length, 2);
+  assert.equal(disclosures.length, 1);
   for (const disclosure of disclosures) {
     assert.equal(disclosure.props.open, undefined);
     const summary = disclosure.props.children.find(node => node.type === "summary");
     assert.match(text(summary), /Error details/);
     assert.equal(text(disclosure.props.children.find(node => node.type === "p")), detail);
   }
-  const earlier = elements(tree).find(node => node.type === "details" && text(node.props.children[0]).startsWith("Earlier"));
-  assert.equal(elements(earlier).filter(node => node.props?.className === "activity-error-details").length, 1);
+  assert.doesNotMatch(text(tree), /Response failed/);
 });
 
 test("routine polls do not open the panel or introduce live announcements and retry actions", () => {
@@ -110,6 +109,6 @@ test("routine polls do not open the panel or introduce live announcements and re
   assert.ok(elements(tree).filter(node => node.type === "details").every(node => node.props.open === undefined));
   assert.equal(elements(tree).some(node => node.props?.["aria-live"]), false);
   assert.equal(elements(tree).some(node => node.type === "button"), false);
-  assert.match(text(tree), /Response failed/);
+  assert.doesNotMatch(text(tree), /Response failed/);
   assert.match(text(tree), /Response stopped/);
 });

@@ -641,7 +641,7 @@ export default function Chat({
             </p>
           )}
           {outcome && <p className="notice" role="status">
-            {outcome.status === "failed" ? `Response failed: ${outcome.error || "Please try again."}` : "Response stopped"}
+            Response stopped
           </p>}
           {images.filter((job) => imageStatus(job)).map((job) => (
             <div className="image-job notice" key={job.id} role="status">

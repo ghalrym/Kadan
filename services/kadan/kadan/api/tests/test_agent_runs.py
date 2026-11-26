@@ -32,8 +32,10 @@ from kadan.runner.agent_inference import (
     tool_characters,
 )
 from kadan.runner.agent_runs import (
+    FALLBACK_FAILURE_REPLY,
     MAX_ARGUMENT_CORRECTIONS,
     MAX_CONTEXT,
+    MAX_ERROR_RETRIES,
     RESERVED_TOKENS,
     AgentRuns,
     RunState,
@@ -79,6 +81,7 @@ class Boundary:
             updated_at=now,
         )
         self.jobs = {}
+        self.prior_runs = []
         self.deliveries = []
         self.delivery_attempts = []
         self.drafts = []
@@ -128,6 +131,14 @@ class Boundary:
         body = kwargs.get("json", {})
         if path == base and method == "GET":
             return self.current.model_dump(mode="json")
+        if (
+            path == f"/api/agents/test/resources/{self.conversation.id}/runs"
+            and method == "GET"
+        ):
+            return [
+                item.model_dump(mode="json")
+                for item in [*self.prior_runs, self.current]
+            ]
         if path == base + "/draft" and method == "PUT":
             self.check_owned(body)
             self.drafts.append(body["content"])
@@ -376,15 +387,19 @@ def test_image_event_context_carries_result_and_delivery_state(
     }
 
 
-def test_failure_after_visible_message_does_not_append_an_answer(boundary):
+def test_failure_after_visible_message_retries_then_delivers_recovery_reply(boundary):
     boundary.controller.inference = Commands(
         send(end_run=False, content="Already delivered"),
-        ServiceError("Hikari failed", 503),
+        *[ServiceError("Hikari failed", 503)] * (MAX_ERROR_RETRIES + 1),
+        ServiceError("Hikari still unavailable", 503),
     )
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == "failed"
+    assert boundary.current.status == "completed"
     assert boundary.current.error == "Hikari failed"
-    assert [item.content for item in boundary.deliveries] == ["Already delivered"]
+    assert [item.content for item in boundary.deliveries] == [
+        "Already delivered",
+        FALLBACK_FAILURE_REPLY,
+    ]
 
 
 def test_cancellation_during_inference_prevents_its_message_delivery(boundary):
@@ -430,40 +445,37 @@ def test_instructions_are_reread_when_a_new_context_is_built(boundary):
     assert second[0].content.startswith("Use brief messages.")
 
 
-def test_invalid_instruction_encoding_fails_before_inference(boundary):
+def test_invalid_instruction_encoding_recovers_without_inference(boundary):
     instruction_file = Path(boundary.settings.agent_instruction_file)
     instruction_file.write_bytes(b"\xff")
     boundary.controller.inference = Commands()
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == "failed"
+    assert boundary.current.status == "completed"
     assert str(instruction_file) in boundary.current.error
     assert "could not be decoded" in boundary.current.error
     assert "text encoding" in boundary.current.error
     assert boundary.current.owner_id is None
     assert boundary.current.lease_expires_at is None
     assert boundary.current.transcript == []
-    assert boundary.current.delivered_message_ids == []
     assert boundary.controller.inference.calls == []
-    assert boundary.delivery_attempts == []
-    assert boundary.deliveries == []
+    assert [item.content for item in boundary.deliveries] == [FALLBACK_FAILURE_REPLY]
 
 
 @pytest.mark.parametrize("failure", ["missing", "directory"])
-def test_unreadable_instructions_fail_before_inference(boundary, failure):
+def test_unreadable_instructions_recover_without_inference(boundary, failure):
     instruction_file = Path(boundary.settings.agent_instruction_file)
     instruction_file.unlink()
     if failure == "directory":
         instruction_file.mkdir()
     boundary.controller.inference = Commands()
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == "failed"
+    assert boundary.current.status == "completed"
     assert str(instruction_file) in boundary.current.error
     assert boundary.current.owner_id is None
     assert boundary.current.lease_expires_at is None
     assert boundary.current.transcript == []
     assert boundary.controller.inference.calls == []
-    assert boundary.delivery_attempts == []
-    assert boundary.deliveries == []
+    assert [item.content for item in boundary.deliveries] == [FALLBACK_FAILURE_REPLY]
 
 
 @pytest.mark.parametrize("failure", ["malformed", "missing"])
@@ -498,8 +510,10 @@ def test_repaired_instructions_allow_a_new_queued_run(boundary):
     boundary.controller.inference = Commands(finish())
     asyncio.run(boundary.controller.process(boundary.current))
     failed = boundary.current
-    assert failed.status == "failed"
+    assert failed.status == "completed"
+    assert failed.error is not None
     assert boundary.controller.inference.calls == []
+    boundary.deliveries.clear()
     boundary.current = queued.model_copy(update={"id": uuid4()})
     instruction_file.write_text("Repaired instructions.")
     asyncio.run(boundary.controller.process(boundary.current))
@@ -756,14 +770,159 @@ def test_image_event_resumes_graph_in_same_conversation(boundary, status):
     assert len(boundary.controller.inference.calls) == 1
 
 
-def test_invalid_commands_fail_the_run_without_a_retry(boundary):
+@pytest.mark.parametrize("failures", [1, 2, 3])
+def test_step_error_retries_up_to_three_times_with_feedback_and_succeeds(
+    boundary, failures
+):
+    error = ServiceError(
+        "The agent requested multiple actions in a single step.",
+        502,
+        "invalid_command",
+    )
     boundary.controller.inference = Commands(
-        ServiceError("Invalid command", 502, "invalid_command"), finish()
+        *[error] * failures,
+        send(content="Here is what is in our space.", end_run=True),
     )
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == "failed"
+    assert boundary.current.status == "completed"
+    assert boundary.current.error is None
+    assert len(boundary.controller.inference.calls) == failures + 1
+    retry_feedback = json.loads(boundary.controller.inference.calls[1][-1].content)
+    assert "multiple actions in a single step" in retry_feedback["error"]
+    assert retry_feedback["retry"] == 1
+    assert retry_feedback["max_retries"] == MAX_ERROR_RETRIES
+    assert [item.content for item in boundary.deliveries] == [
+        "Here is what is in our space."
+    ]
+    assert not any(
+        getattr(item, "name", None) == "step_retry_feedback"
+        for item in boundary.current.transcript
+    )
+
+
+def test_step_error_after_three_retries_has_agent_respond_with_error_context(boundary):
+    error = ServiceError(
+        "The agent requested multiple actions in a single step.",
+        502,
+        "invalid_command",
+    )
+    boundary.controller.inference = Commands(
+        *[error] * (MAX_ERROR_RETRIES + 1),
+        send(
+            content="I had trouble checking that for you. Would you like me to try again?",
+            end_run=True,
+        ),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert (
+        boundary.current.error
+        == "The agent requested multiple actions in a single step."
+    )
+    assert len(boundary.controller.inference.calls) == MAX_ERROR_RETRIES + 2
+    assert boundary.controller.inference.tools[-1] == ["send_message"]
+    recovery_context = json.loads(boundary.controller.inference.calls[-1][-1].content)
+    assert (
+        recovery_context["error"]
+        == "The agent requested multiple actions in a single step."
+    )
+    assert "unless they ask for details" in recovery_context["instruction"]
+    assert [item.content for item in boundary.deliveries] == [
+        "I had trouble checking that for you. Would you like me to try again?"
+    ]
+
+
+def test_step_error_falls_back_when_recovery_inference_fails(boundary):
+    error = ServiceError(
+        "The agent requested multiple actions in a single step.",
+        502,
+        "invalid_command",
+    )
+    boundary.controller.inference = Commands(
+        *[error] * (MAX_ERROR_RETRIES + 1),
+        ServiceError("Hikari disconnected", 503, "inference_unavailable"),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert (
+        boundary.current.error
+        == "The agent requested multiple actions in a single step."
+    )
+    assert [item.content for item in boundary.deliveries] == [FALLBACK_FAILURE_REPLY]
+
+
+def test_cancellation_during_error_retry_stops_without_reply(boundary):
+    def fail_after_cancel():
+        boundary.cancel()
+        raise ServiceError(
+            "The agent requested multiple actions in a single step.",
+            502,
+            "invalid_command",
+        )
+
+    boundary.controller.inference = Commands(
+        fail_after_cancel,
+        send(content="Must not run", end_run=True),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "cancelled"
     assert len(boundary.controller.inference.calls) == 1
     assert boundary.deliveries == []
+
+
+def test_subsequent_turn_receives_recent_run_error_context(boundary):
+    error = ServiceError(
+        "The agent requested multiple actions in a single step.",
+        502,
+        "invalid_command",
+    )
+    boundary.controller.inference = Commands(
+        *[error] * (MAX_ERROR_RETRIES + 1),
+        send(content="Sorry, I struggled with that request.", end_run=True),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    first_run = boundary.current
+    assert first_run.status == "completed"
+    assert first_run.error == str(error)
+
+    follow_up = Message(role="user", content="What happened? Can you give me details?")
+    boundary.conversation = boundary.conversation.model_copy(
+        update={
+            "messages": [*boundary.conversation.messages, follow_up],
+            "version": boundary.conversation.version + 1,
+        }
+    )
+    boundary.prior_runs.append(first_run)
+    boundary.current = AgentRun(
+        id=uuid4(),
+        agent_key="test",
+        conversation_id=boundary.conversation.id,
+        trigger_message_id=follow_up.id,
+        version=1,
+        created_at=datetime.now(UTC) + timedelta(seconds=1),
+        updated_at=datetime.now(UTC) + timedelta(seconds=1),
+    )
+    boundary.controller.inference = Commands(
+        send(
+            content="Earlier I tried to request multiple actions at once.",
+            end_run=True,
+        )
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.current.status == "completed"
+    assert boundary.current.error is None
+    error_obs = next(
+        item
+        for item in boundary.current.transcript
+        if getattr(item, "name", None) == "recent_run_errors"
+    )
+    assert "unless they ask what happened" in error_obs.data["notice"]
+    assert error_obs.data["errors"][0]["error"] == str(error)
+    assert error_obs.data["errors"][0]["request_excerpt"] == "Hello"
+    assert (
+        boundary.deliveries[-1].content
+        == "Earlier I tried to request multiple actions at once."
+    )
 
 
 def test_cancelling_graph_task_cancels_inflight_inference(boundary):
@@ -927,11 +1086,15 @@ def test_computer_work_is_read_only_on_request_in_the_current_conversation(bound
 
 def test_computer_tools_are_not_available_to_the_conversation_agent(boundary):
     boundary.sandbox = Computer()
-    boundary.controller.inference = Commands(command("bash_exec", command="ls"))
+    boundary.controller.inference = Commands(
+        *[command("bash_exec", command="ls")] * (MAX_ERROR_RETRIES + 1),
+        ServiceError("Recovery unavailable", 503),
+    )
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == "failed"
+    assert boundary.current.status == "completed"
     assert "unknown tool" in boundary.current.error
     assert boundary.sandbox.calls == []
+    assert [item.content for item in boundary.deliveries] == [FALLBACK_FAILURE_REPLY]
 
 
 @pytest.mark.parametrize("loss", ["cancelled", "another_owner", "expired"])
@@ -1120,12 +1283,18 @@ def test_invalid_workspace_response_is_an_uncertain_write(boundary):
         command("browser_navigate", address="https://example.com"),
     ],
 )
-def test_unknown_or_disabled_tools_fail_without_correction(boundary, invalid):
-    boundary.controller.inference = Commands(invalid, finish())
+def test_unknown_or_disabled_tools_retry_then_respond_with_recovery(boundary, invalid):
+    boundary.controller.inference = Commands(
+        *[invalid] * (MAX_ERROR_RETRIES + 1),
+        send(content="I struggled to complete that.", end_run=True),
+    )
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == "failed"
-    assert len(boundary.controller.inference.calls) == 1
-    assert boundary.deliveries == []
+    assert boundary.current.status == "completed"
+    assert "unknown tool" in boundary.current.error
+    assert len(boundary.controller.inference.calls) == MAX_ERROR_RETRIES + 2
+    assert [item.content for item in boundary.deliveries] == [
+        "I struggled to complete that."
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1190,10 +1359,13 @@ def test_corrected_history_call_returns_result_then_delivers_once(boundary):
 
 def test_argument_correction_exhaustion_retains_safe_diagnostics(boundary):
     invalid = command("read_conversation_history", unsupported="private")
-    boundary.controller.inference = Commands(*([invalid] * 4))
+    boundary.controller.inference = Commands(
+        *([invalid] * 3),
+        send(content="I struggled to read the history.", end_run=True),
+    )
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == "failed"
-    assert len(boundary.controller.inference.calls) == MAX_ARGUMENT_CORRECTIONS + 1
+    assert boundary.current.status == "completed"
+    assert len(boundary.controller.inference.calls) == MAX_ARGUMENT_CORRECTIONS + 2
     assert "correction attempts" in boundary.current.error
     assert "read_conversation_history" in boundary.current.error
     assert "unsupported: extra_forbidden" in boundary.current.error
@@ -1202,7 +1374,9 @@ def test_argument_correction_exhaustion_retains_safe_diagnostics(boundary):
         == 3
     )
     assert "private" not in json.dumps(boundary.current.model_dump(mode="json"))
-    assert boundary.deliveries == []
+    assert [item.content for item in boundary.deliveries] == [
+        "I struggled to read the history."
+    ]
 
 
 def test_successful_tool_does_not_reset_argument_correction_budget(boundary):
@@ -1212,25 +1386,29 @@ def test_successful_tool_does_not_reset_argument_correction_budget(boundary):
         command("read_conversation_history", limit=1),
         invalid,
         invalid,
-        finish(),
+        send(content="I struggled to complete that.", end_run=True),
     )
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == "failed"
-    assert len(boundary.controller.inference.calls) == 4
+    assert boundary.current.status == "completed"
+    assert len(boundary.controller.inference.calls) == 5
     assert "correction attempts" in boundary.current.error
+    assert [item.content for item in boundary.deliveries] == [
+        "I struggled to complete that."
+    ]
 
 
 def test_argument_rejection_consumes_remaining_command_budget(boundary):
     boundary.controller.inference = Commands(
         *[send(content="Progress", end_run=False) for _ in range(23)],
         command("read_conversation_history", unsupported=True),
-        finish(),
+        send(content="I couldn't finish all the steps.", end_run=True),
     )
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == "failed"
-    assert len(boundary.controller.inference.calls) == 24
+    assert boundary.current.status == "completed"
+    assert len(boundary.controller.inference.calls) == 25
     assert "24-command run limit" in boundary.current.error
-    assert len(boundary.deliveries) == 23
+    assert len(boundary.deliveries) == 24
+    assert boundary.deliveries[-1].content == "I couldn't finish all the steps."
 
 
 def test_argument_diagnostics_are_bounded_and_redact_unconventional_keys(boundary):
@@ -1309,9 +1487,10 @@ def test_restart_preserves_argument_feedback_and_correction_limit(boundary, exha
         )
         await boundary.controller.process(boundary.current)
         if exhausted:
-            assert boundary.current.status == "failed"
-            assert boundary.controller.inference.calls == []
-            assert boundary.deliveries == []
+            assert boundary.current.status == "completed"
+            assert "correction attempts" in boundary.current.error
+            assert boundary.controller.inference.tools == [["send_message"]]
+            assert [item.content for item in boundary.deliveries] == ["Recovered"]
         else:
             assert boundary.current.status == "completed"
             assert (
@@ -1413,18 +1592,23 @@ def test_smaller_model_window_rejects_an_oversized_saved_transcript(boundary):
     boundary.current = boundary.current.model_copy(
         update={"transcript": [RunMessage(role="user", content="x" * 10000)]}
     )
-    boundary.controller.inference = Commands(finish())
+    boundary.controller.inference = Commands(
+        send(content="Sorry, I ran into trouble with that.", end_run=True)
+    )
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == "failed"
+    assert boundary.current.status == "completed"
     assert "context limit" in boundary.current.error
-    assert boundary.controller.inference.calls == []
+    assert boundary.controller.inference.tools == [["send_message"]]
+    assert [item.content for item in boundary.deliveries] == [
+        "Sorry, I ran into trouble with that."
+    ]
 
 
 @pytest.mark.parametrize(
     "context_limit", [1, 1024, 1025, 4096, RESERVED_TOKENS, RESERVED_TOKENS + 1]
 )
 @pytest.mark.parametrize("saved_transcript", [False, True])
-def test_window_without_room_for_tools_fails_before_inference(
+def test_window_without_room_for_tools_recovers_without_inference(
     boundary, context_limit, saved_transcript
 ):
     async def inference_status():
@@ -1439,11 +1623,12 @@ def test_window_without_room_for_tools_fails_before_inference(
         )
     boundary.controller.inference = Commands(finish())
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == "failed"
+    assert boundary.current.status == "completed"
     assert "context" in boundary.current.error
     assert boundary.controller.inference.calls == []
     assert boundary.current.owner_id is None
     assert boundary.current.lease_expires_at is None
+    assert [item.content for item in boundary.deliveries] == [FALLBACK_FAILURE_REPLY]
 
 
 def test_zero_context_budget_does_not_fall_back_to_default(boundary):
@@ -1725,9 +1910,15 @@ def test_reference_scope_matches_budget_preparation_binding_and_validation(
     assert boundary.controller.transcript_limit(status, boundary.current) == (
         context_characters(65536) - tool_characters(expected)
     )
-    boundary.controller.inference = Commands(
-        command("read_request_references"), finish()
-    )
+    if selected:
+        boundary.controller.inference = Commands(
+            command("read_request_references"), finish()
+        )
+    else:
+        boundary.controller.inference = Commands(
+            *[command("read_request_references")] * (MAX_ERROR_RETRIES + 1),
+            send(content="I had trouble reading that.", end_run=True),
+        )
     asyncio.run(boundary.controller.process(boundary.current))
     assert boundary.controller.inference.tools[0] == [tool.name for tool in expected]
     if selected:
@@ -1742,9 +1933,12 @@ def test_reference_scope_matches_budget_preparation_binding_and_validation(
             if item.role != "result"
         )
     else:
-        assert boundary.current.status == "failed"
+        assert boundary.current.status == "completed"
         assert "unknown tool" in boundary.current.error
         assert not any(item.role == "result" for item in boundary.current.transcript)
+        assert [item.content for item in boundary.deliveries] == [
+            "I had trouble reading that."
+        ]
 
 
 def test_saved_reference_reader_replays_from_global_registry_without_selection(
@@ -1790,13 +1984,18 @@ def test_selected_reference_over_context_budget_fails_without_truncation(boundar
 
     boundary.inference_status = status
     boundary.controller.inference = Commands(
-        command("read_request_references"), finish()
+        command("read_request_references"),
+        send(content="I struggled to finish reading that.", end_run=True),
     )
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == "failed"
+    assert boundary.current.status == "completed"
     assert "context limit" in boundary.current.error
-    assert len(boundary.controller.inference.calls) == 1
+    assert len(boundary.controller.inference.calls) == 2
+    assert boundary.controller.inference.tools[-1] == ["send_message"]
     assert tool_result(boundary)["references"][0]["markdown"] == "x" * 12000
+    assert [item.content for item in boundary.deliveries] == [
+        "I struggled to finish reading that."
+    ]
 
 
 def test_historical_codex_event_run_starts_from_the_event(boundary):
@@ -1813,7 +2012,7 @@ def test_historical_codex_event_run_starts_from_the_event(boundary):
     assert context[-1].data == {"status": "completed"}
 
 
-def test_ambiguous_historical_run_fails_without_inference_or_replay(boundary):
+def test_ambiguous_historical_run_recovers_without_inference_or_replay(boundary):
     records = [
         UnrecoveredRecord(
             original={"role": "assistant", "content": "ambiguous operation"}
@@ -1823,9 +2022,9 @@ def test_ambiguous_historical_run_fails_without_inference_or_replay(boundary):
     boundary.start_owned(transcript=records)
     boundary.controller.inference = Commands()
     asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == "failed"
+    assert boundary.current.status == "completed"
     assert "could not safely resume" in boundary.current.error
-    assert not boundary.deliveries
+    assert [item.content for item in boundary.deliveries] == [FALLBACK_FAILURE_REPLY]
     assert not boundary.controller.inference.calls
 
 

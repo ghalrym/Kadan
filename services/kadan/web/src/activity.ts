@@ -45,11 +45,7 @@ export function conversationActivity(conversation: Resource, runs: AgentRun[], i
     };
     switch (run.status) {
       case "failed":
-        item.tone = "failed";
-        item.state = "Response failed";
-        item.detail = run.error || "";
-        groups[run.id === currentOutcome?.id ? 0 : 3].items.push(item);
-        break;
+        continue;
       case "cancelled":
         item.tone = "stopped";
         item.state = "Response stopped";

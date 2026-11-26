@@ -12,12 +12,11 @@ const image = (id, status, extra = {}) => ({
   delivered_message_id: null, updated_at: "2026-10-25T10:00:00Z", ...extra,
 });
 
-test("failed responses retain their recorded error and remain distinct from deliberate stops", () => {
+test("failed responses are omitted from Activity while deliberate stops stay visible", () => {
   const [review, progressing, finished, earlier] = conversationActivity(conversation, [
     run("failed", "failed", { error: "Context allowance exceeded" }), run("stop", "cancelled"),
   ], []);
-  assert.equal(earlier.items[0].state, "Response failed");
-  assert.equal(earlier.items[0].detail, "Context allowance exceeded");
+  assert.deepEqual(earlier.items, []);
   assert.equal(review.items[0].state, "Response stopped");
   assert.equal(review.items[0].detail, "");
   assert.deepEqual(progressing.items, []);
@@ -80,20 +79,18 @@ test("image follow-up responses and missing triggering messages have honest fall
 });
 
 
-test("a newer response preserves all previous failures without counting them as current review", () => {
+test("a newer response moves earlier stops to Earlier and omits failed responses", () => {
   const failed = run("failed", "failed", { error: "Command rejected" });
   const stopped = run("stopped", "cancelled");
   const groups = conversationActivity(conversation, [failed, stopped, run("new", "running")], []);
   assert.equal(groups[0].items.length, 0);
   assert.equal(groups[1].items.length, 1);
   assert.equal(groups[3].historical, true);
-  assert.equal(groups[3].items.length, 2);
-  assert.equal(groups[3].items.find(item => item.id === "failed").detail, "Command rejected");
+  assert.equal(groups[3].items.length, 1);
+  assert.equal(groups[3].items[0].id, "stopped");
 });
 
-test("the latest response failure stays current without labelling older failures resolved", () => {
+test("failed responses never appear in review or Earlier groups", () => {
   const groups = conversationActivity(conversation, [run("old", "failed"), run("new", "failed", { error: "Still blocked" })], []);
-  assert.equal(groups[0].items[0].detail, "Still blocked");
-  assert.equal(groups[3].items[0].id, "old");
-  assert.equal(groups[3].items[0].state, "Response failed");
+  assert.ok(groups.every(group => group.items.length === 0));
 });

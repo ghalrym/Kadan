@@ -5,7 +5,7 @@ export const cancellableImage = (job: ImageJob) => job.status === "queued" || jo
 
 export function currentResponseOutcome(conversation: Resource, runs: AgentRun[]): AgentRun | undefined {
   const latest = runs.filter(run => run.conversation_id === conversation.id).at(-1);
-  if (!latest || (latest.status !== "failed" && latest.status !== "cancelled")) return;
+  if (!latest || latest.status !== "cancelled") return;
   const lastUser = conversation.messages.filter(message => message.role === "user").at(-1);
   if (lastUser && latest.trigger_message_id !== lastUser.id && lastUser.created_at > latest.created_at) return;
   return latest;

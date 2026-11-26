@@ -2,21 +2,23 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { activeRun, cancellableImage, currentResponseOutcome, imageStatus, isImageAsset, latestConversation, responseProgress } from "./agentRuns.ts";
 
-test("earlier failure remains historical when a newer response starts or succeeds", () => {
+test("failed responses are never shown as chat outcomes; stopped responses remain historical after newer work", () => {
   const conversation = { id: "chat", messages: [] };
-  const failed = { id: "failed", conversation_id: "chat", status: "failed" };
-  assert.equal(currentResponseOutcome(conversation, [failed]), failed);
+  const failed = { id: "failed", conversation_id: "chat", status: "failed", error: "The agent requested multiple actions in a single step." };
+  const stopped = { id: "stopped", conversation_id: "chat", status: "cancelled" };
+  assert.equal(currentResponseOutcome(conversation, [failed]), undefined);
+  assert.equal(currentResponseOutcome(conversation, [stopped]), stopped);
   for (const status of ["queued", "running", "completed"]) {
-    assert.equal(currentResponseOutcome(conversation, [failed, { ...failed, id: "new", status }]), undefined);
+    assert.equal(currentResponseOutcome(conversation, [stopped, { ...stopped, id: "new", status }]), undefined);
   }
-  assert.equal(currentResponseOutcome({ ...conversation, id: "another" }, [failed]), undefined);
+  assert.equal(currentResponseOutcome({ ...conversation, id: "another" }, [stopped]), undefined);
 });
 
-test("a later saved user message makes a prior failure historical before its run poll arrives", () => {
+test("a later saved user message makes a prior stop historical before its run poll arrives", () => {
   const conversation = { id: "chat", messages: [{ id: "new", role: "user", created_at: "2026-10-30T12:00:00Z" }] };
-  const failed = { id: "failed", conversation_id: "chat", status: "failed", trigger_message_id: "old", created_at: "2026-10-30T11:00:00Z" };
-  assert.equal(currentResponseOutcome(conversation, [failed]), undefined);
-  assert.equal(currentResponseOutcome(conversation, [{ ...failed, trigger_message_id: "new" }])?.id, "failed");
+  const stopped = { id: "stopped", conversation_id: "chat", status: "cancelled", trigger_message_id: "old", created_at: "2026-10-30T11:00:00Z" };
+  assert.equal(currentResponseOutcome(conversation, [stopped]), undefined);
+  assert.equal(currentResponseOutcome(conversation, [{ ...stopped, trigger_message_id: "new" }])?.id, "stopped");
 });
 
 test("only queued and running responses offer cancellation", () => {

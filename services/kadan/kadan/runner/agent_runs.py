@@ -13,6 +13,13 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4, uuid5
 
 from kadan_tracing import traced, traced_job
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.tools import StructuredTool
 from langgraph.errors import NodeCancelledError
 from langgraph.graph import END, START, StateGraph
@@ -85,12 +92,25 @@ logger = logging.getLogger(__name__)
 LEASE_SECONDS = 60
 MAX_COMMANDS = 24
 MAX_ARGUMENT_CORRECTIONS = 2
+MAX_ERROR_RETRIES = 3
+FALLBACK_FAILURE_REPLY = (
+    "I ran into trouble completing that request. "
+    "Let me know if you'd like me to try again, or ask if you want more details about what happened."
+)
 # Transcript budget in characters when Hikari does not report a context window.
 MAX_CONTEXT = 48000
 # Tool results are JSON, which tokenizes densely; three characters per token
 # estimates transcript space. Reserve generation separately from template overhead.
 CHARACTERS_PER_TOKEN = 3
 RESERVED_TOKENS = REASONING_TOKENS + REPLY_TOKENS + 1024
+
+
+def is_lease_lost(error: BaseException) -> bool:
+    return (
+        isinstance(error, ServiceError)
+        and error.status == 409
+        and error.code == "lease_lost"
+    )
 
 
 def context_characters(context_limit: int | None) -> int:
@@ -545,22 +565,224 @@ class AgentRuns(RunClient):
             for task in done:
                 task.result()
         except (ServiceError, ValidationError, OSError) as error:
-            try:
-                await self.update(
-                    run,
-                    status="failed",
-                    owner_id=None,
-                    lease_expires_at=None,
-                    error=str(error)[:2000],
-                )
-            except ServiceError:
+            if is_lease_lost(error):
                 logger.info(
                     "Run ended after cancellation or loss of ownership: %s", run.id
                 )
+            else:
+                await self.handle_failure(run, error)
         finally:
             work.cancel()
             heartbeat.cancel()
             await asyncio.gather(work, heartbeat, return_exceptions=True)
+
+    async def handle_failure(self, run: AgentRun, error: BaseException) -> None:
+        error_detail = str(error)[:2000]
+        try:
+            current = await self.owned(run)
+        except ServiceError:
+            logger.info("Run ended after cancellation or loss of ownership: %s", run.id)
+            return
+        reply_id = uuid5(current.id, "failure_reply")
+        if reply_id not in current.delivered_message_ids:
+            reply_text = await self._compose_failure_reply(current, error_detail)
+            try:
+                await self._deliver_failure_reply(current, reply_id, reply_text)
+            except ServiceError:
+                logger.info(
+                    "Run could not deliver failure reply: %s",
+                    current.id,
+                )
+                try:
+                    await self.update(
+                        current,
+                        status="failed",
+                        owner_id=None,
+                        lease_expires_at=None,
+                        error=error_detail,
+                    )
+                except ServiceError:
+                    logger.info(
+                        "Run ended after cancellation or loss of ownership: %s",
+                        current.id,
+                    )
+                return
+        try:
+            await self.update(
+                current,
+                status="completed",
+                owner_id=None,
+                lease_expires_at=None,
+                error=error_detail,
+            )
+        except ServiceError:
+            logger.info(
+                "Run ended after cancellation or loss of ownership: %s", current.id
+            )
+
+    async def _deliver_failure_reply(
+        self, run: AgentRun, message_id: UUID, content: str
+    ) -> None:
+        message = Message(id=message_id, role="assistant", content=content)
+        async with self.lock:
+            await self.services.json_request(
+                "Tsuchi",
+                "POST",
+                self.path(run.agent_key, run.id) + "/messages",
+                json={
+                    "worker_id": str(self.owner),
+                    "message": message.model_dump(mode="json"),
+                    "image_job_id": None,
+                },
+            )
+
+    @staticmethod
+    def _failure_context_messages(error_detail: str) -> tuple[list[BaseMessage], int]:
+        call_id = "run_failure_context"
+        payload = {
+            "status": "failed_after_retries",
+            "error": error_detail,
+            "instruction": (
+                "You encountered an error and could not complete the user's request after retrying. "
+                "Reply briefly and naturally to let the user know you struggled to complete the task "
+                "and offer to try again or help another way. "
+                "Do not tell the user the exact technical error or internal details unless they ask for details."
+            ),
+        }
+        serialized = json.dumps(payload, ensure_ascii=False)
+        return (
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "run_failure_context", "args": {}, "id": call_id}
+                    ],
+                ),
+                ToolMessage(
+                    content=serialized,
+                    name="run_failure_context",
+                    tool_call_id=call_id,
+                ),
+            ],
+            len(serialized) + 96,
+        )
+
+    async def _compose_failure_reply(self, run: AgentRun, error_detail: str) -> str:
+        if not run.transcript or any(
+            isinstance(item, UnrecoveredRecord) for item in run.transcript
+        ):
+            return FALLBACK_FAILURE_REPLY
+        try:
+            status = await self.services.inference_status()
+            if status.state != "ready":
+                return FALLBACK_FAILURE_REPLY
+            send_only = [TOOLS_BY_NAME["send_message"]]
+            limit = context_characters(
+                getattr(status, "context_limit", None)
+            ) - tool_characters(send_only)
+            if limit <= 0:
+                return FALLBACK_FAILURE_REPLY
+            safe_transcript = list(run.transcript)
+            if safe_transcript and isinstance(safe_transcript[-1], RunCall):
+                safe_transcript.pop()
+            failure_obs, failure_chars = self._failure_context_messages(error_detail)
+            transcript_chars = sum(entry_characters(item) for item in safe_transcript)
+            if (
+                "context" not in error_detail.lower()
+                and transcript_chars + failure_chars <= limit
+            ):
+                messages = [*transcript_messages(safe_transcript), *failure_obs]
+            else:
+                system_text = (
+                    "You are the user's assistant. You struggled to complete the previous request. "
+                    "Reply briefly and naturally to let the user know you struggled to complete the task "
+                    "without sharing the exact technical error unless they ask for details."
+                )
+                last_user = next(
+                    (
+                        item.content
+                        for item in reversed(safe_transcript)
+                        if isinstance(item, RunMessage) and item.role == "user"
+                    ),
+                    None,
+                )
+                minimal_chars = (
+                    len(system_text)
+                    + (min(len(last_user), 1000) if last_user else 0)
+                    + failure_chars
+                )
+                if minimal_chars > limit:
+                    return FALLBACK_FAILURE_REPLY
+                messages = [SystemMessage(content=system_text)]
+                if last_user:
+                    messages.append(HumanMessage(content=last_user[:1000]))
+                messages.extend(failure_obs)
+            _, command, rejection = await self._infer_once(
+                run, messages, status.model_id, send_only
+            )
+            if rejection is None and command.tool == "send_message":
+                content = command.arguments.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    return content
+        except (ServiceError, ValidationError, OSError) as reply_error:
+            logger.warning(
+                "Failure reply inference failed for run=%s: %s", run.id, reply_error
+            )
+        return FALLBACK_FAILURE_REPLY
+
+    async def recent_run_errors(
+        self,
+        run: AgentRun,
+        messages: list[Message],
+        included_message_ids: set[UUID],
+    ) -> list[dict]:
+        try:
+            values = await self.services.json_request(
+                "Tsuchi",
+                "GET",
+                f"/api/agents/{run.agent_key}/resources/{run.conversation_id}/runs",
+            )
+        except ServiceError:
+            return []
+        if not isinstance(values, list):
+            return []
+        prior_runs: list[AgentRun] = []
+        for value in values:
+            try:
+                item = AgentRun.model_validate(value)
+            except ValidationError:
+                continue
+            if (
+                item.id == run.id
+                or item.agent_key != run.agent_key
+                or item.conversation_id != run.conversation_id
+                or not item.error
+                or item.created_at > run.created_at
+            ):
+                continue
+            if (
+                item.trigger_message_id is not None
+                and item.trigger_message_id not in included_message_ids
+            ):
+                continue
+            prior_runs.append(item)
+        prior_runs.sort(key=lambda item: (item.created_at, item.id))
+        messages_by_id = {message.id: message for message in messages}
+        records: list[dict] = []
+        for item in prior_runs[-3:]:
+            trigger = (
+                messages_by_id.get(item.trigger_message_id)
+                if item.trigger_message_id is not None
+                else None
+            )
+            record: dict[str, object] = {
+                "occurred_at": item.updated_at.isoformat(),
+                "error": item.error,
+            }
+            if trigger is not None:
+                record["request_excerpt"] = trigger.content.strip()[:160]
+            records.append(record)
+        return records
 
     @traced("kadan.agent_runs.context")
     async def context(
@@ -664,6 +886,7 @@ class AgentRuns(RunClient):
             )
 
         history: list[RunMessage] = []
+        included_message_ids: set[UUID] = set()
         for message in reversed(messages):
             if message.role not in {"user", "assistant"}:
                 continue
@@ -682,8 +905,28 @@ class AgentRuns(RunClient):
                     )
                 break
             history.append(turn)
+            included_message_ids.add(message.id)
             budget -= size
+        recent_errors = await self.recent_run_errors(
+            run, messages, included_message_ids
+        )
+        error_context = (
+            RunObservation(
+                name="recent_run_errors",
+                data={
+                    "notice": (
+                        "Internal error context from recent responses in this conversation. "
+                        "Do not share these details with the user unless they ask what happened."
+                    ),
+                    "errors": recent_errors,
+                },
+            )
+            if recent_errors
+            else None
+        )
         context: list[TranscriptEntry] = [system, *reversed(history)]
+        if error_context is not None and entry_characters(error_context) <= budget:
+            context.append(error_context)
         if event is not None:
             context.append(event)
         return context
@@ -709,10 +952,134 @@ class AgentRuns(RunClient):
     async def prepare(self, state: RunState) -> dict:
         run = state.run
         if not run.transcript:
-            status = await self.services.inference_status()
-            limit = self.transcript_limit(status, run)
-            run = await self.update(run, transcript=await self.context(run, limit))
+            for attempt in range(MAX_ERROR_RETRIES + 1):
+                if attempt > 0:
+                    run = await self.owned(run)
+                try:
+                    status = await self.services.inference_status()
+                    limit = self.transcript_limit(status, run)
+                    run = await self.update(
+                        run, transcript=await self.context(run, limit)
+                    )
+                    break
+                except (ServiceError, ValidationError, OSError) as error:
+                    if (
+                        is_lease_lost(error)
+                        or (
+                            isinstance(error, ServiceError)
+                            and error.status in {409, 422}
+                        )
+                        or attempt >= MAX_ERROR_RETRIES
+                    ):
+                        raise
+                    logger.warning(
+                        "Agent context preparation failed (retry %d/%d) run=%s: %s",
+                        attempt + 1,
+                        MAX_ERROR_RETRIES,
+                        run.id,
+                        error,
+                    )
         return {"run": run}
+
+    @staticmethod
+    def _retry_feedback_messages(
+        error: ServiceError, retry_number: int
+    ) -> list[BaseMessage]:
+        call_id = f"retry_feedback_{retry_number}"
+        payload = {
+            "error": str(error),
+            "retry": retry_number,
+            "max_retries": MAX_ERROR_RETRIES,
+            "instruction": (
+                "Your previous step could not be executed. "
+                "Respond with at most one valid tool call using only available tools, "
+                "or send a concise plain text reply."
+            ),
+        }
+        return [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "step_retry_feedback", "args": {}, "id": call_id}],
+            ),
+            ToolMessage(
+                content=json.dumps(payload, ensure_ascii=False),
+                name="step_retry_feedback",
+                tool_call_id=call_id,
+            ),
+        ]
+
+    async def _infer_once(
+        self,
+        run: AgentRun,
+        messages: list[BaseMessage],
+        model_id: str | None,
+        tools: list[StructuredTool],
+    ) -> tuple[RunCall, ToolCommand, ArgumentRejection | None]:
+        started = monotonic()
+        logger.info(
+            "Agent inference started run=%s at=%s",
+            run.id,
+            datetime.now(UTC).isoformat(),
+        )
+        draft_parts: list[str] = []
+        draft_published = False
+        last_draft_at = 0.0
+        draft_path = self.path(run.agent_key, run.id) + "/draft"
+        can_stream_draft = any(tool.name == "send_message" for tool in tools)
+
+        async def publish_draft(text: str) -> None:
+            nonlocal draft_published, last_draft_at
+            if not can_stream_draft:
+                return
+            draft_parts.append(text)
+            content = "".join(draft_parts)
+            if not content.strip():
+                return
+            now = monotonic()
+            if draft_published and now - last_draft_at < 0.15:
+                return
+            try:
+                await self.services.json_request(
+                    "Tsuchi",
+                    "PUT",
+                    draft_path,
+                    json={"worker_id": str(self.owner), "content": content},
+                )
+                draft_published = True
+                last_draft_at = now
+            except ServiceError:
+                logger.debug("Skipping transient draft update for run=%s", run.id)
+
+        command: ToolCommand | None = None
+        try:
+            call = await self.inference.call(
+                messages,
+                model_id,
+                f"kadan:{run.agent_key}:{run.conversation_id}",
+                tools,
+                priority="interactive",
+                on_text_delta=publish_draft if can_stream_draft else None,
+            )
+            command = call.command
+            rejection = validate(command, tools)
+        finally:
+            if draft_published and (command is None or command.tool != "send_message"):
+                try:
+                    await self.services.json_request(
+                        "Tsuchi",
+                        "PUT",
+                        draft_path,
+                        json={"worker_id": str(self.owner), "content": ""},
+                    )
+                except ServiceError:
+                    logger.debug("Skipping transient draft clear for run=%s", run.id)
+            logger.info(
+                "Agent inference ended run=%s at=%s elapsed_seconds=%.3f",
+                run.id,
+                datetime.now(UTC).isoformat(),
+                monotonic() - started,
+            )
+        return call, command, rejection
 
     @traced("kadan.agent_runs.infer_command")
     async def infer_command(self, state: RunState) -> dict:
@@ -747,80 +1114,57 @@ class AgentRuns(RunClient):
                 >= MAX_COMMANDS
             ):
                 raise ServiceError("The agent reached its 24-command run limit.", 422)
-            status = await self.services.inference_status()
-            if status.state != "ready":
-                raise ServiceError(status.message, 503)
-            mcp_servers = await self.active_mcp_servers()
-            tools = self.bound_tools(run, mcp_servers)
-            limit = self.transcript_limit(status, run, mcp_servers)
-            if sum(entry_characters(item) for item in run.transcript) > limit:
-                raise ServiceError("The agent run exceeded its context limit.", 422)
-            started = monotonic()
-            logger.info(
-                "Agent inference started run=%s at=%s",
-                run.id,
-                datetime.now(UTC).isoformat(),
-            )
-            draft_parts: list[str] = []
-            draft_published = False
-            last_draft_at = 0.0
-            draft_path = self.path(run.agent_key, run.id) + "/draft"
-            can_stream_draft = any(tool.name == "send_message" for tool in tools)
-
-            async def publish_draft(text: str) -> None:
-                nonlocal draft_published, last_draft_at
-                if not can_stream_draft:
-                    return
-                draft_parts.append(text)
-                content = "".join(draft_parts)
-                if not content.strip():
-                    return
-                now = monotonic()
-                if draft_published and now - last_draft_at < 0.15:
-                    return
-                try:
-                    await self.services.json_request(
-                        "Tsuchi",
-                        "PUT",
-                        draft_path,
-                        json={"worker_id": str(self.owner), "content": content},
-                    )
-                    draft_published = True
-                    last_draft_at = now
-                except ServiceError:
-                    logger.debug("Skipping transient draft update for run=%s", run.id)
-
+            base_messages = transcript_messages(run.transcript)
+            retry_messages: list[BaseMessage] = []
+            call: RunCall | None = None
             command = None
-            try:
-                call = await self.inference.call(
-                    transcript_messages(run.transcript),
-                    status.model_id,
-                    f"kadan:{run.agent_key}:{run.conversation_id}",
-                    tools,
-                    priority="interactive",
-                    on_text_delta=publish_draft if can_stream_draft else None,
-                )
-                command = call.command
-                rejection = validate(command, tools)
-            finally:
-                if draft_published and (
-                    command is None or command.tool != "send_message"
-                ):
-                    try:
-                        await self.services.json_request(
-                            "Tsuchi",
-                            "PUT",
-                            draft_path,
-                            json={"worker_id": str(self.owner), "content": ""},
+            rejection = None
+            for attempt in range(MAX_ERROR_RETRIES + 1):
+                if attempt > 0:
+                    run = await self.owned(run)
+                try:
+                    status = await self.services.inference_status()
+                    if status.state != "ready":
+                        raise ServiceError(status.message, 503)
+                    mcp_servers = await self.active_mcp_servers()
+                    tools = self.bound_tools(run, mcp_servers)
+                    limit = self.transcript_limit(status, run, mcp_servers)
+                    if sum(entry_characters(item) for item in run.transcript) > limit:
+                        raise ServiceError(
+                            "The agent run exceeded its context limit.", 422
                         )
-                    except ServiceError:
-                        logger.debug("Skipping transient draft clear for run=%s", run.id)
-                logger.info(
-                    "Agent inference ended run=%s at=%s elapsed_seconds=%.3f",
-                    run.id,
-                    datetime.now(UTC).isoformat(),
-                    monotonic() - started,
-                )
+                    call, command, rejection = await self._infer_once(
+                        run,
+                        [*base_messages, *retry_messages],
+                        status.model_id,
+                        tools,
+                    )
+                    break
+                except (ServiceError, ValidationError, OSError) as error:
+                    if (
+                        is_lease_lost(error)
+                        or (isinstance(error, ServiceError) and error.status == 422)
+                        or attempt >= MAX_ERROR_RETRIES
+                    ):
+                        raise
+                    logger.warning(
+                        "Agent inference step failed (retry %d/%d) run=%s: %s",
+                        attempt + 1,
+                        MAX_ERROR_RETRIES,
+                        run.id,
+                        error,
+                    )
+                    if isinstance(error, ServiceError) and error.code in {
+                        "invalid_command",
+                        "response_limit",
+                        "command_too_large",
+                    }:
+                        retry_messages = self._retry_feedback_messages(
+                            error, attempt + 1
+                        )
+                    else:
+                        retry_messages = []
+            assert call is not None and command is not None
             if rejection is not None:
                 # A rejection is feedback, never a pending assistant action. Save
                 # it atomically so restart cannot replay it or reset the budget.
