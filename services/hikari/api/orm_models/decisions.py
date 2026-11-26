@@ -1,11 +1,15 @@
 from uuid import UUID, uuid4
 
 from sqlalchemy import CheckConstraint, ForeignKey, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.orderinglist import ordering_list
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from api.orm_models.base import Base
+from api.orm_models.base import (
+    Base,
+    PortableJSON,
+    PortableJSONValue,
+    PortableTextArray,
+)
 
 
 class ChoiceQuestion(Base):
@@ -34,9 +38,7 @@ class ChoiceOption(Base):
     __table_args__ = (
         CheckConstraint("length(key) > 0", name="key_not_empty"),
         CheckConstraint("position >= 0", name="position_nonnegative"),
-        UniqueConstraint(
-            "question_id", "position", deferrable=True, initially="DEFERRED"
-        ),
+        UniqueConstraint("question_id", "position"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -55,14 +57,13 @@ class ScoreQuestion(Base):
         CheckConstraint("length(key) > 0", name="key_not_empty"),
         CheckConstraint("length(instructions) > 0", name="instructions_not_empty"),
         CheckConstraint("type = 'Score'", name="type"),
-        CheckConstraint("cardinality(levels) > 0", name="levels_not_empty"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     key: Mapped[str] = mapped_column(Text)
     instructions: Mapped[str] = mapped_column(Text)
     type: Mapped[str] = mapped_column(Text, default="Score")
-    levels: Mapped[list[str]] = mapped_column(ARRAY(Text))
+    levels: Mapped[list[str]] = mapped_column(PortableTextArray)
 
 
 class NoulQuestion(Base):
@@ -86,16 +87,11 @@ class DecisionAnswer(Base):
     __table_args__ = (
         CheckConstraint("type IN ('Choice', 'Score', 'Noul')", name="type"),
         CheckConstraint("confidence BETWEEN 0 AND 1", name="confidence_range"),
-        CheckConstraint(
-            "jsonb_typeof(value) IN ('string', 'number', 'boolean')", name="value_type"
-        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     key: Mapped[str] = mapped_column(Text)
     type: Mapped[str] = mapped_column(Text)
-    value: Mapped[str | float | bool] = mapped_column(JSONB)
+    value: Mapped[str | float | bool] = mapped_column(PortableJSONValue)
     confidence: Mapped[float | None]
-    probabilities: Mapped[dict[str, float] | None] = mapped_column(
-        JSONB(none_as_null=True)
-    )
+    probabilities: Mapped[dict[str, float] | None] = mapped_column(PortableJSON)

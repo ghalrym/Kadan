@@ -1,7 +1,7 @@
 from alembic import context
-from sqlalchemy import create_engine, pool
+from sqlalchemy import pool
 
-from api.database import DatabaseSettings
+from api.database import DatabaseSettings, build_engine
 from api.orm_models import Base
 
 
@@ -17,9 +17,14 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    engine = create_engine(DatabaseSettings().url, poolclass=pool.NullPool)
+    url = DatabaseSettings().url
+    engine = build_engine(url)
     with engine.connect() as connection:
-        context.configure(connection=connection, target_metadata=Base.metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=Base.metadata,
+            render_as_batch=connection.dialect.name == "sqlite",
+        )
         with context.begin_transaction():
             context.run_migrations()
     engine.dispose()

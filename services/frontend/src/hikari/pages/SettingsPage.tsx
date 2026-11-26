@@ -4,12 +4,16 @@ import {
   downloadState,
   fetchModels,
   licenseNotices,
+  llmModelId,
+  llmVariantParts,
   modelsCanDownload,
   modelsComplete,
   modelsDownloading,
   modelsProgress,
+  updateLlmModel,
   type CapabilityModel,
   type CheckpointStatus,
+  type LlmQuant,
 } from '../api/settings'
 import SubscriptionsPanel from '../components/SubscriptionsPanel'
 import './SettingsPage.css'
@@ -265,6 +269,16 @@ export default function SettingsPage() {
     setConfirmation({ models: models.filter((row) => modelsCanDownload([row])), focusId })
   }
   const downloaded = rows?.filter(({ model }) => model?.status === 'complete').length ?? 0
+  const languageRow = rows?.find(({ capability }) => capability.id === 'inkling-2-mini') ?? null
+  const languageModel = languageRow?.model ?? null
+  const languageState = downloadState(languageModel)
+  const languageBusy = languageState === 'queued' || languageState === 'downloading'
+  const languageVariant = languageModel ? llmVariantParts(languageModel.id) : null
+  function switchLanguage(quant: LlmQuant, abliterated: boolean) {
+    const nextId = llmModelId(quant, abliterated)
+    if (!languageModel || nextId === languageModel.id) return
+    void run((signal) => updateLlmModel(nextId, signal), 'Could not update language model')
+  }
 
   const errorPanel = (actionError || error) && (
     <div role="alert" className="error-panel models-alert">
@@ -360,6 +374,52 @@ export default function SettingsPage() {
               )}
             </header>
             <StorageBar rows={rows} />
+            {languageVariant && (
+              <div className="language-variant-bar tone-llm">
+                <div className="model-row-label">
+                  <span className="model-row-capability">Language model variant</span>
+                  <span className="muted language-variant-note">
+                    Switch between Q4 (smaller, fits 24 GB VRAM) or Q8 (higher precision) and Standard or Abliterated.
+                  </span>
+                </div>
+                <div className="language-variant-controls">
+                  <div className="segments" role="group" aria-label="Language model precision">
+                    {([
+                      ['q4', 'Q4'],
+                      ['q8', 'Q8'],
+                    ] as const).map(([quant, label]) => (
+                      <button
+                        type="button"
+                        key={quant}
+                        aria-pressed={languageVariant.quant === quant}
+                        className={languageVariant.quant === quant ? 'selected' : ''}
+                        disabled={submitting || needsRefresh || languageBusy}
+                        onClick={() => switchLanguage(quant, languageVariant.abliterated)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="segments" role="group" aria-label="Language model variant">
+                    {([
+                      [false, 'Standard'],
+                      [true, 'Abliterated'],
+                    ] as const).map(([abliterated, label]) => (
+                      <button
+                        type="button"
+                        key={label}
+                        aria-pressed={languageVariant.abliterated === abliterated}
+                        className={languageVariant.abliterated === abliterated ? 'selected' : ''}
+                        disabled={submitting || needsRefresh || languageBusy}
+                        onClick={() => switchLanguage(languageVariant.quant, abliterated)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
             <ol className="model-list">
               {rows.map((row, index) => (
                 <ModelRow

@@ -1,11 +1,32 @@
 import {
   downloadModelV1ModelsModelIdDownloadPost,
   listModelsV1ModelsGet,
+  updateSettings,
 } from './generated/sdk.gen'
 import type { CheckpointStatus } from './generated/types.gen'
 import { capabilities, type Capability } from '../data/models'
 
 export type { CheckpointStatus }
+export type LlmModelId =
+  | 'inkling-2-mini-iq4-nl'
+  | 'inkling-2-mini-q8-0'
+  | 'inkling-2-mini-abliterated-iq4-nl'
+  | 'inkling-2-mini-abliterated-q8-0'
+export type LlmQuant = 'q4' | 'q8'
+
+export function llmVariantParts(modelId: string): { quant: LlmQuant; abliterated: boolean } {
+  return {
+    quant: modelId.endsWith('-q8-0') ? 'q8' : 'q4',
+    abliterated: modelId.includes('-abliterated-'),
+  }
+}
+
+export function llmModelId(quant: LlmQuant, abliterated: boolean): LlmModelId {
+  if (quant === 'q8') {
+    return abliterated ? 'inkling-2-mini-abliterated-q8-0' : 'inkling-2-mini-q8-0'
+  }
+  return abliterated ? 'inkling-2-mini-abliterated-iq4-nl' : 'inkling-2-mini-iq4-nl'
+}
 export type DownloadState =
   | 'unavailable'
   | 'not_downloaded'
@@ -55,6 +76,16 @@ export async function fetchModels(signal: AbortSignal): Promise<CapabilityModel[
   const result = await listModelsV1ModelsGet({ signal })
   if (!result.response?.ok || !result.data) throw settingsError(result.response, result.error)
   return capabilityModels(result.data.models, result.data.selected_model_id)
+}
+
+/** Switch the active local Inkling 2 Mini precision (Q4/Q8) and variant (Standard/Abliterated). */
+export async function updateLlmModel(
+  modelId: LlmModelId,
+  signal: AbortSignal,
+): Promise<CapabilityModel[]> {
+  const result = await updateSettings({ body: { llm_model: modelId }, signal })
+  if (!result.response?.ok || !result.data) throw settingsError(result.response, result.error)
+  return capabilityModels(result.data.models, result.data.defaults.llm)
 }
 
 /**

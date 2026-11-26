@@ -2555,6 +2555,23 @@
       "SettingsRequest": {
         "additionalProperties": false,
         "properties": {
+          "llm_model": {
+            "anyOf": [
+              {
+                "enum": [
+                  "inkling-2-mini-iq4-nl",
+                  "inkling-2-mini-q8-0",
+                  "inkling-2-mini-abliterated-iq4-nl",
+                  "inkling-2-mini-abliterated-q8-0"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Model"
+          },
           "whisper_formatting": {
             "anyOf": [
               {

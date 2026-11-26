@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from api.pydantic_models.inference_task import WhisperFormattingTask
+from api.pydantic_models.inference_task import LlmSelectionTask, WhisperFormattingTask
 from api.pydantic_models.model_store import ModelStoreStatus
 from api.routes.v1 import settings
 from api.services.inference_errors import InferenceFailure
@@ -111,3 +111,29 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(caught.exception.status_code, 503)
         self.assertEqual(caught.exception.detail, "Cannot save setting")
+
+    async def test_llm_model_variant_saves_and_rejects_unknown_ids(self):
+        with self.assertRaises(ValidationError):
+            settings.SettingsRequest(llm_model="qwen-7b")
+        for model_id in (
+            "inkling-2-mini-iq4-nl",
+            "inkling-2-mini-q8-0",
+            "inkling-2-mini-abliterated-iq4-nl",
+            "inkling-2-mini-abliterated-q8-0",
+        ):
+            status = snapshot()
+            status.selected_model_id = model_id
+            status.defaults.llm = model_id
+            with (
+                patch.object(settings.inference, "models_status", return_value=status),
+                patch.object(settings.inference, "submit", new=AsyncMock()) as submit,
+            ):
+                result = await settings.update_settings(
+                    settings.SettingsRequest(llm_model=model_id)
+                )
+            submit.assert_awaited_once_with(
+                LlmSelectionTask(model_id=model_id),
+                feature="llm_selection",
+                operation="configure",
+            )
+            self.assertEqual(result.defaults.llm, model_id)

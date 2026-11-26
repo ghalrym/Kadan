@@ -15,6 +15,16 @@ depends_on = None
 
 
 def upgrade() -> None:
+    is_pg = op.get_bind().dialect.name == "postgresql"
+    jsonb_type = postgresql.JSONB(astext_type=sa.Text()) if is_pg else sa.JSON()
+    jsonb_nullable_type = (
+        postgresql.JSONB(none_as_null=True, astext_type=sa.Text())
+        if is_pg
+        else sa.JSON(none_as_null=True)
+    )
+    text_array_type = postgresql.ARRAY(sa.Text()) if is_pg else sa.JSON()
+    bigint_array_type = postgresql.ARRAY(sa.BigInteger()) if is_pg else sa.JSON()
+
     op.create_table(
         "chat_messages",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -46,22 +56,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_choice_questions")),
     )
-    op.create_table(
-        "decision_answers",
-        sa.Column("id", sa.Uuid(), nullable=False),
-        sa.Column("key", sa.Text(), nullable=False),
-        sa.Column("type", sa.Text(), nullable=False),
-        sa.Column("value", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("confidence", sa.Double(), nullable=True),
-        sa.Column(
-            "probabilities",
-            postgresql.JSONB(none_as_null=True, astext_type=sa.Text()),
-            nullable=True,
-        ),
-        sa.CheckConstraint(
-            "jsonb_typeof(value) IN ('string', 'number', 'boolean')",
-            name=op.f("ck_decision_answers_value_type"),
-        ),
+    decision_constraints = [
         sa.CheckConstraint(
             "type IN ('Choice', 'Score', 'Noul')", name=op.f("ck_decision_answers_type")
         ),
@@ -70,6 +65,28 @@ def upgrade() -> None:
             name=op.f("ck_decision_answers_confidence_range"),
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_decision_answers")),
+    ]
+    if is_pg:
+        decision_constraints.insert(
+            0,
+            sa.CheckConstraint(
+                "jsonb_typeof(value) IN ('string', 'number', 'boolean')",
+                name=op.f("ck_decision_answers_value_type"),
+            ),
+        )
+    op.create_table(
+        "decision_answers",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("key", sa.Text(), nullable=False),
+        sa.Column("type", sa.Text(), nullable=False),
+        sa.Column("value", jsonb_type, nullable=False),
+        sa.Column("confidence", sa.Double(), nullable=True),
+        sa.Column(
+            "probabilities",
+            jsonb_nullable_type,
+            nullable=True,
+        ),
+        *decision_constraints,
     )
     op.create_table(
         "generated_speech",
@@ -86,7 +103,7 @@ def upgrade() -> None:
         sa.Column("mode", sa.Text(), nullable=False),
         sa.Column("prompt", sa.Text(), nullable=False),
         sa.Column("aspect", sa.Text(), nullable=False),
-        sa.Column("seeds", postgresql.ARRAY(sa.BigInteger()), nullable=False),
+        sa.Column("seeds", bigint_array_type, nullable=False),
         sa.Column("meta", sa.Text(), nullable=False),
         sa.CheckConstraint(
             "aspect IN ('square', 'landscape', 'portrait', 'wide')",
@@ -97,21 +114,29 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_image_sets")),
     )
+    model_settings_constraints = [
+        sa.CheckConstraint(
+            "type IN ('LLM', 'Image', 'Video', 'TTS', 'STT')",
+            name=op.f("ck_model_settings_type"),
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_model_settings")),
+    ]
+    if is_pg:
+        model_settings_constraints.insert(
+            1,
+            sa.CheckConstraint(
+                "selected = ANY(options)",
+                name=op.f("ck_model_settings_selected_available"),
+            ),
+        )
     op.create_table(
         "model_settings",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("label", sa.Text(), nullable=False),
         sa.Column("type", sa.Text(), nullable=False),
         sa.Column("selected", sa.Text(), nullable=False),
-        sa.Column("options", postgresql.ARRAY(sa.Text()), nullable=False),
-        sa.CheckConstraint(
-            "type IN ('LLM', 'Image', 'Video', 'TTS', 'STT')",
-            name=op.f("ck_model_settings_type"),
-        ),
-        sa.CheckConstraint(
-            "selected = ANY(options)", name=op.f("ck_model_settings_selected_available")
-        ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_model_settings")),
+        sa.Column("options", text_array_type, nullable=False),
+        *model_settings_constraints,
     )
     op.create_table(
         "noul_questions",
@@ -153,17 +178,8 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_request_records")),
     )
-    op.create_table(
-        "score_questions",
-        sa.Column("id", sa.Uuid(), nullable=False),
-        sa.Column("key", sa.Text(), nullable=False),
-        sa.Column("instructions", sa.Text(), nullable=False),
-        sa.Column("type", sa.Text(), nullable=False),
-        sa.Column("levels", postgresql.ARRAY(sa.Text()), nullable=False),
+    score_constraints = [
         sa.CheckConstraint("type = 'Score'", name=op.f("ck_score_questions_type")),
-        sa.CheckConstraint(
-            "cardinality(levels) > 0", name=op.f("ck_score_questions_levels_not_empty")
-        ),
         sa.CheckConstraint(
             "length(instructions) > 0",
             name=op.f("ck_score_questions_instructions_not_empty"),
@@ -172,6 +188,23 @@ def upgrade() -> None:
             "length(key) > 0", name=op.f("ck_score_questions_key_not_empty")
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_score_questions")),
+    ]
+    if is_pg:
+        score_constraints.insert(
+            1,
+            sa.CheckConstraint(
+                "cardinality(levels) > 0",
+                name=op.f("ck_score_questions_levels_not_empty"),
+            ),
+        )
+    op.create_table(
+        "score_questions",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("key", sa.Text(), nullable=False),
+        sa.Column("instructions", sa.Text(), nullable=False),
+        sa.Column("type", sa.Text(), nullable=False),
+        sa.Column("levels", text_array_type, nullable=False),
+        *score_constraints,
     )
     op.create_table(
         "video_jobs",
@@ -222,8 +255,9 @@ def upgrade() -> None:
         sa.UniqueConstraint(
             "question_id",
             "position",
-            deferrable=True,
-            initially="DEFERRED",
+            *([] if not is_pg else []),
+            deferrable=True if is_pg else None,
+            initially="DEFERRED" if is_pg else None,
             name=op.f("uq_choice_options_question_id"),
         ),
     )

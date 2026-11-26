@@ -178,6 +178,11 @@ class WhisperFormattingTask(TaskInput):
     enabled: bool
 
 
+class LlmSelectionTask(TaskInput):
+    feature: Literal["llm_selection"] = "llm_selection"
+    model_id: LlmModel
+
+
 InferenceInput = Annotated[
     ChatTask
     | ImageTask
@@ -189,7 +194,8 @@ InferenceInput = Annotated[
     | VideoTask
     | DownloadTask
     | ModelContextTask
-    | WhisperFormattingTask,
+    | WhisperFormattingTask
+    | LlmSelectionTask,
     Field(discriminator="feature"),
 ]
 
@@ -218,6 +224,7 @@ class InferenceTask(BaseModel):
         settings = self.feature in (
             "model_context",
             "whisper_formatting",
+            "llm_selection",
         )
         if settings != (self.operation == "configure"):
             raise ValueError("Model settings require the configure operation")

@@ -125,6 +125,7 @@ def settings(models: ModelStoreStatus) -> tuple:
     """What a model store snapshot says that can change a memory requirement."""
     return (
         models.whisper_formatting,
+        models.selected_model_id,
         tuple(
             sorted(
                 (model.id, model.status, model.context_limit) for model in models.models
@@ -523,7 +524,7 @@ class WorkerHub:
     def _store_targets(self, request: InferenceTask) -> list[Worker]:
         """Route settings to persistence owners, downloads to checkpoint owners."""
         if request.operation == "configure":
-            if request.feature == "whisper_formatting":
+            if request.feature in ("whisper_formatting", "llm_selection"):
                 targets = [
                     worker
                     for worker in self._ready()
@@ -531,7 +532,7 @@ class WorkerHub:
                 ]
                 if not targets:
                     raise InferenceFailure(
-                        "No native model store is connected to save transcription settings.",
+                        "No native model store is connected to save settings.",
                         503,
                     )
             else:
@@ -876,6 +877,10 @@ class WorkerHub:
         if source.whisper_formatting != target.whisper_formatting:
             tasks.append(
                 {"feature": "whisper_formatting", "enabled": source.whisper_formatting}
+            )
+        if source.selected_model_id != target.selected_model_id:
+            tasks.append(
+                {"feature": "llm_selection", "model_id": source.selected_model_id}
             )
         limits = {model.id: model.context_limit for model in target.models}
         for model in source.models:

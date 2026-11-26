@@ -4,6 +4,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from fastapi import FastAPI
 from kadan_tracing import RequestTracing, configure, shutdown
 
+from api.database import ensure_database_ready
 from api.routes import health, model_lifecycle
 from api.routes.v1 import (
     decisions,
@@ -31,6 +32,7 @@ from api.services.telemetry import TelemetryMiddleware
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start the worker hub and local machine; models load on requests, never on API reload."""
+    ensure_database_ready()
     async with AsyncExitStack() as cleanup:
         cleanup.push_async_callback(shutdown, configure("hikari-api"))
         cleanup.push_async_callback(inference.close)

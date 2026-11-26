@@ -1380,6 +1380,15 @@ export type ScoreQuestion = {
  */
 export type SettingsRequest = {
   /**
+   * Llm Model
+   */
+  llm_model?:
+    | 'inkling-2-mini-iq4-nl'
+    | 'inkling-2-mini-q8-0'
+    | 'inkling-2-mini-abliterated-iq4-nl'
+    | 'inkling-2-mini-abliterated-q8-0'
+    | null
+  /**
    * Whisper Formatting
    */
   whisper_formatting?: boolean | null

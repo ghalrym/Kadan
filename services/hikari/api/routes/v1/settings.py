@@ -3,7 +3,11 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
 
-from api.pydantic_models.inference_task import WhisperFormattingTask
+from api.pydantic_models.inference_task import (
+    LlmModel,
+    LlmSelectionTask,
+    WhisperFormattingTask,
+)
 from api.pydantic_models.model_store import (
     CheckpointStatus,
     ModelAssignments,
@@ -25,6 +29,7 @@ class SettingsResponse(BaseModel):
 class SettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     whisper_formatting: bool | None = None
+    llm_model: LlmModel | None = None
 
 
 @router.get("", operation_id="getSettings")
@@ -48,6 +53,12 @@ async def update_settings(body: SettingsRequest) -> SettingsResponse:
             await inference.submit(
                 WhisperFormattingTask(enabled=body.whisper_formatting),
                 feature="whisper_formatting",
+                operation="configure",
+            )
+        if body.llm_model is not None:
+            await inference.submit(
+                LlmSelectionTask(model_id=body.llm_model),
+                feature="llm_selection",
                 operation="configure",
             )
         return get_settings()

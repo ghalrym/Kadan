@@ -14,26 +14,24 @@ depends_on = None
 
 def upgrade() -> None:
     op.execute("DELETE FROM capability_providers WHERE capability = 'vision'")
-    op.drop_constraint(
-        op.f("ck_capability_providers_capability"),
-        "capability_providers",
-        type_="check",
-    )
-    op.create_check_constraint(
-        op.f("ck_capability_providers_capability"),
-        "capability_providers",
-        "capability IN ('language', 'image')",
-    )
+    with op.batch_alter_table("capability_providers") as batch_op:
+        batch_op.drop_constraint(
+            op.f("ck_capability_providers_capability"),
+            type_="check",
+        )
+        batch_op.create_check_constraint(
+            op.f("ck_capability_providers_capability"),
+            "capability IN ('language', 'image')",
+        )
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        op.f("ck_capability_providers_capability"),
-        "capability_providers",
-        type_="check",
-    )
-    op.create_check_constraint(
-        op.f("ck_capability_providers_capability"),
-        "capability_providers",
-        "capability IN ('language', 'image', 'vision')",
-    )
+    with op.batch_alter_table("capability_providers") as batch_op:
+        batch_op.drop_constraint(
+            op.f("ck_capability_providers_capability"),
+            type_="check",
+        )
+        batch_op.create_check_constraint(
+            op.f("ck_capability_providers_capability"),
+            "capability IN ('language', 'image', 'vision')",
+        )

@@ -86,6 +86,14 @@ async function page(componentName = 'default') {
     },
     downloadState: model => !model ? 'unavailable' : model.status === 'cancelled' ? 'failed'
       : model.status === 'downloading' && !model.total_bytes ? 'queued' : model.status,
+    llmVariantParts: modelId => ({ quant: modelId.endsWith('-q8-0') ? 'q8' : 'q4', abliterated: modelId.includes('-abliterated-') }),
+    llmModelId: (quant, abliterated) => quant === 'q8'
+      ? (abliterated ? 'inkling-2-mini-abliterated-q8-0' : 'inkling-2-mini-q8-0')
+      : (abliterated ? 'inkling-2-mini-abliterated-iq4-nl' : 'inkling-2-mini-iq4-nl'),
+    updateLlmModel: (modelId, signal) => {
+      const pending = request(changes, signal, modelId)
+      return pending
+    },
     licenseNotices: models => models.map(({ model }) => model).filter(model => model?.license_notice && model.status !== 'complete'),
     modelsDownloading: models => models.some(({ model }) => model?.status === 'downloading'),
     modelsComplete: models => models.every(({ model }) => model?.status === 'complete'),
@@ -388,3 +396,29 @@ for (const [label, overrides, total, shown] of [
     view.unmount()
   })
 }
+
+test('language precision and variant controls switch between Q4/Q8 and Standard/Abliterated', async () => {
+  const view = await loaded()
+  assert.equal(button(view.tree, 'Q4').props['aria-pressed'], true)
+  assert.equal(button(view.tree, 'Q8').props['aria-pressed'], false)
+  assert.equal(button(view.tree, 'Standard').props['aria-pressed'], true)
+  assert.equal(button(view.tree, 'Abliterated').props['aria-pressed'], false)
+
+  await view.click('Abliterated')
+  assert.equal(view.changes[0].models, 'inkling-2-mini-abliterated-iq4-nl')
+  const abliterated = rows()
+  abliterated[0].model.id = 'inkling-2-mini-abliterated-iq4-nl'
+  view.changes[0].resolve(abliterated)
+  await view.flush()
+  assert.equal(button(view.tree, 'Abliterated').props['aria-pressed'], true)
+
+  await view.click('Q8')
+  assert.equal(view.changes[1].models, 'inkling-2-mini-abliterated-q8-0')
+  const abliteratedQ8 = rows()
+  abliteratedQ8[0].model.id = 'inkling-2-mini-abliterated-q8-0'
+  view.changes[1].resolve(abliteratedQ8)
+  await view.flush()
+  assert.equal(button(view.tree, 'Q8').props['aria-pressed'], true)
+  assert.equal(button(view.tree, 'Abliterated').props['aria-pressed'], true)
+  view.unmount()
+})

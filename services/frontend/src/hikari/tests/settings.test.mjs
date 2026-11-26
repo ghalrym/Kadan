@@ -18,7 +18,7 @@ async function load(path) {
 
 async function settingsApi(response = { ok: true }, data = { models: [] }, error = undefined) {
   const calls = []
-  const names = ['listModelsV1ModelsGet', 'downloadModelV1ModelsModelIdDownloadPost']
+  const names = ['listModelsV1ModelsGet', 'downloadModelV1ModelsModelIdDownloadPost', 'updateSettings']
   const sdk = new SyntheticModule(names, function () {
     for (const name of names)
       this.setExport(name, async args => { calls.push({ name, args }); return { response, data, error } })
@@ -153,4 +153,25 @@ test('voice calls are a fixed capability and require acknowledged download witho
   assert.deepEqual(calls.map(call => call.args.path.model_id), [audio.id])
   assert.equal(calls[0].args.body.license_acknowledged, true)
   assert.equal(api.capabilityModels([]).find(row => row.capability.id === audio.id).model, null)
+})
+
+test('language model variant helpers and updateLlmModel switch between Q4/Q8 and Standard/Abliterated', async () => {
+  const { api, calls } = await settingsApi({ ok: true }, {
+    defaults: { llm: 'inkling-2-mini-abliterated-q8-0' },
+    models: [checkpoint('inkling-2-mini-abliterated-q8-0')],
+  })
+  assert.deepEqual(api.llmVariantParts('inkling-2-mini-iq4-nl'), { quant: 'q4', abliterated: false })
+  assert.deepEqual(api.llmVariantParts('inkling-2-mini-q8-0'), { quant: 'q8', abliterated: false })
+  assert.deepEqual(api.llmVariantParts('inkling-2-mini-abliterated-iq4-nl'), { quant: 'q4', abliterated: true })
+  assert.deepEqual(api.llmVariantParts('inkling-2-mini-abliterated-q8-0'), { quant: 'q8', abliterated: true })
+  assert.equal(api.llmModelId('q4', false), 'inkling-2-mini-iq4-nl')
+  assert.equal(api.llmModelId('q8', false), 'inkling-2-mini-q8-0')
+  assert.equal(api.llmModelId('q4', true), 'inkling-2-mini-abliterated-iq4-nl')
+  assert.equal(api.llmModelId('q8', true), 'inkling-2-mini-abliterated-q8-0')
+
+  const signal = new AbortController().signal
+  const next = await api.updateLlmModel('inkling-2-mini-abliterated-q8-0', signal)
+  assert.equal(calls[0].name, 'updateSettings')
+  assert.deepEqual(calls[0].args.body, { llm_model: 'inkling-2-mini-abliterated-q8-0' })
+  assert.equal(next[0].model.id, 'inkling-2-mini-abliterated-q8-0')
 })
