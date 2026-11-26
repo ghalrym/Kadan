@@ -1,6 +1,6 @@
 # Model settings and downloads
 
-Hikari separates fixed capability assignments, checkpoint acquisition and model residency. `ModelAssignments` defines the API's assignments; the frontend presents the same fixed capabilities. Language (including multimodal screenshot vision) uses the active Inkling 2 Mini checkpoint (`inkling-2-mini-iq4-nl` by default, or `inkling-2-mini-q8-0` via `HIKARI_LLM_QUANT`). See [model expectations](../../user-expectations/hikari/model-settings.md).
+Hikari separates fixed capability assignments, checkpoint acquisition and model residency. `ModelAssignments` defines the API's assignments; the frontend presents the same fixed capabilities. Language (including multimodal screenshot vision) uses the active Inkling 2 Mini checkpoint (`inkling-2-mini-iq4-nl` by default, or `inkling-2-mini-q8-0` via `HIKARI_LLM_QUANT`, and the abliterated `inkling-2-mini-abliterated-*` variants via `HIKARI_LLM_ABLITERATED=true`). See [model expectations](../../user-expectations/hikari/model-settings.md).
 
 `GET /v1/settings` returns fixed assignments, observed checkpoints, five-second/480p video defaults and the saved transcription formatting switch. `PUT` changes only formatting. Tier selection, Whisper selection, manual language loading and public saved-context controls are removed. Old tier and Whisper selection files are ignored without deleting or rewriting them. Existing checkpoint directories and volumes are untouched.
 

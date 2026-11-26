@@ -12,7 +12,8 @@ Serves public chat, agent tool-calling turns, and multimodal screenshot vision u
 - Its own Compose service, `hikari-worker-llm` (GPU). It can be scaled, and
   run on another computer using the same services in `compose.yaml`.
 - Configured via Compose environment variables:
-  - `HIKARI_LLM_QUANT`: `IQ4_NL` (default → `inkling-2-mini-iq4-nl`) or `Q8_0` (→ `inkling-2-mini-q8-0`).
+  - `HIKARI_LLM_QUANT`: `IQ4_NL` (default) or `Q8_0`.
+  - `HIKARI_LLM_ABLITERATED`: `false` (default, standard `ggml-org/Inkling-2-Mini-GGUF` checkpoints `inkling-2-mini-iq4-nl` / `inkling-2-mini-q8-0`) or `true` (abliterated `mrfakename/Inkling-2-Mini-abliterated-GGUF` checkpoints `inkling-2-mini-abliterated-iq4-nl` / `inkling-2-mini-abliterated-q8-0`).
   - `HIKARI_LLM_CONTEXT_LIMIT`: effective context window in tokens (default `65536`, range `[4096, 1048576]`).
 - It connects to the API and takes memory only as the API grants it. Workers on
   one computer share its RAM and GPUs in the API's ledger.

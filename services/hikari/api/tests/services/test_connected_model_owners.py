@@ -13,6 +13,8 @@ NATIVE_KINDS = ("llm", "tts", "speech", "formatting", "image", "video")
 CATALOG = (
     ("inkling-2-mini-iq4-nl", "llm"),
     ("inkling-2-mini-q8-0", "llm"),
+    ("inkling-2-mini-abliterated-iq4-nl", "llm"),
+    ("inkling-2-mini-abliterated-q8-0", "llm"),
     ("lfm3-audio-2b-bf16", "audio"),
     ("d1-2b-cpu-f32", "decision"),
     ("qwen-tts-1.7b-custom", "speech"),
@@ -91,6 +93,25 @@ class ConnectedModelOwnersTests(unittest.TestCase):
         self.assertEqual(
             {model.id for model in hub.models.models},
             {"inkling-2-mini-q8-0", "qwen-image-2.1-turbo"},
+        )
+
+    def test_llm_worker_abliterated_selection_propagates_to_snapshot_and_defaults(self):
+        hub = WorkerHub()
+        hub.workers = {
+            "llm": connected_worker(
+                "llm", selected_model_id="inkling-2-mini-abliterated-iq4-nl"
+            ),
+            "image": connected_worker("image"),
+        }
+        hub.primary = "image"
+        hub._refresh_models()
+        self.assertEqual(
+            hub.models.selected_model_id, "inkling-2-mini-abliterated-iq4-nl"
+        )
+        self.assertEqual(hub.models.defaults.llm, "inkling-2-mini-abliterated-iq4-nl")
+        self.assertEqual(
+            {model.id for model in hub.models.models},
+            {"inkling-2-mini-abliterated-iq4-nl", "qwen-image-2.1-turbo"},
         )
 
     def test_experimental_workers_advertise_decision_and_audio_models(self):

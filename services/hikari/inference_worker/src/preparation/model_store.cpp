@@ -826,20 +826,34 @@ fs::path ModelStore::acquire(const std::string& model, const std::atomic_bool& c
 }
 
 std::string ModelStore::selected_llm_id() const {
-    const char* raw = std::getenv("HIKARI_LLM_QUANT");
-    std::string value = raw ? raw : "";
-    std::transform(
-        value.begin(), value.end(), value.begin(), [](unsigned char c) {
+    const auto lowercase_env = [](const char* name) {
+        const char* raw = std::getenv(name);
+        std::string value = raw ? raw : "";
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
             return char(std::tolower(c));
-        }
-    );
-    if (value.empty() || value == "iq4_nl" || value == "iq4-nl" || value == "q4")
-        return "inkling-2-mini-iq4-nl";
-    if (value == "q8_0" || value == "q8-0" || value == "q8")
-        return "inkling-2-mini-q8-0";
-    throw RequestError(
-        "Unsupported HIKARI_LLM_QUANT; expected IQ4_NL or Q8_0.", 422
-    );
+        });
+        return value;
+    };
+    const auto quant = lowercase_env("HIKARI_LLM_QUANT");
+    const auto abliterated_raw = lowercase_env("HIKARI_LLM_ABLITERATED");
+    bool abliterated = false;
+    if (abliterated_raw == "true" || abliterated_raw == "1" || abliterated_raw == "yes"
+        || abliterated_raw == "on") {
+        abliterated = true;
+    } else if (
+        !abliterated_raw.empty() && abliterated_raw != "false" && abliterated_raw != "0"
+        && abliterated_raw != "no" && abliterated_raw != "off"
+    ) {
+        throw RequestError(
+            "Unsupported HIKARI_LLM_ABLITERATED; expected true or false.", 422
+        );
+    }
+    if (quant.empty() || quant == "iq4_nl" || quant == "iq4-nl" || quant == "q4")
+        return abliterated ? "inkling-2-mini-abliterated-iq4-nl"
+                           : "inkling-2-mini-iq4-nl";
+    if (quant == "q8_0" || quant == "q8-0" || quant == "q8")
+        return abliterated ? "inkling-2-mini-abliterated-q8-0" : "inkling-2-mini-q8-0";
+    throw RequestError("Unsupported HIKARI_LLM_QUANT; expected IQ4_NL or Q8_0.", 422);
 }
 
 std::size_t ModelStore::default_llm_context() const {

@@ -1,6 +1,6 @@
 # Language-model lifecycle and context
 
-The public lifecycle describes the native `hikari-worker-llm` Strata worker running Inkling 2 Mini (`inkling-2-mini-iq4-nl` by default, or `inkling-2-mini-q8-0` via `HIKARI_LLM_QUANT`). See [language lifecycle expectations](../../user-expectations/hikari/model-lifecycle.md).
+The public lifecycle describes the native `hikari-worker-llm` Strata worker running Inkling 2 Mini (`inkling-2-mini-iq4-nl` by default, or `inkling-2-mini-q8-0` via `HIKARI_LLM_QUANT`, and the abliterated `inkling-2-mini-abliterated-*` variants via `HIKARI_LLM_ABLITERATED=true`). See [language lifecycle expectations](../../user-expectations/hikari/model-lifecycle.md).
 
 `GET /model-lifecycle` reports the current residency state (`unloaded`, `loading`, or `ready`) of the connected `llm` worker alongside the active Inkling 2 Mini checkpoint and effective context limit (`HIKARI_LLM_CONTEXT_LIMIT`, default `65536`). Missing workers, incomplete checkpoints and unconfirmed cleanup report an error. A download does not establish successful inference.
 

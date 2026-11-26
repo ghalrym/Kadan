@@ -12,6 +12,8 @@ from api.pydantic_models.inference import Operation
 LlmModel = Literal[
     "inkling-2-mini-iq4-nl",
     "inkling-2-mini-q8-0",
+    "inkling-2-mini-abliterated-iq4-nl",
+    "inkling-2-mini-abliterated-q8-0",
 ]
 # Image inference uses Turbo.
 ImageModel = Literal["qwen-image-2.1-turbo"]

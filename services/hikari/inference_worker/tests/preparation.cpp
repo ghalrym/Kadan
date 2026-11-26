@@ -622,7 +622,11 @@ void checkpoint_catalog_units() {
         == turbo.required_files.end()
     );
     // Inkling 2 Mini is the sole local language + vision model family.
-    for (const auto* id : {"inkling-2-mini-iq4-nl", "inkling-2-mini-q8-0"}) {
+    for (const auto* id :
+         {"inkling-2-mini-iq4-nl",
+          "inkling-2-mini-q8-0",
+          "inkling-2-mini-abliterated-iq4-nl",
+          "inkling-2-mini-abliterated-q8-0"}) {
         const auto& model = store.entry(id);
         assert(
             model.kind == "llm" && model.layout == "gguf" && model.inference_available
@@ -659,6 +663,7 @@ void checkpoint_catalog_units() {
     assert(!store.status().contains("selected_tier"));
     assert(transfers == 0);
     unsetenv("HIKARI_LLM_QUANT");
+    unsetenv("HIKARI_LLM_ABLITERATED");
     unsetenv("HIKARI_LLM_CONTEXT_LIMIT");
     assert(store.selected_llm_id() == "inkling-2-mini-iq4-nl");
     assert(store.default_llm_context() == 65536);
@@ -668,11 +673,29 @@ void checkpoint_catalog_units() {
     assert(store.selected_llm_id() == "inkling-2-mini-q8-0");
     assert(store.default_llm_context() == 131072);
     assert(store.status().at("selected_model_id") == "inkling-2-mini-q8-0");
+    setenv("HIKARI_LLM_ABLITERATED", "true", 1);
+    assert(store.selected_llm_id() == "inkling-2-mini-abliterated-q8-0");
+    assert(store.status().at("selected_model_id") == "inkling-2-mini-abliterated-q8-0");
+    unsetenv("HIKARI_LLM_QUANT");
+    assert(store.selected_llm_id() == "inkling-2-mini-abliterated-iq4-nl");
+    assert(
+        store.status().at("selected_model_id") == "inkling-2-mini-abliterated-iq4-nl"
+    );
+    setenv("HIKARI_LLM_ABLITERATED", "1", 1);
+    assert(store.selected_llm_id() == "inkling-2-mini-abliterated-iq4-nl");
+    setenv("HIKARI_LLM_ABLITERATED", "false", 1);
+    assert(store.selected_llm_id() == "inkling-2-mini-iq4-nl");
+    setenv("HIKARI_LLM_ABLITERATED", "0", 1);
+    assert(store.selected_llm_id() == "inkling-2-mini-iq4-nl");
+    setenv("HIKARI_LLM_ABLITERATED", "invalid", 1);
+    rejects([&] { (void)store.selected_llm_id(); });
+    unsetenv("HIKARI_LLM_ABLITERATED");
     setenv("HIKARI_LLM_QUANT", "invalid", 1);
     rejects([&] { (void)store.selected_llm_id(); });
     setenv("HIKARI_LLM_CONTEXT_LIMIT", "1024", 1);
     rejects([&] { (void)store.default_llm_context(); });
     unsetenv("HIKARI_LLM_QUANT");
+    unsetenv("HIKARI_LLM_ABLITERATED");
     unsetenv("HIKARI_LLM_CONTEXT_LIMIT");
 }
 

@@ -141,6 +141,7 @@ services:
       HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-insecure-api-key}
       KADAN_MODEL_DIR: /var/lib/kadan/models
       HIKARI_LLM_QUANT: ${HIKARI_LLM_QUANT:-IQ4_NL}
+      HIKARI_LLM_ABLITERATED: ${HIKARI_LLM_ABLITERATED:-false}
       HIKARI_LLM_CONTEXT_LIMIT: ${HIKARI_LLM_CONTEXT_LIMIT:-65536}
     volumes:
       - model_data:/var/lib/kadan/models

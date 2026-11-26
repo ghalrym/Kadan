@@ -79,6 +79,84 @@
       ]
     },
     {
+      "id": "inkling-2-mini-abliterated-iq4-nl",
+      "repo_id": "mrfakename/Inkling-2-Mini-abliterated-GGUF",
+      "revision": "686fa052107b25ef0c636d3897eb82a915db2fbb",
+      "license": "apache-2.0",
+      "estimated_bytes": 17973851712,
+      "kind": "llm",
+      "display_name": "Inkling 2 Mini Abliterated (IQ4_NL)",
+      "short_name": "Inkling 2 Mini",
+      "layout": "gguf",
+      "subfolder": "",
+      "component_paths": [],
+      "required_files": [
+        "Inkling-2-Mini-abliterated-IQ4_NL.gguf",
+        "mmproj-Inkling-2-Mini-Q8_0.gguf"
+      ],
+      "weight_paths": [],
+      "license_url": "https://huggingface.co/thinkingmachines/Inkling-2-Mini/blob/main/LICENSE",
+      "license_notice": null,
+      "inference_available": true,
+      "asset_url": null,
+      "asset_name": "Inkling-2-Mini-abliterated-IQ4_NL.gguf",
+      "manifest": [
+        {
+          "name": "Inkling-2-Mini-abliterated-IQ4_NL.gguf",
+          "size": 17627940768,
+          "digest": "e9a5c9898737f8eacb08d347fac0d1d219ba5a90ca511f7860ed913390f22948",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/mrfakename/Inkling-2-Mini-abliterated-GGUF/resolve/686fa052107b25ef0c636d3897eb82a915db2fbb/Inkling-2-Mini-abliterated-IQ4_NL.gguf"
+        },
+        {
+          "name": "mmproj-Inkling-2-Mini-Q8_0.gguf",
+          "size": 345910944,
+          "digest": "233287272ec5ac39b4168677aba54a4c024f202410f5629fac1830e1059f8abb",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/mrfakename/Inkling-2-Mini-abliterated-GGUF/resolve/686fa052107b25ef0c636d3897eb82a915db2fbb/mmproj-Inkling-2-Mini-Q8_0.gguf"
+        }
+      ]
+    },
+    {
+      "id": "inkling-2-mini-abliterated-q8-0",
+      "repo_id": "mrfakename/Inkling-2-Mini-abliterated-GGUF",
+      "revision": "686fa052107b25ef0c636d3897eb82a915db2fbb",
+      "license": "apache-2.0",
+      "estimated_bytes": 28461905248,
+      "kind": "llm",
+      "display_name": "Inkling 2 Mini Abliterated (Q8_0)",
+      "short_name": "Inkling 2 Mini",
+      "layout": "gguf",
+      "subfolder": "",
+      "component_paths": [],
+      "required_files": [
+        "Inkling-2-Mini-abliterated-Q8_0.gguf",
+        "mmproj-Inkling-2-Mini-BF16.gguf"
+      ],
+      "weight_paths": [],
+      "license_url": "https://huggingface.co/thinkingmachines/Inkling-2-Mini/blob/main/LICENSE",
+      "license_notice": null,
+      "inference_available": true,
+      "asset_url": null,
+      "asset_name": "Inkling-2-Mini-abliterated-Q8_0.gguf",
+      "manifest": [
+        {
+          "name": "Inkling-2-Mini-abliterated-Q8_0.gguf",
+          "size": 27820099264,
+          "digest": "fe522ee31f90d5eb7dad854823f073bc3109d354295b2a2ef7d668b370974291",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/mrfakename/Inkling-2-Mini-abliterated-GGUF/resolve/686fa052107b25ef0c636d3897eb82a915db2fbb/Inkling-2-Mini-abliterated-Q8_0.gguf"
+        },
+        {
+          "name": "mmproj-Inkling-2-Mini-BF16.gguf",
+          "size": 641805984,
+          "digest": "e914997fe07fb2066bfdce855ec7275c15bc2b624e5423149f1027839593d9cb",
+          "algorithm": "sha256",
+          "url": "https://huggingface.co/mrfakename/Inkling-2-Mini-abliterated-GGUF/resolve/686fa052107b25ef0c636d3897eb82a915db2fbb/mmproj-Inkling-2-Mini-BF16.gguf"
+        }
+      ]
+    },
+    {
       "id": "h3-fl2va",
       "repo_id": "MiniMaxAI/MiniMax-H3",
       "revision": "42ed227ee7df40d41602854ae760620d6eb651fe",

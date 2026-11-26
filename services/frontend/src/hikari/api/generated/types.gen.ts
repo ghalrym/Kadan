@@ -532,7 +532,12 @@ export type CompletionRequest = {
   /**
    * Model
    */
-  model?: 'inkling-2-mini-iq4-nl' | 'inkling-2-mini-q8-0' | null
+  model?:
+    | 'inkling-2-mini-iq4-nl'
+    | 'inkling-2-mini-q8-0'
+    | 'inkling-2-mini-abliterated-iq4-nl'
+    | 'inkling-2-mini-abliterated-q8-0'
+    | null
   /**
    * Priority
    *
@@ -957,7 +962,11 @@ export type ModelAssignments = {
   /**
    * Llm
    */
-  llm?: 'inkling-2-mini-iq4-nl' | 'inkling-2-mini-q8-0'
+  llm?:
+    | 'inkling-2-mini-iq4-nl'
+    | 'inkling-2-mini-q8-0'
+    | 'inkling-2-mini-abliterated-iq4-nl'
+    | 'inkling-2-mini-abliterated-q8-0'
   /**
    * Speech
    */
@@ -1179,7 +1188,12 @@ export type RequestRecord = {
   /**
    * Model
    */
-  model?: 'inkling-2-mini-iq4-nl' | 'inkling-2-mini-q8-0' | null
+  model?:
+    | 'inkling-2-mini-iq4-nl'
+    | 'inkling-2-mini-q8-0'
+    | 'inkling-2-mini-abliterated-iq4-nl'
+    | 'inkling-2-mini-abliterated-q8-0'
+    | null
   /**
    * Output
    */
