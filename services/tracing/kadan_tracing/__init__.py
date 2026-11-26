@@ -121,9 +121,18 @@ class PrivateExporter(SpanExporter):
 
 
 def configure(service: str) -> TracerProvider | None:
-    """No endpoint means no SDK, instrumentation, exporter thread, or network IO."""
+    """No endpoint means no SDK, instrumentation, exporter thread, or network IO.
+
+    The process keeps the first provider: services sharing one process, such as
+    the combined API, get None, so their own shutdown is a no-op.
+    """
+    global _provider
     endpoint = os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
-    if not endpoint or os.getenv("OTEL_SDK_DISABLED", "false").lower() == "true":
+    if (
+        _provider is not None
+        or not endpoint
+        or os.getenv("OTEL_SDK_DISABLED", "false").lower() == "true"
+    ):
         return None
     try:
         ratio = min(1.0, max(0.0, float(os.getenv("KADAN_TRACE_SAMPLE_RATIO", "0.1"))))
@@ -149,12 +158,16 @@ def configure(service: str) -> TracerProvider | None:
     set_global_textmap(propagator)
     trace.set_tracer_provider(provider)
     HTTPXClientInstrumentor().instrument(tracer_provider=provider)
+    _provider = provider
     return provider
 
 
 async def shutdown(provider: TracerProvider | None) -> None:
+    global _provider
     if provider is not None:
         await asyncio.to_thread(provider.shutdown)
+        if provider is _provider:
+            _provider = None
 
 
 def carrier() -> dict[str, str]:
@@ -257,8 +270,10 @@ class RequestTracing:
             finally:
                 route = scope.get("route")
                 if route is not None and hasattr(route, "path"):
-                    current.set_attribute("http.route", route.path)
-                    current.update_name(f"kadan.http.{method} {route.path}")
+                    # A mounted service's prefix (e.g. /hikari) identifies it in the route.
+                    path = scope.get("root_path", "") + route.path
+                    current.set_attribute("http.route", path)
+                    current.update_name(f"kadan.http.{method} {path}")
 
 
 @contextmanager
@@ -298,6 +313,7 @@ def traced_job(name: str):
 # The API owns one exporter queue. Worker resources label the origin of the
 # measured intervals; native code never waits for an OTLP collector.
 _processor = None
+_provider = None
 _relays = {}
 
 

@@ -61,7 +61,7 @@ test("finishing one recording transcribes once and returns text for review witho
   assert.deepEqual(states, ["requesting", "recording", "transcribing"]);
   assert.deepEqual(done, [undefined]);
   assert.equal(fetches.length, 1);
-  assert.equal(fetches[0].path, "/api/transcriptions");
+  assert.equal(fetches[0].path, "/kadan/api/transcriptions");
   assert.equal(Buffer.from(audio.split(",")[1], "base64").readUInt32LE(40), 16 * 2);
   assert.ok(tracks[0].stopCount > 0);
   assert.equal(closedContexts, 1);

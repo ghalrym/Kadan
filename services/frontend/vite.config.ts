@@ -4,11 +4,10 @@ import { defineConfig } from 'vite'
 import { scopeSectionCss } from './config/scopeSectionCss.ts'
 
 /** One development server for Kadan, Tsuchi and Hikari pages.
- * Each *_API_URL chooses a backend; this does not configure production routing.
+ * API_URL is the combined API, which serves each service under its own prefix.
+ * This does not configure production routing.
  */
-const kadan = process.env.KADAN_API_URL ?? 'http://127.0.0.1:8630'
-const tsuchi = process.env.TSUCHI_API_URL ?? 'http://127.0.0.1:8620'
-const hikari = process.env.HIKARI_API_URL ?? 'http://127.0.0.1:8000'
+const api = process.env.API_URL ?? 'http://127.0.0.1:8000'
 
 export default defineConfig({
   plugins: [react()],
@@ -21,19 +20,14 @@ export default defineConfig({
     host: '0.0.0.0',
     allowedHosts: true,
     proxy: {
-      // Tsuchi and Kadan both serve /api, so Tsuchi's is reached under /tsuchi.
-      '/tsuchi/api': {
-        target: tsuchi,
-        changeOrigin: false,
-        rewrite: (url) => url.replace(/^\/tsuchi/, ''),
-      },
-      // ws relays voice call streams.
-      '/api': { target: kadan, changeOrigin: false, ws: true },
-      '/v1': { target: hikari, ws: true },
-      '/model-lifecycle': hikari,
-      '/health': hikari,
-      '/openapi.json': hikari,
-      '/docs': hikari,
+      // ws relays Kadan voice calls.
+      '/kadan/api': { target: api, ws: true },
+      '/tsuchi/api': api,
+      '/hikari/v1': { target: api, ws: true },
+      '/hikari/model-lifecycle': api,
+      '/hikari/health': api,
+      '/hikari/openapi.json': api,
+      '/hikari/docs': api,
     },
     watch: {
       // Poll bind-mounted files when running inside Docker.

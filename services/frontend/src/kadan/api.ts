@@ -15,7 +15,7 @@ export async function api<T>(
   method = "POST",
 ): Promise<T> {
   const response = await fetch(
-    `/api${path}`,
+    `/kadan/api${path}`,
     body === undefined
       // A bodiless call is a read unless another method such as DELETE is named.
       ? method === "POST" ? {} : { method }

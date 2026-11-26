@@ -153,6 +153,10 @@ class TelemetryMiddleware:
         an observed disconnect before response completion. Other raised exceptions
         record 500 unless that disconnect takes precedence; errors propagate. Elapsed time covers handler validation and cleanup."""
         path = scope.get("path", "")
+        # Mounted under a prefix such as /hikari, match the route within this app.
+        root = scope.get("root_path", "")
+        if root and path.startswith(root):
+            path = path[len(root) :]
         if (
             scope["type"] != "http"
             or scope.get("method") != "POST"

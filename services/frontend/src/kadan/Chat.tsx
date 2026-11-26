@@ -78,7 +78,7 @@ function Attachment({ agentKey, id }: { agentKey: string; id: string }) {
   }, [path, attempt]);
   if (failed) return <button className="tag" onClick={() => setAttempt(attempt + 1)}>Reload attachment</button>;
   if (!asset) return <span className="tag">Loading attachment…</span>;
-  const content = `/api${path}/content`;
+  const content = `/kadan/api${path}/content`;
   return isImageAsset(asset) ? (
     <a className="message-image" href={content} target="_blank" rel="noreferrer">
       <img src={content} alt={asset.title || asset.filename} loading="lazy" onError={() => setFailed(true)} />

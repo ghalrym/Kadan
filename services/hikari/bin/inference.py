@@ -61,7 +61,7 @@ def connection(
     ctx: typer.Context,
     url: Annotated[
         str, typer.Option(envvar=["HIKARI_API_URL", "KADAN_API_URL"])
-    ] = "http://127.0.0.1:8000",
+    ] = "http://127.0.0.1:8000/hikari",
     timeout: Annotated[float, typer.Option(min=0.1)] = 3600,
 ) -> None:
     """Use the running API; timeout includes queueing and generation time."""

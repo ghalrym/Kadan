@@ -8,5 +8,5 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY kadan/ ./kadan/
 COPY AGENT.md ./AGENT.md
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8630/api/health',timeout=3)"
-CMD ["uvicorn", "kadan.api.server:app", "--host", "0.0.0.0", "--port", "8630", "--reload", "--reload-dir", "/app/kadan"]
+# Agent runner image; Kadan's API is served by the combined API (services/api).
+CMD ["python", "-m", "kadan.runner"]

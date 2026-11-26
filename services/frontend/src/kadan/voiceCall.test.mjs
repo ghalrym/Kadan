@@ -104,7 +104,7 @@ test("stopping playback cancels all scheduled segments and invalidates queued en
 
 test("capture continues during playback and onset cancels old audio before sending new speech", async () => {
   const call = await connected();
-  assert.equal(socket.url, "wss://kadan.local/api/agents/test/calls");
+  assert.equal(socket.url, "wss://kadan.local/kadan/api/agents/test/calls");
   assert.deepEqual(socket.sent[0], { type: "start", persona_id: "selected-persona" });
   speech(); silence();
   assert.deepEqual(socket.sent.map(event => event.type), ["start", "interrupt", "utterance"]);
@@ -235,7 +235,7 @@ test("browser-trusted HTTP origins can start calls over an unencrypted WebSocket
   window.location.href = "http://kadan.local/";
   assert.equal(callUnavailable(), null);
   const call = await connected();
-  assert.equal(socket.url, "ws://kadan.local/api/agents/test/calls");
+  assert.equal(socket.url, "ws://kadan.local/kadan/api/agents/test/calls");
   call.end();
 });
 

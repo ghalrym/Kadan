@@ -46,7 +46,7 @@ test("exports attachment links and resource IDs without reading file bytes or me
   const result = conversationMarkdown(chain([message("assistant", "Here is the file.", {
     attachment_ids: ["file-one", "file-two"], resource_ids: ["persona-id"],
   })]), "Haru", "https://kadan.example:8443");
-  assert.ok(result.includes("Attachment: [file-one](<https://kadan.example:8443/api/agents/haru/assets/file-one/content?download=true>)"));
+  assert.ok(result.includes("Attachment: [file-one](<https://kadan.example:8443/kadan/api/agents/haru/assets/file-one/content?download=true>)"));
   assert.ok(result.indexOf("file-one") < result.indexOf("file-two"));
   assert.ok(result.includes("Resource: persona-id"));
   assert.ok(result.includes("file contents are not included"));
@@ -80,7 +80,7 @@ for (const fence of ["```", "~~~"]) {
     assert.match(html, /<strong>Next reply<\/strong>/);
     assert.match(html, /<code class="language-js">unfinished\(\)\n\nstillCode\(\)\n<\/code>/);
     for (const id of ["first-file", "next-file"]) {
-      assert.ok(html.includes(`<a href="https://kadan.example/api/agents/haru/assets/${id}/content?download=true">${id}</a>`));
+      assert.ok(html.includes(`<a href="https://kadan.example/kadan/api/agents/haru/assets/${id}/content?download=true">${id}</a>`));
     }
   });
 }

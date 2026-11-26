@@ -11,7 +11,7 @@ const { outputText } = ts.transpileModule(source, {
 
 function record(id = 'request-a') {
   return {
-    id, type: 'Video', endpoint: '/v1/videos', model: 'fixture-model',
+    id, type: 'Video', endpoint: '/hikari/v1/videos', model: 'fixture-model',
     status: 202, latency: '12 ms', latency_ms: 12, time: '10:00:00',
     prompt: 'Observed summary: "fixture"\nsecond line', output: 'Job accepted',
     request_bytes: 120, response_bytes: 80, video_job_id: 'fixture-job',
@@ -149,7 +149,7 @@ test('copies exactly the Advanced JSON at click time and confirms only after cli
   assert.equal(view.writes[1].text, json(view.tree))
   assert.equal(feedback(view.tree, 'status'), '')
   assert.equal(view.refreshes, 0)
-  assert.ok(view.polls.every(url => url === '/v1/requests/request-a'))
+  assert.ok(view.polls.every(url => url === '/hikari/v1/requests/request-a'))
   assert.equal(button(view.tree, 'Copy as cURL'), undefined)
   const replay = elements(view.tree).find(node => node.type?.name === 'ActionButton')
   assert.equal(content(replay), 'Replay request')

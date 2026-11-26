@@ -997,7 +997,7 @@ def test_run_draft_streams_ephemerally_and_clears_on_delivery(tmp_path):
     from tsuchi.config import Settings
     from tsuchi.main import create_app
 
-    app = create_app(Settings(data_dir=tmp_path, static_dir=tmp_path / "missing"))
+    app = create_app(Settings(data_dir=tmp_path))
     with TestClient(app) as client:
         assert (
             client.post("/api/agents", json={"key": "alpha", "name": "Alpha"}).status_code

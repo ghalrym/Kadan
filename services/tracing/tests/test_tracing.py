@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import httpx
+import kadan_tracing
 import pytest
 from kadan_tracing import (
     TEXT_ATTRIBUTES,
@@ -11,6 +12,7 @@ from kadan_tracing import (
     RequestTracing,
     carrier,
     configure,
+    shutdown,
     span,
     traced_job,
 )
@@ -171,6 +173,50 @@ def test_request_span_covers_stream_and_uses_route_template(recording):
     assert len(sent) == 2
 
 
+def test_request_span_route_includes_the_mount_prefix(recording):
+    async def application(scope, receive, send):
+        scope["route"] = SimpleNamespace(path="/v1/models")
+        await send({"type": "http.response.start", "status": 200})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    async def send(message):
+        pass
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/hikari/v1/models",
+        "root_path": "/hikari",
+        "headers": [],
+    }
+    asyncio.run(RequestTracing(application)(scope, Mock(), send))
+    result = recording.get_finished_spans()[0]
+    assert result.attributes["http.route"] == "/hikari/v1/models"
+    assert result.name == "kadan.http.GET /hikari/v1/models"
+
+
+def test_only_the_first_service_in_a_process_configures_tracing(monkeypatch):
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://collector:4318/v1/traces"
+    )
+    monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
+    with (
+        patch("kadan_tracing.OTLPSpanExporter"),
+        patch("kadan_tracing.BatchSpanProcessor"),
+        patch("kadan_tracing.trace.set_tracer_provider") as install,
+        patch("kadan_tracing.set_global_textmap"),
+        patch("kadan_tracing.HTTPXClientInstrumentor"),
+        patch("kadan_tracing._processor"),
+        patch("kadan_tracing._provider", None),
+    ):
+        first = configure("kadan-services")
+        assert first is not None
+        assert configure("hikari-api") is None
+        install.assert_called_once()
+        asyncio.run(shutdown(first))
+        assert kadan_tracing._provider is None
+
+
 def test_enabled_configuration_is_bounded_without_connecting(monkeypatch):
     monkeypatch.setenv(
         "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://collector:4318/v1/traces"
@@ -184,6 +230,7 @@ def test_enabled_configuration_is_bounded_without_connecting(monkeypatch):
         patch("kadan_tracing.set_global_textmap"),
         patch("kadan_tracing.HTTPXClientInstrumentor") as httpx,
         patch("kadan_tracing._processor"),
+        patch("kadan_tracing._provider", None),
     ):
         provider = configure("unit")
         exporter.assert_called_once_with(

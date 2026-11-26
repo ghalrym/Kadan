@@ -1,0 +1,17 @@
+# One environment for Kadan, Hikari and Tsuchi; keep pins in step with each
+# service's own requirements file.
+fastapi==0.143.3
+pydantic==2.14.1
+pydantic-settings==2.16.0
+uvicorn==0.54.0
+# WebSocket support for uvicorn: Hikari workers and voice calls connect over it.
+websockets==15.0.1
+python-multipart==0.0.32
+Pillow==13.0.0
+httpx==0.28.1
+watchfiles==1.3.0
+SQLAlchemy==2.1.3
+alembic==1.20.0
+psycopg[binary]==3.3.6
+langgraph==1.2.16
+langchain-core==1.6.12

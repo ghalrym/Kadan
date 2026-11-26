@@ -5,8 +5,8 @@
 For a complete backup of all namespaces, stop the service and archive the whole volume. Stop it first so the SQLite database and files cannot change during the copy. The commands below apply to Tsuchi managed by this repository's root Compose project. If you still use the standalone deployment, stop and back up through that original Compose project first; root Compose cannot stop a container belonging to another project. Run these commands from the repository root, writing the backup somewhere with enough free disk space:
 
 ```sh
-docker compose stop tsuchi-api
-docker compose run --rm -T --no-deps --entrypoint tar tsuchi-api \
+docker compose stop api
+docker compose run --rm -T --no-deps --entrypoint tar api \
   -czf - -C /data . > tsuchi-backup.tar.gz
 docker compose up -d
 ```
@@ -20,10 +20,10 @@ tar -tzf tsuchi-backup.tar.gz
 Restore your own trusted backup into a **new empty volume**, preserving the original. The following uses a separate Compose project and refuses to extract into a nonempty data directory:
 
 ```sh
-TSUCHI_DATA_VOLUME=tsuchi-restored-data docker compose -p tsuchi-restored run --rm -T --no-deps --entrypoint sh tsuchi-api \
+TSUCHI_DATA_VOLUME=tsuchi-restored-data docker compose -p tsuchi-restored run --rm -T --no-deps --entrypoint sh api \
   -c 'test -z "$(ls -A /data)" && tar -xzf - -C /data --no-same-owner' \
   < tsuchi-backup.tar.gz
-TSUCHI_DATA_VOLUME=tsuchi-restored-data KADAN_PORT=8621 docker compose -p tsuchi-restored up -d --no-deps tsuchi-api frontend
+TSUCHI_DATA_VOLUME=tsuchi-restored-data KADAN_PORT=8621 API_PORT=8001 docker compose -p tsuchi-restored up -d api frontend
 ```
 
-Inspect the restored instance at <http://127.0.0.1:8621/tsuchi> before switching anything over; that copy's Kadan and Hikari pages stay unavailable because their APIs are not started. Coordinate these additional services and port with the server owner. The original volume is untouched.
+Inspect the restored instance at <http://127.0.0.1:8621/tsuchi> before switching anything over. Tsuchi shares the `api` container with Kadan and Hikari, so stopping it for a backup pauses all three, and the restored copy starts its own API and Hikari database (empty, with no workers or models). Coordinate these additional services and ports with the server owner. The original volume is untouched.

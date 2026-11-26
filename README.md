@@ -12,6 +12,7 @@ pages for inspecting and operating those services open inside it.
 | Tsuchi | Durable per-agent storage, search and history | <http://127.0.0.1:8630/tsuchi> |
 | Hikari | Chat, decisions, images, video, speech and transcription | <http://127.0.0.1:8630/hikari> |
 | Frontend | The single web app for all three services | <http://127.0.0.1:8630> |
+| API | One application serving all three APIs under `/kadan`, `/tsuchi` and `/hikari` | <http://127.0.0.1:8000> |
 
 [Start all services with Docker](#docker-compose). Kadan owns agent decisions;
 Tsuchi owns storage and retrieval; Hikari owns inference. Kadan and Tsuchi run
@@ -66,49 +67,55 @@ docker compose ps
 ```
 
 Open **[Kadan](http://127.0.0.1:8630)** to use your agents. One `frontend`
-container serves the web app for every service; each service runs its own API
-containers:
+container serves the web app and one `api` container serves the Kadan, Tsuchi
+and Hikari APIs, each under its own prefix:
 
-| App | Containers |
+| Container | Role |
 | --- | --- |
-| Web app | `frontend` |
-| Kadan | `kadan-api`, `kadan-runner` |
-| Tsuchi | `tsuchi-api` |
-| Hikari | `hikari-api`, plus `hikari-postgres` and the one-shot `hikari-migrate` |
+| `frontend` | The web app for every service |
+| `api` | Kadan at `/kadan`, Tsuchi at `/tsuchi` and Hikari at `/hikari` |
+| `kadan-runner` | Executes agent work |
+| `hikari-postgres`, `hikari-migrate` | Hikari's database and its one-shot migration |
+| `hikari-worker-*` | Hikari's inference workers |
 
 The supporting pages are [Tsuchi](http://127.0.0.1:8630/tsuchi),
 [Hikari Settings](http://127.0.0.1:8630/hikari/settings), and
-[Hikari API documentation](http://127.0.0.1:8000/docs).
+[Hikari API documentation](http://127.0.0.1:8000/hikari/docs). Kadan's and
+Tsuchi's references are at `/kadan/docs` and `/tsuchi/docs` on the same port.
 Select/download the required checkpoints in Hikari Settings before asking an agent
 to generate a response. Startup does not generate content or load a model.
 
 All published ports bind to `0.0.0.0`. This is a single-owner prototype;
 namespace keys are storage selectors, not credentials. Operators are responsible
-for securing access to their deployment. See [security and operator responsibility](docs/user-expectations/security.md). Within Compose, Kadan uses `http://tsuchi-api:8000` for
-storage and `http://hikari-api:8000` for inference. The `frontend` container runs
-Vite and proxies every service's API paths, including streaming responses, through
-the same browser origin; see [the web app's design](docs/architecture/frontend/web-app.md).
-Only the frontend and Hikari's API publish ports.
+for securing access to their deployment. See [security and operator responsibility](docs/user-expectations/security.md). Inside the `api` container, Kadan
+reaches Tsuchi and Hikari at `http://127.0.0.1:8000/tsuchi` and `/hikari`; see
+[the combined API's design](docs/architecture/api/combined-app.md). The `frontend`
+container runs Vite and proxies every service's API paths, including streaming
+responses, through the same browser origin; see [the web app's design](docs/architecture/frontend/web-app.md).
+Only the frontend and the combined API publish ports.
 
 Optionally copy `.env.example` to `.env` to change browser ports, credentials or
 the Tsuchi upload limit. The worker bearer API key defaults to
 `insecure-api-key`.
-`KADAN_PORT` sets the web app's published port. The inference API retains its local
-port 8000. Tsuchi and Hikari no longer publish their own web ports (formerly 8620
-and 8088); use the `/tsuchi` and `/hikari` pages instead.
+`KADAN_PORT` sets the web app's published port and `API_PORT` the combined API's
+(default 8000). Tsuchi and Hikari no longer publish their own web ports (formerly 8620
+and 8088); use the `/tsuchi` and `/hikari` pages instead. Hikari's API moved from
+`http://127.0.0.1:8000/v1` to `http://127.0.0.1:8000/hikari/v1`; update direct
+clients and remote workers (`ws://API_HOST:8000/hikari/v1/workers`).
 
 ```sh
-docker compose logs --tail=100 frontend kadan-api kadan-runner tsuchi-api hikari-api
+docker compose logs --tail=100 frontend api kadan-runner
 docker compose stop
 ```
 
 ### Agent runners
 
-`kadan-api` manages agents, conversations, messages, cancellation and events.
+Kadan's API, served by `api` under `/kadan`, manages agents, conversations,
+messages, cancellation and events.
 `kadan-runner` executes LangGraph work and the independent image/pet queues through
 Tsuchi and Hikari. Hikari retains inference resource management and its separate
-workload workers. The runner has no published port and uses the Kadan API image
-with watchfiles restarting it after Python edits; its API HTTP healthcheck is disabled.
+workload workers. The runner has no published port and uses the Kadan image
+(`services/kadan/Dockerfile`) with watchfiles restarting it after Python edits.
 
 Each stable `KADAN_RUNNER_ID` owns at most `KADAN_RUNNER_CAPACITY` distinct registered
 agent keys (default **5**, a validated positive integer). Idle agents retain their
@@ -162,9 +169,14 @@ The `kadan-frontend`, `tsuchi-frontend` and `hikari-frontend` containers were
 merged into one `frontend` container. When upgrading, pass `--remove-orphans`
 to `up` so the old `kadan-frontend` releases port 8630 for the new container.
 
+Likewise `hikari-api`, `tsuchi-api` and `kadan-api` were merged into one `api`
+container. Pass `--remove-orphans` so the old `hikari-api` releases port 8000.
+Tsuchi's data volume and Hikari's database and model volumes are unchanged.
+
 Run one API process. Each Hikari worker container runs one worker program and
 locks its own workspace in the shared model volume. Reloading the API drops its
-worker connections, which cancels in-flight work; the workers reconnect.
+worker connections, which cancels in-flight work; the workers reconnect. Because
+all three APIs share the process, a Kadan or Tsuchi edit reloads Hikari too.
 
 ### Local tracing with Jaeger
 
@@ -245,9 +257,9 @@ when collectors or workers disconnect or processes terminate abruptly.
 | Kadan API and runner | API HTTP ingress through the last response body; outgoing HTTPX calls; runner graph context, inference, tool invocation and execution; image generation, recovery, saved-asset verification and completion; pet/frame generation | No LangChain/LangGraph payload callbacks, per-token spans, or prompt capture |
 | Durable conversation, image and pet queues | Optional W3C parent persisted in the existing JSON job record; worker execution restores it; queue wait uses the persisted preclaim enqueue timestamp; image completion events retain causality | Existing records without a parent start a new trace. Recovery attempts are marked `kadan.recovery=true`; their full job age is not called queue wait |
 | Tsuchi API | HTTP ingress, durable run/image mutations and message delivery, asset upload and export | SQLite statement text, document contents and individual filesystem operations are not traced |
-| Web app (Tsuchi pages) | API ingress traces in `tsuchi-api` | Browser/proxy timing is not measured |
+| Web app (Tsuchi pages) | API ingress traces under `/tsuchi` routes | Browser/proxy timing is not measured |
 | Hikari API | HTTP ingress, inference lifetime, result presentation/delivery after the native result, worker FIFO wait | Result presentation is distinct from HTTP response serialization/stream delivery; transport delay is visible between worker and API intervals, not presented as a measured network metric |
-| Web app (Hikari pages) | API ingress traces in `hikari-api` | Browser/proxy timing is not measured |
+| Web app (Hikari pages) | API ingress traces under `/hikari` routes | Browser/proxy timing is not measured |
 | All seven native workload workers: llm, decision, tts, speech, formatting, image, video | `hikari-worker-<kind>` resources; actual native request preparation, model load, request admission and batch execution intervals | Shared batch intervals overlap across participating requests; they are wall time, not exclusive GPU time |
 | Language and formatting workers | Separate native prefill and decode intervals | Decode includes token selection/text streaming work; no per-token, kernel or inner-loop tracing |
 | Speech recognition worker | Separate audio frontend, acoustic encode and decode intervals | No per-layer tracing |
@@ -293,12 +305,13 @@ measured cross-request KV hit/miss counters, so none are invented from the API�
 compatibility cache fields. Weight-cache reuse is a separate mechanism and is not
 reported as KV reuse.
 
-In Jaeger, select `kadan-api` and a recent trace, or copy `x-kadan-trace-id` from the
+In Jaeger, select `kadan-services` and a recent trace, or copy `x-kadan-trace-id` from the
 frontend request’s response in developer tools and search that trace ID. Expand
 the Kadan graph/tool spans, HTTP child calls to Tsuchi/Hikari, native worker queue,
 load/admission/execute spans, and language prefill/decode siblings. Compare the
-intervals to identify where wall time is spent. Other entry points start under
-`tsuchi-api` or `hikari-api`. Absence of a sampled trace is not evidence of a fast
+intervals to identify where wall time is spent. All three APIs share the
+`kadan-services` service; a span's route starts with `/kadan`, `/tsuchi` or
+`/hikari`. Absence of a sampled trace is not evidence of a fast
 request. Jaeger’s existing RAM-only retention still applies.
 
 For local Python development, install the shared package before service dependencies:
@@ -329,11 +342,12 @@ docker compose up --build -d
 
 Each Hikari worker container rebuilds only its own program from
 the source mount and restarts it when its binary changes, so other workers keep
-running. To pick up only frontend or Kadan/Tsuchi API edits, replace just those
-services and leave `hikari-api` running:
+running. Any Python edit to Kadan, Tsuchi or Hikari reloads the whole `api`
+process, which drops Hikari's worker connections and cancels inference in
+progress. To pick up frontend or API image changes:
 
 ```sh
-docker compose up -d --no-deps --build --force-recreate --wait frontend kadan-api tsuchi-api
+docker compose up -d --no-deps --build --force-recreate --wait frontend api
 ```
 
 Frontend dependencies install into the frontend's `node_modules` volume on start,

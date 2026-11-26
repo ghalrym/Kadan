@@ -29,7 +29,8 @@ def _first_header_value(value: str | None) -> str | None:
 
 def _callback_url(request: Request) -> str:
     # Prefer forwarded browser origin (through reverse proxy or frontend Vite proxy)
-    # so OAuth returns to the user's browser URL.
+    # so OAuth returns to the user's browser URL. Keep the mount prefix, e.g. /kadan.
+    path = request.scope.get("root_path", "") + "/api/mcp/oauth/callback"
     fwd_proto = _first_header_value(request.headers.get("x-forwarded-proto"))
     fwd_host = _first_header_value(request.headers.get("x-forwarded-host"))
     if not fwd_proto:
@@ -37,11 +38,11 @@ def _callback_url(request: Request) -> str:
         if origin:
             parsed_origin = urlsplit(origin)
             if parsed_origin.scheme in {"http", "https"} and parsed_origin.netloc:
-                return f"{parsed_origin.scheme}://{parsed_origin.netloc}/api/mcp/oauth/callback"
+                return f"{parsed_origin.scheme}://{parsed_origin.netloc}{path}"
     proto = fwd_proto or request.url.scheme
     host = fwd_host or _first_header_value(request.headers.get("host"))
     if host:
-        return f"{proto}://{host}/api/mcp/oauth/callback"
+        return f"{proto}://{host}{path}"
     return str(request.url_for("mcp_oauth_callback"))
 
 

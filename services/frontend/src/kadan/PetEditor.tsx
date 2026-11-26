@@ -104,7 +104,7 @@ function PetThumb({ job, agentKey }: { job: PetJob; agentKey: string }) {
   if (sheet) return <SheetThumb sheet={sheet} />;
   const base = job.steps.find((step) => step.name === "base");
   if (base) return <img className="pet-thumb-art" alt=""
-    src={`/api${agentPath(agentKey)}/assets/${encodeURIComponent(base.output_asset_id)}/content`} />;
+    src={`/kadan/api${agentPath(agentKey)}/assets/${encodeURIComponent(base.output_asset_id)}/content`} />;
   return <Sparkles size={18} aria-hidden="true" />;
 }
 
@@ -531,7 +531,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
         {detail && <p className="pet-description">{detail}</p>}
         {candidate.reference_mode === "character_sheet" && <p className="field-hint">
           Character sheet reference{characterSheet && <> · <a
-            href={`/api${agentPath(agentKey)}/assets/${encodeURIComponent(characterSheet.output_asset_id)}/content`}
+            href={`/kadan/api${agentPath(agentKey)}/assets/${encodeURIComponent(characterSheet.output_asset_id)}/content`}
             target="_blank" rel="noreferrer">View sheet</a></>}
         </p>}
         <p className="field-hint">
@@ -565,7 +565,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
           <summary><Wrench size={14} aria-hidden="true" /> Repair a frame</summary>
           <div className="pet-repair-body">
             <img className="pet-repair-image" width={144} height={156}
-              src={`/api${agentPath(agentKey)}/assets/${encodeURIComponent(frame.output_asset_id)}/content`}
+              src={`/kadan/api${agentPath(agentKey)}/assets/${encodeURIComponent(frame.output_asset_id)}/content`}
               alt={`${frameLabel(frame.name)} saved artwork`} />
             <div className="pet-form">
               <label htmlFor="pet-repair-frame">Frame</label>

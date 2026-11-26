@@ -104,7 +104,7 @@ export class VoiceInput {
       if (this.closed) return;
       const audio = await this.context.decodeAudioData(recording);
       if (this.closed) return;
-      const response = await fetch("/api/transcriptions", {
+      const response = await fetch("/kadan/api/transcriptions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ audio: recognitionWav(audio.getChannelData(0), audio.sampleRate) }),

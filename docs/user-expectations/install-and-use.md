@@ -10,7 +10,7 @@ Startup must work without creating a `.env` file, generating secrets, selecting 
 
 Users can optionally create a `.env` file to override default parameters, such as the web app port, credentials and remote worker connections. `.env.example` documents the available overrides. Customization must remain optional for the baseline system.
 
-Hot reload is the standard behavior. Source edits must reach the running services through automatic reloads or incremental worker rebuilds, without selecting a separate mode.
+Hot reload is the standard behavior. Source edits must reach the running services through automatic reloads or incremental worker rebuilds, without selecting a separate mode. Kadan, Tsuchi and Hikari share one API service, so an edit to any of them restarts all three and cancels inference in progress.
 
 Starting the system and downloading model checkpoints are separate steps. Users select and download the checkpoints they need through Hikari Settings after startup; startup must not require manual model configuration or run inference.
 

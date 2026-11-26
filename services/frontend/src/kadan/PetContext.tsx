@@ -9,7 +9,7 @@ export const PetContext = createContext<Record<string, PetJob | null>>({});
 export function petSheet(job: PetJob | null): PetSheet | null {
   if (!job?.manifest || job.status !== "ready") return null;
   return {
-    url: `/api${agentPath(job.agent_key)}/assets/${encodeURIComponent(job.manifest.atlas_asset_id)}/content`,
+    url: `/kadan/api${agentPath(job.agent_key)}/assets/${encodeURIComponent(job.manifest.atlas_asset_id)}/content`,
     version: job.manifest.sprite_version,
     pixelated: job.manifest.pixelated,
     animations: job.manifest.animations,

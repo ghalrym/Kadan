@@ -18,7 +18,7 @@ export default function ApiAccessPage() {
     /** Validate the schema shape before rendering; ignore results after cleanup. */
     async function load() {
       try {
-        const response = await fetch('/openapi.json', {
+        const response = await fetch('/hikari/openapi.json', {
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
         })
         if (!response.ok) throw new Error(`API schema returned HTTP ${response.status}`)
@@ -54,7 +54,7 @@ export default function ApiAccessPage() {
     <div className="scroll-page">
       <div className="settings-layout stack">
         <h2>API access</h2>
-        <p><a href="/docs" target="_blank" rel="noreferrer">Interactive API reference</a> · <a href="/openapi.json" target="_blank" rel="noreferrer">OpenAPI JSON</a></p>
+        <p><a href="/hikari/docs" target="_blank" rel="noreferrer">Interactive API reference</a> · <a href="/hikari/openapi.json" target="_blank" rel="noreferrer">OpenAPI JSON</a></p>
         {error && <div role="alert">{error} <button type="button" onClick={() => { setError(''); setSchema(null); setRefresh(value => value + 1) }}>Retry</button></div>}
         {!schema && !error && <p role="status">Loading API schema…</p>}
         {schema && <>

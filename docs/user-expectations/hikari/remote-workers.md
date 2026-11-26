@@ -10,4 +10,4 @@ If a worker disconnects, waiting requests can move to another connected worker o
 
 An LFM worker finishes stopping its previous executor before reconnecting. Cancelling work while that cleanup is already in progress does not skip cleanup or make its memory available early.
 
-Operators configure connectivity and the shared worker API key. There is no browser workflow for provisioning remote machines. See the [remote worker setup](../../architecture/hikari/inference.md#workers-on-another-computer) and [security expectations](../security.md).
+Operators configure connectivity and the shared worker API key. Workers set up for the earlier API address must be pointed at Hikari's new address before they reconnect. There is no browser workflow for provisioning remote machines. See the [remote worker setup](../../architecture/hikari/inference.md#workers-on-another-computer) and [security expectations](../security.md).

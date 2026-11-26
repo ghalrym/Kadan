@@ -4,7 +4,7 @@ import { agentPath } from "./api";
 import type { SpaceItem } from "./types";
 
 export function contentUrl(agentKey: string, id: string, download = false) {
-  return `/api${agentPath(agentKey)}/assets/${encodeURIComponent(id)}/content${download ? "?download=true" : ""}`;
+  return `/kadan/api${agentPath(agentKey)}/assets/${encodeURIComponent(id)}/content${download ? "?download=true" : ""}`;
 }
 
 /** An item's type icon, or a thumbnail for images. */

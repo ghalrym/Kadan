@@ -145,7 +145,7 @@ test('lists valid schema metadata and supported operations with explicit referen
   const view = await page()
   assert.match(content(status(view.tree)), /Loading API schema/)
   assert.equal(view.requests.length, 1)
-  assert.equal(view.requests[0].url, '/openapi.json')
+  assert.equal(view.requests[0].url, '/hikari/openapi.json')
   await view.respond(schema())
   assert.match(content(view.tree), /Hikari\s+·\s+1.0/)
   assert.match(content(view.tree), /Available operations/)
@@ -156,8 +156,8 @@ test('lists valid schema metadata and supported operations with explicit referen
   ])
   assert.deepEqual(elements(view.tree).filter(node => node.type === 'a')
     .map(node => [node.props.href, node.props.target, node.props.rel, content(node)]), [
-    ['/docs', '_blank', 'noreferrer', 'Interactive API reference'],
-    ['/openapi.json', '_blank', 'noreferrer', 'OpenAPI JSON'],
+    ['/hikari/docs', '_blank', 'noreferrer', 'Interactive API reference'],
+    ['/hikari/openapi.json', '_blank', 'noreferrer', 'OpenAPI JSON'],
   ])
   assert.equal(alert(view.tree), '')
   assert.equal(button(view.tree, 'Retry'), undefined)

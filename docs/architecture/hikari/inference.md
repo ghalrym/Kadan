@@ -78,7 +78,7 @@ Detached bytes remain charged as a host-only worker budget after confirmed offlo
 and its worker token; source edits rebuild and restart these workers too:
 
 ```sh
-HIKARI_API_URL=ws://API_HOST:8000/v1/workers HIKARI_WORKER_TOKEN=... \
+HIKARI_API_URL=ws://API_HOST:8000/hikari/v1/workers HIKARI_WORKER_TOKEN=... \
   docker compose -p kadan-workers up --build -d --no-deps hikari-worker-image hikari-worker-video
 ```
 

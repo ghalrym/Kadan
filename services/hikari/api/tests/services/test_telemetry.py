@@ -182,3 +182,29 @@ class CompletedRequestTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("Private", record.model_dump_json())
                 self.assertIs(sent[-1], outgoing)
                 self.assertEqual((store.active, store.completed), (0, 1))
+
+    async def test_mounted_api_matches_generation_paths_within_its_prefix(self):
+        async def receive():
+            return {"type": "http.request", "body": b"{}"}
+
+        async def send(message):
+            pass
+
+        async def app(scope, receive, send):
+            await receive()
+            await send({"type": "http.response.start", "status": 200})
+            await send({"type": "http.response.body", "body": b""})
+
+        store = TelemetryStore()
+        await TelemetryMiddleware(app, store)(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/hikari/v1/chat/completions",
+                "root_path": "/hikari",
+            },
+            receive,
+            send,
+        )
+        self.assertEqual(store.completed, 1)
+        self.assertEqual(store.records()[0].endpoint, "/v1/chat/completions")

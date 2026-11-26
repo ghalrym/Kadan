@@ -172,7 +172,7 @@ export class VoiceCallSession {
       this.context.onstatechange = () => {
         if (!this.closed && this.context?.state !== "running") this.end("Audio was suspended. Start a new call.");
       };
-      const url = new URL(`/api/agents/${encodeURIComponent(agentKey)}/calls`, window.location.href);
+      const url = new URL(`/kadan/api/agents/${encodeURIComponent(agentKey)}/calls`, window.location.href);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       this.starting("server");
       this.socket = new WebSocket(url);

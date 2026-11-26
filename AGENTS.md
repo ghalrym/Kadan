@@ -44,7 +44,7 @@ When a topic needs both kinds of documentation, keep the user-visible behavior i
 
 ## API
 
-Current APIs: `services/hikari/`, `services/tsuchi/`, and `services/kadan/`
+Current APIs: `services/hikari/`, `services/tsuchi/`, and `services/kadan/`. One application in `services/api/` serves them together under `/hikari`, `/tsuchi` and `/kadan`; keep each service's app self-contained and unaware of its prefix.
 
 Our APIs follow the a very standard framing here is an example:
 ```

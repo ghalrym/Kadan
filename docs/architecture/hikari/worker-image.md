@@ -71,15 +71,15 @@ progression and PNG publication remain owned by the same worker and memory ledge
 There is no Python inference executor or secondary service.
 
 The supported dependency pair is PyTorch/LibTorch **2.14.1+cu130** and CUDA
-**13.0**. The API Dockerfile installs this pair by default:
+**13.0**. The image worker's Dockerfile installs this pair by default:
 
 ```sh
-docker build -f services/hikari/api/Dockerfile -t hikari-api services/hikari
+docker build -f services/hikari/inference_worker/workers/image/Dockerfile -t hikari-worker-image services/hikari
 ```
 
 For an existing LibTorch installation, use `-DCMAKE_PREFIX_PATH=<torch-prefix>`
 and `-DKADAN_ENABLE_IMAGE_GENERATION=ON` alongside the full-worker CUDA build
-options in `api/Dockerfile`. CMake requires the pinned Torch package, rejects a
+options in `inference_worker/workers/image/Dockerfile`. CMake requires the pinned Torch package, rejects a
 mismatched toolkit and fixes the architecture to SM86 without probing a GPU.
 CPU unit/tool builds leave image generation disabled. Distribute the dependency
 license notices with the binary; Docker retains the PyTorch and NVIDIA notices

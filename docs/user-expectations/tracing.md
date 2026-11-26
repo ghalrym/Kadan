@@ -1,6 +1,6 @@
 # Performance tracing
 
-Kadan, Tsuchi and Hikari can supply request timing traces to an optional Jaeger interface. Tracing is disabled by default. Starting Jaeger alone does not enable collection; operators must also enable application tracing. The applications can start and complete requests without a collector.
+Kadan, Tsuchi and Hikari can supply request timing traces to an optional Jaeger interface. Tracing is disabled by default. Starting Jaeger alone does not enable collection; operators must also enable application tracing. The applications can start and complete requests without a collector. Kadan, Tsuchi and Hikari share one service in the trace view; each request's route shows which of them handled it.
 
 Traces help inspect time spent waiting, loading models, executing agent actions and running inference across services. Sampling and bounded buffers mean some requests or phases can be absent. Native worker phases can appear only after work finishes and can be lost on disconnection. A missing trace does not mean that no work happened or that it was fast.
 

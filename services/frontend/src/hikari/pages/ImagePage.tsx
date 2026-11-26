@@ -41,7 +41,7 @@ export default function ImagePage({ edit = false }: { edit?: boolean }) {
 function ImageWorkspace({ edit }: { edit: boolean }) {
   const [busy, setBusy] = useState(false)
   const [run, setRun] = useState<Run | null>(null)
-  const { data: metrics } = usePolling<MetricsResponse>(run ? `/v1/metrics?image_request_id=${run.id}` : '/v1/metrics', busy ? 1000 : 3000)
+  const { data: metrics } = usePolling<MetricsResponse>(run ? `/hikari/v1/metrics?image_request_id=${run.id}` : '/hikari/v1/metrics', busy ? 1000 : 3000)
   const progress = run ? metrics?.inference_progress : undefined
   const [tracked, setTracked] = useState<Tracked>({ progress: undefined, view: null, start: null })
   const [now, setNow] = useState(() => Date.now())

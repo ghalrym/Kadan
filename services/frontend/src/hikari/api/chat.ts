@@ -30,7 +30,7 @@ export async function streamChat(
   conversationId?: string,
   model?: string,
 ): Promise<ConversationMessage> {
-  const response = await fetch('/v1/chat/completions', {
+  const response = await fetch('/hikari/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

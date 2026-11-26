@@ -31,18 +31,21 @@ them is follow-up work.
 
 ## API routing
 
-The Vite server proxies each backend under the same origin:
+Browser API paths match the [combined API](../api/combined-app.md)'s, so the
+Vite server forwards them unchanged to `API_URL` (Compose: `http://api:8000`):
 
-| Browser path | Backend | Notes |
+| Browser path | Service | Notes |
 | --- | --- | --- |
-| `/api` | `kadan-api` | WebSocket upgrades relay voice calls. |
-| `/tsuchi/api` | `tsuchi-api` | Rewritten to `/api`; Tsuchi and Kadan both use `/api`. |
-| `/v1`, `/model-lifecycle`, `/health` | `hikari-api` | Paths unchanged, so Hikari's generated client works as-is. |
-| `/openapi.json`, `/docs` | `hikari-api` | Hikari's API Access page links here. |
+| `/kadan/api` | Kadan | WebSocket upgrades relay voice calls. |
+| `/tsuchi/api` | Tsuchi | |
+| `/hikari/v1`, `/hikari/model-lifecycle`, `/hikari/health` | Hikari | The generated client's base URL is `/hikari`. |
+| `/hikari/openapi.json`, `/hikari/docs` | Hikari | Hikari's API Access page links here. |
 
-`KADAN_API_URL`, `TSUCHI_API_URL` and `HIKARI_API_URL` choose the targets;
-Compose points them at the service containers. Kadan's API no longer reports
-browser URLs for Tsuchi or Hikari, since their pages share Kadan's origin.
+Tsuchi has a single page at `/tsuchi`, and no Hikari page path starts with
+`v1`, `health`, `model-lifecycle`, `openapi.json` or `docs` (the API access page
+is `/hikari/api`, which is not proxied). New pages must avoid those names. Kadan's
+API no longer reports browser URLs for Tsuchi or Hikari, since their pages share
+Kadan's origin.
 
 ## Stylesheets
 

@@ -436,3 +436,30 @@ def test_callback_url_prefers_https_origin_and_re_registers_when_origin_changes(
         assert mock.registrations[-1]["redirect_uris"] == [
             "http://localhost:8630/api/mcp/oauth/callback"
         ]
+
+
+def test_callback_url_keeps_the_mount_prefix():
+    from starlette.requests import Request
+
+    from kadan.api.routes.mcp import _callback_url
+
+    def request(headers: dict[str, str]) -> Request:
+        return Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "scheme": "http",
+                "path": "/kadan/api/mcp",
+                "root_path": "/kadan",
+                "server": ("api", 8000),
+                "query_string": b"",
+                "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+            }
+        )
+
+    assert _callback_url(request({"Origin": "http://localhost:8630"})) == (
+        "http://localhost:8630/kadan/api/mcp/oauth/callback"
+    )
+    assert _callback_url(
+        request({"Host": "kadan.example", "X-Forwarded-Proto": "https"})
+    ) == ("https://kadan.example/kadan/api/mcp/oauth/callback")

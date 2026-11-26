@@ -36,7 +36,7 @@ function editor(selected = original) {
     "lucide-react": {},
     "./Markdown": { default: "Markdown" },
     "./api": {
-      agentPath: key => `/api/agents/${key}`,
+      agentPath: key => `/kadan/api/agents/${key}`,
       api: (path, body, method) => new Promise((resolve, reject) => {
         requests.push({ path, body, method, resolve, reject });
       }),
@@ -89,7 +89,7 @@ for (const selected of [null, original]) {
     const view = editor(selected);
     const saving = view.save();
     const request = view.requests[0];
-    assert.equal(request.path, `/api/agents/agent/resources${selected ? "/persona" : ""}`);
+    assert.equal(request.path, `/kadan/api/agents/agent/resources${selected ? "/persona" : ""}`);
     assert.equal(request.body.title, "Guide");
     assert.equal(request.body.markdown, "Draft instructions");
     assert.equal(request.body.expected_version, selected?.version);

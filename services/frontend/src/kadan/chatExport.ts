@@ -30,7 +30,7 @@ export function conversationMarkdown(chain: Resource, agentName: string, origin:
     const body = message.content.split(/\r\n?|\n/).map((line) => `> ${line}`).join("\n");
     lines.push("", "---", "", `## ${roles[message.role]} · ${label(message.created_at)}`, "", body);
     for (const id of message.attachment_ids) {
-      const path = `/api/agents/${encodeURIComponent(chain.agent_key)}/assets/${encodeURIComponent(id)}/content?download=true`;
+      const path = `/kadan/api/agents/${encodeURIComponent(chain.agent_key)}/assets/${encodeURIComponent(id)}/content?download=true`;
       lines.push("", `Attachment: [${label(id)}](<${new URL(path, origin).href}>)`);
     }
     for (const id of message.resource_ids) lines.push("", `Resource: ${label(id)}`);

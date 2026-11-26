@@ -9,7 +9,7 @@ import { usePolling } from '../hooks/usePolling'
 export default function RequestDetails() {
   const { requestId } = useParams()
   const { data, error, refresh } = usePolling<RequestResponse>(
-    `/v1/requests/${encodeURIComponent(requestId ?? '')}`,
+    `/hikari/v1/requests/${encodeURIComponent(requestId ?? '')}`,
   )
   const request = data?.request
   const [copyFeedback, setCopyFeedback] = useState<{

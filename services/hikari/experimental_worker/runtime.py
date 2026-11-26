@@ -513,7 +513,7 @@ class Runtime:
             self.info = machine(cpu_only=self.cpu_only)
         token = os.getenv("HIKARI_WORKER_TOKEN", "insecure-api-key")
         async with connect(
-            os.getenv("HIKARI_API_URL", "ws://hikari-api:8000/v1/workers"),
+            os.getenv("HIKARI_API_URL", "ws://api:8000/hikari/v1/workers"),
             additional_headers={"Authorization": f"Bearer {token}"},
             max_size=128 * 1024**2,
             ping_interval=20,

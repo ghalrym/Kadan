@@ -1,0 +1,37 @@
+name: API
+on:
+  push:
+    paths:
+      - 'services/api/**'
+      - 'services/tracing/**'
+      - '.github/workflows/api.yml'
+  pull_request:
+    paths:
+      - 'services/api/**'
+      - 'services/tracing/**'
+      - '.github/workflows/api.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: api-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unit:
+    name: Combined API unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: services/api
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12.15'
+          cache: pip
+          cache-dependency-path: services/api/requirements*.txt
+      - run: python -m pip install --upgrade "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
+      - run: python -m pip install ../tracing
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pytest

@@ -18,7 +18,7 @@ const types: RequestRecord['type'][] = [
 ]
 /** Show rolling retained-sample metrics and explicitly flag truncated windows. */
 function RequestStats() {
-  const { data, error } = usePolling<MetricsResponse>('/v1/metrics')
+  const { data, error } = usePolling<MetricsResponse>('/hikari/v1/metrics')
   const stats = [
     {
       label: 'Requests / min',
@@ -83,7 +83,7 @@ export default function RequestsPage() {
   })
   if (type) query.set('type', type)
   const { data, error, refresh } = usePolling<RequestsResponse>(
-    `/v1/requests?${query}`,
+    `/hikari/v1/requests?${query}`,
   )
   return (
     <div className="requests-page">

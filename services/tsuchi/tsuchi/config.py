@@ -10,7 +10,6 @@ class Settings(BaseSettings):
     )
 
     data_dir: Path = Path("data")
-    static_dir: Path = Path("web/dist")
     max_upload_bytes: int = Field(default=100 * 1024 * 1024, gt=0)
 
 

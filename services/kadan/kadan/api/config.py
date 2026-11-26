@@ -10,6 +10,7 @@ class Settings(BaseSettings):
         env_prefix="KADAN_", env_file=".env", extra="ignore"
     )
 
+    # Standalone defaults; the combined API sets the /tsuchi and /hikari URLs.
     tsuchi_url: str = "http://127.0.0.1:8620"
     hikari_url: str = "http://127.0.0.1:8000"
     agent_instruction_file: str = str(Path(__file__).resolve().parents[2] / "AGENT.md")

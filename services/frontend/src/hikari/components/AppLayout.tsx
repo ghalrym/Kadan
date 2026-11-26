@@ -9,7 +9,7 @@ import { usePolling } from '../hooks/usePolling'
  */
 function ResourceMeters() {
   const { data, error, refresh } = usePolling<MetricsResponse>(
-    '/v1/metrics',
+    '/hikari/v1/metrics',
     5000,
   )
   return (

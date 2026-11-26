@@ -4,7 +4,6 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from kadan_tracing import RequestTracing, configure, shutdown
 from starlette.responses import JSONResponse
-from starlette.staticfiles import StaticFiles
 
 from .config import Settings, StorageError
 from .repository import Repository
@@ -48,10 +47,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return JSONResponse({"detail": detail}, status_code=422)
 
     app.include_router(create_router(repository, files))
-    if settings.static_dir.is_dir():
-        app.mount(
-            "/", StaticFiles(directory=settings.static_dir, html=True), name="website"
-        )
     return app
 
 

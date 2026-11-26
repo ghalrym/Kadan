@@ -1,6 +1,6 @@
 """Native video job queries, cancellation, and completed media."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from fastapi.responses import FileResponse
 from api.services.video_jobs import video_jobs
@@ -19,12 +19,22 @@ class VideoResponse(BaseModel):
     job: VideoJob
 
 
+def public_job(job: VideoJob, request: Request) -> VideoJob:
+    """Prefix the stored content path with where this API is mounted, e.g. /hikari."""
+    root = request.scope.get("root_path", "")
+    if root and job.output_url and job.output_url.startswith("/v1/"):
+        return job.model_copy(update={"output_url": root + job.output_url})
+    return job
+
+
 @router.get("", operation_id="listVideos")
-async def list_videos() -> VideosResponse:
+async def list_videos(request: Request) -> VideosResponse:
     """Return jobs submitted to this API process."""
     try:
         return VideosResponse(
-            jobs=[video_jobs.get(job.id) for job in video_jobs.list()]
+            jobs=[
+                public_job(video_jobs.get(job.id), request) for job in video_jobs.list()
+            ]
         )
     except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
@@ -35,10 +45,10 @@ async def list_videos() -> VideosResponse:
     operation_id="getVideo",
     responses={404: {"description": "Video not found"}},
 )
-async def get_video(video_id: str) -> VideoResponse:
+async def get_video(video_id: str, request: Request) -> VideoResponse:
     """Return the real worker state, including errors and cancellation."""
     try:
-        return VideoResponse(job=video_jobs.get(video_id))
+        return VideoResponse(job=public_job(video_jobs.get(video_id), request))
     except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     except KeyError as exc:
@@ -46,10 +56,10 @@ async def get_video(video_id: str) -> VideoResponse:
 
 
 @router.delete("/{video_id}", operation_id="cancelVideo")
-async def cancel_video(video_id: str) -> VideoResponse:
+async def cancel_video(video_id: str, request: Request) -> VideoResponse:
     try:
         await inference.cancel(video_id)
-        return VideoResponse(job=video_jobs.get(video_id))
+        return VideoResponse(job=public_job(video_jobs.get(video_id), request))
     except InferenceFailure as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
     except KeyError as exc:
