@@ -43,22 +43,37 @@ def _extract_pending_ids(result: dict[str, Any]) -> list[str]:
     return ids
 
 
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _extract_run_status(
     thread_data: dict[str, Any], target_run_id: str | None
 ) -> str | None:
-    runs = thread_data.get("runs")
+    runs = thread_data.get("recentRuns") or thread_data.get("runs")
     if isinstance(runs, list) and runs:
+        dict_runs = [run for run in runs if isinstance(run, dict)]
         if target_run_id:
-            for run in runs:
-                if isinstance(run, dict) and (
-                    run.get("id") == target_run_id or run.get("runId") == target_run_id
+            for run in dict_runs:
+                if (
+                    run.get("id") == target_run_id
+                    or run.get("runId") == target_run_id
                 ):
                     st = run.get("status")
-                    if isinstance(st, str):
-                        return st.lower()
-        latest = runs[0] if isinstance(runs[0], dict) else None
-        if latest and isinstance(latest.get("status"), str):
-            return latest["status"].lower()
+                    if isinstance(st, str) and st.strip():
+                        return st.strip().lower()
+        if dict_runs:
+            if any(_is_int(run.get("ordinal")) for run in dict_runs):
+                latest = max(
+                    dict_runs,
+                    key=lambda run: run["ordinal"]
+                    if _is_int(run.get("ordinal"))
+                    else -1,
+                )
+            else:
+                latest = dict_runs[0]
+            if isinstance(latest.get("status"), str) and latest["status"].strip():
+                return latest["status"].strip().lower()
     for key in ("status", "runStatus", "state"):
         val = thread_data.get(key)
         if isinstance(val, str) and val.strip():
@@ -72,7 +87,23 @@ def _extract_run_status(
     return None
 
 
-def _extract_latest_reply(thread_data: dict[str, Any]) -> str:
+def _extract_thread_field(
+    thread_data: dict[str, Any], key: str, fallback: str | None
+) -> str | None:
+    top = thread_data.get(key)
+    if isinstance(top, str) and top.strip():
+        return top
+    thread_obj = thread_data.get("thread")
+    if isinstance(thread_obj, dict):
+        nested = thread_obj.get(key)
+        if isinstance(nested, str) and nested.strip():
+            return nested
+    return fallback
+
+
+def _extract_latest_reply(
+    thread_data: dict[str, Any], target_run_id: str | None = None
+) -> str:
     items = (
         thread_data.get("messages")
         or thread_data.get("items")
@@ -85,10 +116,36 @@ def _extract_latest_reply(thread_data: dict[str, Any]) -> str:
     )
     if not isinstance(items, list):
         return ""
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        role = str(item.get("role") or item.get("kind") or "").lower()
+    dict_items = [item for item in items if isinstance(item, dict)]
+    if not dict_items:
+        return ""
+    if any(_is_int(item.get("position")) for item in dict_items):
+        ordered = sorted(
+            dict_items,
+            key=lambda item: item["position"]
+            if _is_int(item.get("position"))
+            else -1,
+            reverse=True,
+        )
+    else:
+        ordered = list(reversed(dict_items))
+
+    has_run_ids = any(
+        isinstance(item.get("runId") or item.get("run_id"), str) for item in ordered
+    )
+    if target_run_id and has_run_ids:
+        candidates = [
+            item
+            for item in ordered
+            if (item.get("runId") or item.get("run_id")) == target_run_id
+        ]
+    else:
+        candidates = ordered
+
+    for item in candidates:
+        role = str(
+            item.get("role") or item.get("type") or item.get("kind") or ""
+        ).lower()
         if role in {"assistant", "agent", "assistant_message", "message"}:
             text = item.get("text") or item.get("content") or item.get("message")
             if isinstance(text, str) and text.strip():
@@ -214,6 +271,7 @@ class T3ThreadEvents:
                 "threadId": watch.thread_id,
                 "view": "messages",
                 "limit": 5,
+                "maxCharsPerItem": MAX_SUMMARY_CHARS,
                 **env_args,
             },
         )
@@ -231,17 +289,9 @@ class T3ThreadEvents:
         if status not in TERMINAL_STATUSES:
             return
 
-        link = (
-            read_res.get("link")
-            if isinstance(read_res.get("link"), str)
-            else watch.thread_link
-        )
-        title = (
-            read_res.get("title")
-            if isinstance(read_res.get("title"), str)
-            else watch.thread_title
-        )
-        summary = _extract_latest_reply(read_res)
+        link = _extract_thread_field(read_res, "link", watch.thread_link)
+        title = _extract_thread_field(read_res, "title", watch.thread_title)
+        summary = _extract_latest_reply(read_res, watch.run_id)
         delivered = await self._queue_event(
             watch,
             event_id=uuid5(watch.id, "t3-done"),

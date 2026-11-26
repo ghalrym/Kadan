@@ -11,7 +11,12 @@ import httpx
 
 from kadan.api.config import Settings
 from kadan.api.services import LocalServices
-from kadan.runner.t3_events import T3ThreadEvents
+from kadan.runner.t3_events import (
+    MAX_SUMMARY_CHARS,
+    T3ThreadEvents,
+    _extract_latest_reply,
+    _extract_run_status,
+)
 
 
 def test_t3_watcher_wakes_on_pending_question_then_completion():
@@ -268,3 +273,189 @@ def test_t3_watcher_drops_watch_when_server_deleted_or_conversation_trashed():
         await client.aclose()
 
     asyncio.run(scenario())
+
+
+def test_t3_watcher_parses_nested_thread_recent_runs_and_typed_items():
+    now = datetime.now(UTC).isoformat()
+    server_id = uuid4()
+    watch_id = uuid4()
+    convo_id = uuid4()
+    origin_run_id = uuid4()
+
+    watch = {
+        "id": str(watch_id),
+        "server_id": str(server_id),
+        "thread_id": "mcp:launch:abc",
+        "run_id": "run:thread:abc:ordinal:1",
+        "environment_id": None,
+        "thread_link": None,
+        "thread_title": "Initial title",
+        "origin_agent_key": "mi",
+        "origin_conversation_id": str(convo_id),
+        "origin_run_id": str(origin_run_id),
+        "status": "watching",
+        "last_pending_request_id": None,
+        "version": 1,
+        "created_at": now,
+        "updated_at": now,
+    }
+    server = {
+        "id": str(server_id),
+        "slug": "t3-code",
+        "name": "T3 Code",
+        "preset": "t3_code",
+        "url": "https://t3.example/mcp",
+        "app_url": "https://t3.example",
+        "auth_type": "none",
+        "auth_state": {},
+        "enabled": True,
+        "status": "connected",
+        "status_error": None,
+        "pinned_tools": ["t3_thread_read"],
+        "tools": [
+            {
+                "name": "t3_thread_read",
+                "description": "Read thread",
+                "input_schema": {},
+                "read_only": True,
+                "idempotent": True,
+                "accepts_client_request_id": False,
+            },
+        ],
+        "tools_synced_at": now,
+        "version": 1,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    read_args: list[dict] = []
+    queued_events: list[dict] = []
+    watch_updates: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.url.host == "tsuchi.test":
+            if path == "/api/t3-watches" and request.method == "GET":
+                return httpx.Response(200, json=[watch] if watch["status"] == "watching" else [])
+            if path == "/api/mcp-servers" and request.method == "GET":
+                return httpx.Response(200, json=[server])
+            if path == f"/api/t3-watches/{watch_id}" and request.method == "PUT":
+                body = json.loads(request.content)
+                watch_updates.append(body)
+                watch.update(
+                    {
+                        "status": body["status"],
+                        "thread_link": body["thread_link"],
+                        "thread_title": body["thread_title"],
+                        "version": watch["version"] + 1,
+                    }
+                )
+                return httpx.Response(200, json=watch)
+            if path == f"/api/agents/mi/resources/{convo_id}/event-runs" and request.method == "POST":
+                body = json.loads(request.content)
+                queued_events.append(body)
+                return httpx.Response(201, json={"id": body["id"]})
+            return httpx.Response(404)
+
+        if path == "/mcp":
+            rpc = json.loads(request.content)
+            method = rpc.get("method")
+            if method == "initialize":
+                return httpx.Response(200, json={"jsonrpc": "2.0", "id": rpc["id"], "result": {}})
+            if method == "notifications/initialized":
+                return httpx.Response(202)
+            if method == "tools/call":
+                read_args.append(rpc["params"]["arguments"])
+                data = {
+                    "thread": {
+                        "threadId": "mcp:launch:abc",
+                        "title": "Refined Pet Animations Title",
+                        "link": "https://app.t3.codes/threads/env/mcp%3Alaunch%3Aabc",
+                        "status": "completed",
+                    },
+                    "recentRuns": [
+                        {
+                            "runId": "run:thread:abc:ordinal:1",
+                            "ordinal": 1,
+                            "status": "completed",
+                        }
+                    ],
+                    "items": [
+                        {
+                            "position": 0,
+                            "runId": "run:thread:abc:ordinal:1",
+                            "type": "user_message",
+                            "text": "Investigate pet animations.",
+                        },
+                        {
+                            "position": 2,
+                            "runId": "run:thread:abc:ordinal:1",
+                            "type": "assistant_message",
+                            "text": "I'll trace where Kadan renders the pet.",
+                        },
+                        {
+                            "position": 25,
+                            "runId": "run:thread:abc:ordinal:1",
+                            "type": "assistant_message",
+                            "text": "Full final report with all nine animations.",
+                        },
+                    ],
+                }
+                return httpx.Response(
+                    200,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": rpc["id"],
+                        "result": {"content": [{"type": "text", "text": json.dumps(data)}]},
+                    },
+                )
+        return httpx.Response(404)
+
+    async def scenario():
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        services = LocalServices(
+            client, Settings(tsuchi_url="http://tsuchi.test", hikari_url="http://hikari.test")
+        )
+        watcher = T3ThreadEvents(services)
+        await watcher.poll_once()
+
+        assert read_args == [
+            {
+                "threadId": "mcp:launch:abc",
+                "view": "messages",
+                "limit": 5,
+                "maxCharsPerItem": MAX_SUMMARY_CHARS,
+            }
+        ]
+        assert len(queued_events) == 1
+        payload = json.loads(queued_events[0]["event"]["content"])
+        assert payload["status"] == "completed"
+        assert payload["thread_link"] == "https://app.t3.codes/threads/env/mcp%3Alaunch%3Aabc"
+        assert payload["thread_title"] == "Refined Pet Animations Title"
+        assert payload["message"] == "Full final report with all nine animations."
+        assert watch_updates[0]["thread_link"] == "https://app.t3.codes/threads/env/mcp%3Alaunch%3Aabc"
+        assert watch_updates[0]["thread_title"] == "Refined Pet Animations Title"
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_t3_extractors_handle_multi_run_recent_runs_and_avoid_stale_replies():
+    payload = {
+        "thread": {"status": "failed"},
+        "recentRuns": [
+            {"runId": "run-1", "ordinal": 1, "status": "completed"},
+            {"runId": "run-2", "ordinal": 2, "status": "running"},
+        ],
+        "items": [
+            {"position": 1, "runId": "run-1", "type": "assistant_message", "text": "Old reply"},
+        ],
+    }
+    # Matches target run in recentRuns
+    assert _extract_run_status(payload, "run-2") == "running"
+    assert _extract_run_status(payload, "run-1") == "completed"
+    # Without target_run_id, selects highest ordinal run rather than first entry
+    assert _extract_run_status(payload, None) == "running"
+    # Does not leak run-1's reply when watching run-2
+    assert _extract_latest_reply(payload, "run-2") == ""
+    assert _extract_latest_reply(payload, "run-1") == "Old reply"
