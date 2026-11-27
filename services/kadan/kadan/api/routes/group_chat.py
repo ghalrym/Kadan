@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from typing import Annotated
-from urllib.parse import urlsplit
 from uuid import UUID
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Query, Request, Response
 
+from ..group_chat_oauth import group_chat_mcp_url as _group_chat_mcp_url
+from ..group_chat_plugin import build_chatgpt_plugin_zip
 from ..pydantic_models.group_chat import (
     GroupChatCreateExternalParticipantRequest,
     GroupChatCreateExternalParticipantResponse,
@@ -23,29 +24,18 @@ from ..pydantic_models.group_chat import (
 router = APIRouter(prefix="/api/group-chat")
 
 
-def _first_header_value(value: str | None) -> str | None:
-    if not value:
-        return None
-    first = value.split(",", 1)[0].strip()
-    return first or None
-
-
-def _group_chat_mcp_url(request: Request) -> str:
-    """Build the copyable Group Chat MCP URL preserving mount prefix (e.g. /kadan)."""
-    path = request.scope.get("root_path", "") + "/mcp/group-chat"
-    fwd_proto = _first_header_value(request.headers.get("x-forwarded-proto"))
-    fwd_host = _first_header_value(request.headers.get("x-forwarded-host"))
-    if not fwd_proto:
-        origin = _first_header_value(request.headers.get("origin"))
-        if origin:
-            parsed = urlsplit(origin)
-            if parsed.scheme in {"http", "https"} and parsed.netloc:
-                return f"{parsed.scheme}://{parsed.netloc}{path}"
-    proto = fwd_proto or request.url.scheme
-    host = fwd_host or _first_header_value(request.headers.get("host"))
-    if host:
-        return f"{proto}://{host}{path}"
-    return path
+@router.get("/chatgpt-plugin.zip")
+async def download_chatgpt_plugin_zip(request: Request) -> Response:
+    """Serve a ready-to-upload ChatGPT plugin .zip configured for this Kadan server."""
+    archive = build_chatgpt_plugin_zip(_group_chat_mcp_url(request))
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="kadan-group-chat-plugin.zip"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.get("", response_model=GroupChatRoomSnapshot)

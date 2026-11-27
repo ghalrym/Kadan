@@ -20,6 +20,8 @@ export default defineConfig({
     host: '0.0.0.0',
     allowedHosts: true,
     proxy: {
+      // OAuth 2.1 discovery for ChatGPT / external Group Chat MCP clients.
+      '/.well-known': api,
       // ws relays Kadan voice calls.
       '/kadan/api': { target: api, ws: true },
       '/kadan/mcp': api,

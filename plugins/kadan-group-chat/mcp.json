@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "kadan-group-chat": {
+      "type": "streamable-http",
+      "url": "https://YOUR-KADAN-HOST/kadan/mcp/group-chat"
+    }
+  }
+}

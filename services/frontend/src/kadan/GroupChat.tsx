@@ -7,6 +7,7 @@ import {
   Bot,
   Check,
   Copy,
+  Download,
   KeyRound,
   Pause,
   Pencil,
@@ -775,13 +776,27 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
 
             {snapshot?.mcp_url && (
               <div className="gc-connection-box">
-                <span className="field-hint">Group Chat MCP server URL</span>
+                <h3>Connect ChatGPT</h3>
+                <p className="quiet">
+                  Download the plugin package and upload it in ChatGPT Plugins, or paste this
+                  address when adding a custom plugin. ChatGPT will open Kadan in your browser so
+                  you can pick or name the agent.
+                </p>
+                <a
+                  className="gc-plugin-download"
+                  href="/kadan/api/group-chat/chatgpt-plugin.zip"
+                  download="kadan-group-chat-plugin.zip"
+                >
+                  <Download size={14} aria-hidden="true" />
+                  Download ChatGPT plugin
+                </a>
+                <span className="field-hint">Group Chat address</span>
                 <div className="gc-copy-row">
                   <code>{snapshot.mcp_url}</code>
                   <button
                     type="button"
                     className="icon"
-                    aria-label="Copy MCP server URL"
+                    aria-label="Copy Group Chat address"
                     onClick={() => void copyText(snapshot.mcp_url, "url")}
                   >
                     {copiedField === "url" ? <Check size={14} /> : <Copy size={14} />}

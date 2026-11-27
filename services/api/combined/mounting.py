@@ -11,6 +11,8 @@ from kadan_tracing import configure, shutdown
 
 
 _API_PREFIXES = (
+    "/.well-known",
+    "/kadan/.well-known",
     "/kadan/api",
     "/kadan/mcp",
     "/kadan/docs",
@@ -25,11 +27,40 @@ _API_PREFIXES = (
     "/hikari/openapi.json",
 )
 
+_KADAN_WELL_KNOWN_PREFIXES = (
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/openid-configuration",
+)
+
 
 def _is_api_path(path: str) -> bool:
     return any(
         path == prefix or path.startswith(f"{prefix}/") for prefix in _API_PREFIXES
     )
+
+
+def _is_kadan_well_known_path(path: str) -> bool:
+    return any(
+        path == prefix or path.startswith(f"{prefix}/")
+        for prefix in _KADAN_WELL_KNOWN_PREFIXES
+    )
+
+
+class _KadanWellKnownMiddleware:
+    """Forward root RFC 9728 / RFC 8414 OAuth discovery paths to the mounted Kadan app."""
+
+    def __init__(self, app, kadan_app: FastAPI):
+        self.app = app
+        self.kadan_app = kadan_app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and _is_kadan_well_known_path(scope.get("path", "")):
+            base_root = str(scope.get("root_path") or "").rstrip("/")
+            forwarded_scope = {**scope, "root_path": f"{base_root}/kadan"}
+            await self.kadan_app(forwarded_scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
 
 def lifespan_for(apps: Mapping[str, FastAPI]):
@@ -89,6 +120,8 @@ def create_app(apps: Mapping[str, FastAPI]) -> FastAPI:
     )
     for name, service in apps.items():
         app.mount(f"/{name}", service, name=name)
+    if "kadan" in apps:
+        app.add_middleware(_KadanWellKnownMiddleware, kadan_app=apps["kadan"])
     frontend_dir = os.environ.get("KADAN_FRONTEND_DIR", "").strip()
     if frontend_dir:
         root = Path(frontend_dir).resolve()

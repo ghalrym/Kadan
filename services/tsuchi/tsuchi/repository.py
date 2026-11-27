@@ -35,6 +35,13 @@ from .models import (
     GroupChatMessageInput,
     GroupChatMessagesPage,
     GroupChatMessageWriteResult,
+    GroupChatOAuthClient,
+    GroupChatOAuthClientInput,
+    GroupChatOAuthCode,
+    GroupChatOAuthCodeInput,
+    GroupChatOAuthToken,
+    GroupChatOAuthTokenInput,
+    GroupChatOAuthTokenRefresh,
     GroupChatParticipant,
     GroupChatParticipantInput,
     GroupChatParticipantTouch,
@@ -297,6 +304,32 @@ class Repository:
                 );
                 CREATE INDEX IF NOT EXISTS group_chat_deliveries_pending
                     ON group_chat_webhook_deliveries(status, next_attempt_at);
+                CREATE TABLE IF NOT EXISTS group_chat_oauth_clients (
+                    client_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS group_chat_oauth_codes (
+                    code_hash TEXT PRIMARY KEY,
+                    participant_id TEXT NOT NULL REFERENCES group_chat_participants(id),
+                    expires_at TEXT NOT NULL,
+                    consumed_at TEXT,
+                    data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS group_chat_oauth_codes_expires
+                    ON group_chat_oauth_codes(expires_at);
+                CREATE TABLE IF NOT EXISTS group_chat_oauth_tokens (
+                    id TEXT PRIMARY KEY,
+                    room_id TEXT NOT NULL REFERENCES group_chat_rooms(id),
+                    participant_id TEXT NOT NULL REFERENCES group_chat_participants(id),
+                    access_token_hash TEXT NOT NULL UNIQUE,
+                    refresh_token_hash TEXT NOT NULL UNIQUE,
+                    revoked_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS group_chat_oauth_tokens_participant
+                    ON group_chat_oauth_tokens(participant_id, revoked_at);
                 CREATE TABLE IF NOT EXISTS work_projects (
                     id TEXT PRIMARY KEY,
                     root_path TEXT NOT NULL UNIQUE,
@@ -3210,6 +3243,7 @@ class Repository:
                 self._revoke_participant_subscriptions(
                     db, participant_id, "Participant was revoked", now
                 )
+                self._revoke_participant_oauth_tokens(db, participant_id, now)
             elif value.token_hash is not None:
                 db.execute(
                     "UPDATE group_chat_participants SET handle = ?, token_hash = ?, updated_at = ?, data = ? WHERE id = ?",
@@ -3221,6 +3255,7 @@ class Repository:
                         str(participant_id),
                     ),
                 )
+                self._revoke_participant_oauth_tokens(db, participant_id, now)
             else:
                 db.execute(
                     "UPDATE group_chat_participants SET handle = ?, updated_at = ?, data = ? WHERE id = ?",
@@ -3262,15 +3297,45 @@ class Repository:
 
     def authenticate_group_chat_token(self, token_hash: str) -> GroupChatParticipant:
         with self.connect(write=True) as db:
+            now = utc_now()
+            participant: GroupChatParticipant | None = None
             row = db.execute(
                 "SELECT data FROM group_chat_participants WHERE token_hash = ?",
                 (token_hash,),
             ).fetchone()
-            if not row:
+            if row:
+                participant = GroupChatParticipant.model_validate_json(row[0])
+            else:
+                token_row = db.execute(
+                    "SELECT data, revoked_at FROM group_chat_oauth_tokens WHERE access_token_hash = ?",
+                    (token_hash,),
+                ).fetchone()
+                if token_row:
+                    token_rec = GroupChatOAuthToken.model_validate_json(token_row[0])
+                    if token_row[1] is not None or token_rec.revoked_at is not None:
+                        raise StorageError(
+                            "This OAuth access token has been revoked",
+                            401,
+                            code="token_revoked",
+                        )
+                    if token_rec.access_expires_at <= now:
+                        raise StorageError(
+                            "This OAuth access token has expired",
+                            401,
+                            code="token_expired",
+                        )
+                    part_row = db.execute(
+                        "SELECT data FROM group_chat_participants WHERE id = ?",
+                        (str(token_rec.participant_id),),
+                    ).fetchone()
+                    if part_row:
+                        participant = GroupChatParticipant.model_validate_json(
+                            part_row[0]
+                        )
+            if participant is None:
                 raise StorageError(
                     "Invalid group chat bearer token", 401, code="invalid_token"
                 )
-            participant = GroupChatParticipant.model_validate_json(row[0])
             if participant.revoked_at is not None:
                 raise StorageError(
                     "This agent's access has been revoked",
@@ -3281,7 +3346,6 @@ class Repository:
                 raise StorageError(
                     "This agent is currently paused", 403, code="participant_paused"
                 )
-            now = utc_now()
             updated = participant.model_copy(update={"last_seen_at": now})
             db.execute(
                 "UPDATE group_chat_participants SET data = ? WHERE id = ?",
@@ -3938,6 +4002,233 @@ class Repository:
                             str(sub.id),
                         ),
                     )
+            return updated
+
+    @staticmethod
+    def _revoke_participant_oauth_tokens(
+        db: sqlite3.Connection, participant_id: UUID, now: datetime
+    ) -> None:
+        rows = db.execute(
+            "SELECT id, data FROM group_chat_oauth_tokens WHERE participant_id = ? AND revoked_at IS NULL",
+            (str(participant_id),),
+        ).fetchall()
+        for token_id, raw in rows:
+            token = GroupChatOAuthToken.model_validate_json(raw)
+            revoked = token.model_copy(update={"revoked_at": now, "updated_at": now})
+            db.execute(
+                "UPDATE group_chat_oauth_tokens SET revoked_at = ?, updated_at = ?, data = ? WHERE id = ?",
+                (now.isoformat(), now.isoformat(), revoked.model_dump_json(), token_id),
+            )
+
+    def save_group_chat_oauth_client(
+        self, value: GroupChatOAuthClientInput
+    ) -> GroupChatOAuthClient:
+        with self.connect(write=True) as db:
+            now = utc_now()
+            client = GroupChatOAuthClient(
+                client_id=value.client_id,
+                client_name=value.client_name,
+                redirect_uris=list(value.redirect_uris),
+                token_endpoint_auth_method=value.token_endpoint_auth_method,
+                created_at=now,
+            )
+            db.execute(
+                """INSERT INTO group_chat_oauth_clients (client_id, created_at, data)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(client_id) DO UPDATE SET data = excluded.data""",
+                (client.client_id, now.isoformat(), client.model_dump_json()),
+            )
+            return client
+
+    def get_group_chat_oauth_client(self, client_id: str) -> GroupChatOAuthClient:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT data FROM group_chat_oauth_clients WHERE client_id = ?",
+                (client_id,),
+            ).fetchone()
+            if not row:
+                raise StorageError("OAuth client not found", 404, code="invalid_client")
+            return GroupChatOAuthClient.model_validate_json(row[0])
+
+    def save_group_chat_oauth_code(
+        self, value: GroupChatOAuthCodeInput
+    ) -> GroupChatOAuthCode:
+        with self.connect(write=True) as db:
+            self._group_chat_room(db, value.room_id)
+            participant = self._group_chat_participant(
+                db, value.room_id, value.participant_id
+            )
+            if participant.kind != "external_agent":
+                raise StorageError(
+                    "Only external agents can be connected via OAuth",
+                    422,
+                    code="external_only",
+                )
+            if participant.revoked_at is not None or not participant.enabled:
+                raise StorageError(
+                    "Selected external agent is not active",
+                    409,
+                    code="participant_inactive",
+                )
+            now = utc_now()
+            db.execute(
+                "DELETE FROM group_chat_oauth_codes WHERE expires_at < ?",
+                (now.isoformat(),),
+            )
+            record = GroupChatOAuthCode(
+                code_hash=value.code_hash,
+                room_id=value.room_id,
+                participant_id=value.participant_id,
+                client_id=value.client_id,
+                redirect_uri=value.redirect_uri,
+                code_challenge=value.code_challenge,
+                code_challenge_method=value.code_challenge_method,
+                scope=value.scope,
+                resource=value.resource,
+                expires_at=value.expires_at,
+                consumed_at=None,
+                created_at=now,
+            )
+            db.execute(
+                """INSERT INTO group_chat_oauth_codes
+                   (code_hash, participant_id, expires_at, consumed_at, data)
+                   VALUES (?, ?, ?, NULL, ?)""",
+                (
+                    record.code_hash,
+                    str(record.participant_id),
+                    record.expires_at.isoformat(),
+                    record.model_dump_json(),
+                ),
+            )
+            return record
+
+    def consume_group_chat_oauth_code(self, code_hash: str) -> GroupChatOAuthCode:
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT data, consumed_at FROM group_chat_oauth_codes WHERE code_hash = ?",
+                (code_hash,),
+            ).fetchone()
+            if not row:
+                raise StorageError(
+                    "Authorization code is invalid or expired",
+                    400,
+                    code="invalid_grant",
+                )
+            record = GroupChatOAuthCode.model_validate_json(row[0])
+            now = utc_now()
+            if row[1] is not None or record.consumed_at is not None:
+                raise StorageError(
+                    "Authorization code has already been used",
+                    400,
+                    code="invalid_grant",
+                )
+            if record.expires_at <= now:
+                raise StorageError(
+                    "Authorization code has expired", 400, code="invalid_grant"
+                )
+            consumed = record.model_copy(update={"consumed_at": now})
+            db.execute(
+                "UPDATE group_chat_oauth_codes SET consumed_at = ?, data = ? WHERE code_hash = ?",
+                (now.isoformat(), consumed.model_dump_json(), code_hash),
+            )
+            return consumed
+
+    def create_group_chat_oauth_token(
+        self, value: GroupChatOAuthTokenInput
+    ) -> GroupChatOAuthToken:
+        with self.connect(write=True) as db:
+            self._group_chat_room(db, value.room_id)
+            participant = self._group_chat_participant(
+                db, value.room_id, value.participant_id
+            )
+            if participant.revoked_at is not None or not participant.enabled:
+                raise StorageError(
+                    "Participant is not active", 403, code="participant_inactive"
+                )
+            now = utc_now()
+            token = GroupChatOAuthToken(
+                id=uuid4(),
+                room_id=value.room_id,
+                participant_id=value.participant_id,
+                client_id=value.client_id,
+                scope=value.scope,
+                resource=value.resource,
+                access_expires_at=value.access_expires_at,
+                refresh_expires_at=value.refresh_expires_at,
+                revoked_at=None,
+                created_at=now,
+                updated_at=now,
+            )
+            db.execute(
+                """INSERT INTO group_chat_oauth_tokens
+                   (id, room_id, participant_id, access_token_hash, refresh_token_hash, revoked_at, updated_at, data)
+                   VALUES (?, ?, ?, ?, ?, NULL, ?, ?)""",
+                (
+                    str(token.id),
+                    str(token.room_id),
+                    str(token.participant_id),
+                    value.access_token_hash,
+                    value.refresh_token_hash,
+                    now.isoformat(),
+                    token.model_dump_json(),
+                ),
+            )
+            return token
+
+    def refresh_group_chat_oauth_token(
+        self, value: GroupChatOAuthTokenRefresh
+    ) -> GroupChatOAuthToken:
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT id, data, revoked_at FROM group_chat_oauth_tokens WHERE refresh_token_hash = ?",
+                (value.refresh_token_hash,),
+            ).fetchone()
+            if not row:
+                raise StorageError(
+                    "Refresh token is invalid", 400, code="invalid_grant"
+                )
+            current = GroupChatOAuthToken.model_validate_json(row[1])
+            now = utc_now()
+            if row[2] is not None or current.revoked_at is not None:
+                raise StorageError(
+                    "Refresh token has been revoked", 400, code="invalid_grant"
+                )
+            if current.refresh_expires_at <= now:
+                raise StorageError(
+                    "Refresh token has expired", 400, code="invalid_grant"
+                )
+            if value.client_id is not None and value.client_id != current.client_id:
+                raise StorageError(
+                    "client_id does not match refresh token",
+                    400,
+                    code="invalid_grant",
+                )
+            participant = self._group_chat_participant(
+                db, current.room_id, current.participant_id
+            )
+            if participant.revoked_at is not None or not participant.enabled:
+                raise StorageError(
+                    "Participant is not active", 400, code="invalid_grant"
+                )
+            updated = current.model_copy(
+                update={
+                    "access_expires_at": value.access_expires_at,
+                    "refresh_expires_at": value.refresh_expires_at,
+                    "updated_at": now,
+                }
+            )
+            db.execute(
+                """UPDATE group_chat_oauth_tokens
+                   SET access_token_hash = ?, refresh_token_hash = ?, updated_at = ?, data = ?
+                   WHERE id = ?""",
+                (
+                    value.new_access_token_hash,
+                    value.new_refresh_token_hash,
+                    now.isoformat(),
+                    updated.model_dump_json(),
+                    str(current.id),
+                ),
+            )
             return updated
 
     # ── Native Work projects, threads, runs, activity & harness configs ────────

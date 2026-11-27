@@ -31,6 +31,14 @@ from .models import (
     GroupChatMessageInput,
     GroupChatMessagesPage,
     GroupChatMessageWriteResult,
+    GroupChatOAuthClient,
+    GroupChatOAuthClientInput,
+    GroupChatOAuthCode,
+    GroupChatOAuthCodeConsume,
+    GroupChatOAuthCodeInput,
+    GroupChatOAuthToken,
+    GroupChatOAuthTokenInput,
+    GroupChatOAuthTokenRefresh,
     GroupChatParticipant,
     GroupChatParticipantInput,
     GroupChatParticipantTouch,
@@ -899,6 +907,51 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         delivery_id: UUID, value: GroupChatWebhookDeliveryUpdate
     ):
         return repository.update_group_chat_webhook_delivery(delivery_id, value)
+
+    @router.post(
+        "/group-chat/oauth/clients",
+        response_model=GroupChatOAuthClient,
+        status_code=201,
+    )
+    def save_group_chat_oauth_client(value: GroupChatOAuthClientInput):
+        return repository.save_group_chat_oauth_client(value)
+
+    @router.get(
+        "/group-chat/oauth/clients/{client_id:path}",
+        response_model=GroupChatOAuthClient,
+    )
+    def get_group_chat_oauth_client(client_id: str):
+        return repository.get_group_chat_oauth_client(client_id)
+
+    @router.post(
+        "/group-chat/oauth/codes",
+        response_model=GroupChatOAuthCode,
+        status_code=201,
+    )
+    def save_group_chat_oauth_code(value: GroupChatOAuthCodeInput):
+        return repository.save_group_chat_oauth_code(value)
+
+    @router.post(
+        "/group-chat/oauth/codes/consume",
+        response_model=GroupChatOAuthCode,
+    )
+    def consume_group_chat_oauth_code(value: GroupChatOAuthCodeConsume):
+        return repository.consume_group_chat_oauth_code(value.code_hash)
+
+    @router.post(
+        "/group-chat/oauth/tokens",
+        response_model=GroupChatOAuthToken,
+        status_code=201,
+    )
+    def create_group_chat_oauth_token(value: GroupChatOAuthTokenInput):
+        return repository.create_group_chat_oauth_token(value)
+
+    @router.post(
+        "/group-chat/oauth/tokens/refresh",
+        response_model=GroupChatOAuthToken,
+    )
+    def refresh_group_chat_oauth_token(value: GroupChatOAuthTokenRefresh):
+        return repository.refresh_group_chat_oauth_token(value)
 
     # ── Native Work storage routes ───────────────────────────────────────────
 

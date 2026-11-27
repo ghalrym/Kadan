@@ -519,3 +519,151 @@ def test_group_chat_subscription_refresh_reuses_durable_id_without_duplicates(cl
     ).json()
     assert len(listed) == 1
     assert listed[0]["id"] == first_data["id"]
+
+
+def test_group_chat_oauth_client_code_token_auth_refresh_and_revocation(client):
+    room, _, dot, dot_token = _seed_room_and_participants(client, max_turns=4)
+    room_id = room["id"]
+
+    # 1. Save & retrieve DCR client.
+    reg = client.post(
+        "/api/group-chat/oauth/clients",
+        json={
+            "client_id": "kdn_gcl_chatgpt_1",
+            "client_name": "ChatGPT",
+            "redirect_uris": ["https://chatgpt.com/connector_platform_oauth_redirect"],
+            "token_endpoint_auth_method": "none",
+        },
+    )
+    assert reg.status_code == 201
+    fetched = client.get("/api/group-chat/oauth/clients/kdn_gcl_chatgpt_1")
+    assert fetched.status_code == 200
+    assert fetched.json()["client_name"] == "ChatGPT"
+
+    # 2. Save single-use authorization code and consume once.
+    code_hash = "c" * 64
+    code_res = client.post(
+        "/api/group-chat/oauth/codes",
+        json={
+            "code_hash": code_hash,
+            "room_id": room_id,
+            "participant_id": dot["id"],
+            "client_id": "kdn_gcl_chatgpt_1",
+            "redirect_uri": "https://chatgpt.com/connector_platform_oauth_redirect",
+            "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+            "code_challenge_method": "S256",
+            "scope": "group_chat",
+            "resource": "https://kadan.example/kadan/mcp/group-chat",
+            "expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+        },
+    )
+    assert code_res.status_code == 201
+
+    consumed = client.post(
+        "/api/group-chat/oauth/codes/consume", json={"code_hash": code_hash}
+    )
+    assert consumed.status_code == 200
+    assert consumed.json()["participant_id"] == dot["id"]
+    # Second consume fails (single-use).
+    replay = client.post(
+        "/api/group-chat/oauth/codes/consume", json={"code_hash": code_hash}
+    )
+    assert replay.status_code == 400
+
+    # 3. Mint OAuth token pair and authenticate with access token hash.
+    access_hash_1 = "a" * 64
+    refresh_hash_1 = "r" * 64
+    minted = client.post(
+        "/api/group-chat/oauth/tokens",
+        json={
+            "room_id": room_id,
+            "participant_id": dot["id"],
+            "client_id": "kdn_gcl_chatgpt_1",
+            "scope": "group_chat",
+            "resource": "https://kadan.example/kadan/mcp/group-chat",
+            "access_token_hash": access_hash_1,
+            "refresh_token_hash": refresh_hash_1,
+            "access_expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+            "refresh_expires_at": (datetime.now(UTC) + timedelta(days=30)).isoformat(),
+        },
+    )
+    assert minted.status_code == 201
+    assert access_hash_1 not in minted.text
+    assert refresh_hash_1 not in minted.text
+
+    auth_ok = client.post(
+        "/api/group-chat/participants/authenticate",
+        json={"token_hash": access_hash_1},
+    )
+    assert auth_ok.status_code == 200
+    assert auth_ok.json()["id"] == dot["id"]
+
+    # Static bearer token still authenticates too.
+    static_ok = client.post(
+        "/api/group-chat/participants/authenticate",
+        json={"token_hash": _hash_token(dot_token)},
+    )
+    assert static_ok.status_code == 200
+    assert static_ok.json()["id"] == dot["id"]
+
+    # 4. Rotate via refresh token; old hashes stop working, new access hash works.
+    access_hash_2 = "b" * 64
+    refresh_hash_2 = "s" * 64
+    refreshed = client.post(
+        "/api/group-chat/oauth/tokens/refresh",
+        json={
+            "refresh_token_hash": refresh_hash_1,
+            "client_id": "kdn_gcl_chatgpt_1",
+            "new_access_token_hash": access_hash_2,
+            "new_refresh_token_hash": refresh_hash_2,
+            "access_expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+            "refresh_expires_at": (datetime.now(UTC) + timedelta(days=30)).isoformat(),
+        },
+    )
+    assert refreshed.status_code == 200
+    assert (
+        client.post(
+            "/api/group-chat/participants/authenticate",
+            json={"token_hash": access_hash_1},
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/group-chat/participants/authenticate",
+            json={"token_hash": access_hash_2},
+        ).status_code
+        == 200
+    )
+
+    # 5. Revoking the participant immediately revokes OAuth access and refresh tokens.
+    rev = client.put(
+        f"/api/group-chat/rooms/{room_id}/participants/{dot['id']}",
+        json={"revoke": True, "expected_version": dot["version"]},
+    )
+    assert rev.status_code == 200
+    assert (
+        client.post(
+            "/api/group-chat/participants/authenticate",
+            json={"token_hash": access_hash_2},
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/group-chat/oauth/tokens/refresh",
+            json={
+                "refresh_token_hash": refresh_hash_2,
+                "client_id": "kdn_gcl_chatgpt_1",
+                "new_access_token_hash": "d" * 64,
+                "new_refresh_token_hash": "e" * 64,
+                "access_expires_at": (
+                    datetime.now(UTC) + timedelta(hours=1)
+                ).isoformat(),
+                "refresh_expires_at": (
+                    datetime.now(UTC) + timedelta(days=30)
+                ).isoformat(),
+            },
+        ).status_code
+        == 400
+    )

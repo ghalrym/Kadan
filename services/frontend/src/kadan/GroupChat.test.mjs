@@ -293,10 +293,16 @@ test("GroupChat renders messages, handoff chips, turn-cap notice, and Participan
   const chips = all.filter(node => node.type === "button" && node.props?.className?.includes("gc-chip"));
   assert.equal(chips.length, 2);
 
-  // Participants & Connections drawer shows MCP URL, one-time token card, status badges, and Revoke button.
+  // Participants & Connections drawer shows ChatGPT plugin download, MCP URL, one-time token card, status badges, and Revoke button.
   const drawer = all.find(node => node.type === "aside" && node.props?.className === "group-chat-drawer");
   assert.ok(drawer);
   const drawerText = textOf(drawer);
+  assert.ok(drawerText.includes("Connect ChatGPT"));
+  assert.ok(drawerText.includes("Download ChatGPT plugin"));
+  const downloadLink = all.find(
+    node => node.type === "a" && node.props?.href === "/kadan/api/group-chat/chatgpt-plugin.zip",
+  );
+  assert.ok(downloadLink);
   assert.ok(drawerText.includes("https://kadan.local/kadan/mcp/group-chat"));
   assert.ok(drawerText.includes("kdn_gc_one_time_secret_token"));
   assert.ok(drawerText.includes("will not be shown again"));

@@ -5270,11 +5270,28 @@ dialog.persona-modal {
   flex-direction: column;
   gap: 10px;
 }
+.gc-connection-box h3,
 .gc-participants-list h3,
 .gc-add-form h3 {
   font-size: 13px;
   font-weight: 600;
   color: var(--muted);
+}
+.gc-plugin-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--accent-ink, #fff);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.gc-plugin-download:hover {
+  filter: brightness(1.06);
 }
 .gc-participant-card.is-revoked {
   opacity: 0.6;

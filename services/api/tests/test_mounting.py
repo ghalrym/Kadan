@@ -73,3 +73,37 @@ def test_a_failed_start_stops_services_already_started():
     except RuntimeError:
         pass
     assert events == ["start tsuchi", "stop tsuchi"]
+
+
+def test_root_well_known_oauth_discovery_forwards_to_kadan_with_prefix(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "index.html").write_text("<html>spa</html>", encoding="utf-8")
+    monkeypatch.setenv("KADAN_FRONTEND_DIR", str(tmp_path))
+
+    kadan = FastAPI()
+
+    @kadan.get("/.well-known/oauth-protected-resource/{resource_path:path}")
+    async def prm(resource_path: str):
+        return {"resource_path": resource_path}
+
+    @kadan.get("/.well-known/oauth-authorization-server")
+    async def asm():
+        return {"issuer": "/kadan/api/group-chat/oauth"}
+
+    app = create_app({"kadan": kadan})
+    with TestClient(app) as client:
+        res_prm = client.get(
+            "/.well-known/oauth-protected-resource/kadan/mcp/group-chat"
+        )
+        assert res_prm.status_code == 200
+        assert res_prm.json() == {"resource_path": "kadan/mcp/group-chat"}
+
+        res_asm = client.get("/.well-known/oauth-authorization-server")
+        assert res_asm.status_code == 200
+        assert res_asm.json() == {"issuer": "/kadan/api/group-chat/oauth"}
+
+        # Regular browser route still serves the SPA.
+        spa = client.get("/group-chat")
+        assert spa.status_code == 200
+        assert "<html>spa</html>" in spa.text

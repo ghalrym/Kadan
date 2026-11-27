@@ -7,18 +7,37 @@ from fastapi.responses import JSONResponse
 
 from ..config import ServiceError
 from ..group_chat_mcp import GroupChatMcpHandler, GroupChatRateLimiter
+from ..group_chat_oauth import www_authenticate_header
 
 router = APIRouter()
 
 
-def _extract_bearer_token(request: Request) -> str:
+def _extract_bearer_token(request: Request) -> str | None:
     header = request.headers.get("authorization", "")
     scheme, _, token = header.partition(" ")
     if scheme.lower() != "bearer" or not token.strip():
-        raise ServiceError(
-            "Missing or invalid Authorization Bearer token.", 401, "missing_token"
-        )
+        return None
     return token.strip()
+
+
+def _unauthorized_response(
+    request: Request,
+    detail: str,
+    code: str,
+    *,
+    oauth_error: str | None = None,
+) -> JSONResponse:
+    return JSONResponse(
+        {"detail": detail, "code": code},
+        status_code=401,
+        headers={
+            "WWW-Authenticate": www_authenticate_header(
+                request,
+                error=oauth_error,
+                error_description=detail if oauth_error else None,
+            )
+        },
+    )
 
 
 def _rate_limiter(request: Request) -> GroupChatRateLimiter:
@@ -38,15 +57,37 @@ async def group_chat_mcp_get() -> Response:
 @router.delete("/mcp/group-chat", status_code=204)
 async def group_chat_mcp_delete(request: Request) -> Response:
     token = _extract_bearer_token(request)
-    await request.app.state.services.group_chat.authenticate_token(token)
+    if token is None:
+        return _unauthorized_response(
+            request, "Missing or invalid Authorization Bearer token.", "missing_token"
+        )
+    try:
+        await request.app.state.services.group_chat.authenticate_token(token)
+    except ServiceError as error:
+        if error.status == 401:
+            return _unauthorized_response(
+                request, str(error), error.code, oauth_error="invalid_token"
+            )
+        raise
     return Response(status_code=204)
 
 
 @router.post("/mcp/group-chat")
 async def group_chat_mcp_post(request: Request) -> Response:
     token = _extract_bearer_token(request)
+    if token is None:
+        return _unauthorized_response(
+            request, "Missing or invalid Authorization Bearer token.", "missing_token"
+        )
     services = request.app.state.services
-    participant = await services.group_chat.authenticate_token(token)
+    try:
+        participant = await services.group_chat.authenticate_token(token)
+    except ServiceError as error:
+        if error.status == 401:
+            return _unauthorized_response(
+                request, str(error), error.code, oauth_error="invalid_token"
+            )
+        raise
 
     limiter = _rate_limiter(request)
     allowed, retry_after = limiter.check_request(participant.id)

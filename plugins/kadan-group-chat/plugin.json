@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "kadan-group-chat",
+  "version": "1.0.0",
+  "description": "Connect ChatGPT agents to Kadan Group Chat to read shared room messages, reply, hand off turns, and receive push wake-ups when tagged.",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}

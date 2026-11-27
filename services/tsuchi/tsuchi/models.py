@@ -1622,3 +1622,102 @@ class GroupChatWebhookDeliveryUpdate(Model):
         if value is None:
             return None
         return _require_aware(value, "next_attempt_at")
+
+
+class GroupChatOAuthClient(Model):
+    client_id: str = Field(min_length=1, max_length=512)
+    client_name: str = Field(default="", max_length=256)
+    redirect_uris: list[str] = Field(min_length=1, max_length=20)
+    token_endpoint_auth_method: str = Field(default="none", max_length=64)
+    created_at: datetime
+
+
+class GroupChatOAuthClientInput(Model):
+    client_id: str = Field(min_length=1, max_length=512)
+    client_name: str = Field(default="", max_length=256)
+    redirect_uris: list[str] = Field(min_length=1, max_length=20)
+    token_endpoint_auth_method: str = Field(default="none", max_length=64)
+
+
+class GroupChatOAuthCode(Model):
+    code_hash: str = Field(min_length=32, max_length=128)
+    room_id: UUID
+    participant_id: UUID
+    client_id: str = Field(min_length=1, max_length=512)
+    redirect_uri: str = Field(min_length=1, max_length=2000)
+    code_challenge: str = Field(min_length=16, max_length=256)
+    code_challenge_method: Literal["S256"] = "S256"
+    scope: str = Field(default="group_chat", max_length=256)
+    resource: str | None = Field(default=None, max_length=2000)
+    expires_at: datetime
+    consumed_at: datetime | None = None
+    created_at: datetime
+
+
+class GroupChatOAuthCodeInput(Model):
+    code_hash: str = Field(min_length=32, max_length=128)
+    room_id: UUID
+    participant_id: UUID
+    client_id: str = Field(min_length=1, max_length=512)
+    redirect_uri: str = Field(min_length=1, max_length=2000)
+    code_challenge: str = Field(min_length=16, max_length=256)
+    code_challenge_method: Literal["S256"] = "S256"
+    scope: str = Field(default="group_chat", max_length=256)
+    resource: str | None = Field(default=None, max_length=2000)
+    expires_at: datetime
+
+    @field_validator("expires_at")
+    @classmethod
+    def aware_code_expires_at(cls, value: datetime) -> datetime:
+        return _require_aware(value, "expires_at")
+
+
+class GroupChatOAuthCodeConsume(Model):
+    code_hash: str = Field(min_length=32, max_length=128)
+
+
+class GroupChatOAuthToken(Model):
+    """Persisted OAuth token metadata (token hashes are never returned)."""
+
+    id: UUID
+    room_id: UUID
+    participant_id: UUID
+    client_id: str = Field(min_length=1, max_length=512)
+    scope: str = Field(default="group_chat", max_length=256)
+    resource: str | None = Field(default=None, max_length=2000)
+    access_expires_at: datetime
+    refresh_expires_at: datetime
+    revoked_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class GroupChatOAuthTokenInput(Model):
+    room_id: UUID
+    participant_id: UUID
+    client_id: str = Field(min_length=1, max_length=512)
+    scope: str = Field(default="group_chat", max_length=256)
+    resource: str | None = Field(default=None, max_length=2000)
+    access_token_hash: str = Field(min_length=32, max_length=128)
+    refresh_token_hash: str = Field(min_length=32, max_length=128)
+    access_expires_at: datetime
+    refresh_expires_at: datetime
+
+    @field_validator("access_expires_at", "refresh_expires_at")
+    @classmethod
+    def aware_token_expires(cls, value: datetime) -> datetime:
+        return _require_aware(value, "expires_at")
+
+
+class GroupChatOAuthTokenRefresh(Model):
+    refresh_token_hash: str = Field(min_length=32, max_length=128)
+    client_id: str | None = Field(default=None, max_length=512)
+    new_access_token_hash: str = Field(min_length=32, max_length=128)
+    new_refresh_token_hash: str = Field(min_length=32, max_length=128)
+    access_expires_at: datetime
+    refresh_expires_at: datetime
+
+    @field_validator("access_expires_at", "refresh_expires_at")
+    @classmethod
+    def aware_refresh_expires(cls, value: datetime) -> datetime:
+        return _require_aware(value, "expires_at")
