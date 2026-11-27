@@ -9,9 +9,11 @@ from pydantic import ValidationError
 from kadan.api.routes.agents import (
     AgentInput,
     AgentRename,
+    delete_agent,
     get_agent,
     list_agents,
     rename_agent,
+    router,
 )
 
 
@@ -81,3 +83,25 @@ def test_list_agents_route_delegates_to_services_bootstrap_helper():
         {"key": "kadan", "name": "Kadan Agent"}
     ]
     list_helper.assert_awaited_once_with()
+
+
+def test_delete_agent_route_proxies_delete_to_tsuchi_with_204():
+    json_request = AsyncMock(return_value=None)
+    request = Request(
+        {
+            "type": "http",
+            "app": SimpleNamespace(
+                state=SimpleNamespace(
+                    services=SimpleNamespace(json_request=json_request)
+                )
+            ),
+        }
+    )
+    route = next(
+        r
+        for r in router.routes
+        if r.path == "/api/agents/{key}" and "DELETE" in r.methods
+    )
+    assert route.status_code == 204
+    assert asyncio.run(delete_agent("kadan", request)) is None
+    json_request.assert_awaited_once_with("Tsuchi", "DELETE", "/api/agents/kadan")

@@ -866,3 +866,148 @@ def test_list_agents_handles_409_races_on_greeting_and_persona_seed():
 
     result = run(tsuchi, lambda service: service.list_agents())
     assert result == [agent_record]
+
+
+def test_delete_agent_followed_by_list_agents_bootstraps_fresh_default_agent():
+    agents = {}
+    conversations = {}
+    personas = {}
+    generation = 0
+
+    def tsuchi(request):
+        nonlocal generation
+        if request.method == "GET" and request.url.path == "/api/agents":
+            return httpx.Response(200, json=list(agents.values()))
+        if request.method == "POST" and request.url.path == "/api/agents":
+            body = json.loads(request.content)
+            key = body["key"]
+            if key in agents:
+                return httpx.Response(
+                    409, json={"detail": "This agent key already exists"}
+                )
+            generation += 1
+            agent = {
+                "key": key,
+                "name": body["name"],
+                "created_at": NOW.isoformat(),
+                "selected_pet_id": None,
+                "persona_id": None,
+            }
+            agents[key] = agent
+            return httpx.Response(201, json=agent)
+        if request.method == "DELETE" and request.url.path.startswith("/api/agents/"):
+            key = request.url.path.removeprefix("/api/agents/")
+            if key not in agents:
+                return httpx.Response(404, json={"detail": "Agent namespace not found"})
+            del agents[key]
+            conversations.pop(key, None)
+            personas.pop(key, None)
+            return httpx.Response(204)
+        if (
+            request.method == "GET"
+            and request.url.path == f"/api/agents/{DEFAULT_AGENT_KEY}/resources"
+        ):
+            items = conversations.get(DEFAULT_AGENT_KEY, [])
+            return httpx.Response(
+                200, json=[item.model_dump(mode="json") for item in items]
+            )
+        if (
+            request.method == "POST"
+            and request.url.path == f"/api/agents/{DEFAULT_AGENT_KEY}/resources"
+        ):
+            body = json.loads(request.content)
+            conv_id = UUID(f"10000000-0000-4000-8000-{generation:012d}")
+            created = resource(
+                "conversation",
+                id=conv_id,
+                agent_key=DEFAULT_AGENT_KEY,
+                title=body["title"],
+                messages=[],
+            )
+            conversations.setdefault(DEFAULT_AGENT_KEY, []).append(created)
+            return httpx.Response(201, json=created.model_dump(mode="json"))
+        if request.method == "POST" and request.url.path.endswith("/messages"):
+            body = json.loads(request.content)
+            message = Message.model_validate(body["message"])
+            current = conversations[DEFAULT_AGENT_KEY][0]
+            if any(m.id == message.id for m in current.messages):
+                return httpx.Response(
+                    409, json={"detail": "This message ID already exists"}
+                )
+            assert body["expected_version"] == current.version
+            updated = current.model_copy(
+                update={
+                    "version": current.version + 1,
+                    "messages": [*current.messages, message],
+                }
+            )
+            conversations[DEFAULT_AGENT_KEY][0] = updated
+            return httpx.Response(200, json=updated.model_dump(mode="json"))
+        if (
+            request.method == "GET"
+            and request.url.path == f"/api/agents/{DEFAULT_AGENT_KEY}/persona"
+        ):
+            current_persona = personas.get(DEFAULT_AGENT_KEY)
+            return httpx.Response(
+                200,
+                content=json.dumps(
+                    current_persona.model_dump(mode="json")
+                    if current_persona is not None
+                    else None
+                ),
+            )
+        if (
+            request.method == "PUT"
+            and request.url.path == f"/api/agents/{DEFAULT_AGENT_KEY}/persona"
+        ):
+            body = json.loads(request.content)
+            persona_id = UUID(f"20000000-0000-4000-8000-{generation:012d}")
+            saved = resource(
+                "persona",
+                id=persona_id,
+                agent_key=DEFAULT_AGENT_KEY,
+                title=body["title"],
+                markdown=body["markdown"],
+            )
+            personas[DEFAULT_AGENT_KEY] = saved
+            agents[DEFAULT_AGENT_KEY]["persona_id"] = str(persona_id)
+            return httpx.Response(200, json=saved.model_dump(mode="json"))
+        raise AssertionError(f"Unexpected call: {request.method} {request.url.path}")
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(tsuchi)) as client:
+            service = LocalServices(client, Settings(_env_file=None))
+            initial = await service.list_agents()
+            initial_conv_id = conversations[DEFAULT_AGENT_KEY][0].id
+            initial_persona_id = personas[DEFAULT_AGENT_KEY].id
+
+            # Delete the agent via proxy call.
+            result = await service.json_request(
+                "Tsuchi", "DELETE", f"/api/agents/{DEFAULT_AGENT_KEY}"
+            )
+            assert result is None
+            assert DEFAULT_AGENT_KEY not in agents
+
+            # Deleting a missing agent propagates 404.
+            with pytest.raises(ServiceError) as missing:
+                await service.json_request(
+                    "Tsuchi", "DELETE", f"/api/agents/{DEFAULT_AGENT_KEY}"
+                )
+            assert missing.value.status == 404
+
+            # Listing agents immediately re-bootstraps a brand-new default agent.
+            fresh = await service.list_agents()
+            return initial, initial_conv_id, initial_persona_id, fresh
+
+    initial, initial_conv_id, initial_persona_id, fresh = asyncio.run(scenario())
+    assert len(initial) == 1
+    assert len(fresh) == 1
+    assert fresh[0]["key"] == DEFAULT_AGENT_KEY
+    assert fresh[0]["name"] == DEFAULT_AGENT_NAME
+    assert fresh[0]["persona_id"] != str(initial_persona_id)
+    fresh_conv = conversations[DEFAULT_AGENT_KEY][0]
+    assert fresh_conv.id != initial_conv_id
+    assert len(fresh_conv.messages) == 1
+    assert fresh_conv.messages[0].id == ONBOARDING_GREETING_MESSAGE_ID
+    assert fresh_conv.messages[0].content == ONBOARDING_GREETING
+    assert personas[DEFAULT_AGENT_KEY].markdown == STARTER_PERSONA_MARKDOWN

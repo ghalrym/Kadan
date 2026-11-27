@@ -179,6 +179,11 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         with draft_lock:
             run_drafts.pop((key, run_id), None)
 
+    def clear_agent_drafts(key: str) -> None:
+        with draft_lock:
+            for draft_key in [entry for entry in run_drafts if entry[0] == key]:
+                run_drafts.pop(draft_key, None)
+
     def with_draft(key: str, run: AgentRun) -> AgentRun:
         if run.status != "running":
             clear_draft(key, run.id)
@@ -233,6 +238,11 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     @router.put("/agents/{key}", response_model=Agent)
     def rename_agent(key: AgentKey, value: AgentRename):
         return repository.rename_agent(key, value)
+
+    @router.delete("/agents/{key}", status_code=204)
+    def delete_agent(key: AgentKey):
+        files.delete_agent(key)
+        clear_agent_drafts(key)
 
     @router.get("/agent-runs", response_model=list[AgentRun])
     def active_runs():

@@ -207,6 +207,12 @@ class FileStorage:
         finally:
             temporary.unlink(missing_ok=True)
 
+    @traced("kadan.storage.delete_agent")
+    def delete_agent(self, key: str) -> None:
+        asset_ids = self.repository.delete_agent(key)
+        for asset_id in asset_ids:
+            self.blob_path(asset_id).unlink(missing_ok=True)
+
     @traced("kadan.storage.export")
     def export(self, key: str) -> Path:
         descriptor, filename = tempfile.mkstemp(

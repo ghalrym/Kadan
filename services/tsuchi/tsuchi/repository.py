@@ -1150,6 +1150,37 @@ class Repository:
             self._activity(db, agent.key, "created", "agent", agent.key, agent.name)
         return agent
 
+    @traced("kadan.storage.delete_agent")
+    def delete_agent(self, key: str) -> list[UUID]:
+        with self.connect(write=True) as db:
+            self._agent(db, key)
+            asset_ids = [
+                UUID(row[0])
+                for row in db.execute(
+                    "SELECT id FROM assets WHERE agent_key = ?", (key,)
+                ).fetchall()
+            ]
+            # Clear optional pointers on agents before removing referenced rows.
+            db.execute(
+                "UPDATE agents SET persona_id = NULL, selected_pet_id = NULL WHERE key = ?",
+                (key,),
+            )
+            db.execute("DELETE FROM image_jobs WHERE agent_key = ?", (key,))
+            db.execute("DELETE FROM agent_runs WHERE agent_key = ?", (key,))
+            db.execute("DELETE FROM pet_jobs WHERE agent_key = ?", (key,))
+            db.execute(
+                "DELETE FROM t3_thread_watches WHERE json_extract(data, '$.origin_agent_key') = ?",
+                (key,),
+            )
+            db.execute("DELETE FROM runner_assignments WHERE agent_key = ?", (key,))
+            db.execute("DELETE FROM resource_search WHERE agent_key = ?", (key,))
+            db.execute("DELETE FROM revisions WHERE agent_key = ?", (key,))
+            db.execute("DELETE FROM resources WHERE agent_key = ?", (key,))
+            db.execute("DELETE FROM assets WHERE agent_key = ?", (key,))
+            db.execute("DELETE FROM activity WHERE agent_key = ?", (key,))
+            db.execute("DELETE FROM agents WHERE key = ?", (key,))
+            return asset_ids
+
     @staticmethod
     def _pet(db: sqlite3.Connection, key: str, pet_id: UUID) -> PetJob:
         row = db.execute(

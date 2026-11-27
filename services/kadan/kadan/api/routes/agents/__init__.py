@@ -81,6 +81,13 @@ async def rename_agent(key: AgentKey, value: AgentRename, request: Request):
     )
 
 
+@router.delete("/api/agents/{key}", status_code=204)
+async def delete_agent(key: AgentKey, request: Request) -> None:
+    await request.app.state.services.json_request(
+        "Tsuchi", "DELETE", f"/api/agents/{key}"
+    )
+
+
 @router.get("/api/agents/{key}/persona", response_model=Resource | None)
 async def get_persona(key: AgentKey, request: Request) -> Resource | None:
     return await request.app.state.services.agent_persona(key)
