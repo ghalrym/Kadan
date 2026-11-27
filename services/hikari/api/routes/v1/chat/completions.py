@@ -7,10 +7,14 @@ from uuid import uuid4
 import anyio
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from api.pydantic_models.chat import ChatMessage, ChatTool
-from api.pydantic_models.inference_task import LlmModel
+from api.pydantic_models.inference_task import (
+    LlmModel,
+    WeightVariant,
+    inkling_model_variant,
+)
 from api.repositories import subscriptions
 from api.services.inference import inference
 from api.services.inference_errors import InferenceFailure
@@ -25,6 +29,10 @@ class CompletionRequest(BaseModel):
     messages: list[ChatMessage] = Field(min_length=1)
     tools: list[ChatTool] | None = Field(default=None, max_length=256)
     model: LlmModel | None = None
+    weight_variant: WeightVariant | None = Field(
+        default=None,
+        description="Optional local Inkling 2 Mini weight variant ('base' or 'abliterated') hot-swapped in place without reloading the language worker; omitted uses the configured default.",
+    )
     stream: bool = False
     conversation_id: str | None = Field(
         default=None,
@@ -52,6 +60,16 @@ class CompletionRequest(BaseModel):
         default="interactive",
         description="Interactive turns run ahead of queued background turns between requests.",
     )
+
+    @model_validator(mode="after")
+    def validate_weight_variant(self):
+        if (
+            self.weight_variant is not None
+            and self.model is not None
+            and inkling_model_variant(self.model) != self.weight_variant
+        ):
+            raise ValueError("Requested model does not match requested weight_variant")
+        return self
 
 
 class OutputFunction(BaseModel):
@@ -143,6 +161,7 @@ def observe_generation(measurement, event):
         "prefill_ms",
         "image_encode_ms",
         "cache_restore_ms",
+        "weight_swap_ms",
         "reasoning_ms",
         "thinking_tokens",
         "decode_tokens_per_second",

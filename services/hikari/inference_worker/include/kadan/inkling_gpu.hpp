@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <span>
 #include <vector>
@@ -111,12 +112,59 @@ struct InklingLoopLayerDesc {
 struct InklingGpuModelDesc {
     std::size_t context = 0;
     std::size_t total_matrix_bytes = 0;
+    std::uint32_t initial_variant_id = 0;
     std::span<const float> out_norm;
     std::span<const float> out_res_query;
     InklingMatrixDesc output_weight;
     std::vector<InklingPhysLayerDesc> layers;
     std::vector<InklingLoopLayerDesc> loop_layers;
 };
+
+// Descriptor for one differing matrix (or routed expert slice) hot-swapped in
+// place into the existing GPU weight buffer without changing device addresses.
+struct InklingVariantTensor {
+    enum class Role : std::uint8_t {
+        attn_output = 0,
+        ffn_down_expert = 1
+    };
+
+    std::size_t layer = 0;
+    Role role = Role::attn_output;
+    std::size_t expert = 0;
+    InklingMatrixDesc desc;
+};
+
+// Option A in-place variant swap tier chosen from spare memory headroom:
+//  - gpu_dual_buffer: both variants' differing SoA tensors stay in VRAM (~5 ms D2D).
+//  - pinned_host_ram: both variants' differing SoA tensors stay in pinned RAM (~200-400
+//  ms H2D).
+//  - stream_repack: streams differing tensors from disk and repacks in-place (0 extra
+//  cache).
+enum class InklingSwapTier : std::uint8_t {
+    gpu_dual_buffer = 0,
+    pinned_host_ram = 1,
+    stream_repack = 2
+};
+
+inline InklingSwapTier select_inkling_swap_tier(
+    std::size_t delta_bytes,
+    std::size_t spare_vram_bytes,
+    std::size_t spare_host_ram_bytes
+) {
+    constexpr std::size_t vram_headroom = 512ULL << 20;
+    constexpr std::size_t host_headroom = 2ULL << 30;
+    if (delta_bytes > 0
+        && delta_bytes <= (std::numeric_limits<std::size_t>::max() - vram_headroom) / 2
+        && spare_vram_bytes >= 2 * delta_bytes + vram_headroom) {
+        return InklingSwapTier::gpu_dual_buffer;
+    }
+    if (delta_bytes > 0
+        && delta_bytes <= (std::numeric_limits<std::size_t>::max() - host_headroom) / 2
+        && spare_host_ram_bytes >= 2 * delta_bytes + host_headroom) {
+        return InklingSwapTier::pinned_host_ram;
+    }
+    return InklingSwapTier::stream_repack;
+}
 
 // Pure-C++ scratch sizing helper (unit-testable without CUDA).
 // Computes the required scratch arena bytes on the single state device for
@@ -183,19 +231,35 @@ public:
     virtual void reset() = 0;
 
     // Copies the 40 active FP16 SWA windows and 48 F32 short-conv states on GPU
-    // (D2D) into boundary slot `slot_idx` (< n_gpu_boundary_slots) at `valid_tokens`.
+    // (D2D) into boundary slot `slot_idx` (< n_gpu_boundary_slots) at `valid_tokens`,
+    // tagged with `variant_id` so boundaries never leak across weight variants.
     virtual void save_boundary(
         unsigned /*slot_idx*/,
         std::size_t /*valid_tokens*/,
+        std::uint32_t /*variant_id*/,
         const std::atomic_bool& /*cancel*/
-    ) {}
+    ) {
+    }
 
     // Restores GPU state to `boundary_tokens` from boundary slot `slot_idx` D2D,
     // rewinding the 8 full-attention KV mirrors in place (0 bytes copied).
-    // Returns false if the GPU snapshot or live full-attention mirrors are absent.
+    // Returns false if the GPU snapshot or live full-attention mirrors are absent
+    // or belong to a different weight variant.
     virtual bool restore_boundary(
         unsigned /*slot_idx*/,
         std::size_t /*boundary_tokens*/,
+        std::uint32_t /*variant_id*/,
+        const std::atomic_bool& /*cancel*/
+    ) {
+        return false;
+    }
+
+    // Hot-swaps the differing variant tensors in place into the existing GPU
+    // buffers (`wo`, `d_down_ptrs`), preserving all device addresses and keeping
+    // any captured single-token decode CUDA Graph valid.
+    virtual bool swap_variant(
+        std::uint32_t /*variant_id*/,
+        std::span<const InklingVariantTensor> /*target_tensors*/,
         const std::atomic_bool& /*cancel*/
     ) {
         return false;

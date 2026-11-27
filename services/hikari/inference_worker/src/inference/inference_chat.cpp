@@ -6,6 +6,7 @@
 #include "kadan/chat_prompt.hpp"
 #include "kadan/gguf_text.hpp"
 #include "kadan/inference_engines.hpp"
+#include "kadan/inkling_variant.hpp"
 #include "kadan/preparation.hpp"
 #include "kadan/text_decision.hpp"
 #include "kadan/text_tokenizer.hpp"
@@ -91,9 +92,15 @@ public:
         // Remaining host memory holds weight slices that do not fit in VRAM.
         layout.cache =
             std::min<Bytes>(layout.packed, available[0] - layout.host - headroom);
+        const auto variant = inkling_model_variant(request.model);
+        const std::string initial_variant =
+            variant ? std::string(inkling_variant_name(*variant)) : std::string();
         model_ = std::make_unique<text::Engine>(
-            root.c_str(), layout, plan, resources_, &cancel
+            root.c_str(), layout, plan, resources_, &cancel, initial_variant
         );
+        model_id_ = request.model;
+        checkpoint_ = request.configuration.checkpoint;
+        last_weight_swap_ms_ = 0.0;
         tokenizer_ = std::make_unique<text::Tokenizer>(resources_, Workload::llm);
         tokenizer_identity_ =
             checkpoint::GgufMetadata::file_identity(root + "/tokenizer.json");
@@ -106,6 +113,47 @@ public:
             tokenizer_->added_token_id("<|content_invoke_tool_json|>");
         id_end_message_ = tokenizer_->added_token_id("<|end_message|>");
         id_image_placeholder_ = tokenizer_->added_token_id("<|unused_200054|>");
+    }
+
+    bool try_hot_swap(
+        const InferenceRequest& request,
+        const Footprint&,
+        const std::atomic_bool& cancel
+    ) override {
+        if (!model_ || request.configuration.context_limit != capacity_)
+            return false;
+        if (request.model == model_id_
+            && request.configuration.checkpoint == checkpoint_) {
+            last_weight_swap_ms_ = 0.0;
+            return true;
+        }
+        if (!inkling_hot_swap_compatible(model_id_, request.model))
+            return false;
+        const auto target_variant = inkling_model_variant(request.model);
+        if (!target_variant)
+            return false;
+        const auto target_root = request.configuration.checkpoint;
+        const auto old_tok = checkpoint_ / "tokenizer.json";
+        const auto new_tok = target_root / "tokenizer.json";
+        if (old_tok != new_tok) {
+            constexpr std::size_t max_tokenizer_bytes = 64ULL * 1024 * 1024;
+            if (read_bytes(old_tok, max_tokenizer_bytes)
+                != read_bytes(new_tok, max_tokenizer_bytes))
+                return false;
+        }
+        model_->set_cancel(cancel);
+        if (!model_->switch_variant(
+                target_root.string().c_str(),
+                inkling_variant_name(*target_variant),
+                cancel
+            ))
+            return false;
+        model_id_ = request.model;
+        checkpoint_ = target_root;
+        tokenizer_identity_ = checkpoint::GgufMetadata::file_identity(new_tok.string());
+        last_weight_swap_ms_ = model_->last_weight_swap_ms();
+        restored_ = false;
+        return true;
     }
 
     void prepare(
@@ -462,6 +510,7 @@ public:
             };
         }
         const double cache_restore_ms = model_->last_cache_restore_ms();
+        const double weight_swap_ms = std::exchange(last_weight_swap_ms_, 0.0);
         restored_ = false;
         std::vector<std::uint32_t>().swap(prompt_);
         request_memory_.reset();
@@ -492,6 +541,7 @@ public:
                   {"prefill_ms", Json(prefill_ms)},
                   {"image_encode_ms", Json(image_encode_ms)},
                   {"cache_restore_ms", Json(cache_restore_ms)},
+                  {"weight_swap_ms", Json(weight_swap_ms)},
                   {"reasoning_ms", Json(reasoning_ms)},
                   {"thinking_tokens", thinking_tokens},
                   {"output_tokens", generated},
@@ -656,6 +706,7 @@ private:
                 )
             );
         }
+        last_weight_swap_ms_ = 0.0;
         return answers;
     }
 
@@ -667,6 +718,9 @@ private:
     };
 
     bool restored_ = false;
+    std::string model_id_;
+    fs::path checkpoint_;
+    double last_weight_swap_ms_ = 0.0;
     WeightIdentity tokenizer_identity_;
     std::size_t prompt_tokens_ = 0, reused_tokens_ = 0;
     std::shared_ptr<Resources> resources_;

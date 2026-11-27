@@ -67,3 +67,18 @@ class DecisionRouteTests(unittest.IsolatedAsyncioTestCase):
                     model_id=model,
                 )
             self.assertEqual(error.exception.errors()[0]["type"], "extra_forbidden")
+
+    def test_weight_variant_is_accepted_and_validated(self):
+        for variant in ("base", "abliterated"):
+            body = DecisionRequest(
+                state="text",
+                questions=[{"type": "Noul", "key": "q", "instructions": "True?"}],
+                weight_variant=variant,
+            )
+            self.assertEqual(body.weight_variant, variant)
+        with self.assertRaises(ValidationError):
+            DecisionRequest(
+                state="text",
+                questions=[{"type": "Noul", "key": "q", "instructions": "True?"}],
+                weight_variant="invalid",
+            )

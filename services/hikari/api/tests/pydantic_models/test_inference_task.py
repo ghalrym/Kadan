@@ -5,6 +5,8 @@ from pydantic import ValidationError
 from api.pydantic_models.inference_task import (
     InferenceTask,
     TranscriptionFormattingTask,
+    resolve_inkling_variant_model,
+    same_inkling_precision_family,
 )
 
 
@@ -71,6 +73,63 @@ class InferenceTaskTests(unittest.TestCase):
         ):
             with self.subTest(value=value), self.assertRaises(ValidationError):
                 InferenceTask.model_validate(value)
+
+    def test_weight_variant_round_trips_and_resolves_precision_family(self):
+        chat_task = InferenceTask(
+            operation="completion",
+            input={
+                "feature": "llm",
+                "messages": [{"role": "user", "text": "Hello"}],
+                "weight_variant": "base",
+            },
+        )
+        restored = InferenceTask.model_validate_json(chat_task.model_dump_json())
+        self.assertEqual(restored.input.weight_variant, "base")
+
+        dec_task = InferenceTask(
+            input={
+                "feature": "decisions",
+                "state": "Example",
+                "questions": [],
+                "weight_variant": "abliterated",
+            }
+        )
+        self.assertEqual(
+            InferenceTask.model_validate_json(
+                dec_task.model_dump_json()
+            ).input.weight_variant,
+            "abliterated",
+        )
+
+        with self.assertRaises(ValidationError):
+            InferenceTask(
+                operation="completion",
+                input={
+                    "feature": "llm",
+                    "messages": [{"role": "user", "text": "Hello"}],
+                    "model": "inkling-2-mini-abliterated-iq4-nl",
+                    "weight_variant": "base",
+                },
+            )
+
+        self.assertEqual(
+            resolve_inkling_variant_model("inkling-2-mini-abliterated-iq4-nl", "base"),
+            "inkling-2-mini-iq4-nl",
+        )
+        self.assertEqual(
+            resolve_inkling_variant_model("inkling-2-mini-q8-0", "abliterated"),
+            "inkling-2-mini-abliterated-q8-0",
+        )
+        self.assertTrue(
+            same_inkling_precision_family(
+                "inkling-2-mini-iq4-nl", "inkling-2-mini-abliterated-iq4-nl"
+            )
+        )
+        self.assertFalse(
+            same_inkling_precision_family(
+                "inkling-2-mini-iq4-nl", "inkling-2-mini-q8-0"
+            )
+        )
 
 
 class NativeTranscriptionFormattingLimitTests(unittest.TestCase):

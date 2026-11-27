@@ -362,6 +362,31 @@ void placement() {
         many.use({"experts", e}, 10);
     const auto large = many.stats();
     check(large.device == 1000 && large.device_slices == 100, "placement_many");
+
+    // Strata variant swap evicts only differing tensors while keeping shared
+    // matrices and experts resident across both VRAM and RAM tiers.
+    Placement swap(8);
+    swap.budgets(100, 100);
+    check(swap.use({"blk.8.attn_output.weight", 0}, 30, true).device, "swap_ao");
+    check(swap.use({"blk.8.attn_q.weight", 0}, 30, true).device, "swap_shared_q");
+    check(swap.use({"blk.6.ffn_down_exps.weight", 0}, 40, false).device, "swap_dn0");
+    check(swap.use({"blk.6.ffn_down_exps.weight", 1}, 40, false).ram, "swap_dn1");
+    check(swap.use({"blk.6.ffn_gate_up_exps.weight", 0}, 40, false).ram, "swap_gu0");
+    const auto ev_ao = swap.evict_tensor("blk.8.attn_output.weight");
+    check(
+        ev_ao.device_evicted.size() == 1 && ev_ao.ram_evicted.empty(), "swap_evict_ao"
+    );
+    const auto ev_dn = swap.evict_tensor("blk.6.ffn_down_exps.weight");
+    check(
+        ev_dn.device_evicted.size() == 1 && ev_dn.ram_evicted.size() == 1,
+        "swap_evict_dn"
+    );
+    const auto after_swap = swap.stats();
+    check(
+        after_swap.device == 30 && after_swap.device_slices == 1 && after_swap.ram == 40
+            && after_swap.ram_slices == 1,
+        "swap_shared_retained"
+    );
 }
 
 void activations() {

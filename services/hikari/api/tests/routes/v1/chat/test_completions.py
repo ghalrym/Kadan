@@ -403,3 +403,58 @@ class SubscriptionCompletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.thinking_tokens, 24)
         self.assertEqual(record.cache_restore_ms, 42.5)
 
+    def test_weight_variant_validation_and_swap_telemetry(self):
+        from api.pydantic_models.inference_task import ChatTask
+        from api.pydantic_models.requests import RequestRecord
+        from api.routes.v1.chat.completions import observe_generation
+
+        for variant in ("base", "abliterated"):
+            body = CompletionRequest(
+                messages=[{"role": "user", "content": "Hello"}],
+                weight_variant=variant,
+            )
+            self.assertEqual(body.weight_variant, variant)
+            task = ChatTask(**body.model_dump())
+            self.assertEqual(task.weight_variant, variant)
+
+        # Consistent model + weight_variant is accepted.
+        consistent = CompletionRequest(
+            messages=[{"role": "user", "content": "Hello"}],
+            model="inkling-2-mini-iq4-nl",
+            weight_variant="base",
+        )
+        self.assertEqual(consistent.weight_variant, "base")
+
+        # Conflicting model + weight_variant is rejected.
+        with self.assertRaises(ValidationError):
+            CompletionRequest(
+                messages=[{"role": "user", "content": "Hello"}],
+                model="inkling-2-mini-iq4-nl",
+                weight_variant="abliterated",
+            )
+
+        # Unknown weight_variant is rejected.
+        with self.assertRaises(ValidationError):
+            CompletionRequest(
+                messages=[{"role": "user", "content": "Hello"}],
+                weight_variant="uncensored",
+            )
+
+        measurement = {}
+        observe_generation(measurement, {"timing": {"weight_swap_ms": 215.4}})
+        self.assertEqual(measurement["weight_swap_ms"], 215.4)
+        record = RequestRecord(
+            id="req_swap",
+            time="2026-11-27T00:00:00Z",
+            type="LLM",
+            status=200,
+            latency="0.500 s",
+            latency_ms=500.0,
+            endpoint="/v1/chat/completions",
+            prompt="1 message",
+            output="HTTP 200",
+            request_bytes=10,
+            response_bytes=20,
+            **measurement,
+        )
+        self.assertEqual(record.weight_swap_ms, 215.4)

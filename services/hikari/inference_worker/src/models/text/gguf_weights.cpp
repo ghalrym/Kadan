@@ -9,6 +9,7 @@
 #include "cpu_matvec.hpp"
 #include "gguf_model.hpp"
 #include "kadan/gguf_quantization.hpp"
+#include "kadan/inkling_variant.hpp"
 #include "kadan/weight_inventory.hpp"
 
 namespace kadan::text {
@@ -248,16 +249,17 @@ void GgufWeights::place(
         std::vector<WeightIdentity> released;
         released.reserve(decision.device_evicted.size());
         for (const auto& slice : decision.device_evicted)
-            released.push_back(gguf_->identity(slice.tensor, slice.expert));
+            released.push_back(tensor_identity(slice.tensor, slice.expert));
         compute.release_weights(released);
     }
     for (const auto& slice : decision.ram_evicted)
         ram_.erase(slice);
     if (decision.ram && !ram_.contains(key)) {
         const auto& m = matrices_.at(key.tensor);
+        const auto& source_gguf = tensor_checkpoint(key.tensor);
         std::vector<std::byte> slice(bytes);
-        gguf_->read_packed_rows(key.tensor, key.expert, 0, slice, *cancel_);
-        if (gguf_->tensor(key.tensor).type == 0) {
+        source_gguf.read_packed_rows(key.tensor, key.expert, 0, slice, *cancel_);
+        if (source_gguf.tensor(key.tensor).type == 0) {
             const std::span values(
                 reinterpret_cast<const float*>(slice.data()), m.rows * m.columns
             );
@@ -289,7 +291,7 @@ std::vector<Vec> GgufWeights::project(
 ) const {
     check_cancel();
     const auto started = std::chrono::steady_clock::now();
-    gguf_->check_unchanged();
+    check_unchanged();
 
     struct Prepared {
         const Matrix* matrix;
@@ -314,7 +316,8 @@ std::vector<Vec> GgufWeights::project(
                 && request.expert < m.experts,
             "gguf_text_projection_shape"
         );
-        const auto& tensor = gguf_->tensor(request.name);
+        const auto& source_gguf = tensor_checkpoint(request.name);
+        const auto& tensor = source_gguf.tensor(request.name);
         need(tensor.type == 0 || gguf::encoding(tensor.type), "gguf_text_encoding");
         SliceKey key{request.name, request.expert};
         const Bytes bytes = tensor.bytes / m.experts;
@@ -337,12 +340,14 @@ std::vector<Vec> GgufWeights::project(
                     to.data(), cached->second.data() + first * row_bytes, to.size()
                 );
             else
-                gguf_->read_packed_rows(key.tensor, key.expert, first, to, *cancel_);
+                tensor_checkpoint(key.tensor)
+                    .read_packed_rows(key.tensor, key.expert, first, to, *cancel_);
         };
         auto identity = identities_.find(key);
         if (identity == identities_.end())
             identity =
-                identities_.emplace(key, gguf_->identity(request.name, request.expert))
+                identities_
+                    .emplace(key, source_gguf.identity(request.name, request.expert))
                     .first;
         prepared.push_back(
             {&m,
@@ -596,7 +601,7 @@ std::vector<Vec> GgufWeights::project(
         need(projection_output_finite(result, output), "gguf_text_nonfinite");
     }
     // Resident rows remain valid only while every file is unchanged.
-    gguf_->check_unchanged();
+    check_unchanged();
     timing_.projection +=
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started)
             .count();
@@ -620,8 +625,105 @@ void GgufWeights::parallel(
     workers_->run(count, body);
 }
 
+const checkpoint::GgufCheckpoint&
+GgufWeights::tensor_checkpoint(std::string_view name) const {
+    return (variant_gguf_ && is_inkling_variant_tensor(name)) ? *variant_gguf_ : *gguf_;
+}
+
+WeightIdentity
+GgufWeights::tensor_identity(const std::string& name, std::size_t expert) const {
+    SliceKey key{name, expert};
+    auto it = identities_.find(key);
+    if (it != identities_.end())
+        return it->second;
+    const auto& source_gguf = tensor_checkpoint(name);
+    return identities_.emplace(std::move(key), source_gguf.identity(name, expert))
+        .first->second;
+}
+
 void GgufWeights::check_unchanged() const {
     gguf_->check_unchanged();
+    if (variant_gguf_)
+        variant_gguf_->check_unchanged();
+}
+
+std::unique_ptr<checkpoint::GgufCheckpoint> GgufWeights::prepare_variant_checkpoint(
+    const char* target_root, const std::atomic_bool& cancel
+) const {
+    if (!target_root || !*target_root)
+        return {};
+    auto target = std::make_unique<checkpoint::GgufCheckpoint>(target_root, cancel);
+    if (target->has("prism.hadamard.sign_values"))
+        return {};
+    if (target->string("general.architecture") != gguf_->string("general.architecture")
+        || target->tensor_count() != gguf_->tensor_count())
+        return {};
+    std::uint64_t target_packed = 0;
+    for (std::size_t i = 0; i < gguf_->tensor_count(); ++i) {
+        const auto& base = gguf_->tensor_at(i);
+        const auto& cand = target->tensor_at(i);
+        if (base.name != cand.name || base.type != cand.type || base.rank != cand.rank
+            || base.shape != cand.shape || base.bytes != cand.bytes)
+            return {};
+        target_packed = checkpoint::weight_bytes_add(target_packed, cand.bytes);
+    }
+    if (target_packed != packed_)
+        return {};
+    // Verify small host-resident F32 vectors and tables (norms, clips, rel bias,
+    // conv weights, loop msg_query) are identical; any divergence requires full reload.
+    for (const auto& [name, count] : vectors_) {
+        Vec base_v(count), cand_v(count);
+        gguf_->read_vector(name, base_v, cancel);
+        target->read_vector(name, cand_v, cancel);
+        if (std::memcmp(base_v.data(), cand_v.data(), count * sizeof(float)) != 0)
+            return {};
+    }
+    for (const auto& [name, m] : matrices_) {
+        const std::size_t elems = m.rows * m.columns * m.experts;
+        if (m.experts != 1 || elems > (1ULL << 20))
+            continue;
+        const auto& t = gguf_->tensor(name);
+        if (t.type != 0 || is_inkling_variant_tensor(name))
+            continue;
+        Vec base_v(elems), cand_v(elems);
+        gguf_->read_rows(name, 0, 0, base_v, cancel);
+        target->read_rows(name, 0, 0, cand_v, cancel);
+        if (std::memcmp(base_v.data(), cand_v.data(), elems * sizeof(float)) != 0)
+            return {};
+    }
+    return target;
+}
+
+void GgufWeights::commit_variant_checkpoint(
+    std::unique_ptr<checkpoint::GgufCheckpoint> target, DenseCompute* strata_compute
+) {
+    if (strata_compute) {
+        std::vector<WeightIdentity> retired;
+        for (const auto& [name, m] : matrices_) {
+            if (!is_inkling_variant_tensor(name))
+                continue;
+            const auto evicted = placement_.evict_tensor(name);
+            for (const auto& slice : evicted.device_evicted)
+                retired.push_back(tensor_identity(slice.tensor, slice.expert));
+            for (const auto& slice : evicted.ram_evicted)
+                ram_.erase(slice);
+            for (std::size_t e = 0; e < m.experts; ++e) {
+                SliceKey key{name, e};
+                ram_.erase(key);
+                identities_.erase(key);
+            }
+        }
+        if (!retired.empty())
+            strata_compute->release_weights(retired);
+    } else {
+        for (const auto& [name, m] : matrices_) {
+            if (!is_inkling_variant_tensor(name))
+                continue;
+            for (std::size_t e = 0; e < m.experts; ++e)
+                identities_.erase(SliceKey{name, e});
+        }
+    }
+    variant_gguf_ = std::move(target);
 }
 
 InklingMatrixDesc GgufWeights::describe_matrix(
@@ -631,19 +733,19 @@ InklingMatrixDesc GgufWeights::describe_matrix(
     need(it != matrices_.end(), "gguf_text_missing_matrix");
     const auto& m = it->second;
     need(expert < m.experts, "gguf_text_projection_shape");
-    const auto& tensor = gguf_->tensor(name);
+    const auto& source_gguf = tensor_checkpoint(name);
+    const auto& tensor = source_gguf.tensor(name);
     need(tensor.type == 0 || gguf::encoding(tensor.type), "gguf_text_encoding");
     const Bytes bytes = tensor.bytes / m.experts;
     const std::size_t row_bytes = bytes / m.rows;
     SliceKey key{name, expert};
-    auto id_it = identities_.find(key);
-    if (id_it == identities_.end())
-        id_it = identities_.emplace(key, gguf_->identity(name, expert)).first;
+    const auto id = tensor_identity(name, expert);
     auto source = [this, key](std::size_t first, std::span<std::byte> to) {
-        gguf_->read_packed_rows(key.tensor, key.expert, first, to, *cancel_);
+        tensor_checkpoint(key.tensor)
+            .read_packed_rows(key.tensor, key.expert, first, to, *cancel_);
     };
     return InklingMatrixDesc{
-        id_it->second,
+        id,
         tensor.type == 0 ? std::nullopt : gguf::encoding(tensor.type),
         m.columns,
         m.rows,

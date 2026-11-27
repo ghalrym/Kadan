@@ -1194,10 +1194,83 @@ public:
 
     ~CudaDeviceOperations() override {
         try {
+            release_variant_slabs();
             destroy_inkling_runtime();
             release_mirrors();
         } catch (...) {
         }
+    }
+
+    struct VariantSlab {
+        unsigned char* data = nullptr;
+        Bytes bytes = 0;
+        Handle reservation = 0;
+        bool is_host = false;
+    };
+
+    std::array<VariantSlab, 2> inkling_variant_slabs{};
+
+    Bytes spare_vram_bytes() const {
+        const auto snapshot = ledger_.snapshot();
+        const auto at = std::size_t(device_) + 1;
+        const Bytes growth =
+            scratch_limit > scratch_bytes ? scratch_limit - scratch_bytes : 0;
+        const Bytes ledger_free =
+            snapshot.capacity[at] > snapshot.used[at] + growth
+                ? snapshot.capacity[at] - snapshot.used[at] - growth
+                : 0;
+        return std::min(ledger_free, physical_available_bytes());
+    }
+
+    Bytes spare_host_bytes() const {
+        const auto snapshot = ledger_.snapshot();
+        return snapshot.capacity[0] > snapshot.used[0]
+                   ? snapshot.capacity[0] - snapshot.used[0]
+                   : 0;
+    }
+
+    bool allocate_variant_slab(std::size_t slot, Bytes bytes, bool host) {
+        if (slot >= inkling_variant_slabs.size() || !bytes)
+            return false;
+        release_variant_slab(inkling_variant_slabs[slot]);
+        const auto snapshot = ledger_.snapshot();
+        const auto index = host ? std::size_t(0) : std::size_t(device_) + 1;
+        if (index >= snapshot.capacity.size()
+            || snapshot.used[index] + bytes > snapshot.capacity[index])
+            return false;
+        if (!host && bytes > physical_available_bytes())
+            return false;
+        auto footprint = snapshot.capacity;
+        std::fill(footprint.begin(), footprint.end(), 0);
+        footprint[index] = bytes;
+        Handle reservation = 0;
+        try {
+            reservation = ledger_.reserve(workload_, std::move(footprint));
+        } catch (const std::runtime_error&) {
+            return false;
+        }
+        void* ptr = nullptr;
+        const auto status = host ? cudaHostAlloc(&ptr, bytes, cudaHostAllocPortable)
+                                 : cudaMalloc(&ptr, bytes);
+        if (status != cudaSuccess) {
+            cudaGetLastError();
+            ledger_.released(reservation);
+            if (status != cudaErrorMemoryAllocation)
+                checked(status);
+            return false;
+        }
+        ledger_.loaded(reservation);
+        ledger_.pin(reservation);
+        inkling_variant_slabs[slot] = {
+            static_cast<unsigned char*>(ptr), bytes, reservation, host
+        };
+        return true;
+    }
+
+    void release_variant_slabs() {
+        sync_inkling_stream();
+        for (auto& slab : inkling_variant_slabs)
+            release_variant_slab(slab);
     }
 
     struct InklingGraphKey {
@@ -1393,6 +1466,22 @@ private:
         return free > remaining ? free - remaining : 0;
     }
 
+    void release_variant_slab(VariantSlab& slab) {
+        if (slab.data) {
+            checked(cuda_trace::synchronize(cudaStreamLegacy));
+            if (slab.is_host)
+                checked(cudaFreeHost(slab.data));
+            else
+                checked(cudaFree(slab.data));
+        }
+        if (slab.reservation) {
+            ledger_.unpin(slab.reservation);
+            ledger_.begin_eviction(slab.reservation);
+            ledger_.released(slab.reservation);
+        }
+        slab = {};
+    }
+
     void release_recurrent(Recurrent& r) {
         if (r.data) {
             checked(cuda_trace::synchronize(cudaStreamLegacy));
@@ -1475,6 +1564,7 @@ public:
     }
 
     void release_weights() override {
+        release_variant_slabs();
         release_mirrors();
         weights.release();
     }

@@ -686,3 +686,62 @@ def test_hikari_chat_model_rejects_invalid_reasoning_and_token_caps(kwargs):
                 )
 
     asyncio.run(check())
+
+
+def test_weight_variant_and_task_class_routing():
+    from kadan.runner.agent_inference import resolve_task_weight_variant
+
+    assert resolve_task_weight_variant() is None
+    assert resolve_task_weight_variant(task_class="persona_chat") == "abliterated"
+    assert resolve_task_weight_variant(task_class="harness") == "base"
+    assert resolve_task_weight_variant(weight_variant="base") == "base"
+    assert (
+        resolve_task_weight_variant(task_class="harness", weight_variant="base")
+        == "base"
+    )
+    with pytest.raises(ValueError, match="conflicts with"):
+        resolve_task_weight_variant(task_class="harness", weight_variant="abliterated")
+
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        if request.url.path == "/v1/decisions":
+            return httpx.Response(
+                200,
+                json={"answers": [{"key": "ready", "value": 0.9}]},
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=(
+                'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
+                "data: [DONE]\n\n"
+            ),
+        )
+
+    async def check():
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            inference = AgentInference(client, "http://hikari")
+            await inference.complete_text(
+                [HumanMessage(content="code")],
+                None,
+                task_class="harness",
+            )
+            await inference.complete_text(
+                [HumanMessage(content="chat")],
+                None,
+                task_class="persona_chat",
+            )
+            scores = await inference.evaluate_decisions(
+                "Choose",
+                [{"key": "ready", "instructions": "Ready?"}],
+                task_class="harness",
+            )
+            assert scores == {"ready": 0.9}
+
+    asyncio.run(check())
+    assert seen[0]["weight_variant"] == "base"
+    assert seen[1]["weight_variant"] == "abliterated"
+    assert seen[2]["weight_variant"] == "base"

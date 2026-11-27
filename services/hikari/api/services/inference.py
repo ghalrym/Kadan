@@ -16,6 +16,7 @@ from api.pydantic_models.inference_task import (
     AudioCallTask,
     DownloadTask,
     InferenceTask,
+    same_inkling_precision_family,
 )
 from api.pydantic_models.model_store import (
     DownloadObservation,
@@ -163,7 +164,12 @@ class InferenceService:
                 worker
                 for worker in workers
                 if worker.residency_known
-                and getattr(worker, "resident_model", None) == model_id
+                and (
+                    getattr(worker, "resident_model", None) == model_id
+                    or same_inkling_precision_family(
+                        getattr(worker, "resident_model", None), model_id
+                    )
+                )
             ),
             None,
         )

@@ -64,10 +64,14 @@ public:
         tokens_.reserve(capacity);
     }
 
-    std::size_t
-    begin(std::span<const unsigned> prompt, std::string_view conversation, bool reuse) {
+    std::size_t begin(
+        std::span<const unsigned> prompt,
+        std::string_view conversation,
+        bool reuse,
+        std::string_view variant = {}
+    ) {
         const bool hit = valid_ && reuse && !conversation.empty()
-                         && conversation == conversation_
+                         && conversation == conversation_ && variant == variant_
                          && tokens_.size() < prompt.size()
                          && std::equal(tokens_.begin(), tokens_.end(), prompt.begin());
         reason_ = !reuse ? "disabled" : hit ? "hit" : "miss";
@@ -75,6 +79,7 @@ public:
         if (!hit)
             tokens_.clear();
         conversation_ = conversation;
+        variant_ = variant;
         retain_ = reuse && !conversation.empty();
         valid_ = false;
         return reused;
@@ -104,11 +109,13 @@ public:
     void clear() {
         tokens_.clear();
         conversation_.clear();
+        variant_.clear();
         retain_ = valid_ = false;
     }
 
     std::size_t memory_bytes() const {
-        return tokens_.capacity() * sizeof(unsigned) + conversation_.capacity();
+        return tokens_.capacity() * sizeof(unsigned) + conversation_.capacity()
+               + variant_.capacity();
     }
 
     bool retaining() const {
@@ -124,6 +131,10 @@ public:
         return conversation_;
     }
 
+    std::string_view variant() const {
+        return variant_;
+    }
+
     std::size_t stored() const {
         return valid_ ? tokens_.size() : 0;
     }
@@ -136,6 +147,7 @@ private:
     std::size_t capacity_;
     std::vector<unsigned> tokens_;
     std::string conversation_;
+    std::string variant_;
     std::string_view reason_ = "miss";
     bool retain_ = false, valid_ = false;
 };
@@ -143,11 +155,13 @@ private:
 // Bounded LRU pool of compacted model checkpoints. Holds both per-conversation
 // checkpoints (live snapshots on conversation switch and leading-turn boundaries)
 // and cross-conversation static prefixes (e.g. identical system prompt + tools
-// with zero images). Total retained memory never exceeds `budget_bytes`.
+// with zero images), isolated by active weight variant. Total retained memory
+// never exceeds `budget_bytes`.
 class CheckpointPool {
 public:
     struct Entry {
         std::string conversation;
+        std::string variant;
         bool is_static = false;
         std::vector<unsigned> tokens;
         std::vector<ImageTag> images;
@@ -195,7 +209,8 @@ public:
         bool is_static,
         std::span<const unsigned> tokens,
         std::span<const ImageTag> images,
-        ModelState state
+        ModelState state,
+        std::string_view variant = {}
     ) {
         if (!budget_bytes_ || tokens.empty())
             return false;
@@ -206,6 +221,7 @@ public:
 
         Entry entry;
         entry.conversation = is_static ? std::string() : std::string(conversation);
+        entry.variant = std::string(variant);
         entry.is_static = is_static;
         entry.tokens.assign(tokens.begin(), tokens.end());
         entry.images = images_within_prefix(images, tokens.size());
@@ -213,17 +229,17 @@ public:
         entry.bytes = state_memory_bytes(entry.state)
                       + entry.tokens.capacity() * sizeof(unsigned)
                       + entry.images.capacity() * sizeof(ImageTag)
-                      + entry.conversation.capacity();
+                      + entry.conversation.capacity() + entry.variant.capacity();
         entry.last_used = ++clock_;
 
         if (entry.bytes > budget_bytes_)
             return false;
 
-        // Deduplicate exact matches (same scope + tokens + images).
+        // Deduplicate exact matches (same scope + variant + tokens + images).
         for (auto it = entries_.begin(); it != entries_.end(); ++it) {
             if (it->is_static == entry.is_static
                 && it->conversation == entry.conversation
-                && it->tokens == entry.tokens
+                && it->variant == entry.variant && it->tokens == entry.tokens
                 && it->images == entry.images) {
                 used_bytes_ -= it->bytes;
                 entries_.erase(it);
@@ -231,13 +247,14 @@ public:
             }
         }
 
-        // Keep at most 2 checkpoints per conversation (boundary + live) so one
-        // conversation does not evict other active conversations unnecessarily.
+        // Keep at most 2 checkpoints per (conversation, variant) (boundary + live)
+        // so one conversation does not evict other active conversations unnecessarily.
         if (!is_static) {
             std::size_t count = 0;
             auto oldest = entries_.end();
             for (auto it = entries_.begin(); it != entries_.end(); ++it) {
-                if (!it->is_static && it->conversation == entry.conversation) {
+                if (!it->is_static && it->conversation == entry.conversation
+                    && it->variant == entry.variant) {
                     ++count;
                     if (oldest == entries_.end() || it->last_used < oldest->last_used)
                         oldest = it;
@@ -272,10 +289,13 @@ public:
     const Entry* find_best(
         std::span<const unsigned> prompt,
         std::string_view conversation,
-        std::span<const ImageTag> prompt_images = {}
+        std::span<const ImageTag> prompt_images = {},
+        std::string_view variant = {}
     ) {
         Entry* best = nullptr;
         for (auto& entry : entries_) {
+            if (entry.variant != variant)
+                continue;
             if (entry.tokens.size() >= prompt.size())
                 continue;
             if (!std::equal(entry.tokens.begin(), entry.tokens.end(), prompt.begin()))

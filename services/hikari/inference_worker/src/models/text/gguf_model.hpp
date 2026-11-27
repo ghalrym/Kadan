@@ -182,12 +182,33 @@ public:
         const std::string& name, std::size_t expert = 0
     ) const;
 
+    // Active checkpoint backing `name` (shared base gguf_ or swapped variant_gguf_).
+    const checkpoint::GgufCheckpoint& tensor_checkpoint(std::string_view name) const;
+    WeightIdentity
+    tensor_identity(const std::string& name, std::size_t expert = 0) const;
+
+    // Opens and validates a candidate companion variant checkpoint (same
+    // architecture, tensor layout, quant types, and immutable small params).
+    // Returns nullptr if incompatible (caller falls back to full reload).
+    std::unique_ptr<checkpoint::GgufCheckpoint> prepare_variant_checkpoint(
+        const char* target_root, const std::atomic_bool& cancel
+    ) const;
+
+    // Commits a validated companion variant checkpoint for the differing tensors.
+    // When `strata_compute` is non-null (Strata tiered fallback), retires old
+    // differing slices from GPU DeviceWeights, Placement, and host RAM while
+    // keeping all shared weights resident.
+    void commit_variant_checkpoint(
+        std::unique_ptr<checkpoint::GgufCheckpoint> target, DenseCompute* strata_compute
+    );
+
 private:
     struct Matrix {
         std::size_t rows, columns, experts;
     };
 
     std::unique_ptr<checkpoint::GgufCheckpoint> gguf_;
+    std::unique_ptr<checkpoint::GgufCheckpoint> variant_gguf_;
     std::map<std::string, Matrix, std::less<>> matrices_;
     std::map<std::string, std::size_t, std::less<>> vectors_;
     std::set<std::string, std::less<>> bound_;
@@ -314,10 +335,27 @@ public:
 
     // Optional GPU-resident boundary checkpoint save/rewind (zero full-attention
     // KV re-upload when rewinding a live GPU conversation to an earlier boundary).
-    virtual void save_gpu_boundary(unsigned /*slot_idx*/, std::size_t /*tokens*/) {}
+    virtual void save_gpu_boundary(
+        unsigned /*slot_idx*/, std::size_t /*tokens*/, std::uint32_t /*variant_id*/
+    ) {
+    }
 
     virtual bool try_rewind_gpu_boundary(
-        unsigned /*slot_idx*/, std::size_t /*boundary_tokens*/
+        unsigned /*slot_idx*/,
+        std::size_t /*boundary_tokens*/,
+        std::uint32_t /*variant_id*/
+    ) {
+        return false;
+    }
+
+    virtual bool has_gpu_executor() const {
+        return false;
+    }
+
+    virtual bool switch_variant(
+        std::uint32_t /*target_variant_id*/,
+        const checkpoint::GgufCheckpoint& /*target_gguf*/,
+        const std::atomic_bool& /*cancel*/
     ) {
         return false;
     }
@@ -348,6 +386,10 @@ std::size_t inkling2_loop_state_bytes(std::size_t context);
 // small resident layer parameters for a context across all logical slots.
 std::size_t inkling2_loop_device_state_bytes(std::size_t context);
 
-std::unique_ptr<Model>
-inkling2_loop_model(const GgufWeights&, DenseCompute&, std::size_t context);
+std::unique_ptr<Model> inkling2_loop_model(
+    const GgufWeights&,
+    DenseCompute&,
+    std::size_t context,
+    std::uint32_t initial_variant_id = 0
+);
 }  // namespace kadan::text

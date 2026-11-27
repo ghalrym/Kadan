@@ -38,6 +38,7 @@ class RequestRecord(BaseModel):
     prefill_ms: float | None = None
     image_encode_ms: float | None = None
     cache_restore_ms: float | None = None
+    weight_swap_ms: float | None = None
     reasoning_ms: float | None = None
     thinking_tokens: int | None = None
     decode_tokens_per_second: float | None = None

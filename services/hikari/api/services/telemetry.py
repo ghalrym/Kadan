@@ -243,6 +243,7 @@ class TelemetryMiddleware:
                             "prefill_ms",
                             "image_encode_ms",
                             "cache_restore_ms",
+                            "weight_swap_ms",
                             "reasoning_ms",
                             "thinking_tokens",
                             "decode_tokens_per_second",

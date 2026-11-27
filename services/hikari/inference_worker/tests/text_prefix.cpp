@@ -139,5 +139,50 @@ int main() {
     prefix.resume(sys_prefix, "static_prefix_hit");
     assert(prefix.reason() == "static_prefix_hit");
 
+    // Variant isolation: live Prefix and CheckpointPool (both per-conversation
+    // and static prefixes) never cross-hit across base vs abliterated weights.
+    Prefix var_prefix(16);
+    assert(var_prefix.begin(prompt, "conv-v", true, "abliterated") == 0);
+    var_prefix.commit(prompt);
+    var_prefix.commit(decoded);
+    var_prefix.complete();
+    assert(var_prefix.stored() == 3 && var_prefix.variant() == "abliterated");
+    // Same conversation + extending prompt under a different variant must miss.
+    assert(var_prefix.begin(extension, "conv-v", true, "base") == 0);
+    assert(var_prefix.reason() == "miss" && var_prefix.variant() == "base");
+    var_prefix.commit(extension);
+    var_prefix.complete();
+    assert(var_prefix.stored() == 4 && var_prefix.variant() == "base");
+
+    CheckpointPool var_pool(one_entry_bytes * 6);
+    assert(var_pool.save("", true, sys_prefix, {}, dummy_state(16), "base"));
+    assert(var_pool.save("", true, sys_prefix, {}, dummy_state(16), "abliterated"));
+    assert(
+        var_pool.save("conv-v", false, chat_turn1, {}, dummy_state(16), "abliterated")
+    );
+    assert(var_pool.save("conv-v", false, comp_turn1, {}, dummy_state(16), "base"));
+    // Lookup for "base" must never return "abliterated" conversation or static state.
+    const auto* base_conv_hit = var_pool.find_best(comp_turn2, "conv-v", {}, "base");
+    assert(
+        base_conv_hit && !base_conv_hit->is_static && base_conv_hit->variant == "base"
+        && base_conv_hit->tokens.size() == 5
+    );
+    const auto* ablit_conv_hit =
+        var_pool.find_best(chat_turn2, "conv-v", {}, "abliterated");
+    assert(
+        ablit_conv_hit && !ablit_conv_hit->is_static
+        && ablit_conv_hit->variant == "abliterated"
+        && ablit_conv_hit->tokens.size() == 5
+    );
+    // Asking for chat_turn2 under "base" cannot reuse "abliterated"'s conv checkpoint;
+    // it may only reuse the "base"-tagged static prefix.
+    const auto* cross_variant = var_pool.find_best(chat_turn2, "conv-v", {}, "base");
+    assert(
+        cross_variant && cross_variant->is_static && cross_variant->variant == "base"
+        && cross_variant->tokens.size() == 3
+    );
+    // Asking for an unknown variant gets zero hits (no cross-variant leak).
+    assert(var_pool.find_best(chat_turn2, "conv-v", {}, "other") == nullptr);
+
     std::cout << "Resident prefix and checkpoint pool units passed; no inference\n";
 }

@@ -2091,7 +2091,9 @@ public:
         StateRunner run_on_state,
         kadan::InklingGpuModelDesc desc
     )
-        : run_on_state_(std::move(run_on_state)), desc_(std::move(desc)) {
+        : run_on_state_(std::move(run_on_state)),
+          desc_(std::move(desc)),
+          active_variant_id_(desc_.initial_variant_id) {
         // Copy small host-side F32 parameter spans so desc_ remains self-contained
         // if re-uploaded after release_scratch(false) / release_devices().
         out_norm_.assign(desc_.out_norm.begin(), desc_.out_norm.end());
@@ -2127,6 +2129,21 @@ public:
                 desc_.loop_layers[i].msg_query.begin(),
                 desc_.loop_layers[i].msg_query.end()
             );
+        }
+    }
+
+    ~InklingGpuRunner() override {
+        try {
+            std::atomic_bool no_cancel{false};
+            run_on_state_(
+                no_cancel,
+                [&](DeviceWorkspace& ws, const std::atomic_bool&) {
+                    auto& arena =
+                        static_cast<CudaDeviceOperations&>(ws.operations());
+                    arena.release_variant_slabs();
+                }
+            );
+        } catch (...) {
         }
     }
 
@@ -2204,9 +2221,11 @@ public:
     void save_boundary(
         unsigned slot_idx,
         std::size_t valid_tokens,
+        std::uint32_t variant_id,
         const std::atomic_bool& cancel
     ) override {
-        if (slot_idx >= G::n_gpu_boundary_slots || !valid_tokens)
+        if (slot_idx >= G::n_gpu_boundary_slots || !valid_tokens
+            || variant_id != active_variant_id_)
             return;
         const std::size_t conv_floats = G::n_slots * G::n_conv_hist * G::n_conv_channels;
         const std::size_t boundary_bytes = kadan::inkling_gpu_boundary_bytes(desc_.context);
@@ -2298,7 +2317,7 @@ public:
                     }
                     ++swa_idx;
                 }
-                gpu_boundaries_[slot_idx] = {true, valid_tokens};
+                gpu_boundaries_[slot_idx] = {true, valid_tokens, variant_id};
             }
         );
     }
@@ -2306,12 +2325,15 @@ public:
     bool restore_boundary(
         unsigned slot_idx,
         std::size_t boundary_tokens,
+        std::uint32_t variant_id,
         const std::atomic_bool& cancel
     ) override {
         if (slot_idx >= G::n_gpu_boundary_slots || !boundary_tokens)
             return false;
         if (!gpu_boundaries_[slot_idx].valid
-            || gpu_boundaries_[slot_idx].tokens != boundary_tokens)
+            || gpu_boundaries_[slot_idx].tokens != boundary_tokens
+            || gpu_boundaries_[slot_idx].variant_id != variant_id
+            || active_variant_id_ != variant_id)
             return false;
 
         const std::size_t conv_floats = G::n_slots * G::n_conv_hist * G::n_conv_channels;
@@ -2422,6 +2444,292 @@ public:
             }
         );
         return restored;
+    }
+
+    bool swap_variant(
+        std::uint32_t target_variant_id,
+        std::span<const kadan::InklingVariantTensor> target_tensors,
+        const std::atomic_bool& cancel
+    ) override {
+        if (target_variant_id >= 2u || target_tensors.empty())
+            return false;
+        require(active_variant_id_ < 2u, "inkling_gpu_variant_corrupted");
+        if (target_variant_id == active_variant_id_)
+            return true;
+
+        struct SwapItem {
+            const kadan::InklingVariantTensor* src = nullptr;
+            unsigned char* dst = nullptr;
+            WeightKind kind = kWKindF32;
+            std::size_t bytes = 0;
+            std::size_t offset = 0;
+        };
+
+        bool swapped = false;
+        run_on_state_(
+            cancel,
+            [&](DeviceWorkspace& ws, const std::atomic_bool& failed) {
+                stop(cancel, failed);
+                auto& arena =
+                    static_cast<CudaDeviceOperations&>(ws.operations());
+                if (!ensure_weights_and_params(ws, cancel, failed))
+                    return;
+
+                std::vector<SwapItem> items;
+                items.reserve(target_tensors.size());
+                std::size_t total_delta_bytes = 0;
+                for (const auto& t : target_tensors) {
+                    if (t.layer >= G::n_phys)
+                        return;
+                    const auto kind = to_weight_kind(t.desc.encoding);
+                    if (!kind)
+                        return;
+                    const std::size_t bytes = t.desc.out * t.desc.row_bytes;
+                    if (!bytes || bytes > gguf_projection_staging_bytes)
+                        return;
+                    const auto& gl = gpu_layers_[t.layer];
+                    unsigned char* dst = nullptr;
+                    if (t.role == kadan::InklingVariantTensor::Role::attn_output) {
+                        if (gl.wo.kind != *kind || gl.wo.in != t.desc.in
+                            || gl.wo.out != t.desc.out || !gl.wo.qs)
+                            return;
+                        dst = const_cast<unsigned char*>(gl.wo.qs);
+                    } else if (
+                        t.role == kadan::InklingVariantTensor::Role::ffn_down_expert
+                    ) {
+                        if (t.expert >= G::n_experts || gl.down_kind != *kind
+                            || t.desc.in != G::n_ff_exp || t.desc.out != G::n_embd
+                            || !gl.down_ptrs[t.expert])
+                            return;
+                        dst = const_cast<unsigned char*>(gl.down_ptrs[t.expert]);
+                    } else {
+                        return;
+                    }
+                    items.push_back({&t, dst, *kind, bytes, total_delta_bytes});
+                    total_delta_bytes += bytes;
+                }
+
+                cudaStream_t stream = arena.ensure_inkling_stream();
+                arena.sync_inkling_stream();
+                checked(cuda_trace::synchronize(cudaStreamLegacy));
+
+                // Initialize Option A variant cache tier on first swap based on
+                // actual spare VRAM / host RAM headroom.
+                if (!variant_cache_initialized_) {
+                    auto tier = kadan::select_inkling_swap_tier(
+                        total_delta_bytes,
+                        arena.spare_vram_bytes(),
+                        arena.spare_host_bytes()
+                    );
+                    if (tier == kadan::InklingSwapTier::gpu_dual_buffer) {
+                        if (!arena.allocate_variant_slab(0, total_delta_bytes, false)
+                            || !arena.allocate_variant_slab(1, total_delta_bytes, false)) {
+                            arena.release_variant_slabs();
+                            tier = kadan::select_inkling_swap_tier(
+                                total_delta_bytes, 0, arena.spare_host_bytes()
+                            );
+                        }
+                    }
+                    if (tier == kadan::InklingSwapTier::pinned_host_ram) {
+                        if (!arena.allocate_variant_slab(0, total_delta_bytes, true)
+                            || !arena.allocate_variant_slab(1, total_delta_bytes, true)) {
+                            arena.release_variant_slabs();
+                            tier = kadan::InklingSwapTier::stream_repack;
+                        }
+                    }
+                    swap_tier_ = tier;
+                    variant_cache_initialized_ = true;
+
+                    if (swap_tier_ != kadan::InklingSwapTier::stream_repack) {
+                        const auto& cur_slab =
+                            arena.inkling_variant_slabs[active_variant_id_];
+                        const auto dir = cur_slab.is_host ? cudaMemcpyDeviceToHost
+                                                          : cudaMemcpyDeviceToDevice;
+                        for (const auto& item : items) {
+                            stop(cancel, failed);
+                            checked(cudaMemcpyAsync(
+                                cur_slab.data + item.offset,
+                                item.dst,
+                                item.bytes,
+                                dir,
+                                stream
+                            ));
+                        }
+                        checked(cudaStreamSynchronize(stream));
+                        variant_cached_[active_variant_id_] = true;
+                    }
+                }
+
+                // Isolate live KV/conv state and GPU boundaries across variants
+                // while keeping all buffer addresses and any captured decode
+                // CUDA Graph completely intact.
+                for (auto& b : gpu_boundaries_)
+                    b = {};
+                if (auto it = arena.recurrent.find(kInklingConvKey);
+                    it != arena.recurrent.end() && it->second.data) {
+                    checked(cudaMemsetAsync(
+                        it->second.data, 0, it->second.floats * sizeof(float), stream
+                    ));
+                }
+                for (std::size_t s = 0; s < G::n_slots; ++s) {
+                    if (auto it = arena.mirrors.find(s); it != arena.mirrors.end())
+                        it->second.valid = 0;
+                }
+
+                // Mark active variant dirty while overwriting live buffers so
+                // cancellation or failure forces full engine cleanup.
+                active_variant_id_ = ~std::uint32_t(0);
+
+                if (variant_cached_[target_variant_id]) {
+                    const auto& src_slab = arena.inkling_variant_slabs[target_variant_id];
+                    const auto dir = src_slab.is_host ? cudaMemcpyHostToDevice
+                                                      : cudaMemcpyDeviceToDevice;
+                    for (const auto& item : items) {
+                        stop(cancel, failed);
+                        checked(cudaMemcpyAsync(
+                            item.dst,
+                            src_slab.data + item.offset,
+                            item.bytes,
+                            dir,
+                            stream
+                        ));
+                    }
+                    checked(cudaStreamSynchronize(stream));
+                } else {
+                    constexpr std::size_t staging_bytes = gguf_projection_staging_bytes;
+                    constexpr std::size_t half_bytes = staging_bytes / 2;
+                    auto pinned = ws.host_staging(staging_bytes);
+                    Layout l;
+                    const auto off_status = l.add(sizeof(unsigned));
+                    const auto off_staged0 = l.add(half_bytes);
+                    const auto off_staged1 = l.add(half_bytes);
+                    ws.ensure(l.bytes);
+                    auto* d_status = arena.at<unsigned>(off_status);
+                    unsigned char* dev_half[2] = {
+                        arena.at<unsigned char>(off_staged0),
+                        arena.at<unsigned char>(off_staged1)
+                    };
+                    std::byte* pinned_half[2] = {
+                        pinned.data(), pinned.data() + half_bytes
+                    };
+                    checked(cudaMemsetAsync(d_status, 0, sizeof(unsigned), stream));
+
+                    struct Events {
+                        cudaEvent_t ev[2]{};
+                        ~Events() {
+                            for (auto e : ev)
+                                if (e)
+                                    cudaEventDestroy(e);
+                        }
+                    } events;
+                    for (auto& e : events.ev)
+                        checked(cudaEventCreateWithFlags(&e, cudaEventDisableTiming));
+                    bool ev_busy[2] = {false, false};
+                    auto wait_half = [&](unsigned p) {
+                        if (ev_busy[p]) {
+                            checked(cudaEventSynchronize(events.ev[p]));
+                            ev_busy[p] = false;
+                        }
+                    };
+
+                    const bool cache_target =
+                        swap_tier_ != kadan::InklingSwapTier::stream_repack;
+                    const auto& dst_slab = arena.inkling_variant_slabs[target_variant_id];
+                    const auto cache_dir = dst_slab.is_host ? cudaMemcpyDeviceToHost
+                                                            : cudaMemcpyDeviceToDevice;
+                    unsigned step = 0;
+                    for (const auto& item : items) {
+                        stop(cancel, failed);
+                        const auto& m = item.src->desc;
+                        unsigned p = 0;
+                        std::span<std::byte> host_buf;
+                        unsigned char* dev_src = nullptr;
+                        if (item.bytes <= half_bytes) {
+                            p = step++ & 1u;
+                            wait_half(p);
+                            host_buf = {pinned_half[p], item.bytes};
+                            dev_src = dev_half[p];
+                        } else {
+                            wait_half(0);
+                            wait_half(1);
+                            host_buf = {pinned.data(), item.bytes};
+                            dev_src = dev_half[0];
+                        }
+                        if (m.out >= 4 && item.bytes >= PackedReadTeam::parallel_threshold)
+                            ws.packed_read_team().read(m.source, 0, m.row_bytes, host_buf);
+                        else
+                            m.source(0, host_buf);
+                        stop(cancel, failed);
+
+                        checked(cudaMemcpyAsync(
+                            dev_src,
+                            host_buf.data(),
+                            item.bytes,
+                            cudaMemcpyHostToDevice,
+                            stream
+                        ));
+                        const std::size_t elem_count =
+                            (item.kind == kWKindF32)
+                                ? (m.out * m.in)
+                                : ((m.out * m.in) / 32u);
+                        unsigned char* dst_qs =
+                            (item.kind == kWKindF32) ? nullptr : item.dst;
+                        __half* dst_scales =
+                            (item.kind == kWKindF32)
+                                ? nullptr
+                                : reinterpret_cast<__half*>(
+                                      item.dst + soa_scales_offset(m.out, m.in, item.kind)
+                                  );
+                        inkling_repack_soa_validate_kernel<<<
+                            unsigned((elem_count + 255) / 256), 256, 0, stream>>>(
+                            dev_src,
+                            dst_qs,
+                            dst_scales,
+                            elem_count,
+                            int(item.kind),
+                            d_status
+                        );
+                        checked(cudaGetLastError());
+                        if (item.kind == kWKindF32) {
+                            checked(cudaMemcpyAsync(
+                                item.dst,
+                                dev_src,
+                                item.bytes,
+                                cudaMemcpyDeviceToDevice,
+                                stream
+                            ));
+                        }
+                        if (cache_target) {
+                            checked(cudaMemcpyAsync(
+                                dst_slab.data + item.offset,
+                                item.dst,
+                                item.bytes,
+                                cache_dir,
+                                stream
+                            ));
+                        }
+                        if (item.bytes <= half_bytes) {
+                            checked(cudaEventRecord(events.ev[p], stream));
+                            ev_busy[p] = true;
+                        } else {
+                            checked(cudaStreamSynchronize(stream));
+                        }
+                    }
+                    unsigned invalid = 0;
+                    checked(cudaMemcpyAsync(
+                        &invalid, d_status, sizeof(invalid), cudaMemcpyDeviceToHost, stream
+                    ));
+                    checked(cudaStreamSynchronize(stream));
+                    require(!invalid, "h3_cuda_nonfinite_weight");
+                    if (cache_target)
+                        variant_cached_[target_variant_id] = true;
+                }
+
+                active_variant_id_ = target_variant_id;
+                swapped = true;
+            }
+        );
+        return swapped;
     }
 
     void sync_to_host(
@@ -2854,6 +3162,7 @@ public:
         unsigned* argmax_out = nullptr
     ) override {
         require(!cancel.load(), "h3_cuda_cancelled");
+        require(active_variant_id_ < 2u, "inkling_gpu_variant_corrupted");
         require(
             rows > 0 && rows <= 512
                 && input_embeddings.size() == rows * G::n_embd
@@ -3109,10 +3418,15 @@ private:
     struct GpuBoundaryMeta {
         bool valid = false;
         std::size_t tokens = 0;
+        std::uint32_t variant_id = 0;
     };
 
     StateRunner run_on_state_;
     kadan::InklingGpuModelDesc desc_;
+    std::uint32_t active_variant_id_ = 0;
+    kadan::InklingSwapTier swap_tier_ = kadan::InklingSwapTier::stream_repack;
+    bool variant_cache_initialized_ = false;
+    std::array<bool, 2> variant_cached_{false, false};
     std::vector<float> out_norm_, out_res_query_;
     std::vector<HostPhysParams> host_layers_;
     std::vector<HostLoopParams> host_loops_;
@@ -3269,6 +3583,15 @@ private:
         ws.ensure(256);
         if (desc_.total_matrix_bytes + (32ULL << 20) > arena.weights.capacity())
             return false;
+
+        // If the weight bank was emptied (e.g. after release_devices), clear any
+        // cached variant slabs before re-admitting fresh weights.
+        const auto probe_key = matrix_key(desc_.layers[0].wq, 0, desc_.layers[0].wq.out);
+        if (!arena.weights.find(probe_key, true)) {
+            arena.release_variant_slabs();
+            variant_cache_initialized_ = false;
+            variant_cached_ = {false, false};
+        }
 
         // 1. Admit every dense matrix, loop controller matrix, and routed expert.
         for (std::size_t i = 0; i < G::n_phys; ++i) {

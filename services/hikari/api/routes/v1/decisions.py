@@ -8,6 +8,7 @@ from api.pydantic_models.decisions import (
     DecisionQuestion,
     ScoreQuestion,
 )
+from api.pydantic_models.inference_task import WeightVariant
 from api.services.inference import inference
 from api.services.inference_http import infer
 
@@ -18,6 +19,10 @@ class DecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     state: str = Field(min_length=1, max_length=8000)
     questions: list[DecisionQuestion] = Field(min_length=1, max_length=8)
+    weight_variant: WeightVariant | None = Field(
+        default=None,
+        description="Optional local Inkling 2 Mini weight variant ('base' or 'abliterated') hot-swapped in place without reloading the language worker.",
+    )
 
     @model_validator(mode="after")
     def validate_questions(self):
