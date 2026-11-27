@@ -2365,3 +2365,34 @@ class LoadContextTests(HubTestCase):
         worker.slot.busy = True
         await self.hub._schedule(worker.computer)
         self.assertEqual(asked[-1], {"model": "inkling-2-mini-iq4-nl", "context": 4096})
+
+    def test_requested_model_resolves_weight_variant_against_selected_llm(self):
+        chat_base = InferenceTask(
+            operation="generate",
+            input={
+                "feature": "llm",
+                "messages": [{"role": "user", "content": "hi"}],
+                "weight_variant": "base",
+            },
+        )
+        decision_ablit = InferenceTask(
+            operation="generate",
+            input={
+                "feature": "decisions",
+                "state": "context",
+                "questions": [{"key": "q1", "type": "Noul", "instructions": "yes?"}],
+                "weight_variant": "abliterated",
+            },
+        )
+        self.assertEqual(
+            requested_model(chat_base, "inkling-2-mini-abliterated-iq4-nl"),
+            "inkling-2-mini-iq4-nl",
+        )
+        self.assertEqual(
+            requested_model(decision_ablit, "inkling-2-mini-q8-0"),
+            "inkling-2-mini-abliterated-q8-0",
+        )
+        self.assertEqual(
+            requested_model(chat_base),
+            "inkling-2-mini-iq4-nl",
+        )

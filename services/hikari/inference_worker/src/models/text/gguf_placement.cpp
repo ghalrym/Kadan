@@ -74,6 +74,32 @@ Placement::Decision Placement::use(const SliceKey& key, Bytes bytes, bool pinned
     return decision;
 }
 
+Placement::Decision Placement::evict_tensor(std::string_view tensor_name) {
+    Decision decision;
+    for (auto it = slots_.begin(); it != slots_.end();) {
+        if (it->first.tensor != tensor_name) {
+            ++it;
+            continue;
+        }
+        const auto& key = it->first;
+        const auto& slot = it->second;
+        if (slot.device) {
+            device_used_ -= slot.bytes;
+            if (!slot.pinned)
+                device_order_.erase({slot.priority, key});
+            decision.device_evicted.push_back(key);
+        }
+        if (slot.ram) {
+            ram_used_ -= slot.bytes;
+            if (!slot.pinned)
+                ram_order_.erase({slot.priority, key});
+            decision.ram_evicted.push_back(key);
+        }
+        it = slots_.erase(it);
+    }
+    return decision;
+}
+
 Placement::Stats Placement::stats() const {
     Stats result{device_used_, ram_used_, 0, 0};
     for (const auto& [key, slot] : slots_) {

@@ -15,8 +15,46 @@ LlmModel = Literal[
     "inkling-2-mini-abliterated-iq4-nl",
     "inkling-2-mini-abliterated-q8-0",
 ]
+WeightVariant = Literal["base", "abliterated"]
 # Image inference uses FLUX.2 Klein 4B Distilled.
 ImageModel = Literal["flux.2-klein-4b"]
+
+
+def inkling_model_variant(model_id: str | None) -> WeightVariant | None:
+    if model_id in ("inkling-2-mini-iq4-nl", "inkling-2-mini-q8-0"):
+        return "base"
+    if model_id in (
+        "inkling-2-mini-abliterated-iq4-nl",
+        "inkling-2-mini-abliterated-q8-0",
+    ):
+        return "abliterated"
+    return None
+
+
+def inkling_model_quant(model_id: str | None) -> Literal["iq4-nl", "q8-0"] | None:
+    if model_id in ("inkling-2-mini-iq4-nl", "inkling-2-mini-abliterated-iq4-nl"):
+        return "iq4-nl"
+    if model_id in ("inkling-2-mini-q8-0", "inkling-2-mini-abliterated-q8-0"):
+        return "q8-0"
+    return None
+
+
+def resolve_inkling_variant_model(
+    selected_model_id: str, variant: WeightVariant
+) -> LlmModel:
+    q8 = inkling_model_quant(selected_model_id) == "q8-0"
+    if variant == "abliterated":
+        return (
+            "inkling-2-mini-abliterated-q8-0"
+            if q8
+            else "inkling-2-mini-abliterated-iq4-nl"
+        )
+    return "inkling-2-mini-q8-0" if q8 else "inkling-2-mini-iq4-nl"
+
+
+def same_inkling_precision_family(model_a: str | None, model_b: str | None) -> bool:
+    quant_a = inkling_model_quant(model_a)
+    return quant_a is not None and quant_a == inkling_model_quant(model_b)
 
 
 class TaskInput(BaseModel):
@@ -29,6 +67,7 @@ class ChatTask(TaskInput):
     tools: list[ChatTool] | None = Field(default=None, max_length=256)
     model: LlmModel | None = None
     model_id: LlmModel | None = None
+    weight_variant: WeightVariant | None = None
     context_limit: int | None = None
     stream: bool = False
     conversation_id: str | None = None
@@ -37,6 +76,17 @@ class ChatTask(TaskInput):
     reasoning_tokens: int | None = Field(default=None, ge=1, strict=True)
     reasoning_effort: Literal["low", "medium", "high"] | None = None
     priority: Literal["interactive", "background"] = "interactive"
+
+    @model_validator(mode="after")
+    def validate_weight_variant(self):
+        explicit_model = self.model_id or self.model
+        if (
+            self.weight_variant is not None
+            and explicit_model is not None
+            and inkling_model_variant(explicit_model) != self.weight_variant
+        ):
+            raise ValueError("Requested model does not match requested weight_variant")
+        return self
 
 
 class ImageTask(TaskInput):
@@ -93,6 +143,7 @@ class DecisionTask(TaskInput):
     feature: Literal["decisions"] = "decisions"
     state: str
     questions: list[DecisionQuestion]
+    weight_variant: WeightVariant | None = None
 
 
 class SpeechVoice(TaskInput):

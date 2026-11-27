@@ -53,6 +53,7 @@ struct PrefixSnapshot final : serving::InferenceCache {
     ModelState state;
     std::vector<ImageTag> images;
     std::vector<WeightIdentity> weights;
+    std::string variant;
     std::size_t context = 0;
     Bytes bytes() const override;
 };
@@ -64,10 +65,21 @@ public:
         Plan,
         const ComputePlan&,
         std::shared_ptr<Resources> owner = {},
-        const std::atomic_bool* cancel = nullptr
+        const std::atomic_bool* cancel = nullptr,
+        std::string initial_variant = {}
     );
     ~Engine() override;
     void set_cancel(const std::atomic_bool&);
+    // Hot-swaps differing weights to `target_root` / `target_variant` in place
+    // while keeping shared weights, GPU buffers, CUDA Graph, and variant-tagged
+    // checkpoints intact. Returns false if full reload is required.
+    bool switch_variant(
+        const char* target_root,
+        std::string_view target_variant,
+        const std::atomic_bool& cancel
+    );
+    std::string_view active_variant() const;
+    double last_weight_swap_ms() const;
     serving::Info info() const override;
     std::size_t begin_request(
         std::span<const unsigned> prompt,

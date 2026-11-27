@@ -9,6 +9,7 @@
 #include "gguf_model.hpp"
 #include "inkling2_vision.hpp"
 #include "kadan/gguf_text.hpp"
+#include "kadan/inkling_variant.hpp"
 #include "kadan/text_prefix.hpp"
 
 namespace kadan::text {
@@ -22,7 +23,9 @@ struct Architecture {
     void (*bind)(GgufWeights&);
     std::size_t (*state)(std::size_t);
     std::size_t (*device_state)(std::size_t);
-    std::unique_ptr<Model> (*model)(const GgufWeights&, DenseCompute&, std::size_t);
+    std::unique_ptr<Model> (*model)(
+        const GgufWeights&, DenseCompute&, std::size_t, std::uint32_t
+    );
 };
 
 Architecture architecture(const std::string& name) {
@@ -91,6 +94,7 @@ Plan plan(const char* root, std::size_t context, const std::atomic_bool* cancel)
 
 struct Engine::Impl {
     std::string root_dir;
+    std::string active_variant;
     Plan p;
     WorkerCompute execution;
     Handle memory = 0;
@@ -105,6 +109,7 @@ struct Engine::Impl {
     Footprint retained_state;
     std::size_t tokens = 0, boundary = 0, static_boundary = 0;
     double cache_restore_ms = 0.0;
+    double last_weight_swap_ms = 0.0;
     bool active = false, poisoned = false, save_static = false;
 
     void save_pool_entry(
@@ -112,15 +117,25 @@ struct Engine::Impl {
         bool is_static,
         std::span<const unsigned> entry_tokens,
         std::span<const ImageTag> entry_images,
-        bool save_gpu_boundary = false
+        bool save_gpu_boundary = false,
+        std::string_view entry_variant = {}
     ) {
         if (!tokens || entry_tokens.size() != tokens || !pool.budget_bytes())
             return;
+        const std::string_view variant =
+            entry_variant.empty() ? std::string_view(active_variant) : entry_variant;
         if (save_gpu_boundary)
-            model->save_gpu_boundary(is_static ? 0u : 1u, tokens);
+            model->save_gpu_boundary(
+                is_static ? 0u : 1u, tokens, inkling_variant_numeric_id(variant)
+            );
         auto compacted = model->snapshot_state(tokens, p.context);
         pool.save(
-            conversation, is_static, entry_tokens, entry_images, std::move(compacted)
+            conversation,
+            is_static,
+            entry_tokens,
+            entry_images,
+            std::move(compacted),
+            variant
         );
     }
 
@@ -150,11 +165,11 @@ struct Engine::Impl {
         Plan selected,
         const ComputePlan& compute_plan,
         std::shared_ptr<Resources> owner,
-        const std::atomic_bool* cancel_flag
+        const std::atomic_bool* cancel_flag,
+        std::string initial_variant
     )
-        : root_dir(root ? root : ""),
-          p(selected),
-          execution(compute_plan, Workload::llm, std::move(owner)),
+        : root_dir(root ? root : ""), active_variant(std::move(initial_variant)),
+          p(selected), execution(compute_plan, Workload::llm, std::move(owner)),
           cancel(cancel_flag) {
         need(bool(execution.compute), "gguf_text_cuda_required");
         memory = execution.resources->reserve(
@@ -175,7 +190,12 @@ struct Engine::Impl {
                 architecture(name).state(p.context) + p.context * sizeof(unsigned)
             );
             weights->set_ram_budget(p.cache);
-            model = architecture(name).model(*weights, *execution.compute, p.context);
+            model = architecture(name).model(
+                *weights,
+                *execution.compute,
+                p.context,
+                inkling_variant_numeric_id(active_variant)
+            );
             // KV mirrors stay out of the weight bank's reservation.
             execution.compute->reserve_device_state(model->device_state_bytes());
             // GGUF weight banks retain packed tensor bytes rather than decoded
@@ -226,9 +246,19 @@ Engine::Engine(
     Plan p,
     const ComputePlan& compute_plan,
     std::shared_ptr<Resources> owner,
-    const std::atomic_bool* cancel
+    const std::atomic_bool* cancel,
+    std::string initial_variant
 )
-    : impl_(std::make_unique<Impl>(root, p, compute_plan, std::move(owner), cancel)) {
+    : impl_(
+          std::make_unique<Impl>(
+              root,
+              p,
+              compute_plan,
+              std::move(owner),
+              cancel,
+              std::move(initial_variant)
+          )
+      ) {
 }
 
 Engine::~Engine() = default;
@@ -238,6 +268,73 @@ void Engine::set_cancel(const std::atomic_bool& cancel) {
     impl_->weights->set_cancel(cancel);
     if (impl_->vision)
         impl_->vision->set_cancel(cancel);
+}
+
+bool Engine::switch_variant(
+    const char* target_root,
+    std::string_view target_variant,
+    const std::atomic_bool& cancel
+) {
+    auto& m = *impl_;
+    need(!m.active, "gguf_text_request_state");
+    m.last_weight_swap_ms = 0.0;
+    if (!target_root || !*target_root)
+        return false;
+    if (target_variant == m.active_variant && m.root_dir == target_root)
+        return true;
+
+    // Preserve any valid outgoing live conversation in the variant-tagged
+    // CheckpointPool before swapping weights so it can resume warmly when this
+    // variant returns.
+    if (!m.poisoned && m.prefix.stored() > 0 && !m.prefix.conversation().empty()
+        && m.prefix.stored() == m.tokens) {
+        m.save_pool_entry(
+            m.prefix.conversation(),
+            false,
+            m.prefix.committed(),
+            m.live_images,
+            false,
+            m.prefix.variant()
+        );
+    }
+
+    const auto started = std::chrono::steady_clock::now();
+    auto target_gguf = m.weights->prepare_variant_checkpoint(target_root, cancel);
+    if (!target_gguf)
+        return false;
+    m.execution.resume();
+    const bool gpu_active = m.model->has_gpu_executor();
+    const auto target_id = inkling_variant_numeric_id(target_variant);
+    if (!m.model->switch_variant(target_id, *target_gguf, cancel))
+        return false;
+    m.weights->commit_variant_checkpoint(
+        std::move(target_gguf), gpu_active ? nullptr : m.execution.compute.get()
+    );
+    m.prefix.clear();
+    m.live_images.clear();
+    m.pending_images.clear();
+    m.static_tokens.clear();
+    m.retained_state.clear();
+    m.tokens = 0;
+    m.boundary = 0;
+    m.static_boundary = 0;
+    m.poisoned = false;
+    m.save_static = false;
+    m.active_variant = std::string(target_variant);
+    m.root_dir = target_root;
+    m.last_weight_swap_ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - started
+    )
+                                .count();
+    return true;
+}
+
+std::string_view Engine::active_variant() const {
+    return impl_->active_variant;
+}
+
+double Engine::last_weight_swap_ms() const {
+    return impl_->last_weight_swap_ms;
 }
 
 std::shared_ptr<Resources> Engine::resources() const {
@@ -294,10 +391,11 @@ std::size_t Engine::begin_request(
     }
 
     const auto live_stored = m.prefix.stored();
+    const bool live_variant_ok = m.prefix.variant() == m.active_variant;
     const bool live_images_ok =
         !live_stored || images_match_prefix(m.live_images, prompt_images, live_stored);
     const bool will_live_hit =
-        live_stored > 0 && reuse_prefix && !conversation.empty()
+        live_stored > 0 && reuse_prefix && !conversation.empty() && live_variant_ok
         && conversation == m.prefix.conversation() && live_stored < prompt.size()
         && live_images_ok
         && std::equal(
@@ -310,9 +408,10 @@ std::size_t Engine::begin_request(
     bool gpu_rewind_static = false;
     std::vector<ImageTag> gpu_rewind_images;
     if (!will_live_hit && !m.poisoned && reuse_prefix && live_stored > 0
-        && live_stored == m.tokens) {
-        if (const auto* entry =
-                m.pool.find_best(prompt, conversation, prompt_images)) {
+        && live_stored == m.tokens && live_variant_ok) {
+        if (const auto* entry = m.pool.find_best(
+                prompt, conversation, prompt_images, m.active_variant
+            )) {
             const std::size_t n = entry->tokens.size();
             if (n > 0 && n <= live_stored
                 && std::equal(
@@ -337,15 +436,21 @@ std::size_t Engine::begin_request(
     if (!will_live_hit && !same_conv_rewind && !m.poisoned && live_stored > 0
         && !m.prefix.conversation().empty() && live_stored == m.tokens) {
         m.save_pool_entry(
-            m.prefix.conversation(), false, m.prefix.committed(), m.live_images
+            m.prefix.conversation(),
+            false,
+            m.prefix.committed(),
+            m.live_images,
+            false,
+            m.prefix.variant()
         );
     }
-    if (!will_live_hit && live_stored > 0 && !live_images_ok) {
+    if (!will_live_hit && live_stored > 0 && (!live_images_ok || !live_variant_ok)) {
         m.prefix.clear();
         m.live_images.clear();
     }
 
-    const auto reused = m.prefix.begin(prompt, conversation, reuse_prefix);
+    const auto reused =
+        m.prefix.begin(prompt, conversation, reuse_prefix, m.active_variant);
     need(!reused || reused == m.tokens, "gguf_text_prefix_position");
     m.pending_images.assign(prompt_images.begin(), prompt_images.end());
     m.save_static = reuse_prefix;
@@ -358,7 +463,9 @@ std::size_t Engine::begin_request(
         if (gpu_rewind_len > 0) {
             const auto started = std::chrono::steady_clock::now();
             if (m.model->try_rewind_gpu_boundary(
-                    gpu_rewind_static ? 0u : 1u, gpu_rewind_len
+                    gpu_rewind_static ? 0u : 1u,
+                    gpu_rewind_len,
+                    inkling_variant_numeric_id(m.active_variant)
                 )) {
                 m.tokens = gpu_rewind_len;
                 m.poisoned = false;
@@ -383,8 +490,9 @@ std::size_t Engine::begin_request(
             m.live_images.clear();
             // Released mirrors re-upload the restored keys on first attention.
             if (reuse_prefix) {
-                if (const auto* entry =
-                        m.pool.find_best(prompt, conversation, prompt_images)) {
+                if (const auto* entry = m.pool.find_best(
+                        prompt, conversation, prompt_images, m.active_variant
+                    )) {
                     try {
                         m.restore_pool_entry(*entry);
                     } catch (...) {
@@ -448,9 +556,8 @@ void Engine::forget_conversation(std::string_view conversation) {
 }
 
 Bytes PrefixSnapshot::bytes() const {
-    return sizeof(*this) + prefix.memory_bytes()
-           + images.capacity() * sizeof(ImageTag)
-           + weights.capacity() * sizeof(WeightIdentity)
+    return sizeof(*this) + prefix.memory_bytes() + images.capacity() * sizeof(ImageTag)
+           + weights.capacity() * sizeof(WeightIdentity) + variant.capacity()
            + state_memory_bytes(state);
 }
 
@@ -463,7 +570,8 @@ std::unique_ptr<PrefixSnapshot> Engine::take_prefix() {
     const auto& gguf = m.weights->gguf();
     saved->weights.reserve(gguf.tensor_count());
     for (std::size_t i = 0; i < gguf.tensor_count(); ++i)
-        saved->weights.push_back(gguf.identity(gguf.tensor_at(i).name));
+        saved->weights.push_back(m.weights->tensor_identity(gguf.tensor_at(i).name));
+    saved->variant = m.active_variant;
     saved->context = m.p.context;
     saved->state = m.model->take_state();
     saved->prefix = std::move(m.prefix);
@@ -477,12 +585,13 @@ std::unique_ptr<PrefixSnapshot> Engine::take_prefix() {
 bool Engine::restore_prefix(std::unique_ptr<PrefixSnapshot> saved) {
     auto& m = *impl_;
     const auto& gguf = m.weights->gguf();
-    if (!saved || saved->context != m.p.context
+    if (!saved || saved->context != m.p.context || saved->variant != m.active_variant
+        || saved->prefix.variant() != m.active_variant
         || saved->weights.size() != gguf.tensor_count())
         return false;
     m.weights->check_unchanged();
     for (std::size_t i = 0; i < gguf.tensor_count(); ++i)
-        if (saved->weights[i] != gguf.identity(gguf.tensor_at(i).name))
+        if (saved->weights[i] != m.weights->tensor_identity(gguf.tensor_at(i).name))
             return false;
     m.active = false;
     m.poisoned = false;

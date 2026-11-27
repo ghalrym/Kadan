@@ -64,7 +64,7 @@ struct ChatRequest {
     std::vector<ChatTool> tools;
     std::vector<lfm3::Lfm3ChatMessage> lfm3_messages;
     Json lfm3_tools;
-    std::optional<std::string> model, conversation_id;
+    std::optional<std::string> model, conversation_id, weight_variant;
     bool reuse_prefix = true;
     bool stream = false;
     bool context_supplied = false;
@@ -94,7 +94,7 @@ struct AudioCallRequest {
 };
 
 struct DecisionRequest {
-    std::optional<std::string> model;
+    std::optional<std::string> model, weight_variant;
     std::string state;
     std::vector<text::DecisionQuestion> questions;
 };

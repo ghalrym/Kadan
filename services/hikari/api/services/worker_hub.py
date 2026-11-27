@@ -17,7 +17,10 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from api.pydantic_models.inference_task import InferenceTask
+from api.pydantic_models.inference_task import (
+    InferenceTask,
+    resolve_inkling_variant_model,
+)
 from api.pydantic_models.model_store import ModelStoreStatus
 from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
@@ -159,11 +162,18 @@ def target_worker(request: InferenceTask) -> str | None:
     return FEATURE_WORKERS[request.feature]
 
 
-def requested_model(request: InferenceTask) -> str | None:
+def requested_model(
+    request: InferenceTask, selected_llm_id: str | None = None
+) -> str | None:
     for field in ("model_id", "model"):
         value = getattr(request.input, field, None)
         if isinstance(value, str):
             return value
+    variant = getattr(request.input, "weight_variant", None)
+    if variant is not None and request.feature in ("llm", "decisions"):
+        return resolve_inkling_variant_model(
+            selected_llm_id or "inkling-2-mini-iq4-nl", variant
+        )
     return None
 
 
@@ -936,10 +946,17 @@ class WorkerHub:
 
     def _head_fields(self, worker: Worker) -> dict:
         """What the oldest queued job asks for that changes the worker's needs."""
+        selected_llm = (
+            worker.models.selected_model_id
+            if worker.models is not None
+            else self.models.selected_model_id
+            if self.models is not None
+            else None
+        )
         for job in self.jobs.values():
             if job.worker != worker.kind or worker.id not in job.machines:
                 continue
-            fields = {"model": requested_model(job.request)}
+            fields = {"model": requested_model(job.request, selected_llm)}
             # A load's explicit context overrides the saved one, null included.
             if (
                 job.request.operation == "load"

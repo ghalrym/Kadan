@@ -59,6 +59,15 @@ class LanguageLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["state"], "ready")
         self.assertEqual(status["effective_context_limit"], 65536)
 
+    def test_hot_swapped_companion_variant_remains_ready(self):
+        service = self.service()
+        worker = service.worker.workers["text"]
+        worker.resident_model = "inkling-2-mini-abliterated-iq4-nl"
+        worker.resident_context = {"effective": 65536}
+        status = service.language_status()
+        self.assertEqual(status["state"], "ready")
+        self.assertEqual(status["effective_context_limit"], 65536)
+
     async def test_generation_is_ready_and_only_the_load_phase_is_loading(self):
         service = self.service()
         job = InferenceJob(InferenceTask(input={"feature": "llm"}), False)

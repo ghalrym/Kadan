@@ -55,6 +55,8 @@ public:
     }
 
     Decision use(const SliceKey& key, Bytes bytes, bool pinned = false);
+    // Evicts all slices belonging to `tensor_name` (used during Strata variant swap).
+    Decision evict_tensor(std::string_view tensor_name);
     Stats stats() const;
 
 private:

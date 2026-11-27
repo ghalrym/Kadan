@@ -560,6 +560,12 @@ export type CompletionRequest = {
    * Tools
    */
   tools?: Array<ChatTool> | null
+  /**
+   * Weight Variant
+   *
+   * Optional local Inkling 2 Mini weight variant ('base' or 'abliterated') hot-swapped in place without reloading the language worker; omitted uses the configured default.
+   */
+  weight_variant?: 'base' | 'abliterated' | null
 }
 
 /**
@@ -638,6 +644,12 @@ export type DecisionRequest = {
    * State
    */
   state: string
+  /**
+   * Weight Variant
+   *
+   * Optional local Inkling 2 Mini weight variant ('base' or 'abliterated') hot-swapped in place without reloading the language worker.
+   */
+  weight_variant?: 'base' | 'abliterated' | null
 }
 
 /**
@@ -1250,6 +1262,10 @@ export type RequestRecord = {
    * Type
    */
   type: 'LLM' | 'Image' | 'TTS' | 'STT' | 'Decision'
+  /**
+   * Weight Swap Ms
+   */
+  weight_swap_ms?: number | null
 }
 
 /**
