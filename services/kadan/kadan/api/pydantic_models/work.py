@@ -110,6 +110,7 @@ class WorkRun(BaseModel):
     client_request_id: str | None = None
     mode: Literal["send", "steer", "queue"] = "send"
     prompt: str
+    images: list[str] = Field(default_factory=list)
     status: WorkRunStatus
     owner_id: UUID | None = None
     lease_expires_at: datetime | None = None
@@ -142,10 +143,11 @@ class WorkThreadDetail(BaseModel):
 class WorkThreadCreate(WorkModel):
     project_id: UUID
     title: str = Field(min_length=1, max_length=500)
-    harness: WorkHarnessId = "codex"
+    harness: WorkHarnessId = "inkling"
     model: str | None = Field(default=None, max_length=256)
     model_options: dict[str, JsonValue] = Field(default_factory=dict)
     prompt: str | None = Field(default=None, max_length=200000)
+    images: list[str] = Field(default_factory=list, max_length=16)
     client_request_id: str | None = Field(default=None, max_length=256)
 
     @field_validator("title")
@@ -174,6 +176,7 @@ class WorkThreadOrganizeRequest(WorkModel):
 class WorkRunCreate(WorkModel):
     prompt: str = Field(min_length=1, max_length=200000)
     mode: Literal["send", "steer", "queue"] = "send"
+    images: list[str] = Field(default_factory=list, max_length=16)
     client_request_id: str | None = Field(default=None, max_length=256)
 
 
@@ -221,6 +224,7 @@ class WorkHarnessPublic(BaseModel):
     supports_resume: bool = True
     supports_approvals: bool = True
     supports_questions: bool = True
+    supports_images: bool = False
 
 
 class WorkHarnessSignInSubmit(WorkModel):

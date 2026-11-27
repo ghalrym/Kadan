@@ -340,3 +340,47 @@ def test_work_harness_config_and_work_event_run_kind(client):
     )
     assert event_run.status_code == 201
     assert event_run.json()["trigger_event"]["kind"] == "work"
+
+
+def test_work_run_persists_and_validates_image_attachments(client):
+    project = client.post(
+        "/api/work/projects",
+        json={"title": "Vision", "root_path": "/tmp/vision"},
+    ).json()
+    thread = client.post(
+        "/api/work/threads",
+        json={
+            "project_id": project["id"],
+            "title": "Inspect screenshot",
+            "harness": "inkling",
+        },
+    ).json()
+
+    valid_img = (
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2dIAAAAASUVORK5CYII="
+    )
+    created = client.post(
+        f"/api/work/threads/{thread['id']}/runs",
+        json={
+            "prompt": "Check this mockup",
+            "mode": "send",
+            "images": [valid_img],
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["images"] == [valid_img]
+
+    fetched = client.get(f"/api/work/runs/{created.json()['id']}")
+    assert fetched.status_code == 200
+    assert fetched.json()["images"] == [valid_img]
+
+    invalid = client.post(
+        f"/api/work/threads/{thread['id']}/runs",
+        json={
+            "prompt": "Bad image",
+            "mode": "send",
+            "images": ["https://example.com/not-a-data-url.png"],
+        },
+    )
+    assert invalid.status_code == 422

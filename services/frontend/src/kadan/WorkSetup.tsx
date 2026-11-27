@@ -3,10 +3,12 @@ import {
   ArrowUpRight,
   ChevronUp,
   Folder,
+  ImagePlus,
   KeyRound,
   Plus,
   RefreshCw,
   Trash2,
+  X,
 } from "lucide-react";
 import {
   browseWorkFilesystem,
@@ -42,10 +44,11 @@ export default function WorkSetup({ initialTab = "new", onThreadCreated, onChang
 
   // New thread form state.
   const [projectId, setProjectId] = useState("");
-  const [harnessId, setHarnessId] = useState("codex");
+  const [harnessId, setHarnessId] = useState("");
   const [modelId, setModelId] = useState("");
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [attachedImages, setAttachedImages] = useState<{ name: string; dataUrl: string }[]>([]);
 
   // Add project folder form state.
   const [folderBrowser, setFolderBrowser] = useState<FilesystemBrowseResponse | null>(null);
@@ -127,19 +130,47 @@ export default function WorkSetup({ initialTab = "new", onThreadCreated, onChang
 
   const selectedHarness = harnesses.find((h) => h.id === harnessId) ?? null;
 
+  function handleSelectImages(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    const allowed = Array.from(files).filter(
+      (f) => f.type === "image/png" || f.type === "image/jpeg",
+    );
+    if (allowed.length < files.length) {
+      setError("Only PNG and JPEG screenshots can be attached.");
+    }
+    for (const file of allowed.slice(0, Math.max(0, 8 - attachedImages.length))) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          setAttachedImages((prev) => [
+            ...prev.slice(0, 7),
+            { name: file.name, dataUrl: reader.result as string },
+          ]);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  }
+
   async function handleStartThread(event: React.FormEvent) {
     event.preventDefault();
     if (!projectId || !title.trim()) return;
+    const chosenHarness = harnessId || harnesses[0]?.id || "inkling";
     setBusy(true);
     setError("");
     try {
       const created = await createWorkThread({
         project_id: projectId,
         title: title.trim(),
-        harness: harnessId,
+        harness: chosenHarness,
         model: modelId || selectedHarness?.default_model || null,
         prompt: prompt.trim() || null,
+        images:
+          selectedHarness?.supports_images && attachedImages.length > 0
+            ? attachedImages.map((img) => img.dataUrl)
+            : undefined,
       });
+      setAttachedImages([]);
       onChanged();
       onThreadCreated(created.id);
     } catch (err) {
@@ -360,6 +391,14 @@ export default function WorkSetup({ initialTab = "new", onThreadCreated, onChang
                 )}
               </div>
 
+              {selectedHarness &&
+                selectedHarness.auth.login_method === "local" &&
+                selectedHarness.auth.status !== "ready" && (
+                  <p className="work-local-hint" role="status">
+                    {selectedHarness.auth.message}
+                  </p>
+                )}
+
               <label>
                 Task title
                 <input
@@ -380,6 +419,45 @@ export default function WorkSetup({ initialTab = "new", onThreadCreated, onChang
                   placeholder="Describe the change, bug fix, or investigation…"
                 />
               </label>
+
+              {selectedHarness?.supports_images && (
+                <div className="work-image-attach-row">
+                  <label className="button work-attach-btn">
+                    <ImagePlus size={14} />
+                    Attach screenshot
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg"
+                      multiple
+                      hidden
+                      disabled={busy}
+                      onChange={(e) => {
+                        handleSelectImages(e.target.files);
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                  {attachedImages.length > 0 && (
+                    <div className="work-image-chips">
+                      {attachedImages.map((img, idx) => (
+                        <span key={`${img.name}-${idx}`} className="work-image-chip">
+                          <span>{img.name}</span>
+                          <button
+                            type="button"
+                            className="icon"
+                            aria-label={`Remove ${img.name}`}
+                            onClick={() =>
+                              setAttachedImages((prev) => prev.filter((_, i) => i !== idx))
+                            }
+                          >
+                            <X size={12} />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="work-form-actions">
                 <button type="submit" className="primary" disabled={busy || !title.trim()}>
@@ -557,7 +635,19 @@ export default function WorkSetup({ initialTab = "new", onThreadCreated, onChang
                     Models: {harness.models.map((m) => m.label).join(", ")}
                   </span>
                   <div className="work-harness-actions">
-                    {isReady ? (
+                    {harness.auth.login_method === "local" ? (
+                      isReady ? (
+                        <span className="field-hint">No account or API key needed</span>
+                      ) : (
+                        <button
+                          className="button"
+                          disabled={busy || loading}
+                          onClick={() => void refresh()}
+                        >
+                          Check status
+                        </button>
+                      )
+                    ) : isReady ? (
                       <button
                         className="button"
                         disabled={busy}
