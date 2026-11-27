@@ -141,8 +141,7 @@ test("the sidebar moves between chat, Plugins and the agent page", async () => {
   const view = await app();
   const sidebar = () => view.findAll(node => node.type === "Sidebar")[0];
   const count = type => view.findAll(node => node.type === type).length;
-  assert.equal(sidebar().props.selectedId, "chain");
-  assert.deepEqual(sidebar().props.conversations, listed);
+  assert.equal(sidebar().props.page.name, "chat");
   assert.equal(count("Chat"), 1);
   sidebar().props.onPage("plugins");
   view.render();
@@ -154,7 +153,7 @@ test("the sidebar moves between chat, Plugins and the agent page", async () => {
   view.findAll(node => node.type === "AgentPage")[0].props.onEditPet();
   view.render();
   assert.equal(count("PetEditor"), 1);
-  sidebar().props.onOpenChat("chain");
+  sidebar().props.onPage("chat");
   view.render();
   assert.equal(count("Chat"), 1);
   assert.equal(count("AgentPage"), 0);

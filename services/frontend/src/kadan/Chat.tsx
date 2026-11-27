@@ -1,5 +1,4 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Link } from "react-router";
 import { ArrowUp, ArrowDown, ArrowUpRight, RotateCw, Search, X } from "lucide-react";
 import Markdown from "./Markdown";
 import Composer, { readiness } from "./Composer";
@@ -31,8 +30,8 @@ interface Props {
   blocked: boolean;
   refreshStatus: () => Promise<void>;
 }
-/** Messages further apart than this get a timestamp between them. */
-const BREAK_MS = 4 * 60 * 60 * 1000;
+/** Messages further apart than 30 minutes get a full-width timestamp divider bar. */
+const BREAK_MS = 30 * 60 * 1000;
 /** Older messages render on request so a long chain opens quickly. */
 const PAGE = 200;
 const NEAR_LATEST = 80;
@@ -43,19 +42,20 @@ const ROLE = { user: "You", assistant: "Assistant", system: "System", tool: "Too
 function breakLabel(value: string) {
   const date = new Date(value);
   const now = new Date();
-  const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const time = date
+    .toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })
+    .toLowerCase();
   const days = Math.round(
     (new Date(now).setHours(0, 0, 0, 0) - new Date(date).setHours(0, 0, 0, 0)) / 86400000,
   );
-  if (days === 0) return `Today ${time}`;
-  if (days === 1) return `Yesterday ${time}`;
-  if (days < 7) return `${date.toLocaleDateString(undefined, { weekday: "long" })} ${time}`;
+  if (days === 0) return time;
+  if (days === 1) return `Yesterday · ${time}`;
+  if (days < 7) return `${date.toLocaleDateString(undefined, { weekday: "long" })} · ${time}`;
   return `${date.toLocaleDateString(undefined, {
-    weekday: "short",
     month: "short",
     day: "numeric",
     ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
-  })} at ${time}`;
+  })} · ${time}`;
 }
 const stamp = (value: string) =>
   new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -552,7 +552,7 @@ export default function Chat({
             return (
               <Fragment key={message.id}>
                 {split && (
-                  <div className="time-break">
+                  <div className="time-break" role="separator">
                     <time dateTime={message.created_at}>{breakLabel(message.created_at)}</time>
                   </div>
                 )}
@@ -583,10 +583,9 @@ export default function Chat({
                         </span>
                       ))}
                       {message.sources?.length > 0 &&
-                        <Link className="tag" to="/tsuchi">
-                          Attachments in Tsuchi
-                          <ArrowUpRight size={12} />
-                        </Link>}
+                        <span className="tag">
+                          Attachments saved on server
+                        </span>}
                     </footer>
                   )}
                 </article>

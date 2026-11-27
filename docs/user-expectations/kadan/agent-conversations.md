@@ -1,18 +1,16 @@
 # Agent conversations
 
-Kadan lets users hatch an agent, hold as many chats with it as they like, and return to any of them from the sidebar. Creating an agent saves its records in Tsuchi without downloading or running a model. Users can [rename agents](renaming-agents.md); deleting agents is not available.
+Kadan lets users hatch an agent and talk with it in one ever-persistent chat thread. Creating an agent saves its records in Tsuchi without downloading or running a model. Users can [rename agents](renaming-agents.md); deleting agents is not available.
 
 Hatching requires a name and a unique permanent key. Invalid or duplicate keys produce an error without replacing an existing agent. After an uncertain creation, refresh the agent list before trying again. Kadan opens the first agent returned by Tsuchi after refreshing; other existing agents are not selectable in Kadan. Both applications use the same [namespaces](../tsuchi/namespaces.md).
 
-## Chats
+## Single persistent chat
 
-Each agent has its own saved chats; Tsuchi stores them as conversations. **New chat** starts one. Kadan opens the most recently active chat when it loads, and creates a first chat when the agent has none. An empty chat appears in the sidebar only while it is open; it is listed once it has a message.
+Each agent has one ever-persistent conversation thread stored in Tsuchi. Kadan opens that thread automatically when it loads, creating it on first use. Whenever more than 30 minutes pass between messages (including when you return and send a new message after being inactive for over 30 minutes), Kadan draws a timestamp divider bar across the chat (`--- XX:XX am/pm ---`) so the elapsed time is clear.
 
-A chat without its own name is titled from its first message. **Rename** in the chat's **…** menu gives it a name; renaming keeps its messages, even while a reply is being saved. **Delete** asks for confirmation and moves the chat to Tsuchi's trash, where it can be restored; a reply still in progress cannot be saved into a deleted chat. After the open chat is deleted, Kadan opens the next most recent chat, or a new one.
+The thread handles context compaction automatically so users never need to start new chats or manually compact. After more than 30 minutes of inactivity, the server auto-compacts older messages into a durable rolling summary in the background while keeping all earlier messages intact in saved history.
 
-Each reply receives only the messages of its own chat. Replies, images and background updates stay in the chat that requested them, so switching chats does not move or cancel that work.
-
-One unsent draft is kept per agent in the current browser tab and follows you between chats; it can be lost when the tab closes and is not a saved message. When refresh opens a different agent, Kadan waits for that agent’s chats rather than showing the previous agent’s. If loading fails, it reports the error; retry refreshes the records. A failed refresh for the same agent leaves its last loaded chat visible.
+One unsent draft is kept per agent in the current browser tab; it can be lost when the tab closes and is not a saved message. When refresh opens a different agent, Kadan waits for that agent’s thread rather than showing the previous agent’s. If loading fails, it reports the error; retry refreshes the records. A failed refresh for the same agent leaves its last loaded chat visible.
 
 Users can [upload files and attach them](chat-attachments.md) to a message or note. When the user mentions saved documents or memories, the agent uses its tools to find and read them. Upload confirmation is separate from message delivery. Sending saves the message and queues work. Users can keep typing and send more messages while earlier work waits. Replies can be delayed by other work or model loading. The agent can finish work without sending a visible reply; stopped work remains visible. When an error interrupts a response, Kadan retries up to three times automatically; if the response still cannot be completed, the agent replies in chat letting the user know it struggled to complete the task without sharing exact error details unless the user asks for details. Failed responses are never shown as error notices in the chat interface.
 

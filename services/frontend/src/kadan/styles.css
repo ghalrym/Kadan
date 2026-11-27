@@ -348,6 +348,10 @@ svg {
   background: var(--raised);
   color: var(--text);
 }
+.panel-spacer {
+  flex: 1;
+  min-height: 0;
+}
 .panel-scroll {
   flex: 1;
   min-height: 0;
@@ -538,27 +542,18 @@ svg {
   color: var(--faint);
   font-size: 11px;
 }
-.services {
+.sidebar-server-row {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
 }
-.services a {
+.server-status-label {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 4px 9px;
-  border-radius: 999px;
+  padding: 4px 10px;
   color: var(--muted);
   font-size: 12px;
-  text-decoration: none;
-}
-.services a:hover {
-  background: var(--hover);
-  color: var(--text);
-}
-.services a[aria-disabled="true"] {
-  pointer-events: none;
 }
 .services-refresh {
   margin-left: auto;
@@ -824,14 +819,24 @@ main:focus {
   color: var(--muted);
   font-size: 12px;
 }
-/* Gaps over four hours read as a fresh start, so they carry the time. */
+/* Gaps over 30 minutes show a full-width timestamp divider bar. */
 .time-break {
-  margin: 22px 0 10px;
-  text-align: center;
-  color: var(--faint);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 22px 0 12px;
+  color: var(--muted);
   font-size: 11px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.time-break::before,
+.time-break::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line-strong);
 }
 .time-break:first-child,
 .earlier + .time-break {
@@ -3223,24 +3228,33 @@ button.danger:not(.primary) {
 
 /* Kadan Desktop server connection settings */
 .server-settings-trigger {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   justify-content: flex-start;
-  padding: 7px 10px;
+  padding: 6px 10px;
   border-radius: var(--r-sm);
+  color: var(--muted);
+}
+.server-settings-trigger:hover:not(:disabled) {
   color: var(--text);
-  margin-bottom: 6px;
 }
 .server-settings-nav {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
+  min-width: 0;
   line-height: 1.25;
+}
+.server-settings-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
 }
 .server-settings-nav small {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--faint);
   font-family: var(--mono);
-  max-width: 165px;
+  max-width: 155px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

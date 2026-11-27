@@ -114,6 +114,14 @@ class Boundary:
     async def inference_status(self):
         return SimpleNamespace(state="ready", model_id="selected-model")
 
+    async def image_inference_status(self):
+        return SimpleNamespace(
+            state="ready",
+            model_id="qwen-image-2.1-turbo",
+            download_state="complete",
+            message="Qwen-Image 2.1 Turbo is downloaded and ready.",
+        )
+
     def check_owned(self, body):
         if self.current.status != "running" or body["worker_id"] != str(
             self.current.owner_id
@@ -1006,6 +1014,73 @@ def test_task_status_is_read_only_on_request_in_the_current_conversation(boundar
     result = boundary.controller.inference.calls[1][-1]
     assert result.type == "tool"
     assert json.loads(result.content) == status
+
+
+def test_generate_image_without_downloaded_model_returns_user_instructions(
+    boundary, monkeypatch
+):
+    async def missing_image_model():
+        return SimpleNamespace(
+            state="model_required",
+            model_id="qwen-image-2.1-turbo",
+            download_state="not_downloaded",
+            message=(
+                "Image generation is not set up yet because the image model has not been "
+                "downloaded. Tell the user to open Kadan Server, go to Hikari → Settings, "
+                "and either download the local image model (Qwen-Image 2.1 Turbo) or sign in "
+                "to Codex and switch Images to ChatGPT."
+            ),
+        )
+
+    monkeypatch.setattr(boundary, "image_inference_status", missing_image_model)
+    boundary.controller.inference = Commands(
+        command("generate_image", prompt="A little blue bird"),
+        send(
+            content="Please open Kadan Server and download Qwen-Image 2.1 Turbo in Hikari Settings.",
+            end_run=True,
+        ),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.jobs == {}
+    assert boundary.current.status == "completed"
+    result = tool_result(boundary, -3)
+    assert result["available"] is False
+    assert result["status"] == "model_required"
+    assert "Kadan Server" in result["user_instructions"]
+    assert "Hikari → Settings" in result["user_instructions"]
+    assert len(boundary.deliveries) == 1
+
+
+def test_read_task_status_includes_image_setup_instructions_when_not_ready(
+    boundary, monkeypatch
+):
+    status = {"jobs": [], "next_offset": None}
+    original = boundary.json_request
+
+    async def read(service, method, path, **kwargs):
+        if path.endswith("/task-status"):
+            return status
+        return await original(service, method, path, **kwargs)
+
+    async def downloading_image_model():
+        return SimpleNamespace(
+            state="model_required",
+            model_id="qwen-image-2.1-turbo",
+            download_state="downloading",
+            message="The local image model (Qwen-Image 2.1 Turbo) is currently downloading.",
+        )
+
+    boundary.json_request = read
+    monkeypatch.setattr(boundary, "image_inference_status", downloading_image_model)
+    boundary.controller.inference = Commands(
+        command("read_task_status", offset=0), finish()
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    result = json.loads(boundary.controller.inference.calls[1][-1].content)
+    assert result["jobs"] == []
+    assert result["image_generation"]["available"] is False
+    assert result["image_generation"]["download_state"] == "downloading"
+    assert "downloading" in result["image_generation"]["user_instructions"]
 
 
 def test_removed_computer_tools_are_not_available(boundary):

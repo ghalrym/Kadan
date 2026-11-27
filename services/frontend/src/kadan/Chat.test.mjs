@@ -147,6 +147,9 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     notices: () => elements().filter(node => node.props?.className === "notice").map(node => node.props.children),
     alerts: () => elements().filter(node => node.props?.role === "alert").map(node => node.props.children[0]),
     receipts: () => elements().filter(node => node.props?.className === "receipt").map(node => node.props.children),
+    timeBreaks: () => elements()
+      .filter(node => node.props?.className === "time-break" && node.props?.role === "separator")
+      .map(node => elements(node).find(child => child.type === "time")?.props?.children ?? ""),
     composer: () => elements().find(node => node.type === "Composer").props,
     async poll(runs, conversation = selectedChain) {
       snapshotRuns = runs;
@@ -433,4 +436,23 @@ test("live streaming drafts render before completion and clear once the final re
   assert.deepEqual(view.streamingMessages(), []);
   assert.equal(view.savedResults().length, 1);
   assert.equal(view.timerDelays.at(-1), 2000);
+});
+
+test("inactivity over 30 minutes inserts a time separator bar while shorter gaps do not", async () => {
+  const now = new Date();
+  const base = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 10, 0, 0);
+  const at = minutes => new Date(base.getTime() + minutes * 60_000).toISOString();
+  const view = await chat([], {
+    ...chain,
+    messages: [
+      { ...message("m1", "user", "First"), created_at: at(0) },
+      { ...message("m2", "assistant", "Quick reply"), created_at: at(10) },
+      { ...message("m3", "user", "Within 30 minutes"), created_at: at(30) },
+      { ...message("m4", "user", "After 31 minutes"), created_at: at(61) },
+    ],
+  });
+  const breaks = view.timeBreaks();
+  assert.equal(breaks.length, 2);
+  assert.match(breaks[0], /10:00 am/);
+  assert.match(breaks[1], /11:01 am/);
 });

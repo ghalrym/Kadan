@@ -255,6 +255,97 @@ def test_active_inkling_requires_its_own_downloaded_worker(
     asyncio.run(check())
 
 
+@pytest.mark.parametrize(
+    ("image_provider", "models", "expected_state", "expected_download", "expected_text"),
+    [
+        (
+            "codex",
+            [],
+            "ready",
+            None,
+            "ChatGPT",
+        ),
+        (
+            "local",
+            [
+                {
+                    "id": "qwen-image-2.1-turbo",
+                    "kind": "image",
+                    "status": "complete",
+                    "inference_available": True,
+                }
+            ],
+            "ready",
+            "complete",
+            "ready",
+        ),
+        (
+            "local",
+            [
+                {
+                    "id": "qwen-image-2.1-turbo",
+                    "kind": "image",
+                    "status": "not_downloaded",
+                    "inference_available": True,
+                }
+            ],
+            "model_required",
+            "not_downloaded",
+            "Kadan Server",
+        ),
+        (
+            "local",
+            [
+                {
+                    "id": "qwen-image-2.1-turbo",
+                    "kind": "image",
+                    "status": "downloading",
+                    "inference_available": True,
+                }
+            ],
+            "model_required",
+            "downloading",
+            "currently downloading",
+        ),
+        (
+            "local",
+            [
+                {
+                    "id": "qwen-image-2.1-turbo",
+                    "kind": "image",
+                    "status": "complete",
+                    "inference_available": False,
+                }
+            ],
+            "unavailable",
+            None,
+            "Hikari → Settings",
+        ),
+    ],
+)
+def test_image_inference_status_reports_readiness_and_setup_guidance(
+    image_provider, models, expected_state, expected_download, expected_text
+):
+    async def check():
+        def boundary(request):
+            if request.url.path == "/v1/subscriptions":
+                return httpx.Response(
+                    200,
+                    json={"capabilities": {"language": "local", "image": image_provider}},
+                )
+            assert request.url.path == "/v1/models"
+            return httpx.Response(200, json={"models": models})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(boundary)) as client:
+            service = LocalServices(client, Settings(_env_file=None))
+            status = await service.image_inference_status()
+            assert status.state == expected_state
+            assert status.download_state == expected_download
+            assert expected_text in status.message
+
+    asyncio.run(check())
+
+
 def test_unavailable_services_return_actionable_status():
     def offline(request):
         raise httpx.ConnectError("offline", request=request)

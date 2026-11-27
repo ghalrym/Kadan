@@ -6,12 +6,11 @@ Kadan's layout follows coding-assistant apps such as T3 Code and Codex: a sideba
 
 From top to bottom, the sidebar offers:
 
-- **New chat** starts a chat. If an unused empty chat already exists, Kadan reopens it instead of creating another.
+- **Chat** opens the agent's single ever-persistent conversation thread.
 - **Space** opens the [Space](space.md) library of pages, slides and files.
 - **Plugins** opens the [Plugins](plugins.md) page.
-- **Chats** lists chats newest first, with how long ago each was last active. Each chat's **…** menu can rename or delete it.
 - The agent's name and pet open the **Agent page**.
-- **Tsuchi** and **Hikari** show [service status](service-status.md) and open Tsuchi's storage pages and Hikari Settings in the same window. Those pages keep their own navigation and offer **Back to Kadan**. The refresh button reloads service status, the agent and its chats.
+- Directly below the agent link, **Server settings** (in the standalone Kadan app) shows the connected server address and connection status and lets you switch servers, alongside a refresh button that reloads server status, the agent and its chats. Tsuchi and Hikari management live in **Kadan Server**, not inside the Kadan client app.
 
 Lists in the sidebar reflect what Kadan last loaded. Changes made on Tsuchi's pages appear after returning to Kadan or refreshing.
 

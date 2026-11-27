@@ -67,8 +67,8 @@ loader.deregister();
 
 const originals = new Map(["matchMedia", "document"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 // Slots follow App's useState calls; refs and effects do not consume these slots.
-const AGENT = 0, EDITING_PERSONA = 3, RENAMING = 4, ASSIGNING_RUNNER = 5, CONVERSATIONS = 7, SELECTION = 8,
-  CHAIN = 9, PAGE = 10, LOADING = 15, BUSY = 16, RESOURCE_OWNER = 22;
+const AGENT = 0, EDITING_PERSONA = 3, RENAMING = 4, ASSIGNING_RUNNER = 5, SELECTION = 6,
+  CHAIN = 7, PAGE = 8, LOADING = 13, BUSY = 14, RESOURCE_OWNER = 20;
 const original = { id: "original", agent_key: "agent", title: "New chat", version: 3, messages: [] };
 const replacement = { ...original, id: "replacement", version: 1 };
 const select = (conversation) => {
@@ -178,20 +178,9 @@ test("plugins open while chat is busy and returning keeps the conversation", () 
   render();
   assert.ok(find("Plugins"));
   assert.equal(find("Chat"), undefined);
-  find("Sidebar").props.onOpenChat("original");
+  find("Sidebar").props.onPage("chat");
   assert.equal(chat().key, previous.key);
   assert.equal(state[CHAIN], original);
-});
-
-test("opening a chat from the sidebar selects it and waits for its messages", () => {
-  state[CONVERSATIONS] = [{ id: "replacement", message_count: 1, updated_at: "2026-01-01" }];
-  chat().props;
-  find("Sidebar").props.onOpenChat("replacement");
-  assert.deepEqual(state[SELECTION], { owner: "agent", id: "replacement" });
-  render();
-  assert.equal(find("Chat"), undefined, "the previous chat must not show under the new selection");
-  state[CHAIN] = replacement;
-  assert.equal(chat().props.chain, replacement);
 });
 
 test("Space opens the library for the current agent and returning keeps the chat", () => {
@@ -200,15 +189,8 @@ test("Space opens the library for the current agent and returning keeps the chat
   render();
   assert.equal(find("SpaceLibrary").props.agentKey, "agent");
   assert.equal(find("Chat"), undefined);
-  find("Sidebar").props.onOpenChat("original");
+  find("Sidebar").props.onPage("chat");
   assert.equal(chat().key, previous.key);
-});
-
-test("chat updates keep the sidebar summary current", () => {
-  const update = chat().props.onChange;
-  update({ ...original, version: 4, messages: [{ id: "m", role: "user", content: "Plan a garden" }] });
-  assert.equal(state[CONVERSATIONS][0].title, "Plan a garden");
-  assert.equal(state[CONVERSATIONS][0].message_count, 1);
 });
 
 test("chat and the agent page open the single persona editor modal, which closes again", () => {

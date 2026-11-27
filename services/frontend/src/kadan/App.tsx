@@ -4,7 +4,7 @@ import { Egg, Menu } from "lucide-react";
 import { agentPath, api } from "./api";
 import { getDesktopServerConfig, isDesktopApp } from "./desktop";
 import { latestConversation } from "./agentRuns";
-import { emptyConversation, pickConversation, summarize, upsertConversation } from "./conversations";
+import { pickConversation } from "./conversations";
 import type { Agent, ConversationSummary, PetJob, Resource, Status } from "./types";
 import Chat from "./Chat";
 import Hatch from "./Hatch";
@@ -17,7 +17,6 @@ import RunnerAssignment from "./RunnerAssignment";
 import Plugins from "./Plugins";
 import Sidebar, { type Page } from "./Sidebar";
 import SpaceLibrary from "./SpaceLibrary";
-import ConfirmDialog from "./ConfirmDialog";
 import AgentPage from "./AgentPage";
 import ServerSettings from "./ServerSettings";
 import { PetContext } from "./PetContext";
@@ -37,12 +36,10 @@ export default function App() {
   const [editingPersona, setEditingPersona] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [assigningRunner, setAssigningRunner] = useState(false);
-  const [confirm, setConfirm] = useState<{ title: string; message: string; confirm: string; run: () => Promise<void> } | null>(null);
   const petSelectionRevision = useRef(0);
   const petReadRevision = useRef(0);
   const pendingPetSelection = useRef(0);
-  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  /** The open chat, remembered with the agent it belongs to. */
+  /** The agent's single persistent chat, remembered with the agent it belongs to. */
   const [selection, setSelection] = useState<{ owner: string; id: string } | null>(null);
   const [chain, setChain] = useState<Resource | null>(null);
   const [page, setPage] = useState<Page>({ name: "chat" });
@@ -176,7 +173,6 @@ export default function App() {
         setEditingPersona(false);
         setRenaming(false);
         setAssigningRunner(false);
-        setConfirm(null);
         setPage({ name: "chat" });
       }
       setAgent(first ?? null);
@@ -206,7 +202,7 @@ export default function App() {
     void refreshPetSelection(key, () => current, true).catch(() => {});
     return () => { current = false; };
   }, [key, refreshPetSelection, petRetry]);
-  // Chats load first; the open chat loads separately below.
+  // Resolve the agent's single persistent thread, creating it if none exists yet.
   useEffect(() => {
     if (!key) return;
     let current = true;
@@ -221,10 +217,8 @@ export default function App() {
         if (!id) {
           const created = await api<Resource>(`${agentPath(key)}/conversations`, {}, "POST");
           if (!isCurrent()) return;
-          rows = [summarize(created)];
           id = created.id;
         }
-        setConversations(rows);
         setSelection((value) => value?.owner === key && value.id === id ? value : { owner: key, id });
       })
       .catch((e) => {
@@ -264,60 +258,10 @@ export default function App() {
   function updateChain(value: Resource) {
     if (agentKey.current !== key) return;
     setChain((current) => current ? latestConversation(current, value) : current);
-    setConversations((rows) => upsertConversation(rows, summarize(value)));
   }
   function show(next: Page) {
     setMenu(false);
     transition(() => setPage(next));
-  }
-  function openChat(id: string) {
-    setSelection({ owner: key, id });
-    show({ name: "chat" });
-  }
-  async function newChat() {
-    const reuse = emptyConversation(conversations);
-    if (reuse) {
-      openChat(reuse.id);
-      return;
-    }
-    const created = await api<Resource>(`${agentPath(key)}/conversations`, {}, "POST");
-    if (agentKey.current !== created.agent_key) return;
-    setConversations((rows) => upsertConversation(rows, summarize(created)));
-    setChain(created);
-    setResourceOwner(key);
-    openChat(created.id);
-  }
-  function startNewChat() {
-    newChat().catch((e) => setError((e as Error).message));
-  }
-  async function updateConversation(id: string, change: { title: string }) {
-    try {
-      const saved = await api<ConversationSummary>(`${agentPath(key)}/conversations/${encodeURIComponent(id)}`, change, "PUT");
-      setConversations((rows) => upsertConversation(rows, saved));
-    } catch (e) {
-      setError((e as Error).message);
-      throw e;
-    }
-  }
-  /** After the open chat disappears, open the next one rather than an empty screen. */
-  function reopenAfterRemoval(remaining: ConversationSummary[]) {
-    const next = pickConversation(remaining.filter((row) => row.message_count > 0), null);
-    if (next) openChat(next);
-    else startNewChat();
-  }
-  function deleteChat(id: string) {
-    const chat = conversations.find((row) => row.id === id);
-    setConfirm({
-      title: "Delete chat?",
-      message: `“${chat?.title ?? "This chat"}” will be moved to Tsuchi’s trash, where it can be restored.`,
-      confirm: "Delete",
-      run: async () => {
-        await api<void>(`${agentPath(key)}/conversations/${encodeURIComponent(id)}`, undefined, "DELETE");
-        const remaining = conversations.filter((row) => row.id !== id);
-        setConversations(remaining);
-        if (selectedId === id) reopenAfterRemoval(remaining);
-      },
-    });
   }
   function restoreFocus() {
     if (mobile && !menu) openNavigation.current?.focus();
@@ -370,8 +314,6 @@ export default function App() {
         <Sidebar
           agent={agent}
           page={page}
-          conversations={key && resourceOwner === key ? conversations : []}
-          selectedId={selectedId}
           status={status}
           loading={loading}
           disabled={disabled}
@@ -381,11 +323,7 @@ export default function App() {
             void refreshAgent();
             void refreshStatus();
           }}
-          onNewChat={startNewChat}
-          onOpenChat={openChat}
           onPage={(name) => show({ name })}
-          onRenameChat={(id, title) => updateConversation(id, { title })}
-          onDeleteChat={deleteChat}
           desktopHost={desktopHost}
           onServerSettings={desktopMode ? () => { setMenu(false); setServerSettingsOpen(true); } : undefined}
         />
@@ -486,13 +424,6 @@ export default function App() {
           restoreFocus();
         }}
       />}
-      {confirm && <ConfirmDialog
-        title={confirm.title}
-        message={confirm.message}
-        confirm={confirm.confirm}
-        onConfirm={confirm.run}
-        onClose={() => setConfirm(null)}
-      />}
       {assigningRunner && agent && <RunnerAssignment
         agent={agent}
         onClose={() => {
@@ -521,7 +452,6 @@ export default function App() {
           setDesktopHost(nextHost);
           setAgent(null);
           setChain(null);
-          setConversations([]);
           setError("");
           void refreshAgent();
           void refreshStatus();

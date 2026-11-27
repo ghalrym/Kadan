@@ -240,6 +240,15 @@ class RunConversation:
         return {"tool": "send_message", "delivered": True}
 
     async def generate_image(self, args: GenerateImageArguments) -> dict:
+        image_status = await self.runs.services.image_inference_status()
+        if image_status.state != "ready":
+            return {
+                "tool": "generate_image",
+                "available": False,
+                "status": image_status.state,
+                "download_state": image_status.download_state,
+                "user_instructions": image_status.message,
+            }
         image = ImageJob.model_validate(
             await self.runs.services.json_request(
                 "Tsuchi",
@@ -288,12 +297,24 @@ class RunConversation:
             return {"error": str(error), "history_available": False}
 
     async def read_task_status(self, offset: int) -> dict:
-        return await self.runs.services.json_request(
+        result = await self.runs.services.json_request(
             "Tsuchi",
             "GET",
             f"/api/agents/{self.run.agent_key}/resources/{self.run.conversation_id}/task-status",
             params={"offset": offset},
         )
+        image_status = await self.runs.services.image_inference_status()
+        if image_status.state != "ready" and isinstance(result, dict):
+            return {
+                **result,
+                "image_generation": {
+                    "available": False,
+                    "status": image_status.state,
+                    "download_state": image_status.download_state,
+                    "user_instructions": image_status.message,
+                },
+            }
+        return result
 
     async def finish(self) -> None:
         self.finished = True

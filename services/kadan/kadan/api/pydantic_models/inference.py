@@ -24,6 +24,7 @@ class HikariModels(BaseModel):
 
 class HikariCapabilityProviders(BaseModel):
     language: Literal["local", "claude", "codex"] = "local"
+    image: Literal["local", "codex"] = "local"
 
 
 class HikariSubscriptions(BaseModel):

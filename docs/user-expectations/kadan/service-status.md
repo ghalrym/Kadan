@@ -1,12 +1,12 @@
 # Service status
 
-Kadan shows connection information for Tsuchi and Hikari and links to their pages, which open in the same window inside Kadan's web app. Those pages offer **Back to Kadan**. The indicators refresh periodically and can lag a change. Loading and connection failures must remain distinguishable from readiness.
+Kadan shows connection status for its connected **Kadan Server** in the bottom of the sidebar and above the chat composer when something needs attention. Managing storage (Tsuchi) and local models or subscriptions (Hikari) lives in the **Kadan Server** app; the standalone Kadan client does not link directly to Tsuchi or Hikari pages. The indicators refresh periodically and can lag a change. Loading and connection failures must remain distinguishable from readiness.
 
-Tsuchi availability means Kadan can reach storage. If storage is unavailable, Kadan cannot reliably load agents or confirm new saved messages. An error must not be presented as an empty collection or a successful save.
+Storage availability means Kadan Server can reach Tsuchi. If storage is unavailable, Kadan cannot reliably load agents or confirm new saved messages. An error must not be presented as an empty collection or a successful save.
 
-Hikari can require a user-approved model download or attention to an unavailable inference worker. Open Hikari Settings to resolve those states. Language readiness does not mean the model is already loaded or that speech, images and other inference types are ready. A later request can still wait or fail.
+Language inference can require a user-approved model download or attention to an unavailable worker in **Kadan Server → Hikari → Settings**. Language readiness does not mean the model is already loaded or that speech, images and other inference types are ready. A later request can still wait or fail.
 
-When the fixed LFM3 conversation model needs downloading, Kadan links to Hikari Settings and keeps the composer available for notes. The Settings link opens Hikari Settings in the same window. Returning to Kadan in that browser tab restores the chat's draft, chosen persona and any unsent message; a persona deleted in the meantime falls back to the default. Opening Settings does not download a model or send the draft. Replies become available after Kadan observes the connected worker's completed checkpoint.
+When the language model needs downloading, Kadan shows a plain status notice above the composer directing the user to **Kadan Server** and keeps the composer available for notes. Replies become available after Kadan observes the completed checkpoint or active subscription in Kadan Server.
 
 When language inference is unavailable, users can [save chat notes](saving-chat-notes.md) if storage is working. Restoring inference does not automatically answer those notes. Readiness also does not prove that an agent has an available [runner](runner-availability.md).
 

@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Link } from "react-router";
-import { ArrowUp, ArrowUpRight, Mic, NotebookPen, Paperclip, Square, X } from "lucide-react";
+import { ArrowUp, Mic, NotebookPen, Paperclip, Square, X } from "lucide-react";
 import type { ChatAttachments } from "./attachments";
 import AttachmentPicker from "./AttachmentPicker";
 import type { Status } from "./types";
@@ -15,18 +14,17 @@ export function readiness(status: Status | null) {
 function attention(status: Status | null) {
   if (!status) return null;
   if (status.tsuchi.state !== "ready")
-    return { label: "Storage offline", detail: status.tsuchi.message, to: "/tsuchi" };
+    return { label: "Storage offline · check Kadan Server", detail: status.tsuchi.message };
   const hikari = status.hikari;
   if (hikari.state === "ready") return null;
   return {
     label:
       hikari.state === "model_required"
         ? hikari.download_state === "downloading"
-          ? "Downloading model · notes only"
-          : "Download a model · notes only"
-        : "Hikari offline · notes only",
+          ? "Downloading model in Kadan Server · notes only"
+          : "Download a model in Kadan Server · notes only"
+        : "Server inference offline · notes only",
     detail: hikari.message,
-    to: "/hikari/settings",
   };
 }
 
@@ -115,11 +113,10 @@ export default function Composer({
       {voiceError && <p role="alert">{voiceError}</p>}
       {voice && <p role="status">{voice === "requesting" ? "Waiting for microphone permission…" : voice === "recording" ? "Recording · up to 20 seconds. Stop to transcribe." : "Transcribing…"}</p>}
       {issue && (
-        <Link className="attention" to={issue.to} title={issue.detail}>
+        <p className="attention" role="status" title={issue.detail}>
           <span className="dot warn" />
           {issue.label}
-          <ArrowUpRight size={13} />
-        </Link>
+        </p>
       )}
       <VoiceCallControl voiceCall={voiceCall} />
       <form

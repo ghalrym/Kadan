@@ -248,6 +248,75 @@ class LocalServices:
             )
             return InferenceState(state="unavailable", message=message)
 
+    async def image_inference_status(self) -> InferenceState:
+        try:
+            providers = HikariSubscriptions.model_validate(
+                await self.json_request("Hikari", "GET", "/v1/subscriptions")
+            )
+            if providers.capabilities.image != "local":
+                return InferenceState(
+                    state="ready",
+                    model_id=None,
+                    message="Image generation uses ChatGPT through your Codex subscription in Hikari.",
+                )
+            catalog = HikariModels.model_validate(
+                await self.json_request("Hikari", "GET", "/v1/models")
+            )
+            model = next(
+                (
+                    item
+                    for item in catalog.models
+                    if item.kind == "image" or item.id.startswith("qwen-image-")
+                ),
+                None,
+            )
+            if model is None or not model.inference_available:
+                return InferenceState(
+                    state="unavailable",
+                    model_id=model.id if model is not None else None,
+                    message=(
+                        "Image generation is currently unavailable. Tell the user to open "
+                        "Kadan Server and check Hikari → Settings."
+                    ),
+                )
+            if model.status == "complete":
+                return InferenceState(
+                    state="ready",
+                    model_id=model.id,
+                    download_state="complete",
+                    message="Qwen-Image 2.1 Turbo is downloaded and ready.",
+                )
+            if model.status == "downloading":
+                return InferenceState(
+                    state="model_required",
+                    model_id=model.id,
+                    download_state="downloading",
+                    message=(
+                        "The local image model (Qwen-Image 2.1 Turbo) is currently downloading. "
+                        "Tell the user to check download progress in Kadan Server under "
+                        "Hikari → Settings and try again once it finishes."
+                    ),
+                )
+            return InferenceState(
+                state="model_required",
+                model_id=model.id,
+                download_state=model.status,
+                message=(
+                    "Image generation is not set up yet because the image model has not been "
+                    "downloaded. Tell the user to open Kadan Server, go to Hikari → Settings, "
+                    "and either download the local image model (Qwen-Image 2.1 Turbo) or sign in "
+                    "to Codex and switch Images to ChatGPT."
+                ),
+            )
+        except (ServiceError, ValidationError):
+            return InferenceState(
+                state="unavailable",
+                message=(
+                    "Could not reach Hikari to check image generation. Tell the user to make "
+                    "sure Kadan Server is running and check Hikari → Settings."
+                ),
+            )
+
     async def storage_status(self) -> ServiceState:
         try:
             value = await self.json_request("Tsuchi", "GET", "/api/health")

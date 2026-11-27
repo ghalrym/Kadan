@@ -317,8 +317,17 @@ class ImageJobs:
             timeout=httpx.Timeout(None, connect=3),
         )
         if not response.is_success:
+            try:
+                detail = response.json().get("detail")
+            except (ValueError, AttributeError):
+                detail = None
+            message = (
+                f"Hikari image generation failed (HTTP {response.status_code}): {detail}"
+                if isinstance(detail, str) and detail.strip()
+                else f"Hikari image generation failed (HTTP {response.status_code})."
+            )
             raise ServiceError(
-                f"Hikari image generation failed (HTTP {response.status_code}).",
+                message,
                 502,
                 "image_generation_failed",
             )

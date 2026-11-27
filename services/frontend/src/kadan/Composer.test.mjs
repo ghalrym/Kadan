@@ -56,11 +56,12 @@ function elements(node) {
 const find = (tree, type) => elements(tree).find(node => node.type === type);
 const prompt = tree => elements(tree).find(node => node.props?.className === "plan-prompt");
 
-test("missing model links to the Hikari Settings page for downloads", () => {
+test("missing model shows a non-navigating notice pointing to Kadan Server", () => {
   const notice = elements(compose()).find(node => node.props?.className === "attention");
-  assert.equal(notice.props.to, "/hikari/settings");
+  assert.equal(notice.type, "p");
+  assert.equal(notice.props.to, undefined);
   assert.equal(notice.props.onClick, undefined);
-  assert.ok([notice.props.children].flat(Infinity).includes("Download a model · notes only"));
+  assert.ok([notice.props.children].flat(Infinity).includes("Download a model in Kadan Server · notes only"));
 });
 
 test("missing model leaves the draft editable and preserves explicit note sending", () => {
@@ -95,8 +96,8 @@ test("ready model removes the prompt and offers chat without a multi-persona pic
 test("unknown and unavailable states are not presented as no-plan states", () => {
   assert.equal(prompt(compose({ status: null })), undefined);
   for (const [state, label] of [
-    ["model_required", "Download a model · notes only"],
-    ["unavailable", "Hikari offline · notes only"],
+    ["model_required", "Download a model in Kadan Server · notes only"],
+    ["unavailable", "Server inference offline · notes only"],
   ]) {
     const tree = compose({ status: { ...status, hikari: { ...status.hikari, state } } });
     assert.equal(prompt(tree), undefined);
@@ -104,7 +105,7 @@ test("unknown and unavailable states are not presented as no-plan states", () =>
   }
   const tree = compose({ status: { ...status, tsuchi: { ...status.tsuchi, state: "unavailable" } } });
   assert.equal(prompt(tree), undefined);
-  assert.ok(elements(tree).find(node => node.props?.className === "attention").props.children.includes("Storage offline"));
+  assert.ok(elements(tree).find(node => node.props?.className === "attention").props.children.includes("Storage offline · check Kadan Server"));
   assert.equal(find(tree, "textarea").props.disabled, true);
 });
 
