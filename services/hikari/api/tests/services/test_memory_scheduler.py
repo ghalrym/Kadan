@@ -20,7 +20,7 @@ def ledger(ram=64, vram=(24,)):
                 {"vram_total": 2 * v * GIB, "vram_free": v * GIB} for v in vram
             ],
         },
-        ["llm", "tts", "speech", "formatting", "image", "video"],
+        ["llm", "tts", "speech", "formatting", "image"],
     )
 
 
@@ -149,13 +149,13 @@ class CapacityTests(unittest.TestCase):
 class DisplacementTests(unittest.TestCase):
     def test_lowest_priority_then_least_recent_idle_worker_is_offloaded_first(self):
         machine = ledger(vram=(24,))
-        load(machine, "image", [4, 8], used=1.0)
-        load(machine, "video", [4, 8], used=5.0)
+        load(machine, "speech", [4, 8], used=1.0)
+        load(machine, "image", [4, 8], used=5.0)
         load(machine, "tts", [4, 8], used=0.0)
-        machine.workers["speech"].requirement = requirement(1, 8)
+        machine.workers["llm"].requirement = requirement(1, 8)
         self.assertEqual(
-            plan_load(machine, "speech"),
-            [Action("offload", "video"), Action("load", "speech", [GIB, 8 * GIB])],
+            plan_load(machine, "llm"),
+            [Action("offload", "image"), Action("load", "llm", [GIB, 8 * GIB])],
         )
 
     def test_language_model_shrinks_before_it_is_offloaded(self):
@@ -186,27 +186,27 @@ class DisplacementTests(unittest.TestCase):
     def test_shrinking_that_is_not_enough_becomes_an_offload(self):
         machine = ledger(vram=(24,))
         load(machine, "llm", [40, 24], need=requirement(10, 12, 60, 40))
-        machine.workers["video"].requirement = requirement(4, 20)
+        machine.workers["image"].requirement = requirement(4, 20)
         self.assertEqual(
-            plan_load(machine, "video"),
-            [Action("offload", "llm"), Action("load", "video", [4 * GIB, 20 * GIB])],
+            plan_load(machine, "image"),
+            [Action("offload", "llm"), Action("load", "image", [4 * GIB, 20 * GIB])],
         )
 
     def test_busy_workers_are_never_displaced(self):
         machine = ledger(vram=(24,))
-        load(machine, "video", [4, 24], busy=True)
+        load(machine, "image", [4, 24], busy=True)
         machine.workers["llm"].requirement = requirement(4, 8)
         self.assertIsNone(plan_load(machine, "llm"))
 
     def test_queued_work_is_displaced_only_by_higher_priority(self):
         machine = ledger(vram=(24,))
-        load(machine, "image", [4, 24], pending=2)
-        machine.workers["video"].requirement = requirement(4, 8)
-        self.assertIsNone(plan_load(machine, "video"))
+        load(machine, "speech", [4, 24], pending=2)
+        machine.workers["image"].requirement = requirement(4, 8)
+        self.assertIsNone(plan_load(machine, "image"))
         machine.workers["tts"].requirement = requirement(4, 8)
         self.assertEqual(
             plan_load(machine, "tts"),
-            [Action("offload", "image"), Action("load", "tts", [4 * GIB, 8 * GIB])],
+            [Action("offload", "speech"), Action("load", "tts", [4 * GIB, 8 * GIB])],
         )
 
     def test_queued_language_model_keeps_memory_against_lower_priority(self):
@@ -217,14 +217,14 @@ class DisplacementTests(unittest.TestCase):
 
     def test_several_offloads_combine_until_the_worker_fits(self):
         machine = ledger(vram=(24,))
-        load(machine, "image", [2, 10], used=1.0)
-        load(machine, "video", [2, 10], used=2.0)
+        load(machine, "speech", [2, 10], used=1.0)
+        load(machine, "image", [2, 10], used=2.0)
         machine.workers["llm"].requirement = requirement(4, 20)
         self.assertEqual(
             plan_load(machine, "llm"),
             [
-                Action("offload", "video"),
                 Action("offload", "image"),
+                Action("offload", "speech"),
                 Action("load", "llm", [4 * GIB, 20 * GIB]),
             ],
         )
@@ -274,10 +274,10 @@ class LanguagePriorityTests(unittest.TestCase):
     def test_only_the_language_tier_is_reserved(self):
         machine = ledger(ram=64, vram=(24,))
         machine.workers["tts"].requirement = requirement(2, 6)
-        machine.workers["video"].requirement = requirement(4, 3, 40, 33)
+        machine.workers["image"].requirement = requirement(4, 3, 40, 33)
         self.assertEqual(
-            plan_load(machine, "video"),
-            [Action("load", "video", [40 * GIB, 24 * GIB])],
+            plan_load(machine, "image"),
+            [Action("load", "image", [40 * GIB, 24 * GIB])],
         )
 
     def test_worker_still_runs_when_the_reserve_does_not_leave_room(self):
@@ -354,12 +354,12 @@ class MultiGpuTests(unittest.TestCase):
     def test_shrink_keeps_a_floor_on_every_gpu_it_uses(self):
         machine = ledger(ram=64, vram=(24, 24))
         load(machine, "llm", [30, 24, 18], need=spread(10, 6, 30, 40, 2))
-        machine.workers["video"].requirement = spread(4, 20, 4, 20, 3)
-        actions = plan_load(machine, "video")
+        machine.workers["image"].requirement = spread(4, 20, 4, 20, 3)
+        actions = plan_load(machine, "image")
         self.assertEqual(
             actions[0], Action("load", "llm", [30 * GIB, 6 * GIB, 2 * GIB])
         )
-        self.assertEqual(actions[1].worker, "video")
+        self.assertEqual(actions[1].worker, "image")
 
     def test_growth_can_add_a_gpu(self):
         machine = ledger(ram=64, vram=(24, 24))
@@ -399,10 +399,10 @@ class RamCachePressureTests(unittest.TestCase):
         machine = ledger(ram=8)
         cache = machine.workers["llm"]
         cache.budget = [4 * GIB, 0]
-        machine.workers["video"].requirement = requirement(6, 8)
+        machine.workers["image"].requirement = requirement(6, 8)
         self.assertEqual(
-            plan_load(machine, "video"),
-            [Action("offload", "llm"), Action("load", "video", [6 * GIB, 8 * GIB])],
+            plan_load(machine, "image"),
+            [Action("offload", "llm"), Action("load", "image", [6 * GIB, 8 * GIB])],
         )
 
     def test_restoring_worker_reuses_its_own_ram_budget(self):
@@ -421,5 +421,5 @@ class RamCachePressureTests(unittest.TestCase):
                 cache = machine.workers["llm"]
                 cache.budget = [4 * GIB, 0]
                 setattr(cache, attr, 1)
-                machine.workers["video"].requirement = requirement(6, 8)
-                self.assertIsNone(plan_load(machine, "video"))
+                machine.workers["image"].requirement = requirement(6, 8)
+                self.assertIsNone(plan_load(machine, "image"))

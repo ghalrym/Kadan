@@ -304,7 +304,7 @@ impl ServerSupervisor {
         self.stop_all().await;
         let cfg = self.state.lock().unwrap().config.clone();
         let data_dir = PathBuf::from(&cfg.data_dir);
-        for sub in ["tsuchi", "models", "videos"] {
+        for sub in ["tsuchi", "models"] {
             std::fs::create_dir_all(data_dir.join(sub))
                 .map_err(|e| format!("Could not prepare data folder: {e}"))?;
         }
@@ -405,7 +405,6 @@ impl ServerSupervisor {
                     "speech".into(),
                     "tts".into(),
                     "image".into(),
-                    "video".into(),
                 ]
             } else {
                 vec!["formatting".into()]
@@ -547,7 +546,6 @@ impl ServerSupervisor {
                     .env("HIKARI_AUTO_MIGRATE", "true")
                     .env("HIKARI_WORKER_TOKEN", &cfg.worker_token)
                     .env("HIKARI_MODEL_DIR", data_dir.join("models"))
-                    .env("HIKARI_VIDEO_DIR", data_dir.join("videos"))
                     .env("KADAN_TSUCHI_URL", format!("{local_base}/tsuchi"))
                     .env("KADAN_HIKARI_URL", format!("{local_base}/hikari"))
                     .env("KADAN_APP_VERSION", env!("CARGO_PKG_VERSION"))

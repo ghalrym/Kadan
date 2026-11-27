@@ -129,4 +129,4 @@ ATen generation, as does BF16 reduced-precision reduction.
 
 ## Subscription generation branch
 
-On this branch, generation can be routed before native submission to the [Codex subscription image backend](subscriptions.md#image-generation-backend-on-this-branch). Local generation, source/reference editing, pet stages, and the shared native image/video runtime retain the contracts above. The subscription backend does not enter worker scheduling, download checks or physical memory admission. UI integration and owner validation remain pending; this does not establish behavior on master.
+On this branch, generation can be routed before native submission to the [Codex subscription image backend](subscriptions.md#image-generation-backend-on-this-branch). Local generation, source/reference editing, pet stages, and the native image runtime retain the contracts above. The subscription backend does not enter worker scheduling, download checks or physical memory admission. UI integration and owner validation remain pending; this does not establish behavior on master.

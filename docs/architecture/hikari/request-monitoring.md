@@ -1,12 +1,12 @@
 # Request telemetry
 
-Hikari observes generation HTTP handlers separately from worker execution. This keeps an accepted background job from being reported as completed inference. See the user expectations for [request monitoring](../../user-expectations/hikari/request-monitoring.md).
+Hikari observes generation HTTP handlers separately from worker execution. See the user expectations for [request monitoring](../../user-expectations/hikari/request-monitoring.md).
 
 Completed HTTP observations are process-local and capped at 1,000. Restart clears them. The UI initially shows 25 rows per page; filtering and searching retained IDs, endpoints or summaries reset pagination. Details hold structural summaries rather than original content or credentials. Monitoring reads do not count as generation requests.
 
 The request model field retains only curated Inkling 2 Mini language IDs (`inkling-2-mini-iq4-nl`, `inkling-2-mini-q8-0`, `inkling-2-mini-abliterated-iq4-nl`, `inkling-2-mini-abliterated-q8-0`). It observes the explicit `model` field of a complete JSON body within the summary limit; absent, arbitrary, oversized or unconsumed input leaves the model null. This records a requested checkpoint, not proof that inference ran. The chat completion endpoint does not accept `model_id` as an alias.
 
-Requests per minute, median HTTP latency and error rate use retained completions from the last 60 seconds. If capacity truncates that window, request count is a lower bound and latency/error statistics describe retained samples. No samples means unavailable statistics, not zero. Active HTTP handlers are not a count of GPU jobs; an HTTP 202 video submission is separate from its terminal job outcome.
+Requests per minute, median HTTP latency and error rate use retained completions from the last 60 seconds. If capacity truncates that window, request count is a lower bound and latency/error statistics describe retained samples. No samples means unavailable statistics, not zero. Active HTTP handlers are not a count of GPU jobs.
 
 HTTP latency includes validation, queueing and cleanup. Streamed-chat time to first token includes HTTP waiting and text buffering; generation-only time to first token excludes that queue. Decode tokens per second excludes prefill and cleanup. An absent field is unavailable, not a substitute for another timing.
 

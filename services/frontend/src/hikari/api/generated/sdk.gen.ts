@@ -18,9 +18,6 @@ import type {
   CancelSubscriptionLoginData,
   CancelSubscriptionLoginErrors,
   CancelSubscriptionLoginResponses,
-  CancelVideoData,
-  CancelVideoErrors,
-  CancelVideoResponses,
   ChooseCapabilityProviderData,
   ChooseCapabilityProviderErrors,
   ChooseCapabilityProviderResponses,
@@ -45,9 +42,6 @@ import type {
   GenerateSpeechData,
   GenerateSpeechErrors,
   GenerateSpeechResponses,
-  GenerateVideoData,
-  GenerateVideoErrors,
-  GenerateVideoResponses,
   GetDecisionsData,
   GetDecisionsResponses,
   GetMetricsData,
@@ -65,12 +59,6 @@ import type {
   GetSubscriptionLoginResponses,
   GetSubscriptionsData,
   GetSubscriptionsResponses,
-  GetVideoContentData,
-  GetVideoContentErrors,
-  GetVideoContentResponses,
-  GetVideoData,
-  GetVideoErrors,
-  GetVideoResponses,
   HealthData,
   HealthResponses,
   ListImagesData,
@@ -86,8 +74,6 @@ import type {
   ListSpeechModelsData,
   ListSpeechModelsResponses,
   ListSpeechResponses,
-  ListVideosData,
-  ListVideosResponses,
   StartSubscriptionLoginData,
   StartSubscriptionLoginErrors,
   StartSubscriptionLoginResponses,
@@ -651,79 +637,3 @@ export const submitSubscriptionLoginCode = <
       ...options.headers,
     },
   })
-
-/**
- * List Videos
- *
- * Return jobs submitted to this API process.
- */
-export const listVideos = <ThrowOnError extends boolean = false>(
-  options?: Options<ListVideosData, ThrowOnError>,
-): RequestResult<ListVideosResponses, unknown, ThrowOnError> =>
-  (options?.client ?? client).get<ListVideosResponses, unknown, ThrowOnError>({
-    url: '/v1/videos',
-    ...options,
-  })
-
-/**
- * Generate Video
- *
- * Queue a validated native generation and return its actual job identifier.
- */
-export const generateVideo = <ThrowOnError extends boolean = false>(
-  options: Options<GenerateVideoData, ThrowOnError>,
-): RequestResult<GenerateVideoResponses, GenerateVideoErrors, ThrowOnError> =>
-  (options.client ?? client).post<
-    GenerateVideoResponses,
-    GenerateVideoErrors,
-    ThrowOnError
-  >({
-    url: '/v1/videos/generations',
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  })
-
-/**
- * Cancel Video
- */
-export const cancelVideo = <ThrowOnError extends boolean = false>(
-  options: Options<CancelVideoData, ThrowOnError>,
-): RequestResult<CancelVideoResponses, CancelVideoErrors, ThrowOnError> =>
-  (options.client ?? client).delete<
-    CancelVideoResponses,
-    CancelVideoErrors,
-    ThrowOnError
-  >({ url: '/v1/videos/{video_id}', ...options })
-
-/**
- * Get Video
- *
- * Return the real worker state, including errors and cancellation.
- */
-export const getVideo = <ThrowOnError extends boolean = false>(
-  options: Options<GetVideoData, ThrowOnError>,
-): RequestResult<GetVideoResponses, GetVideoErrors, ThrowOnError> =>
-  (options.client ?? client).get<
-    GetVideoResponses,
-    GetVideoErrors,
-    ThrowOnError
-  >({ url: '/v1/videos/{video_id}', ...options })
-
-/**
- * Get Video Content
- */
-export const getVideoContent = <ThrowOnError extends boolean = false>(
-  options: Options<GetVideoContentData, ThrowOnError>,
-): RequestResult<
-  GetVideoContentResponses,
-  GetVideoContentErrors,
-  ThrowOnError
-> =>
-  (options.client ?? client).get<
-    GetVideoContentResponses,
-    GetVideoContentErrors,
-    ThrowOnError
-  >({ url: '/v1/videos/{video_id}/content', ...options })

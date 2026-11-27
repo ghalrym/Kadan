@@ -575,8 +575,14 @@ class AuthorizationTests(unittest.TestCase):
             self.assertTrue(authorized(socket))
 
     def test_requested_model_reads_either_field(self):
-        video = InferenceTask(input={"feature": "video", "prompt": "sea"})
-        self.assertEqual(requested_model(video), "h3-fl2va-int8-turbo")
+        speech = InferenceTask(
+            input={
+                "feature": "tts",
+                "script": "hi",
+                "voice": {"mode": "custom", "speaker": "Ryan"},
+            }
+        )
+        self.assertEqual(requested_model(speech), "qwen-tts-1.7b-custom")
         self.assertEqual(requested_model(chat()), "inkling-2-mini-iq4-nl")
 
 
@@ -584,7 +590,7 @@ class RegistrationTests(HubTestCase):
     async def test_physical_ram_is_independent_of_capped_worker_registration_order(
         self,
     ):
-        for order in (("llm", "video"), ("video", "llm")):
+        for order in (("llm", "image"), ("image", "llm")):
             with self.subTest(order=order):
                 workers = {}
                 for kind in order:
@@ -600,25 +606,25 @@ class RegistrationTests(HubTestCase):
                             "requirement": needs((16, 0), (16, 0)),
                         },
                     )
-                language, video = workers["llm"], workers["video"]
-                self.assertIs(language.computer, video.computer)
-                ledger = video.computer.ledger
+                language, picture = workers["llm"], workers["image"]
+                self.assertIs(language.computer, picture.computer)
+                ledger = picture.computer.ledger
                 self.assertEqual(ledger.capacity, [400 * GIB, 23 * GIB, 23 * GIB])
                 self.assertEqual(language.slot.host_limit, 23 * GIB)
-                self.assertIsNone(video.slot.host_limit)
-                video.slot.pending = 1
-                video.slot.requirement = Requirement(
-                    "h3", (117 * GIB, 3 * GIB), (117 * GIB, 3 * GIB)
+                self.assertIsNone(picture.slot.host_limit)
+                picture.slot.pending = 1
+                picture.slot.requirement = Requirement(
+                    "flux.2-klein-4b", (117 * GIB, 3 * GIB), (117 * GIB, 3 * GIB)
                 )
-                await self.hub._schedule(video.computer)
-                self.assertEqual(video.slot.budget[0], 117 * GIB)
-                self.assertTrue(video.slot.loaded)
+                await self.hub._schedule(picture.computer)
+                self.assertEqual(picture.slot.budget[0], 117 * GIB)
+                self.assertTrue(picture.slot.loaded)
 
     async def test_legacy_first_registration_retains_conservative_physical_baseline(
         self,
     ):
         _, old = await self.connect("image", ram_free=23)
-        _, new = await self.connect("video", ram_free=400, physical_ram_free=400)
+        _, new = await self.connect("tts", ram_free=400, physical_ram_free=400)
         self.assertIs(old.computer, new.computer)
         self.assertEqual(new.computer.ledger.capacity[0], 23 * GIB)
         self.assertEqual(old.slot.host_limit, 23 * GIB)
@@ -1504,7 +1510,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
     async def test_cancel_after_early_terminal_stops_unsent_targets(self):
         first = self.add_worker("first")
         second = self.add_worker("second", "image")
-        third = self.add_worker("third", "video")
+        third = self.add_worker("third", "tts")
         job = self.register_job()
         entered, release = asyncio.Event(), asyncio.Event()
         send_text = second.websocket.send_text
@@ -1550,7 +1556,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
     async def test_cancelled_partial_fanout_cannot_succeed(self):
         first = self.add_worker("first")
         second = self.add_worker("second", "image")
-        third = self.add_worker("third", "video")
+        third = self.add_worker("third", "tts")
         job = self.register_job()
         entered, release = asyncio.Event(), asyncio.Event()
         send_text = second.websocket.send_text
@@ -1603,7 +1609,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
     async def test_cancel_preserves_prior_store_failure_while_other_send_is_open(self):
         first = self.add_worker("first")
         second = self.add_worker("second", "image")
-        third = self.add_worker("third", "video")
+        third = self.add_worker("third", "tts")
         job = self.register_job()
         entered, release = asyncio.Event(), asyncio.Event()
         send_text = second.websocket.send_text
@@ -1757,7 +1763,7 @@ class SubmissionOwnershipTests(CancellationTestCase):
     async def test_partial_send_failure_keeps_submission_until_all_cleanup(self):
         first = self.add_worker("first")
         second = self.add_worker("second", "image")
-        third = self.add_worker("third", "video")
+        third = self.add_worker("third", "tts")
         first_socket = first.websocket = JobSocket(self.hub, first)
         second_socket = second.websocket = JobSocket(self.hub, second)
         send_text = second_socket.send_text
@@ -1858,7 +1864,6 @@ class ModelIdleTests(HubTestCase):
             "speech",
             "formatting",
             "image",
-            "video",
         ):
             with self.subTest(kind=kind):
                 socket, worker = await self.resident(kind, computer=kind)
@@ -1959,10 +1964,10 @@ class SchedulingTests(HubTestCase):
         _, picture = await self.connect(
             "image", physical_ram_free=400, ram_free=400, ram_limit=None
         )
-        old_video, _ = await self.connect(
-            "video", physical_ram_free=400, ram_free=400, ram_limit=None
+        old_tts, _ = await self.connect(
+            "tts", physical_ram_free=400, ram_free=400, ram_limit=None
         )
-        await old_video.close()
+        await old_tts.close()
         await self.settle()
         picture.slot.loaded = True
         picture.slot.busy = True
@@ -1970,30 +1975,36 @@ class SchedulingTests(HubTestCase):
         picture.slot.requirement = Requirement(
             "resident", (350 * GIB, 0), (350 * GIB, 0)
         )
-        socket, video = await self.connect(
-            "video",
+        socket, speech = await self.connect(
+            "tts",
             physical_ram_free=49,
             ram_free=49,
             ram_limit=None,
             replies={"load": ok, "requirement": needs((117, 3), (117, 3))},
         )
         job = await self.hub.submit(
-            InferenceTask(input={"feature": "video", "prompt": "red ball"})
+            InferenceTask(
+                input={
+                    "feature": "tts",
+                    "script": "red ball",
+                    "voice": {"mode": "custom", "speaker": "Ryan"},
+                }
+            )
         )
-        await self.hub._schedule(video.computer)
-        self.assertEqual(video.computer.ledger.capacity[0], 400 * GIB)
-        self.assertIsNone(video.slot.host_limit)
+        await self.hub._schedule(speech.computer)
+        self.assertEqual(speech.computer.ledger.capacity[0], 400 * GIB)
+        self.assertIsNone(speech.slot.host_limit)
         self.assertFalse(socket.commands("cancel"))
         self.assertFalse(socket.commands("load"))
-        self.assertEqual(video.slot.pending, 1)
+        self.assertEqual(speech.slot.pending, 1)
         self.assertFalse(job.result.done())
         # Confirmed release makes the ledger capacity available again.
         picture.slot.loaded = False
         picture.slot.busy = False
         picture.slot.budget = [0, 0]
-        await self.hub._schedule(video.computer)
+        await self.hub._schedule(speech.computer)
         self.assertEqual(socket.commands("load")[-1]["budget"][0], 117 * GIB)
-        self.assertTrue(video.slot.loaded)
+        self.assertTrue(speech.slot.loaded)
 
     async def test_container_ceiling_is_not_transient_free_ram(self):
         socket, worker = await self.connect(

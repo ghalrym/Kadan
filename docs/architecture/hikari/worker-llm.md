@@ -39,14 +39,14 @@ Serves public chat, agent tool-calling turns, and multimodal screenshot vision u
 
 - **Minimum:** model weights + vision projector + FP16 KV mirror, F32 short-conv/parameter and GPU boundary snapshot device state + VRAM headroom, plus host RAM for staging and prefix checkpoint state.
 - **Context:** sized from the configured `HIKARI_LLM_CONTEXT_LIMIT` (default `65536`) or an explicit request context limit within the checkpoint's supported maximum.
-- **Several GPUs:** the budget may span GPUs where supported, with per-GPU headroom enforced. At the default `IQ4_NL` quant and `65536` context, FP16 KV + GPU boundary device state (~2.67 GiB) allows the entire model to pack cleanly onto a single 24 GiB GPU, leaving other GPUs free for image/video/audio workloads.
+- **Several GPUs:** the budget may span GPUs where supported, with per-GPU headroom enforced. At the default `IQ4_NL` quant and `65536` context, FP16 KV + GPU boundary device state (~2.67 GiB) allows the entire model to pack cleanly onto a single 24 GiB GPU, leaving other GPUs free for image and audio workloads.
 
 ## Scheduling
 
 - Priority 1, shared with decisions and live voice calls: the highest.
 - Within queued language requests, `interactive` requests (chat turns) run ahead of `background` requests between turns, with a fairness bound (at most 3 consecutive interactive turns ahead of waiting background work) and no mid-generation preemption.
-- While it is not loaded, other workers leave its minimum free where possible so chat can start beside an image (FLUX.2 Klein 4B) or video (H3) request.
-- When idle lower-priority workers hold memory, it takes back the VRAM it lacks so GPU sharing between LLM and image/video generation works automatically without manual unloading.
+- While it is not loaded, other workers leave its minimum free where possible so chat can start beside an image (FLUX.2 Klein 4B) request.
+- When idle lower-priority workers hold memory, it takes back the VRAM it lacks so GPU sharing between LLM and image generation works automatically without manual unloading.
 - Any change to its budget closes the engine cleanly before releasing memory; the next request reloads within the new budget.
 
 ## Constraints

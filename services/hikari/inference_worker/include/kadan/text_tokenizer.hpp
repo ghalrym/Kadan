@@ -19,7 +19,6 @@ public:
     static constexpr std::size_t max_input_bytes = 32000, max_tokens = 128000;
     enum class Format {
         byte_level,
-        h3,
         tts
     };
     explicit Tokenizer(

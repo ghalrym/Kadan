@@ -33,8 +33,8 @@ CustomVoice: named speakers, supported languages and instructions.
 
 ## Scheduling
 
-- Priority 2. It yields to the language worker and displaces transcription, image
-  and video when they are idle or queued.
+- Priority 2. It yields to the language worker and displaces transcription and
+  image when they are idle or queued.
 
 ## Constraints
 

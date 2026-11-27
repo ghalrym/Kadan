@@ -21,7 +21,6 @@ PRIORITY = {
     "speech": 3,
     "formatting": 3,
     "image": 4,
-    "video": 5,
     "lfm3_audio": 1,
 }
 TOP_PRIORITY = min(PRIORITY.values())
@@ -229,7 +228,7 @@ def _reserve(ledger: MachineLedger, target: WorkerSlot) -> list[int]:
     """Room kept for the language model while it is not loaded.
 
     Other workers never take its minimum, so the language model can start while
-    an image or video runs instead of queueing behind it. The minimum is placed
+    an image runs instead of queueing behind it. The minimum is placed
     by the same per-GPU rules as a real grant, so it may span GPUs.
     """
     free = ledger.free()

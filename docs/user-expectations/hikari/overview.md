@@ -1,6 +1,6 @@
 # Hikari user expectations
 
-Hikari supplies chat, decisions, images, video, speech and transcription for Kadan and direct clients. Its pages, opened from Kadan's sidebar inside the same web app, let users download its fixed models, try inference and inspect recent requests. **Back to Kadan** returns to chats.
+Hikari supplies chat, decisions, images, speech and transcription for Kadan and direct clients. Its pages, opened from Kadan's sidebar inside the same web app, let users download its fixed models, try inference and inspect recent requests. **Back to Kadan** returns to chats.
 
 Downloading, loading and successful generation are separate states. Requests can wait for hardware or fail when their requirements cannot be met. Playground results generally belong to the open page; each feature describes what survives navigation or a service restart.
 
@@ -14,7 +14,6 @@ Downloading, loading and successful generation are separate states. Requests can
 | [Decisions](decisions.md) | Evaluate choices, scores and criteria in a single pass using the language model. |
 | [Image generation](image-generation.md) | Generate artwork from descriptions and inspect progress and results. |
 | [Image editing](image-editing.md) | Edit source images or use reference conditioning with defined preservation limits. |
-| [Video generation](video-generation.md) | Queue clips with audio, cancel jobs and download completed media. |
 | [Text to speech](text-to-speech.md) | Generate completed audio using named speakers and delivery instructions. |
 | [Transcription](transcription.md) | Transcribe supported recordings with optional formatting and raw-text fallback. |
 | [Live voice calls](voice-calls.md) | Build direct spoken conversations with client-managed turns, playback and acknowledgements. |

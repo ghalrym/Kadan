@@ -18,7 +18,6 @@ using Footprint = std::vector<Bytes>;
 enum class Workload {
     llm,
     image,
-    video,
     speech,
     formatting,
     tts,

@@ -620,7 +620,7 @@ int main() {
     {
         Resources r({host, 1024});
         Fake gpu(r);
-        DeviceWeights bank(r, 0, Workload::video, 64, gpu);
+        DeviceWeights bank(r, 0, Workload::image, 64, gpu);
         gpu.free_bytes = 16;
         check(
             !bank.retain(key, bytes, cancel) && gpu.pointers.empty()
@@ -696,7 +696,7 @@ int main() {
     for (const auto* fail : {"allocate", "copy"}) {
         Resources r({host, 1024});
         Fake gpu(r);
-        DeviceWeights bank(r, 0, Workload::video, 64, gpu);
+        DeviceWeights bank(r, 0, Workload::image, 64, gpu);
         gpu.fail = fail;
         fails([&] { bank.retain(key, bytes, cancel); });
         check(!bank.quarantined() && bank.allocated() == 0 && gpu.pointers.empty());
@@ -707,7 +707,7 @@ int main() {
     {
         Resources r({host, 1024});
         Fake gpu(r);
-        DeviceWeights bank(r, 0, Workload::video, 64, gpu);
+        DeviceWeights bank(r, 0, Workload::image, 64, gpu);
         gpu.cancellation = &cancel;
         fails([&] { bank.retain(key, bytes, cancel); });
         check(bank.allocated() == 0 && gpu.pointers.empty());

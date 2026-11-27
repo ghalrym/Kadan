@@ -181,7 +181,7 @@ int main() {
         fails([&] { r.reserve(Workload::llm, {1}); });
         auto h = r.reserve(Workload::llm, {70, 20, 10});
         fails([&] { r.pin(h); });  // Loading is not executable.
-        fails([&] { r.reserve(Workload::video, {31, 0, 0}); });
+        fails([&] { r.reserve(Workload::image, {31, 0, 0}); });
         check(r.snapshot().used == Footprint({70, 20, 10}));
         r.loaded(h);
         r.pin(h);

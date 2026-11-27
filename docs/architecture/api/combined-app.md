@@ -36,8 +36,8 @@ handlers are synchronous and run in the thread pool, so its SQLite work does not
 block Hikari's worker connections on the shared event loop.
 
 Code that builds a URL to its own service uses the request's `root_path` (the
-mount prefix) rather than assuming it is served at `/`: Kadan's MCP OAuth
-callback and Hikari's video content links. Hikari's request telemetry and the
+mount prefix) rather than assuming it is served at `/`, such as Kadan's MCP OAuth
+callback. Hikari's request telemetry and the
 shared request tracing strip or keep that prefix explicitly.
 
 ## Shared process

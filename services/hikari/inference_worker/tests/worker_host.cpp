@@ -210,7 +210,7 @@ void invalid_commands_are_rejected_not_thrown() {
     assert(harness.last(id('3'))["state"] == "rejected");
     assert(harness.last(id('3'))["status_code"] == 422);
     harness.command(
-        {{"id", id('4')}, {"command", "load"}, {"worker", "video"}, {"budget", {1, 1}}}
+        {{"id", id('4')}, {"command", "load"}, {"worker", "image"}, {"budget", {1, 1}}}
     );
     assert(harness.last(id('4'))["status_code"] == 404);
     harness.command({{"id", id('5')}, {"command", "offload"}, {"worker", "store"}});

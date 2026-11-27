@@ -23,27 +23,6 @@ class ImageSet(Base):
     meta: Mapped[str] = mapped_column(Text)
 
 
-class VideoJob(Base):
-    __tablename__ = "video_jobs"
-    __table_args__ = (
-        CheckConstraint("aspect IN ('wide', 'portrait', 'square')", name="aspect"),
-        CheckConstraint("progress BETWEEN 0 AND 100", name="progress_range"),
-        CheckConstraint("status IN ('Rendering', 'Queued', 'Done')", name="status"),
-    )
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True)
-    prompt: Mapped[str] = mapped_column(Text)
-    duration: Mapped[str] = mapped_column(Text)
-    resolution: Mapped[str] = mapped_column(Text)
-    aspect: Mapped[str] = mapped_column(Text)
-    fps: Mapped[str] = mapped_column(Text)
-    progress: Mapped[int]
-    time: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(Text)
-    thumbnail: Mapped[str] = mapped_column(Text)
-    progress_text: Mapped[str] = mapped_column(Text)
-
-
 class GeneratedSpeech(Base):
     __tablename__ = "generated_speech"
 

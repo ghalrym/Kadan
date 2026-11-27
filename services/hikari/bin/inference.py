@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Annotated
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import typer
@@ -106,12 +106,6 @@ def image(ctx: typer.Context, request_file: Path, output: Path | None = None) ->
 
 
 @app.command()
-def video(ctx: typer.Context, request_file: Path, output: Path | None = None) -> None:
-    """Queue a video JSON request and return its job ID; acceptance is not completion."""
-    submit(ctx.obj, "/v1/videos/generations", request_file, output)
-
-
-@app.command()
 def speech(ctx: typer.Context, request_file: Path, output: Path | None = None) -> None:
     """Submit a speech generation JSON request; results contain base64 WAV audio."""
     submit(ctx.obj, "/v1/audio/speech", request_file, output)
@@ -131,24 +125,3 @@ def decisions(
 ) -> None:
     """Submit a decision JSON request containing state and typed questions."""
     submit(ctx.obj, "/v1/decisions", request_file, output)
-
-
-@app.command("video-status")
-def video_status(ctx: typer.Context, job_id: str) -> None:
-    """Read a video's queue/progress/completion state from the live API."""
-    typer.echo(ctx.obj.request("GET", f"/v1/videos/{quote(job_id, safe='')}").decode())
-
-
-@app.command("video-cancel")
-def video_cancel(ctx: typer.Context, job_id: str) -> None:
-    """Ask the live worker to cancel a queued or running video job."""
-    typer.echo(
-        ctx.obj.request("DELETE", f"/v1/videos/{quote(job_id, safe='')}").decode()
-    )
-
-
-@app.command("video-download")
-def video_download(ctx: typer.Context, job_id: str, output: Path) -> None:
-    """Download a completed job's MP4; unfinished jobs return an API error."""
-    content = ctx.obj.request("GET", f"/v1/videos/{quote(job_id, safe='')}/content")
-    output.write_bytes(content)

@@ -9,7 +9,7 @@ from api.services.inference_errors import InferenceFailure
 from api.services.worker_hub import WorkerHub
 from api.tests.services.test_worker_hub import checkpoint
 
-NATIVE_KINDS = ("llm", "tts", "speech", "formatting", "image", "video")
+NATIVE_KINDS = ("llm", "tts", "speech", "formatting", "image")
 CATALOG = (
     ("inkling-2-mini-iq4-nl", "llm"),
     ("inkling-2-mini-q8-0", "llm"),
@@ -20,7 +20,6 @@ CATALOG = (
     ("whisper-medium", "transcription"),
     ("superwhisper-s1-mini", "formatting"),
     ("flux.2-klein-4b", "image"),
-    ("h3-fl2va-int8-turbo", "video"),
 )
 
 
@@ -75,7 +74,6 @@ class ConnectedModelOwnersTests(unittest.TestCase):
                 "whisper-medium",
                 "superwhisper-s1-mini",
                 "flux.2-klein-4b",
-                "h3-fl2va-int8-turbo",
             },
         )
 
@@ -155,13 +153,11 @@ class ConnectedModelOwnersTests(unittest.TestCase):
         self.assertEqual(len(hub.models.models), 1)
         hub.models.models[0].status = "failed"
         hub.models.models[0].error = "snapshot only"
-        hub.models.video_defaults.duration = 10
         for worker in (first, second):
             self.assertTrue(
                 all(model.status == "complete" for model in worker.models.models)
             )
             self.assertTrue(all(model.error is None for model in worker.models.models))
-            self.assertEqual(worker.models.video_defaults.duration, 5)
 
 
 class ConnectedStoreSettingsTests(unittest.IsolatedAsyncioTestCase):

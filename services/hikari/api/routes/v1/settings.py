@@ -11,7 +11,6 @@ from api.pydantic_models.inference_task import (
 from api.pydantic_models.model_store import (
     CheckpointStatus,
     ModelAssignments,
-    VideoDefaults,
 )
 from api.services.inference import inference
 from api.services.inference_errors import InferenceFailure
@@ -22,7 +21,6 @@ router = APIRouter(prefix="/v1/settings", tags=["Settings"])
 class SettingsResponse(BaseModel):
     models: list[CheckpointStatus]
     defaults: ModelAssignments
-    video_defaults: VideoDefaults
     whisper_formatting: bool
 
 
@@ -41,7 +39,6 @@ def get_settings() -> SettingsResponse:
     return SettingsResponse(
         models=status.models,
         defaults=status.defaults,
-        video_defaults=status.video_defaults,
         whisper_formatting=status.whisper_formatting,
     )
 

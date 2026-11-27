@@ -6,4 +6,4 @@ The public lifecycle describes the native `hikari-worker-llm` Strata worker runn
 
 `POST /model-lifecycle/unload` cancels owned language jobs, joins cleanup, and requests confirmed native offload before returning status. Physical charges remain until release is confirmed. It neither removes checkpoint files nor cancels media work. Public manual loading and saved-context endpoints remain retired; context size is configured via `HIKARI_LLM_CONTEXT_LIMIT` on `hikari-worker-llm`.
 
-Placement, memory admission, prefix-cache reuse, and GPU sharing with other workers (such as FLUX.2 Klein 4B and H3 video) are described in [Language worker](worker-llm.md) and [Inference architecture](inference.md).
+Placement, memory admission, prefix-cache reuse, and GPU sharing with other workers (such as FLUX.2 Klein 4B and Qwen3-TTS) are described in [Language worker](worker-llm.md) and [Inference architecture](inference.md).

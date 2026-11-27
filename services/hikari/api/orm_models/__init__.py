@@ -7,7 +7,7 @@ from api.orm_models.decisions import (
     NoulQuestion,
     ScoreQuestion,
 )
-from api.orm_models.media import GeneratedSpeech, ImageSet, VideoJob
+from api.orm_models.media import GeneratedSpeech, ImageSet
 from api.orm_models.requests import RequestRecord
 from api.orm_models.settings import ModelSetting
 from api.orm_models.subscriptions import CapabilityProvider, Subscription
@@ -22,7 +22,6 @@ __all__ = [
     "ScoreQuestion",
     "GeneratedSpeech",
     "ImageSet",
-    "VideoJob",
     "RequestRecord",
     "ModelSetting",
     "CapabilityProvider",

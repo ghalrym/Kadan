@@ -89,7 +89,7 @@ jobs:
         run: python -m pip install -r services/hikari/requirements-dev.txt
       - name: Run clang-tidy
         run: python services/hikari/bin/hikari.py check cpp-lint --build-dir /tmp/kadan-lint
-      - name: Run tokenizer and H3 inventory unit tests
+      - name: Run tokenizer unit tests
         run: |
-          cmake --build /tmp/kadan-lint --target text-tokenizer-tests h3-inventory-tests --parallel 2
-          ctest --test-dir /tmp/kadan-lint -R '^(text-tokenizer|h3-inventory)$' --output-on-failure
+          cmake --build /tmp/kadan-lint --target text-tokenizer-tests --parallel 2
+          ctest --test-dir /tmp/kadan-lint -R '^text-tokenizer$' --output-on-failure

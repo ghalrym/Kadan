@@ -359,14 +359,7 @@ export type CheckpointStatus = {
   /**
    * Kind
    */
-  kind:
-    | 'llm'
-    | 'video'
-    | 'speech'
-    | 'transcription'
-    | 'formatting'
-    | 'image'
-    | 'audio'
+  kind: 'llm' | 'speech' | 'transcription' | 'formatting' | 'image' | 'audio'
   /**
    * License
    */
@@ -978,10 +971,6 @@ export type ModelAssignments = {
    * Transcription
    */
   transcription?: 'whisper-medium'
-  /**
-   * Video
-   */
-  video?: 'h3-fl2va-int8-turbo'
 }
 
 /**
@@ -1260,15 +1249,7 @@ export type RequestRecord = {
   /**
    * Type
    */
-  type: 'LLM' | 'Image' | 'Video' | 'TTS' | 'STT' | 'Decision'
-  /**
-   * Video Job Id
-   */
-  video_job_id?: string | null
-  /**
-   * Video Status
-   */
-  video_status?: 'Queued' | 'Rendering' | 'Done' | 'Failed' | 'Cancelled' | null
+  type: 'LLM' | 'Image' | 'TTS' | 'STT' | 'Decision'
 }
 
 /**
@@ -1406,7 +1387,6 @@ export type SettingsResponse = {
    * Models
    */
   models: Array<CheckpointStatus>
-  video_defaults: VideoDefaults
   /**
    * Whisper Formatting
    */
@@ -1668,146 +1648,6 @@ export type ValidationError = {
    * Error Type
    */
   type: string
-}
-
-/**
- * VideoDefaults
- *
- * Suggested clip settings; request limits and memory admission are separate.
- */
-export type VideoDefaults = {
-  /**
-   * Duration
-   */
-  duration?: number
-  /**
-   * Resolution
-   */
-  resolution?: '480p' | '768p'
-}
-
-/**
- * VideoGenerationRequest
- */
-export type VideoGenerationRequest = {
-  /**
-   * Aspect
-   */
-  aspect?: '16:9' | '9:16' | '1:1'
-  /**
-   * Fps
-   */
-  fps?: 24
-  /**
-   * Model
-   */
-  model?: 'h3-fl2va-int8-turbo'
-  /**
-   * Negative Prompt
-   */
-  negative_prompt?: ''
-  /**
-   * Prompt
-   */
-  prompt: string
-  /**
-   * Resolution
-   *
-   * Omit for the fixed default (5 seconds, 480p).
-   */
-  resolution?: '480p' | '768p' | null
-  /**
-   * Seconds
-   *
-   * Whole seconds at 24 fps (1–15). Omit for the fixed default (5 seconds, 480p); duration is also accepted.
-   */
-  seconds?: number | null
-  /**
-   * Seed
-   */
-  seed?: number
-}
-
-/**
- * VideoGenerationResponse
- */
-export type VideoGenerationResponse = {
-  job: VideoJob
-}
-
-/**
- * VideoJob
- */
-export type VideoJob = {
-  /**
-   * Aspect
-   */
-  aspect: 'wide' | 'portrait' | 'square'
-  /**
-   * Duration
-   */
-  duration: string
-  /**
-   * Error
-   */
-  error?: string | null
-  /**
-   * Fps
-   */
-  fps: string
-  /**
-   * Id
-   */
-  id: string
-  /**
-   * Output Url
-   */
-  output_url?: string | null
-  /**
-   * Progress
-   */
-  progress: number
-  /**
-   * Progresstext
-   */
-  progressText: string
-  /**
-   * Prompt
-   */
-  prompt: string
-  /**
-   * Resolution
-   */
-  resolution: string
-  /**
-   * Status
-   */
-  status: 'Rendering' | 'Queued' | 'Done' | 'Failed' | 'Cancelled'
-  /**
-   * Thumbnail
-   */
-  thumbnail: string
-  /**
-   * Time
-   */
-  time: string
-}
-
-/**
- * VideoResponse
- */
-export type VideoResponse = {
-  job: VideoJob
-}
-
-/**
- * VideosResponse
- */
-export type VideosResponse = {
-  /**
-   * Jobs
-   */
-  jobs: Array<VideoJob>
 }
 
 /**
@@ -2406,7 +2246,7 @@ export type ListRequestsData = {
     /**
      * Type
      */
-    type?: 'LLM' | 'Image' | 'Video' | 'TTS' | 'STT' | 'Decision' | null
+    type?: 'LLM' | 'Image' | 'TTS' | 'STT' | 'Decision' | null
     /**
      * Status
      */
@@ -2728,143 +2568,3 @@ export type SubmitSubscriptionLoginCodeResponses = {
 
 export type SubmitSubscriptionLoginCodeResponse =
   SubmitSubscriptionLoginCodeResponses[keyof SubmitSubscriptionLoginCodeResponses]
-
-export type ListVideosData = {
-  body?: never
-  path?: never
-  query?: never
-  url: '/v1/videos'
-}
-
-export type ListVideosResponses = {
-  /**
-   * Successful Response
-   */
-  200: VideosResponse
-}
-
-export type ListVideosResponse = ListVideosResponses[keyof ListVideosResponses]
-
-export type GenerateVideoData = {
-  body: VideoGenerationRequest
-  path?: never
-  query?: never
-  url: '/v1/videos/generations'
-}
-
-export type GenerateVideoErrors = {
-  /**
-   * Validation Error
-   */
-  422: HttpValidationError
-  /**
-   * Video provider unavailable
-   */
-  503: unknown
-}
-
-export type GenerateVideoError = GenerateVideoErrors[keyof GenerateVideoErrors]
-
-export type GenerateVideoResponses = {
-  /**
-   * Successful Response
-   */
-  202: VideoGenerationResponse
-}
-
-export type GenerateVideoResponse =
-  GenerateVideoResponses[keyof GenerateVideoResponses]
-
-export type CancelVideoData = {
-  body?: never
-  path: {
-    /**
-     * Video Id
-     */
-    video_id: string
-  }
-  query?: never
-  url: '/v1/videos/{video_id}'
-}
-
-export type CancelVideoErrors = {
-  /**
-   * Validation Error
-   */
-  422: HttpValidationError
-}
-
-export type CancelVideoError = CancelVideoErrors[keyof CancelVideoErrors]
-
-export type CancelVideoResponses = {
-  /**
-   * Successful Response
-   */
-  200: VideoResponse
-}
-
-export type CancelVideoResponse =
-  CancelVideoResponses[keyof CancelVideoResponses]
-
-export type GetVideoData = {
-  body?: never
-  path: {
-    /**
-     * Video Id
-     */
-    video_id: string
-  }
-  query?: never
-  url: '/v1/videos/{video_id}'
-}
-
-export type GetVideoErrors = {
-  /**
-   * Video not found
-   */
-  404: unknown
-  /**
-   * Validation Error
-   */
-  422: HttpValidationError
-}
-
-export type GetVideoError = GetVideoErrors[keyof GetVideoErrors]
-
-export type GetVideoResponses = {
-  /**
-   * Successful Response
-   */
-  200: VideoResponse
-}
-
-export type GetVideoResponse = GetVideoResponses[keyof GetVideoResponses]
-
-export type GetVideoContentData = {
-  body?: never
-  path: {
-    /**
-     * Video Id
-     */
-    video_id: string
-  }
-  query?: never
-  url: '/v1/videos/{video_id}/content'
-}
-
-export type GetVideoContentErrors = {
-  /**
-   * Validation Error
-   */
-  422: HttpValidationError
-}
-
-export type GetVideoContentError =
-  GetVideoContentErrors[keyof GetVideoContentErrors]
-
-export type GetVideoContentResponses = {
-  /**
-   * Successful Response
-   */
-  200: unknown
-}

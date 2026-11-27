@@ -6,13 +6,9 @@ export const capabilities = [
   { id: 'whisper-medium', label: 'Speech to text', short: 'STT', tone: 'stt' },
   { id: 'superwhisper-s1-mini', label: 'Speech formatter', short: 'Formatter', tone: 'formatter' },
   { id: 'qwen-tts-1.7b-custom', label: 'Text to speech', short: 'TTS', tone: 'tts' },
-  { id: 'h3-fl2va-int8-turbo', label: 'Video', short: 'Video', tone: 'video' },
 ] as const
 
 export type Capability = (typeof capabilities)[number]
-
-/** Clip settings the video form starts from. */
-export const videoDefaults = { duration: 5, resolution: '480p' } as const
 
 /** Capabilities a subscription can serve instead of the model on this computer. */
 export const subscriptionCapabilities = [

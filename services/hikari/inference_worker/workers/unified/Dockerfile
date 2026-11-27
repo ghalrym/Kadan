@@ -1,6 +1,6 @@
 # Unified 100% C++20/CUDA multi-workload worker image (no Python runtime).
 # Supports lfm3_llm, lfm3_vision, lfm3_audio, formatting, llm,
-# speech, tts, and video via `kadan-worker --workload=<kind>`.
+# speech, and tts via `kadan-worker --workload=<kind>`.
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS build
 ARG DEBIAN_FRONTEND=noninteractive
 ARG KADAN_CUDA_ARCHS="86"
@@ -31,7 +31,6 @@ RUN cmake -S /src/inference_worker -B /build -G Ninja \
     -DKADAN_ALLOW_MULTI_ARCH=${KADAN_ALLOW_MULTI_ARCH} \
     -DCMAKE_CUDA_ARCHITECTURES="${KADAN_CUDA_ARCHS}" \
     -DKADAN_ENABLE_TTS_WORKER=ON \
-    -DKADAN_ENABLE_H3_GENERATION=ON \
     -DKADAN_ENABLE_WHISPER_BLAS=ON \
     && cmake --build /build --target kadan-worker -j"$(nproc)" \
     && cmake --install /build --component kadan-worker --prefix /opt/kadan
@@ -40,7 +39,6 @@ FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    ffmpeg \
     libarchive13t64 \
     libcurl4t64 \
     libicu74 \

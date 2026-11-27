@@ -1,6 +1,6 @@
 # Inference operations
 
-Users expect Hikari to run chat, decisions, speech synthesis, transcription and formatting, image generation, and video generation on their available hardware. Users can request several inference types at once. Hikari manages model loading, memory sharing and waiting work automatically; users should not need to unload one model manually before requesting another type.
+Users expect Hikari to run chat, decisions, speech synthesis, transcription and formatting, and image generation on their available hardware. Users can request several inference types at once. Hikari manages model loading, memory sharing and waiting work automatically; users should not need to unload one model manually before requesting another type.
 
 ## Language models and hardware
 
@@ -22,9 +22,8 @@ When requests compete for memory, Hikari uses this priority order, highest first
 2. Speech synthesis.
 3. Transcription and transcription formatting.
 4. Image generation.
-5. Video generation.
 
-A higher-priority request does not interrupt inference already running. For example, chat and image generation can overlap when both fit. If a video is already running and occupies the memory chat needs, chat waits rather than cancelling the video. Within queued language requests, interactive chat replies take priority over background computer work between turns, while ensuring waiting background work still makes progress.
+A higher-priority request does not interrupt inference already running. For example, chat and image generation can overlap when both fit. If an image generation is already running and occupies the memory chat needs, chat waits rather than cancelling the image generation. Within queued language requests, interactive chat replies take priority over background computer work between turns, while ensuring waiting background work still makes progress.
 
 Hikari tries to keep room for chat while other work runs, but chat has no unconditional immediate-start guarantee. Sustained higher-priority demand can delay lower-priority work.
 

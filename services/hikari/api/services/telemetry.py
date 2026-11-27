@@ -17,7 +17,6 @@ GENERATION_PATHS = {
     "/v1/decisions": "Decision",
     "/v1/images/generations": "Image",
     "/v1/images/edits": "Image",
-    "/v1/videos/generations": "Video",
     "/v1/audio/speech": "TTS",
     "/v1/audio/transcriptions": "STT",
 }
@@ -238,7 +237,6 @@ class TelemetryMiddleware:
                         for key, value in measurement.items()
                         if key
                         in {
-                            "video_job_id",
                             "generation_ttft_ms",
                             "first_token_ms",
                             "stream_ttft_ms",

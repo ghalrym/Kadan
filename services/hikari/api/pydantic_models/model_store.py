@@ -30,7 +30,6 @@ class CheckpointStatus(BaseModel):
     estimated_bytes: int
     kind: Literal[
         "llm",
-        "video",
         "speech",
         "transcription",
         "formatting",
@@ -52,23 +51,14 @@ class ModelAssignments(BaseModel):
     llm: LlmModel = "inkling-2-mini-iq4-nl"
     audio_call: Literal["lfm3-audio-2b-bf16"] = "lfm3-audio-2b-bf16"
     image: Literal["flux.2-klein-4b"] = "flux.2-klein-4b"
-    video: Literal["h3-fl2va-int8-turbo"] = "h3-fl2va-int8-turbo"
     speech: Literal["qwen-tts-1.7b-custom"] = "qwen-tts-1.7b-custom"
     transcription: Literal["whisper-medium"] = "whisper-medium"
     formatting: Literal["superwhisper-s1-mini"] = "superwhisper-s1-mini"
     decisions: LlmModel = "inkling-2-mini-iq4-nl"
 
 
-class VideoDefaults(BaseModel):
-    """Suggested clip settings; request limits and memory admission are separate."""
-
-    duration: int = Field(default=5, ge=1, le=15)
-    resolution: Literal["480p", "768p"] = "480p"
-
-
 class ModelStoreStatus(BaseModel):
     models: list[CheckpointStatus]
     defaults: ModelAssignments = Field(default_factory=ModelAssignments)
-    video_defaults: VideoDefaults = Field(default_factory=VideoDefaults)
     selected_model_id: LlmModel = "inkling-2-mini-iq4-nl"
     whisper_formatting: bool = True

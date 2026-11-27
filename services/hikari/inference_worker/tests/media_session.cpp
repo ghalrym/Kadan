@@ -809,7 +809,7 @@ void upload_admission_failure_never_enqueues() {
     Fixture f;
     check(!f.session.admit(decoder(), shape()));
     auto view = upload_view(f.session, false);
-    const auto charge = f.resources->reserve(Workload::video, {1000000, 0, 0});
+    const auto charge = f.resources->reserve(Workload::image, {1000000, 0, 0});
     std::array<std::byte, 64> bytes{};
     check(fails([&] { f.session.upload_input(view, bytes); }) == "exhausted");
     check(f.trace->uploads == 0 && f.resources->snapshot().used[0] == 1000000);

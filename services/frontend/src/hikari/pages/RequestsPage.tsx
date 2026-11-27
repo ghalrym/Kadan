@@ -11,7 +11,6 @@ import { usePolling } from '../hooks/usePolling'
 const types: RequestRecord['type'][] = [
   'LLM',
   'Image',
-  'Video',
   'TTS',
   'STT',
   'Decision',
@@ -200,7 +199,6 @@ export default function RequestsPage() {
                 </td>
                 <td className={`mono ${requestStatus(request).className}`}>
                   {requestStatus(request).label}
-                  {request.type === 'Video' && request.status === 202 && <div className="faint">HTTP 202 · accepted</div>}
                 </td>
                 <td className="mono">{request.latency}</td>
               </tr>

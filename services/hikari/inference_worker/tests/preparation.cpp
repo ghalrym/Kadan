@@ -373,10 +373,6 @@ void pinned_catalog_units() {
         worker_requirement(kadan::Workload::tts, std::nullopt, store)["model"]
         == "qwen-tts-1.7b-custom"
     );
-    assert(
-        worker_requirement(kadan::Workload::video, std::nullopt, store)["model"]
-        == "h3-fl2va-int8-turbo"
-    );
     rejects([&] { worker_requirement(kadan::Workload::speech, "unknown", store); });
     assert(read_document(tmp.path / "tier.json").at("tier") == "obsolete");
     assert(
@@ -421,17 +417,10 @@ void pinned_catalog_units() {
                 incomplete.push_back(file);
         rejects([&] { store.validate_files(speech, parse_manifest(incomplete)); });
     }
-    for (const auto* model :
-         {"inkling-2-mini-iq4-nl",
-          "qwen-tts-1.7b-custom",
-          "h3-fl2va",
-          "h3-fl2va-int8-turbo"})
+    for (const auto* model : {"inkling-2-mini-iq4-nl", "qwen-tts-1.7b-custom"})
         for (const auto* path :
              {"../config.json", "/config.json", "model.py", "speech_tokenizer/run.py"})
             assert(!store.allowed(path, store.entry(model)));
-    const auto& video = store.entry("h3-fl2va-int8-turbo");
-    store.validate_files(video, video.manifest);
-    assert(!store.allowed("FL2VA/transformer/model-00001-of-00013.safetensors", video));
 }
 
 void shared_settings_units() {
@@ -795,31 +784,6 @@ void typed_request_units() {
         {{"feature", "tts"}, {"script", "Hello"}, {"voice", {{"speaker", "Ryan"}}}}
     );
     assert(std::get<SpeechRequest>(speech.input).language == "Auto");
-    const auto video = request(
-        "video", {{"feature", "video"}, {"prompt", "Mountain"}, {"resolution", "480p"}}
-    );
-    assert(std::get<VideoRequest>(video.input).short_edge == 480);
-    assert(std::get<VideoRequest>(video.input).resolution_supplied);
-    assert(!std::get<VideoRequest>(video.input).duration_supplied);
-    for (const auto duration : {1u, 15u}) {
-        const auto clip = request(
-            "video",
-            {{"feature", "video"}, {"prompt", "Mountain"}, {"duration", duration}}
-        );
-        assert(std::get<VideoRequest>(clip.input).duration == duration);
-        assert(std::get<VideoRequest>(clip.input).duration_supplied);
-    }
-    rejects([&] {
-        request(
-            "video",
-            {{"feature", "video"}, {"prompt", "Mountain"}, {"resolution", "1080p"}}
-        );
-    });
-    rejects([&] {
-        request(
-            "video", {{"feature", "video"}, {"prompt", "Mountain"}, {"duration", 16}}
-        );
-    });
     const auto download =
         request("download", {{"feature", "models"}, {"model_id", "small"}}, "download");
     assert(std::get<DownloadRequest>(download.input).model == "small");
@@ -1793,8 +1757,7 @@ void job_units() {
         }
             .dump();
     Json models = Json::array();
-    for (const auto* id :
-         {"inkling-2-mini-iq4-nl", "flux.2-klein-4b", "h3-fl2va-int8-turbo"}) {
+    for (const auto* id : {"inkling-2-mini-iq4-nl", "flux.2-klein-4b"}) {
         const auto dir = root / (std::string(id) + "-revision");
         const auto manifest = local_manifest(dir, {{"config.json", config}});
         models.push_back(entry(id, manifest));
@@ -1855,23 +1818,6 @@ void job_units() {
         && std::get<ImageRequest>(defaulted.input).steps == 4
     );
     files.cleanup(defaulted.id);
-    auto video =
-        request("defaulted-video", {{"feature", "video"}, {"prompt", "mountain"}});
-    prepare_task(video, store, files, running);
-    assert(std::get<VideoRequest>(video.input).duration == 5);
-    assert(std::get<VideoRequest>(video.input).short_edge == 480);
-    files.cleanup(video.id);
-    auto explicit_video = request(
-        "explicit-video",
-        {{"feature", "video"},
-         {"prompt", "mountain"},
-         {"duration", 15},
-         {"resolution", "768p"}}
-    );
-    prepare_task(explicit_video, store, files, running);
-    assert(std::get<VideoRequest>(explicit_video.input).duration == 15);
-    assert(std::get<VideoRequest>(explicit_video.input).short_edge == 768);
-    files.cleanup(explicit_video.id);
     auto default_image = request(
         "default_image-image",
         {{"feature", "image"}, {"prompt", "mountain"}, {"count", 1}}

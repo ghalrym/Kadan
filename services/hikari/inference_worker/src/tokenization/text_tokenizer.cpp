@@ -164,8 +164,6 @@ struct Tokenizer::Impl {
             );
         } else {
             check(post.at("type") == "ByteLevel", "text_tokenizer_post");
-            if (format == Format::h3)
-                check(!post.at("add_prefix_space").get<bool>(), "text_tokenizer_post");
         }
     }
 

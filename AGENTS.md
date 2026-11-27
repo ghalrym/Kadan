@@ -88,14 +88,13 @@ Hikari has no hardware tiers. It runs one fixed model per capability, and users 
 | Language, Vision & Decisions | Inkling 2 Mini (`inkling-2-mini-iq4-nl` / `inkling-2-mini-q8-0` / `inkling-2-mini-abliterated-iq4-nl` / `inkling-2-mini-abliterated-q8-0` via `HIKARI_LLM_QUANT` and `HIKARI_LLM_ABLITERATED`) |
 | Voice calls | LFM3 Audio 2B BF16 (`lfm3-audio-2b-bf16`) |
 | Image | FLUX.2 Klein 4B (`flux.2-klein-4b`) |
-| Video | MiniMax H3 Turbo (`h3-fl2va-int8-turbo`) |
 | Text to speech | Qwen3-TTS 1.7B CustomVoice (`qwen-tts-1.7b-custom`) |
 | Speech to text | Whisper medium (`whisper-medium`) |
 | Speech formatter | S1-mini by Superwhisper (`superwhisper-s1-mini`) |
 
-- Do not reintroduce hardware tiers, per-machine model choices, `d1-2b-cpu-f32`, `qwen-image-2.1-turbo`, or Qwen LLM checkpoints.
+- Do not reintroduce hardware tiers, per-machine model choices, `d1-2b-cpu-f32`, `qwen-image-2.1-turbo`, MiniMax H3 video generation (`h3-fl2va-int8-turbo`), or Qwen LLM checkpoints.
 - Inkling 2 Mini (text + built-in `mmproj` vision encoder + single-forward-pass logit-softmax Decisions) runs natively in Hikari's C++ Strata MoE engine (`hikari-worker-llm`) and is the sole local language/vision/decisions model. Downloads require explicit license acknowledgement; enabling a worker does not acquire a model.
-- Preserve FLUX.2 Klein 4B (`flux.2-klein-4b`), Qwen3-TTS (`qwen-tts-1.7b-custom`), their required encoders/tokenizers and the shared native image/video runtime.
+- Preserve FLUX.2 Klein 4B (`flux.2-klein-4b`), Qwen3-TTS (`qwen-tts-1.7b-custom`), their required encoders/tokenizers and the native image runtime.
 - Preserve physical RAM/VRAM admission, cancellation, ownership and confirmed cleanup. Requests that cannot fit fail without silent truncation, quantization or another model.
 
 The native Strata MoE language path places routed experts across VRAM, RAM and disk. Its execution rules remain:

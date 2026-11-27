@@ -52,8 +52,6 @@ const char* worker_name(Workload workload) {
         return "formatting";
     case Workload::image:
         return "image";
-    case Workload::video:
-        return "video";
     }
     throw std::invalid_argument("workload");
 }

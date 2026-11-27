@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field
 Feature = Literal[
     "llm",
     "image",
-    "video",
     "stt",
     "audio_call",
     "stt_formatting",

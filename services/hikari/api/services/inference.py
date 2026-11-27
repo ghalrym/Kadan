@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import time
 from contextlib import suppress
@@ -17,7 +16,6 @@ from api.pydantic_models.inference_task import (
     AudioCallTask,
     DownloadTask,
     InferenceTask,
-    VideoTask,
 )
 from api.pydantic_models.model_store import (
     DownloadObservation,
@@ -25,7 +23,6 @@ from api.pydantic_models.model_store import (
 )
 from api.services.inference_cancellation import await_cleanup
 from api.services.inference_errors import InferenceFailure
-from api.services.video_jobs import video_jobs
 from api.services.worker_hub import WorkerHub
 from kadan_tracing import span, traced
 from pydantic import BaseModel
@@ -353,20 +350,6 @@ class InferenceService:
                     self.context.clear()
             elif event.state in ("failed", "cancelled"):
                 self.state, self.error = "error", event.error or "Cancelled"
-        if feature == "video":
-            if event.state in ("loading", "running", "progress"):
-                video_jobs.update(
-                    job.request.id,
-                    status="Rendering",
-                    progress_text=event.phase or event.state,
-                )
-            elif event.state in ("failed", "cancelled"):
-                video_jobs.update(
-                    job.request.id,
-                    status="Failed" if event.state == "failed" else "Cancelled",
-                    progress_text=event.state,
-                    error=event.error or None,
-                )
 
     async def _submit(
         self,
@@ -384,23 +367,7 @@ class InferenceService:
                 **body.model_dump(mode="json", exclude_unset=True),
             },
         )
-        if isinstance(request.input, VideoTask):
-            video = request.input
-            if video.duration is None or video.resolution is None:
-                status = self.models_status()
-                if video.duration is None:
-                    video.duration = status.video_defaults.duration
-                if video.resolution is None:
-                    video.resolution = status.video_defaults.resolution
-            video_jobs.prepare(request.id, video)
-        try:
-            job = await self.worker.submit(request, streaming=streaming)
-        except BaseException:
-            if feature == "video":
-                video_jobs.update(
-                    request.id, status="Failed", progress_text="Not accepted"
-                )
-            raise
+        job = await self.worker.submit(request, streaming=streaming)
         task = asyncio.create_task(self._complete(job))
         self.tasks[request.id] = task
         task.add_done_callback(lambda completed: self.tasks.pop(request.id, None))
@@ -415,10 +382,6 @@ class InferenceService:
         job_id: str | None = None,
     ):
         job, task = await self._submit(body, feature, operation, job_id=job_id)
-        if feature == "video":
-            # Completion is reflected by the video metadata endpoint.
-            task.add_done_callback(self._background_finished)
-            return video_jobs.get(job.request.id)
         try:
             return await task
         except asyncio.CancelledError:
@@ -453,25 +416,12 @@ class InferenceService:
 
     @traced("kadan.inference.wait_and_deliver")
     async def _complete(self, job):
-        failure = None
         try:
             result = await asyncio.shield(job.result)
             with span("kadan.result.delivery"):
-                if job.request.feature == "video":
-                    # The worker may be on another machine; its file arrives inline.
-                    video = result.pop("video", None)
-                    if video is not None:
-                        await asyncio.to_thread(
-                            video_jobs.store, job.request.id, base64.b64decode(video)
-                        )
-                        result["output_url"] = f"/v1/videos/{job.request.id}/content"
-                    video_jobs.update(job.request.id, **result)
                 if job.request.operation in ("load", "unload"):
                     return self.status()
                 return result
-        except (Exception, asyncio.CancelledError) as error:
-            failure = error
-            raise
         finally:
             try:
                 if not job.result.done():
@@ -482,19 +432,6 @@ class InferenceService:
                 if self.progress and self.progress.job_id == job.request.id:
                     self.progress = None
                 self.worker.jobs.pop(job.request.id, None)
-                if failure is not None and job.result.done():
-                    self._finish_video_error(job, failure)
-
-    @staticmethod
-    def _finish_video_error(job, error):
-        if job.request.feature != "video":
-            return
-        cancelled = isinstance(error, asyncio.CancelledError) or (
-            isinstance(error, InferenceFailure) and error.status_code == 499
-        )
-        video_jobs.finish_error(
-            job.request.id, cancelled=cancelled, error=None if cancelled else str(error)
-        )
 
     async def cancel(self, job_id):
         if job_id not in self.worker.jobs:
@@ -514,9 +451,6 @@ class InferenceService:
                     )
             finally:
                 self.worker.jobs.pop(job_id, None)
-                if job.result.done():
-                    error = None if job.result.cancelled() else job.result.exception()
-                    self._finish_video_error(job, error or asyncio.CancelledError())
 
     async def unload(self):
         """Cancel language requests and await confirmed cold-worker cleanup."""

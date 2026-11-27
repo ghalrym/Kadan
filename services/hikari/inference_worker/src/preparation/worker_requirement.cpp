@@ -2,7 +2,6 @@
 
 #include "kadan/gguf_checkpoint.hpp"
 #include "kadan/gguf_text.hpp"
-#include "kadan/h3_memory.hpp"
 #include "kadan/preparation.hpp"
 #include "kadan/worker_compute.hpp"
 
@@ -15,9 +14,6 @@ constexpr Bytes device_headroom = compute_context_bytes + 2 * gib;
 constexpr Bytes text_host_headroom = 4 * gib;
 // Engine admission floors, from each engine's load().
 constexpr Bytes image_host_floor = 16 * gib;
-constexpr Bytes video_device_floor = 3 * gib;
-// Video prompts beyond this length no longer grow the text stage.
-constexpr std::size_t max_prompt_bytes = 32000;
 
 std::string default_model(Workload workload, const ModelStore& store) {
     switch (workload) {
@@ -37,8 +33,6 @@ std::string default_model(Workload workload, const ModelStore& store) {
         return "flux.2-klein-4b";
     case Workload::tts:
         return "qwen-tts-1.7b-custom";
-    case Workload::video:
-        return "h3-fl2va-int8-turbo";
     }
     throw std::invalid_argument("workload");
 }
@@ -118,21 +112,6 @@ Json worker_requirement(
             weights + device_headroom,
             device_headroom
         );
-    case Workload::video: {
-        // The largest clip the API accepts bounds the host execution stage;
-        // spare host memory beyond it becomes the engine's weight cache.
-        const auto largest = video::h3_api_profile(768, "16:9", 15);
-        const Bytes stage =
-            std::max(4 * gib, video::h3_request_memory(largest, max_prompt_bytes));
-        return footprint(
-            model,
-            stage,
-            stage + 2 * weights,
-            video_device_floor,
-            weights + video_device_floor,
-            video_device_floor
-        );
-    }
     case Workload::lfm3_llm:
         return footprint(model, 16 * gib, 16 * gib, 20 * gib, 20 * gib, 20 * gib);
     case Workload::lfm3_vision:

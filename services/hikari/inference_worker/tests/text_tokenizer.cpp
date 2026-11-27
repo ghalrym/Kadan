@@ -193,24 +193,16 @@ int main() {
           {"normalized", false}}}
     );
     using Tokenizer = kadan::text::Tokenizer;
-    for (const auto format : {Tokenizer::Format::h3, Tokenizer::Format::tts}) {
-        metadata["post_processor"] =
-            format == Tokenizer::Format::h3
-                ? Json{{"type", "ByteLevel"}, {"add_prefix_space", false}}
-                : Json{
-                      {"type", "TemplateProcessing"},
-                      {"special_tokens", Json::object()},
-                      {"single",
-                       Json::array({{{"Sequence", {{"id", "A"}, {"type_id", 0}}}}})}
-                  };
+    {
+        const auto format = Tokenizer::Format::tts;
+        metadata["post_processor"] = Json{
+            {"type", "TemplateProcessing"},
+            {"special_tokens", Json::object()},
+            {"single", Json::array({{{"Sequence", {{"id", "A"}, {"type_id", 0}}}}})}
+        };
         auto bounded =
             std::make_shared<kadan::Resources>(kadan::Footprint{512ULL * 1024 * 1024});
-        Tokenizer tokenizer(
-            bounded,
-            format == Tokenizer::Format::h3 ? kadan::Workload::video
-                                            : kadan::Workload::tts,
-            format
-        );
+        Tokenizer tokenizer(bounded, kadan::Workload::tts, format);
         std::ofstream(path) << metadata;
         tokenizer.load(path.string(), cancel);
         assert(bounded->snapshot().used[0] == 192ULL * 1024 * 1024);

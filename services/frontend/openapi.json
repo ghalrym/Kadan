@@ -687,7 +687,6 @@
           "kind": {
             "enum": [
               "llm",
-              "video",
               "speech",
               "transcription",
               "formatting",
@@ -1810,12 +1809,6 @@
             "default": "whisper-medium",
             "title": "Transcription",
             "type": "string"
-          },
-          "video": {
-            "const": "h3-fl2va-int8-turbo",
-            "default": "h3-fl2va-int8-turbo",
-            "title": "Video",
-            "type": "string"
           }
         },
         "title": "ModelAssignments",
@@ -2343,42 +2336,12 @@
             "enum": [
               "LLM",
               "Image",
-              "Video",
               "TTS",
               "STT",
               "Decision"
             ],
             "title": "Type",
             "type": "string"
-          },
-          "video_job_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Video Job Id"
-          },
-          "video_status": {
-            "anyOf": [
-              {
-                "enum": [
-                  "Queued",
-                  "Rendering",
-                  "Done",
-                  "Failed",
-                  "Cancelled"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Video Status"
           }
         },
         "required": [
@@ -2603,9 +2566,6 @@
             "title": "Models",
             "type": "array"
           },
-          "video_defaults": {
-            "$ref": "#/components/schemas/VideoDefaults"
-          },
           "whisper_formatting": {
             "title": "Whisper Formatting",
             "type": "boolean"
@@ -2614,7 +2574,6 @@
         "required": [
           "models",
           "defaults",
-          "video_defaults",
           "whisper_formatting"
         ],
         "title": "SettingsResponse",
@@ -3055,250 +3014,6 @@
           "type"
         ],
         "title": "ValidationError",
-        "type": "object"
-      },
-      "VideoDefaults": {
-        "description": "Suggested clip settings; request limits and memory admission are separate.",
-        "properties": {
-          "duration": {
-            "default": 5,
-            "maximum": 15.0,
-            "minimum": 1.0,
-            "title": "Duration",
-            "type": "integer"
-          },
-          "resolution": {
-            "default": "480p",
-            "enum": [
-              "480p",
-              "768p"
-            ],
-            "title": "Resolution",
-            "type": "string"
-          }
-        },
-        "title": "VideoDefaults",
-        "type": "object"
-      },
-      "VideoGenerationRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "aspect": {
-            "default": "16:9",
-            "enum": [
-              "16:9",
-              "9:16",
-              "1:1"
-            ],
-            "title": "Aspect",
-            "type": "string"
-          },
-          "fps": {
-            "const": 24,
-            "default": 24,
-            "title": "Fps",
-            "type": "integer"
-          },
-          "model": {
-            "const": "h3-fl2va-int8-turbo",
-            "default": "h3-fl2va-int8-turbo",
-            "title": "Model",
-            "type": "string"
-          },
-          "negative_prompt": {
-            "const": "",
-            "default": "",
-            "title": "Negative Prompt",
-            "type": "string"
-          },
-          "prompt": {
-            "maxLength": 8000,
-            "minLength": 1,
-            "pattern": "\\S",
-            "title": "Prompt",
-            "type": "string"
-          },
-          "resolution": {
-            "anyOf": [
-              {
-                "enum": [
-                  "480p",
-                  "768p"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Omit for the fixed default (5 seconds, 480p).",
-            "title": "Resolution"
-          },
-          "seconds": {
-            "anyOf": [
-              {
-                "maximum": 15.0,
-                "minimum": 1.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Whole seconds at 24 fps (1–15). Omit for the fixed default (5 seconds, 480p); duration is also accepted.",
-            "title": "Seconds"
-          },
-          "seed": {
-            "default": 42,
-            "maximum": 4294967295.0,
-            "minimum": 0.0,
-            "title": "Seed",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "prompt"
-        ],
-        "title": "VideoGenerationRequest",
-        "type": "object"
-      },
-      "VideoGenerationResponse": {
-        "properties": {
-          "job": {
-            "$ref": "#/components/schemas/VideoJob"
-          }
-        },
-        "required": [
-          "job"
-        ],
-        "title": "VideoGenerationResponse",
-        "type": "object"
-      },
-      "VideoJob": {
-        "properties": {
-          "aspect": {
-            "enum": [
-              "wide",
-              "portrait",
-              "square"
-            ],
-            "title": "Aspect",
-            "type": "string"
-          },
-          "duration": {
-            "title": "Duration",
-            "type": "string"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "fps": {
-            "title": "Fps",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "output_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Output Url"
-          },
-          "progress": {
-            "maximum": 100.0,
-            "minimum": 0.0,
-            "title": "Progress",
-            "type": "integer"
-          },
-          "progressText": {
-            "title": "Progresstext",
-            "type": "string"
-          },
-          "prompt": {
-            "title": "Prompt",
-            "type": "string"
-          },
-          "resolution": {
-            "title": "Resolution",
-            "type": "string"
-          },
-          "status": {
-            "enum": [
-              "Rendering",
-              "Queued",
-              "Done",
-              "Failed",
-              "Cancelled"
-            ],
-            "title": "Status",
-            "type": "string"
-          },
-          "thumbnail": {
-            "title": "Thumbnail",
-            "type": "string"
-          },
-          "time": {
-            "title": "Time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "prompt",
-          "duration",
-          "resolution",
-          "aspect",
-          "fps",
-          "progress",
-          "time",
-          "status",
-          "thumbnail",
-          "progressText"
-        ],
-        "title": "VideoJob",
-        "type": "object"
-      },
-      "VideoResponse": {
-        "properties": {
-          "job": {
-            "$ref": "#/components/schemas/VideoJob"
-          }
-        },
-        "required": [
-          "job"
-        ],
-        "title": "VideoResponse",
-        "type": "object"
-      },
-      "VideosResponse": {
-        "properties": {
-          "jobs": {
-            "items": {
-              "$ref": "#/components/schemas/VideoJob"
-            },
-            "title": "Jobs",
-            "type": "array"
-          }
-        },
-        "required": [
-          "jobs"
-        ],
-        "title": "VideosResponse",
         "type": "object"
       },
       "api__routes__v1__images__edits__ImageRequest": {
@@ -4310,7 +4025,6 @@
                   "enum": [
                     "LLM",
                     "Image",
-                    "Video",
                     "TTS",
                     "STT",
                     "Decision"
@@ -4811,199 +4525,6 @@
         "summary": "Submit Login Code",
         "tags": [
           "Subscriptions"
-        ]
-      }
-    },
-    "/v1/videos": {
-      "get": {
-        "description": "Return jobs submitted to this API process.",
-        "operationId": "listVideos",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VideosResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "List Videos",
-        "tags": [
-          "Videos"
-        ]
-      }
-    },
-    "/v1/videos/generations": {
-      "post": {
-        "description": "Queue a validated native generation and return its actual job identifier.",
-        "operationId": "generateVideo",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VideoGenerationRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VideoGenerationResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          },
-          "503": {
-            "description": "Video provider unavailable"
-          }
-        },
-        "summary": "Generate Video",
-        "tags": [
-          "Videos"
-        ]
-      }
-    },
-    "/v1/videos/{video_id}": {
-      "delete": {
-        "operationId": "cancelVideo",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "video_id",
-            "required": true,
-            "schema": {
-              "title": "Video Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VideoResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Cancel Video",
-        "tags": [
-          "Videos"
-        ]
-      },
-      "get": {
-        "description": "Return the real worker state, including errors and cancellation.",
-        "operationId": "getVideo",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "video_id",
-            "required": true,
-            "schema": {
-              "title": "Video Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VideoResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "404": {
-            "description": "Video not found"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Video",
-        "tags": [
-          "Videos"
-        ]
-      }
-    },
-    "/v1/videos/{video_id}/content": {
-      "get": {
-        "operationId": "getVideoContent",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "video_id",
-            "required": true,
-            "schema": {
-              "title": "Video Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Video Content",
-        "tags": [
-          "Videos"
         ]
       }
     }

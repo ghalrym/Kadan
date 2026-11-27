@@ -20,7 +20,7 @@ WORKER_SOURCE = Path(os.getenv("HIKARI_WORKER_SOURCE", "/src/inference_worker"))
 WORKER_BUILD = Path(os.getenv("HIKARI_WORKER_BUILD", "/build"))
 WORKER_PREFIX = Path(os.getenv("HIKARI_WORKER_PREFIX", "/opt/kadan"))
 NATIVE_SUFFIXES = {".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp", ".cmake", ".sh"}
-WORKERS = ("llm", "tts", "speech", "formatting", "image", "video")
+WORKERS = ("llm", "tts", "speech", "formatting", "image")
 
 
 def environment() -> dict[str, str]:
@@ -140,7 +140,7 @@ def start_api(env: dict[str, str]) -> subprocess.Popen:
             "--reload",
             "--reload-dir",
             str(ROOT / "api"),
-            # Worker results, such as finished videos, are large WebSocket messages.
+            # Worker results, such as generated images and audio, are large WebSocket messages.
             "--ws-max-size",
             str(256 * 1024 * 1024),
         ],

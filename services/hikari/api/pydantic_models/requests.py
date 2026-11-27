@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 from api.pydantic_models.inference_task import LlmModel
 
-RequestType = Literal["LLM", "Image", "Video", "TTS", "STT", "Decision"]
+RequestType = Literal["LLM", "Image", "TTS", "STT", "Decision"]
 RequestStatus = Annotated[int, Field(ge=100, le=599)]
 ObservedLanguageModel = LlmModel
 
@@ -31,11 +31,6 @@ class RequestRecord(BaseModel):
     output: str
     request_bytes: int
     response_bytes: int
-
-    video_job_id: str | None = None
-    video_status: (
-        Literal["Queued", "Rendering", "Done", "Failed", "Cancelled"] | None
-    ) = None
 
     generation_ttft_ms: float | None = None
     first_token_ms: float | None = None

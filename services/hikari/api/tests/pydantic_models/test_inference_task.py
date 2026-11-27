@@ -20,7 +20,6 @@ class InferenceTaskTests(unittest.TestCase):
                 "voice": {"mode": "custom", "speaker": "Ryan"},
             },
             {"feature": "stt", "audio": "data:audio/wav;base64,AAAA"},
-            {"feature": "video", "prompt": "Mountain"},
         ]
         for value in inputs:
             with self.subTest(feature=value["feature"]):

@@ -650,7 +650,7 @@ void inventory_cases() {
 
 void cache_retirement() {
     auto resources = std::make_shared<kadan::Resources>(kadan::Footprint{4096});
-    ReadCache cache(resources, 4096, kadan::Workload::video);
+    ReadCache cache(resources, 4096, kadan::Workload::image);
     ReadCache::Key text{}, denoiser{};
     text.inode = 1;
     denoiser.inode = 2;
@@ -684,7 +684,7 @@ void converted_cache_cases() {
         {0, 0x3c, 0, 0x80, 1, 0, 0, 0xc0, 0x80, 0x3f, 0, 0xc0, 0, 0, 0x60, 0x40}
     );
     auto resources = std::make_shared<kadan::Resources>(kadan::Footprint{4096});
-    auto cache = std::make_shared<ReadCache>(resources, 4096, kadan::Workload::video);
+    auto cache = std::make_shared<ReadCache>(resources, 4096, kadan::Workload::image);
     std::atomic_bool cancel = false;
     {
         Shard shard(f.root.c_str(), "model.safetensors", budget());
@@ -727,7 +727,7 @@ void converted_cache_cases() {
     }
     cache.reset();
     check(resources->snapshot().used[0] == 0);
-    cache = std::make_shared<ReadCache>(resources, 1, kadan::Workload::video);
+    cache = std::make_shared<ReadCache>(resources, 1, kadan::Workload::image);
     {
         Shard shard(f.root.c_str(), "model.safetensors", budget());
         shard.cache_reads(cache, &cancel);
@@ -742,7 +742,7 @@ void cache_cases() {
     nvfp4_fixture(f);
     auto q = budget();
     auto resources = std::make_shared<kadan::Resources>(kadan::Footprint{4096});
-    auto cache = std::make_shared<ReadCache>(resources, 4096, kadan::Workload::video);
+    auto cache = std::make_shared<ReadCache>(resources, 4096, kadan::Workload::image);
     std::atomic_bool cancel = false;
     std::array<std::uint8_t, 4> out{};
     {
@@ -774,7 +774,7 @@ void cache_cases() {
     cache.reset();
     check(resources->snapshot().used[0] == 0);
     // A tensor larger than the cache streams into the caller's destination.
-    cache = std::make_shared<ReadCache>(resources, 1, kadan::Workload::video);
+    cache = std::make_shared<ReadCache>(resources, 1, kadan::Workload::image);
     std::size_t reads = 0;
     ReadCache::Key key{};
     cache->read(
@@ -794,7 +794,7 @@ void cache_cases() {
     );
     cache.reset();
     check(resources->snapshot().used[0] == 0);
-    cache = std::make_shared<ReadCache>(resources, 4096, kadan::Workload::video);
+    cache = std::make_shared<ReadCache>(resources, 4096, kadan::Workload::image);
     fails(
         [&] {
             cache->read(key, 4, 0, out, [&](auto, auto) { cancel = true; }, &cancel);
@@ -819,7 +819,7 @@ void cache_cases() {
     check(cache->stats().entries == 0 && cache->stats().allocated == 0);
     cache.reset();
     // Payload fits exactly, but its map entry does not: stream and retain none.
-    cache = std::make_shared<ReadCache>(resources, 4, kadan::Workload::video);
+    cache = std::make_shared<ReadCache>(resources, 4, kadan::Workload::image);
     cache->read(
         key,
         4,
@@ -834,7 +834,7 @@ void cache_cases() {
         kadan::Footprint{3 * ReadCache::chunk_bytes}
     );
     cache = std::make_shared<ReadCache>(
-        resources, 3 * ReadCache::chunk_bytes, kadan::Workload::video
+        resources, 3 * ReadCache::chunk_bytes, kadan::Workload::image
     );
     reads = 0;
     fails(

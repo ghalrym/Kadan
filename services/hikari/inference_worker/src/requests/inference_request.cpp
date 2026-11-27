@@ -496,34 +496,6 @@ InferenceRequest parse_request(const Json& envelope) {
     } else if (feature == "stt_formatting") {
         request.input = TranscriptionFormattingRequest{body.at("text")};
         request.workload = Workload::formatting;
-    } else if (feature == "video") {
-        VideoRequest input;
-        input.prompt = body.at("prompt");
-        input.model = body.value("model", input.model);
-        input.aspect = body.value("aspect", input.aspect);
-        const auto resolution = optional<std::string>(body, "resolution");
-        const auto duration = optional<unsigned>(body, "duration");
-        input.resolution_supplied = resolution.has_value();
-        input.duration_supplied = duration.has_value();
-        if (resolution) {
-            preparation_check(
-                *resolution == "480p" || *resolution == "768p",
-                "Video resolution must be 480p or 768p",
-                422
-            );
-            input.short_edge = *resolution == "480p" ? 480 : 768;
-        }
-        if (duration) {
-            preparation_check(
-                *duration >= 1 && *duration <= 15,
-                "Video duration must be 1–15 seconds",
-                422
-            );
-            input.duration = *duration;
-        }
-        input.seed = body.value("seed", 42ULL);
-        request.input = std::move(input);
-        request.workload = Workload::video;
     } else if (feature == "model_context") {
         request.input = ContextRequest{
             body.at("model_id"), optional<std::size_t>(body, "context_limit")

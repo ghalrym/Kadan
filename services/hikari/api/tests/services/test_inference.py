@@ -1,16 +1,12 @@
 import asyncio
-import base64
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from api.pydantic_models.inference import ImageProgress
-from api.pydantic_models.model_store import ModelStoreStatus
 from api.routes.v1.chat.completions import CompletionRequest
 from api.routes.v1.images.generations import ImageRequest
-from api.routes.v1.videos.generations import VideoGenerationRequest
 from api.services.inference import InferenceService
 from api.services.inference_worker import InferenceJob, InferenceTask, WorkerEvent
-from api.services.video_jobs import VideoJobs
 
 
 class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
@@ -27,32 +23,6 @@ class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
         job.result.set_result(result)
         self.assertEqual(await task, result)
         self.assertNotIn(job.request.id, service.worker.jobs)
-
-    async def test_video_bytes_arrive_inline_and_are_stored(self):
-        service = InferenceService()
-        job = InferenceJob(
-            InferenceTask(input={"feature": "video", "prompt": "sea"}), False
-        )
-        service.worker.jobs[job.request.id] = job
-        job.result.set_result(
-            {
-                "status": "Done",
-                "progress": 100,
-                "video": base64.b64encode(b"mp4").decode(),
-            }
-        )
-        with (
-            patch("api.services.inference.video_jobs.store") as store,
-            patch("api.services.inference.video_jobs.update") as update,
-        ):
-            await service._complete(job)
-        store.assert_called_once_with(job.request.id, b"mp4")
-        update.assert_called_once_with(
-            job.request.id,
-            status="Done",
-            progress=100,
-            output_url=f"/v1/videos/{job.request.id}/content",
-        )
 
     async def test_submission_contains_typed_complete_inputs(self):
         service = InferenceService()
@@ -72,54 +42,6 @@ class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 {"image": {}},
             )
-
-    async def test_video_omissions_use_fixed_defaults_in_job_and_worker(self):
-        service = InferenceService()
-        service.worker.models = ModelStoreStatus(models=[])
-
-        async def submit(request, **kwargs):
-            self.assertEqual(request.input.duration, 5)
-            self.assertEqual(request.input.resolution, "480p")
-            job = InferenceJob(request, False)
-            job.result.set_result({})
-            return job
-
-        with (
-            patch.object(service.worker, "submit", side_effect=submit),
-            patch("api.services.inference.video_jobs", VideoJobs()),
-        ):
-            job = await service.submit(
-                VideoGenerationRequest(prompt="Scene"), feature="video"
-            )
-            await asyncio.gather(*service.tasks.values())
-        self.assertEqual((job.duration, job.resolution), ("5s", "480p"))
-
-    async def test_video_defaults_preserve_each_explicit_clip_setting(self):
-        service = InferenceService()
-        service.worker.models = ModelStoreStatus(models=[])
-        for fields, expected in (
-            ({"seconds": 15}, (15, "480p")),
-            ({"resolution": "768p"}, (5, "768p")),
-            ({"seconds": 1, "resolution": "768p"}, (1, "768p")),
-        ):
-
-            async def submit(request, **kwargs):
-                self.assertEqual(
-                    (request.input.duration, request.input.resolution), expected
-                )
-                job = InferenceJob(request, False)
-                job.result.set_result({})
-                return job
-
-            with (
-                self.subTest(fields=fields),
-                patch.object(service.worker, "submit", side_effect=submit),
-                patch("api.services.inference.video_jobs", VideoJobs()),
-            ):
-                await service.submit(
-                    VideoGenerationRequest(prompt="Scene", **fields), feature="video"
-                )
-                await asyncio.gather(*service.tasks.values())
 
     async def test_stream_relays_content_and_uses_worker_selected_model(self):
         service = InferenceService()

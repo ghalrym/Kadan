@@ -10,7 +10,6 @@ import RequestsPage from './pages/RequestsPage'
 import SettingsPage from './pages/SettingsPage'
 import SpeechToTextPage from './pages/SpeechToTextPage'
 import TextToSpeechPage from './pages/TextToSpeechPage'
-import VideoPage from './pages/VideoPage'
 
 export default function App() {
   return (
@@ -24,7 +23,6 @@ export default function App() {
         <Route path="decisions" element={<DecisionsPage />} />
         <Route path="image" element={<ImagePage />} />
         <Route path="image/edit" element={<ImagePage edit />} />
-        <Route path="video" element={<VideoPage />} />
         <Route path="tts" element={<TextToSpeechPage />} />
         <Route path="stt" element={<SpeechToTextPage />} />
         <Route path="api" element={<ApiAccessPage />} />

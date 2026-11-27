@@ -4,7 +4,7 @@ Hikari manages model loading and memory allocations across inference workers so 
 
 ## Language model execution
 
-Public conversations, agent runs, and screenshot vision use Thinking Machines Lab's Inkling 2 Mini (`inkling-2-mini-iq4-nl` by default, or `inkling-2-mini-q8-0` via `HIKARI_LLM_QUANT`, and the abliterated `inkling-2-mini-abliterated-*` variants via `HIKARI_LLM_ABLITERATED=true`) running natively on Hikari's C++ Strata engine (`hikari-worker-llm`). The checkpoint is a dense GGUF multimodal model with a bundled vision projector (`mmproj`) and shares host RAM and GPU VRAM with other workers (such as FLUX.2 Klein 4B, H3 video, Qwen3-TTS, and LFM3-Audio) through the memory scheduler.
+Public conversations, agent runs, and screenshot vision use Thinking Machines Lab's Inkling 2 Mini (`inkling-2-mini-iq4-nl` by default, or `inkling-2-mini-q8-0` via `HIKARI_LLM_QUANT`, and the abliterated `inkling-2-mini-abliterated-*` variants via `HIKARI_LLM_ABLITERATED=true`) running natively on Hikari's C++ Strata engine (`hikari-worker-llm`). The checkpoint is a dense GGUF multimodal model with a bundled vision projector (`mmproj`) and shares host RAM and GPU VRAM with other workers (such as FLUX.2 Klein 4B, Qwen3-TTS, and LFM3-Audio) through the memory scheduler.
 
 The engine keeps model weights, vision projector, and KV cache within the memory budget granted by the API. Offloading and admission preserve the configured checkpoint rather than substituting another model or silently truncating context.
 
@@ -26,15 +26,14 @@ Priority governs access to memory in this order, highest first:
 2. Speech synthesis.
 3. Transcription and transcription formatting.
 4. Image generation.
-5. Video generation.
 
-A higher-priority request does not interrupt inference already running. It may wait for an active image or video request to finish if there is insufficient memory to run alongside it.
+A higher-priority request does not interrupt inference already running. It may wait for an active image request to finish if there is insufficient memory to run alongside it.
 
 Hikari first tries to make room by reducing an idle worker's memory allocation before unloading its model entirely. It reclaims memory from lower-priority workers first, and from the least recently used workers within a priority. An idle worker with no queued requests can yield memory even to a lower-priority type. A worker with queued requests yields only to a strictly higher-priority type. Memory becomes available to another worker only after its release is confirmed.
 
 Where possible, Hikari keeps enough room for the language worker's minimum requirements so chat can start while another type runs. This reservation is best effort: if preserving it prevents other work from fitting, Hikari can let that work proceed. Chat therefore has no unconditional immediate-start guarantee, and sustained higher-priority demand can delay lower-priority work.
 
-For example, an idle chat model holding more memory than it needs can have its allocation reduced to admit an image request. An active video request continues to completion even if chat is waiting for its memory.
+For example, an idle chat model holding more memory than it needs can have its allocation reduced to admit an image request. An active image request continues to completion even if chat is waiting for its memory.
 
 ## Allocation changes and model lifecycle
 
@@ -79,7 +78,7 @@ and its worker token; source edits rebuild and restart these workers too:
 
 ```sh
 HIKARI_API_URL=ws://API_HOST:8000/hikari/v1/workers HIKARI_WORKER_TOKEN=... \
-  docker compose -p kadan-workers up --build -d --no-deps hikari-worker-image hikari-worker-video
+  docker compose -p kadan-workers up --build -d --no-deps hikari-worker-image hikari-worker-tts
 ```
 
 To reuse a model store created by the former standalone worker configuration,

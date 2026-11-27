@@ -9,7 +9,6 @@
 
 #include <nlohmann/json.hpp>
 
-#include "kadan/h3_generation.hpp"
 #include "kadan/image_upload.hpp"
 #include "kadan/inference_trace.hpp"
 #include "kadan/lfm3.hpp"
@@ -133,14 +132,6 @@ struct TranscriptionFormattingRequest {
     std::string text;
 };
 
-struct VideoRequest {
-    std::string prompt, model = "h3-fl2va-int8-turbo", aspect = "16:9";
-    unsigned short_edge = 768, duration = 8;
-    bool resolution_supplied = false, duration_supplied = false;
-    std::uint64_t seed = 42;
-    video::H3GenerationPaths paths;
-};
-
 struct DownloadRequest {
     std::string model;
     bool license_acknowledged = false;
@@ -168,7 +159,6 @@ using TaskInput = std::variant<
     SpeechRequest,
     TranscriptionRequest,
     TranscriptionFormattingRequest,
-    VideoRequest,
     DownloadRequest,
     ContextRequest,
     WhisperFormattingRequest,

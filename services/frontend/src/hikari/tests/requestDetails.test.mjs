@@ -11,11 +11,10 @@ const { outputText } = ts.transpileModule(source, {
 
 function record(id = 'request-a') {
   return {
-    id, type: 'Video', endpoint: '/hikari/v1/videos', model: 'fixture-model',
-    status: 202, latency: '12 ms', latency_ms: 12, time: '10:00:00',
-    prompt: 'Observed summary: "fixture"\nsecond line', output: 'Job accepted',
-    request_bytes: 120, response_bytes: 80, video_job_id: 'fixture-job',
-    video_status: 'Queued', output_tokens: null, cache_hit: false,
+    id, type: 'Image', endpoint: '/hikari/v1/images/generations', model: 'fixture-model',
+    status: 200, latency: '12 ms', latency_ms: 12, time: '10:00:00',
+    prompt: 'Observed summary: "fixture"\nsecond line', output: 'HTTP 200; 80 response bytes',
+    request_bytes: 120, response_bytes: 80, output_tokens: null, cache_hit: false,
   }
 }
 
@@ -139,7 +138,7 @@ test('copies exactly the Advanced JSON at click time and confirms only after cli
   assert.deepEqual(view.writes.map(write => write.text), [snapshot])
   assert.equal(feedback(view.tree, 'status'), '')
   assert.equal(feedback(view.tree, 'alert'), '')
-  await view.observe({ ...request, video_status: 'Done', output: 'Finished' })
+  await view.observe({ ...request, output: 'Finished' })
   assert.notEqual(json(view.tree), snapshot)
   assert.equal(view.writes[0].text, snapshot)
   view.writes[0].resolve()
@@ -174,7 +173,7 @@ for (const failure of ['rejects', 'throws', 'missing']) {
     assert.match(feedback(view.tree, 'alert'), /Could not copy details.*Select the JSON under Advanced.*manually/)
     assert.equal(json(view.tree), snapshot)
     assert.ok(elements(view.tree).some(node => node.type === 'details' && content(node).includes('Advanced')))
-    await view.observe({ ...record(), video_status: 'Done' })
+    await view.observe({ ...record(), output: 'Finished' })
     assert.match(feedback(view.tree, 'alert'), /Could not copy details/)
     view.unmount()
   })

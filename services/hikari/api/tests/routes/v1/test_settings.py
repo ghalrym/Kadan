@@ -54,8 +54,6 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.defaults.speech, "qwen-tts-1.7b-custom")
         self.assertEqual(result.defaults.formatting, "superwhisper-s1-mini")
         self.assertEqual(result.models[0].downloaded_bytes, 5)
-        self.assertEqual(result.video_defaults.duration, 5)
-        self.assertEqual(result.video_defaults.resolution, "480p")
         self.assertNotIn("tiers", result.model_dump())
 
     def test_unknown_tier_and_model_selections_are_rejected(self):

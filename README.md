@@ -10,7 +10,7 @@ pages for inspecting and operating those services open inside it.
 | --- | --- | --- |
 | Kadan | Agent conversations and actions | <http://127.0.0.1:8630> |
 | Tsuchi | Durable per-agent storage, search and history | <http://127.0.0.1:8630/tsuchi> |
-| Hikari | Chat, decisions, images, video, speech and transcription | <http://127.0.0.1:8630/hikari> |
+| Hikari | Chat, decisions, images, speech and transcription | <http://127.0.0.1:8630/hikari> |
 | Frontend | The single web app for all three services | <http://127.0.0.1:8630> |
 | API | One application serving all three APIs under `/kadan`, `/tsuchi` and `/hikari` | <http://127.0.0.1:8000> |
 
@@ -36,15 +36,12 @@ Existing installations keep their data and operational identifiers:
 | Surface | Hikari behavior |
 | --- | --- |
 | Developer CLI | Use `python services/hikari/bin/hikari.py`; `python services/hikari/bin/kadan.py` still runs the same commands. |
-| API configuration | `HIKARI_MODEL_DIR`, `HIKARI_VIDEO_DIR` and `HIKARI_INFERENCE_WORKER` take precedence over their `KADAN_*` counterparts. Unset Hikari variables retain the existing configuration and defaults. |
+| API configuration | `HIKARI_MODEL_DIR` and `HIKARI_INFERENCE_WORKER` take precedence over their `KADAN_*` counterparts. Unset Hikari variables retain the existing configuration and defaults. |
 | CLI API URL | `HIKARI_API_URL` takes precedence over `KADAN_API_URL`; an explicit `infer --url` takes precedence over both. |
-| Persistent storage | Keep `~/.local/share/kadan/models`, `~/.local/share/kadan/videos`, `/var/lib/kadan/models`, database credentials and named volumes. No automatic moves or data rewriting occur. |
+| Persistent storage | Keep `~/.local/share/kadan/models`, `/var/lib/kadan/models`, database credentials and named volumes. No automatic moves or data rewriting occur. |
 | Compose | The default project name stays `kadan`, even from a checkout named Hikari. Keep any existing `-p` / `COMPOSE_PROJECT_NAME` and storage overrides. |
 | HTTP clients | Endpoint paths, request/response fields, model IDs and `X-Kadan-Request-Id` are unchanged. |
 | Native tools | `kadan-*` tool names, C++ namespaces/includes, `KADAN_*` CMake options, native environment variables, timing records and prepared-asset formats stay compatible. The single `kadan-inference-worker` is replaced by one `kadan-worker-<type>` program per inference type. |
-
-Workers return finished videos to the API, which writes them to
-`HIKARI_VIDEO_DIR`.
 
 Keep the old `/kadan.svg` asset URL for already-open clients; the application now
 uses `/hikari.svg`. Historical benchmark names and evidence remain unchanged.
@@ -260,10 +257,10 @@ when collectors or workers disconnect or processes terminate abruptly.
 | Web app (Tsuchi pages) | API ingress traces under `/tsuchi` routes | Browser/proxy timing is not measured |
 | Hikari API | HTTP ingress, inference lifetime, result presentation/delivery after the native result, worker FIFO wait | Result presentation is distinct from HTTP response serialization/stream delivery; transport delay is visible between worker and API intervals, not presented as a measured network metric |
 | Web app (Hikari pages) | API ingress traces under `/hikari` routes | Browser/proxy timing is not measured |
-| All seven native workload workers: llm, decision, tts, speech, formatting, image, video | `hikari-worker-<kind>` resources; actual native request preparation, model load, request admission and batch execution intervals | Shared batch intervals overlap across participating requests; they are wall time, not exclusive GPU time |
+| All five native workload workers: llm, tts, speech, formatting, image | `hikari-worker-<kind>` resources; actual native request preparation, model load, request admission and batch execution intervals | Shared batch intervals overlap across participating requests; they are wall time, not exclusive GPU time |
 | Language and formatting workers | Separate native prefill and decode intervals | Decode includes token selection/text streaming work; no per-token, kernel or inner-loop tracing |
 | Speech recognition worker | Separate audio frontend, acoustic encode and decode intervals | No per-layer tracing |
-| Image, video, decision and TTS engine internals | Native execution interval plus separate preparation/load/admission | Finer conditioning, denoise, VAE, codec, decision-stage and TTS subphases are not split in this change |
+| Image and TTS engine internals | Native execution interval plus separate preparation/load/admission | Finer conditioning, denoise, VAE, codec and TTS subphases are not split in this change |
 | Postgres, migration job, Jaeger and frontend containers | Application requests around those boundaries only | No database-query, migration, collector-self, or proxy spans |
 
 Native workers receive W3C `traceparent` in the existing job envelope and retain it

@@ -41,9 +41,6 @@ std::vector<CompiledWorkload> compiled_workloads() {
 #ifdef KADAN_HAS_IMAGE_ENGINE
     out.push_back({"image", "Image Generation (FLUX.2 Klein 4B)", true});
 #endif
-#ifdef KADAN_HAS_VIDEO_ENGINE
-    out.push_back({"video", "Video Generation (MiniMax H3 Turbo)", true});
-#endif
 #endif
     return out;
 }
@@ -223,23 +220,6 @@ std::optional<WorkerProgram> build_program(std::string_view workload) {
                         image->source && !image->reference
                             ? kadan::image::edit_steps(image->steps, image->strength)
                             : image->steps;
-            }
-        };
-    }
-#endif
-#ifdef KADAN_HAS_VIDEO_ENGINE
-    if (workload == "video") {
-        return WorkerProgram{
-            kadan::Workload::video,
-            true,
-            [](WorkerEnvironment& env) {
-                auto& ch = env.channel;
-                return video_engine(
-                    env.resources,
-                    [&ch](const char* phase, std::size_t value) {
-                        ch.progress(phase, value);
-                    }
-                );
             }
         };
     }

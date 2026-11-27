@@ -59,7 +59,6 @@ FEATURE_WORKERS = {
     "stt": "speech",
     "stt_formatting": "formatting",
     "image": "image",
-    "video": "video",
 }
 
 # Native stores persist the transcription preference; LFM configure is only an ack.
@@ -72,7 +71,6 @@ CHECKPOINT_WORKERS = {
     "transcription": "speech",
     "formatting": "formatting",
     "image": "image",
-    "video": "video",
     "audio": "lfm3_audio",
 }
 

@@ -205,9 +205,6 @@ input[type='range'] {
 .meter--blue {
   --meter-color: var(--llm);
 }
-.progress--video {
-  --meter-color: var(--video);
-}
 .progress--muted {
   --meter-color: #4a4f58;
 }

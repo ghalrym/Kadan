@@ -214,9 +214,6 @@ void prepare_input(
     const std::atomic_bool&
 );
 void prepare_input(
-    VideoRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
-);
-void prepare_input(
     DownloadRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
@@ -232,5 +229,4 @@ Json present_chat(const InferenceRequest&, Json result);
 Json present_image(const InferenceRequest&, const std::vector<fs::path>& images);
 Json present_speech(const InferenceRequest&, const fs::path& output);
 Json present_transcription(const InferenceRequest&, const std::string& text);
-Json present_video(const InferenceRequest&, const fs::path& output);
 }  // namespace kadan::serving

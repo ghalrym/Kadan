@@ -13,22 +13,6 @@ class ImageSet(BaseModel):
     mime_type: Literal["image/png"] | None = None
 
 
-class VideoJob(BaseModel):
-    id: str
-    prompt: str
-    duration: str
-    resolution: str
-    aspect: Literal["wide", "portrait", "square"]
-    fps: str
-    progress: int = Field(ge=0, le=100)
-    time: str
-    status: Literal["Rendering", "Queued", "Done", "Failed", "Cancelled"]
-    thumbnail: str
-    output_url: str | None = None
-    error: str | None = None
-    progress_text: str = Field(alias="progressText")
-
-
 class GeneratedSpeech(BaseModel):
     voice: str
     meta: str

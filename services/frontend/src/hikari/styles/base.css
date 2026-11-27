@@ -23,7 +23,6 @@
   --error: #f2665a;
   --llm: #8fb4ff;
   --image: #e59bff;
-  --video: #ff9e7a;
   --tts: #6fe0d0;
   --stt: #f2d16b;
   --mono: 'Geist Mono', monospace;
@@ -129,9 +128,6 @@ textarea::placeholder {
 }
 .type-Image {
   color: var(--image);
-}
-.type-Video {
-  color: var(--video);
 }
 .type-TTS {
   color: var(--tts);

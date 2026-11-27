@@ -6,7 +6,6 @@
 #include <limits>
 
 #include "kadan/image_attention.hpp"
-#include "kadan/video_progress.hpp"
 #include "kadan/weight_progress.hpp"
 using namespace kadan;
 
@@ -142,7 +141,6 @@ void projection_math() {
     for (auto workload :
          {Workload::llm,
           Workload::image,
-          Workload::video,
           Workload::speech,
           Workload::tts,
           Workload::formatting})
@@ -349,36 +347,6 @@ int main() {
     vae_normalization_planning();
     image_attention_precision();
     projection_math();
-    // Exercise only progress events, without a model, tensor or inference call.
-    std::vector<std::pair<std::string, std::size_t>> updates;
-    video::VideoProgress progress([&](const char* phase, std::size_t count) {
-        updates.emplace_back(phase, count);
-    });
-    for (std::size_t head = 1; head <= 363040; ++head)
-        progress.update("rope", head);
-    progress.update("block_completed", 1);
-    check(updates.size() == 91);
-    check(updates.front() == std::pair<std::string, std::size_t>{"rope", 1});
-    check(updates[89] == std::pair<std::string, std::size_t>{"rope", 363040});
-    check(updates.back() == std::pair<std::string, std::size_t>{"block_completed", 1});
-    updates.clear();
-    progress.update("rope", 1);
-    progress.update("rope", 100);
-    progress.reset();
-    progress.update("rope", 1);
-    progress.update("block_loaded", 2);
-    check(
-        updates.size() == 3 && updates[1].second == 1
-        && updates.back().first == "block_loaded"
-    );
-    updates.clear();
-    progress.update("rope", 1);
-    progress.update("rope", 50);
-    progress.update("rope", 1);
-    check(updates.size() == 3 && updates[1].second == 50 && updates.back().second == 1);
-    progress.update("gpu_0_weight_allocated_bytes", 123);
-    progress.update("gpu_0_weight_allocated_bytes", 456);
-    check(updates.back().second == 456);
 
     // Existing progress wire format: exact byte counts, physical device identity,
     // and distinct inventory/planned/allocated values; never executes a model.

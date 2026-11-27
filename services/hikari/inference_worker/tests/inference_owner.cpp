@@ -102,7 +102,7 @@ void fifo_shares_ledger() {
         Workload::llm,
         Workload::formatting,
         Workload::image,
-        Workload::video,
+        Workload::image,
         Workload::speech,
         Workload::tts
     };

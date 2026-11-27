@@ -324,7 +324,7 @@ void read_through_and_slot_pressure() {
     check(store.retain("qwen/rev/a"));
     std::vector<kadan::Handle> external;
     for (std::size_t i = 1; i < Resources::max_residents; ++i)
-        external.push_back(ledger->reserve(kadan::Workload::video, {0, 0}));
+        external.push_back(ledger->reserve(kadan::Workload::image, {0, 0}));
     check(store.retain("qwen/rev/b"));
     check(
         ledger->snapshot().residents == Resources::max_residents

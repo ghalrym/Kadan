@@ -1,7 +1,6 @@
 /* One fixed model per capability, colored like the rest of Hikari's modality accents. */
 .tone-llm { --tone: var(--llm); }
 .tone-image { --tone: var(--image); }
-.tone-video { --tone: var(--video); }
 .tone-tts { --tone: var(--tts); }
 .tone-stt { --tone: var(--stt); }
 .tone-formatter { --tone: #9fd8ff; }

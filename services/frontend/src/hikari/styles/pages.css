@@ -838,7 +838,7 @@ textarea.input[aria-invalid='true'] {
     animation: none;
   }
 }
-/* Image, video, and audio workspaces */
+/* Image and audio workspaces */
 .image-options {
   display: grid;
   grid-template-columns: 1.5fr 1fr;
@@ -1015,63 +1015,6 @@ textarea.input[aria-invalid='true'] {
   .image-progress__step.is-active .image-progress__marker {
     animation: none;
   }
-}
-.video-job {
-  display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
-  gap: 18px;
-  padding: 14px;
-}
-.video-thumbnail {
-  height: 135px;
-  border-radius: 8px;
-  background: var(--sidebar);
-  display: flex;
-  justify-content: center;
-  overflow: hidden;
-}
-.video-thumbnail .media-placeholder {
-  height: 100%;
-  max-width: 100%;
-  border: 0;
-  border-radius: 0;
-  justify-content: center;
-  text-align: center;
-}
-.job-prompt {
-  font-size: 13.5px;
-  line-height: 1.5;
-  text-wrap: pretty;
-}
-.job-progress {
-  margin-top: auto;
-  gap: 12px;
-}
-.job-progress .progress {
-  flex: 1;
-  min-width: 30px;
-}
-.job-progress > span {
-  white-space: nowrap;
-}
-.job-rendering,
-.job-done,
-.job-queued {
-  border: 0;
-  padding: 2px 9px;
-  font: 500 11px var(--mono);
-}
-.job-rendering {
-  color: var(--video);
-  background: rgb(255 158 122 / 12%);
-}
-.job-done {
-  color: var(--success);
-  background: rgb(90 209 154 / 12%);
-}
-.job-queued {
-  color: var(--muted);
-  background: var(--border);
 }
 .speech-script {
   position: relative;
@@ -1303,12 +1246,6 @@ textarea.input[aria-invalid='true'] {
   color: var(--faint);
 }
 @media (max-width: 1280px) {
-  .video-job {
-    grid-template-columns: 1fr;
-  }
-  .video-thumbnail {
-    height: 170px;
-  }
   .image-set-heading {
     flex-wrap: wrap;
     gap: 8px;

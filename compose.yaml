@@ -270,35 +270,6 @@ services:
       api:
         condition: service_healthy
 
-  # Video worker: H3 video with audio.
-  hikari-worker-video:
-    build:
-      context: ./services/hikari
-      dockerfile: inference_worker/workers/video/Dockerfile
-    command: [python, bin/hikari.py, run, worker, video]
-    init: true
-    restart: unless-stopped
-    environment:
-      HIKARI_API_URL: ${HIKARI_API_URL:-ws://api:8000/hikari/v1/workers}
-      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-insecure-api-key}
-      KADAN_MODEL_DIR: /var/lib/kadan/models
-    volumes:
-      - model_data:/var/lib/kadan/models
-      - ./services/hikari/bin:/app/bin
-      - ./services/hikari/inference_worker:/src/inference_worker
-      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
-      - hikari_worker_video_build:/build
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    depends_on:
-      api:
-        condition: service_healthy
-
   # Stable logical-agent owner. Replicas need distinct KADAN_RUNNER_ID values.
   kadan-runner: &kadan_runner
     build:
@@ -384,4 +355,5 @@ volumes:
   hikari_worker_speech_build:
   hikari_worker_formatting_build:
   hikari_worker_image_build:
+  # Retain the old native Video build volume; no existing data is removed.
   hikari_worker_video_build:

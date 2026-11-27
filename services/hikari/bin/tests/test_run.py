@@ -26,19 +26,20 @@ class BuildTests(unittest.TestCase):
         with patch.object(
             run.subprocess, "run", return_value=Mock(returncode=0)
         ) as execute:
-            self.assertTrue(run.build({}, "video"))
+            self.assertTrue(run.build({}, "tts"))
         install = execute.call_args_list[1].args[0]
         self.assertEqual(
-            install[install.index("--component") + 1], "kadan-worker-video"
+            install[install.index("--component") + 1], "kadan-worker-tts"
         )
 
     def test_unknown_worker_is_rejected(self):
         with self.assertRaises(typer.BadParameter):
             run.worker("gpu")
 
-    def test_retired_native_decision_worker_is_rejected(self):
-        with self.assertRaises(typer.BadParameter):
-            run.worker("decision")
+    def test_retired_native_workers_are_rejected(self):
+        for retired in ("decision", "video"):
+            with self.subTest(worker=retired), self.assertRaises(typer.BadParameter):
+                run.worker(retired)
 
 
 class WorkerReloadTests(unittest.TestCase):

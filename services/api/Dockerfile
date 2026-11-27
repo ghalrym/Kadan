@@ -25,6 +25,6 @@ RUN python bin/hikari.py check install
 EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request as u; [u.urlopen(f'http://127.0.0.1:8000{p}', timeout=3) for p in ('/hikari/health', '/tsuchi/api/health', '/kadan/api/health')]"
-# Worker results, such as finished videos, are large WebSocket messages.
+# Worker results, such as generated images and audio, are large WebSocket messages.
 CMD ["uvicorn", "combined.main:app", "--host", "0.0.0.0", "--port", "8000", "--ws-max-size", "268435456", \
      "--reload", "--reload-dir", "/app/combined", "--reload-dir", "/app/api", "--reload-dir", "/app/tsuchi", "--reload-dir", "/app/kadan"]
