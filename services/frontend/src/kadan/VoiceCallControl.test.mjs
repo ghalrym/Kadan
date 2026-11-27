@@ -49,13 +49,13 @@ afterEach(() => {
 });
 
 test("starting an unavailable call reports the session error for the composer alert", () => {
-  const voiceCall = useVoiceCall("test", null, false);
+  const voiceCall = useVoiceCall("test", false);
   assert.equal(voiceCall.unavailable, "This browser does not support voice calls.");
   voiceCall.start();
   assert.deepEqual(state, [null, false, voiceCall.unavailable]);
 });
 
 test("a disabled call does not start a session or report an availability error", () => {
-  useVoiceCall("test", null, true).start();
+  useVoiceCall("test", true).start();
   assert.deepEqual(state, [null, false, ""]);
 });

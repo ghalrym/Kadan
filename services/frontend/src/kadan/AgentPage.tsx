@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Brain, ChevronRight, Palette, Pencil, RefreshCw, Search, Server } from "lucide-react";
+import { ArrowLeft, Brain, ChevronRight, Palette, Pencil, RefreshCw, Search, Server, UserRound } from "lucide-react";
 import { agentPath, api } from "./api";
 import Pet, { useMood } from "./Pet";
 import { useAgentPet } from "./PetContext";
@@ -10,6 +10,7 @@ interface Props {
   agent: Agent;
   disabled: boolean;
   onEditPet: () => void;
+  onEditPersona: () => void;
   onRename: () => void;
   onRunner: () => void;
 }
@@ -96,7 +97,7 @@ function Memories({ agentKey, agentName }: { agentKey: string; agentName: string
 }
 
 /** Everything about the agent itself: its look, name, memories and where its work runs. */
-export default function AgentPage({ agent, disabled, onEditPet, onRename, onRunner }: Props) {
+export default function AgentPage({ agent, disabled, onEditPet, onEditPersona, onRename, onRunner }: Props) {
   const sheet = useAgentPet(agent.key);
   const [mood, react] = useMood("idle");
   return (
@@ -113,6 +114,7 @@ export default function AgentPage({ agent, disabled, onEditPet, onRename, onRunn
           </div>
           <div className="agent-hero-actions">
             <button onClick={onEditPet}><Palette size={15} />Edit pet</button>
+            <button disabled={disabled} onClick={onEditPersona}><UserRound size={15} />Persona</button>
             <button disabled={disabled} onClick={onRename}><Pencil size={15} />Rename</button>
           </div>
         </header>

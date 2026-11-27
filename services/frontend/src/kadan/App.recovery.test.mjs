@@ -42,7 +42,7 @@ const mocks = {
   "./Pet": moduleUrl("export default 'Pet'; export const agentPet = () => null; export const useMood = () => [];"),
   "./pet": moduleUrl("export const agentHue = () => 0;"),
   "./PetContext": moduleUrl("export const PetContext = { Provider: 'Provider' }; export const useAgentPet = () => null;"),
-  ...Object.fromEntries(["Chat", "Hatch", "PetEditor", "RenameAgent", "RunnerAssignment", "Plugins", "Sidebar", "SpaceLibrary", "ConfirmDialog", "AgentPage", "ServerSettings"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
+  ...Object.fromEntries(["Chat", "Hatch", "PetEditor", "PersonaEditor", "RenameAgent", "RunnerAssignment", "Plugins", "Sidebar", "SpaceLibrary", "ConfirmDialog", "AgentPage", "ServerSettings"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
 };
 const loader = registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -67,7 +67,7 @@ loader.deregister();
 
 const originals = new Map(["matchMedia", "document"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 // Slots follow App's useState calls; refs and effects do not consume these slots.
-const AGENT = 0, RENAMING = 3, ASSIGNING_RUNNER = 4, CONVERSATIONS = 7, SELECTION = 8,
+const AGENT = 0, EDITING_PERSONA = 3, RENAMING = 4, ASSIGNING_RUNNER = 5, CONVERSATIONS = 7, SELECTION = 8,
   CHAIN = 9, PAGE = 10, LOADING = 15, BUSY = 16, RESOURCE_OWNER = 22;
 const original = { id: "original", agent_key: "agent", title: "New chat", version: 3, messages: [] };
 const replacement = { ...original, id: "replacement", version: 1 };
@@ -209,6 +209,19 @@ test("chat updates keep the sidebar summary current", () => {
   update({ ...original, version: 4, messages: [{ id: "m", role: "user", content: "Plan a garden" }] });
   assert.equal(state[CONVERSATIONS][0].title, "Plan a garden");
   assert.equal(state[CONVERSATIONS][0].message_count, 1);
+});
+
+test("chat and the agent page open the single persona editor modal, which closes again", () => {
+  state[LOADING] = false;
+  chat().props.onEditPersona();
+  render();
+  const editor = find("PersonaEditor");
+  assert.equal(editor.props.agentKey, "agent");
+  assert.equal(editor.props.agentName, "Agent");
+  editor.props.onClose();
+  assert.equal(state[EDITING_PERSONA], false);
+  render();
+  assert.equal(find("PersonaEditor"), undefined);
 });
 
 for (const slot of [LOADING, BUSY]) {

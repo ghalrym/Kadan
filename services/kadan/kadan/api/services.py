@@ -17,7 +17,6 @@ from .pydantic_models.inference import (
 from .pydantic_models.resources import Memory, Message, Resource, ResourceKind
 from .routes.agents.conversations.notes import NoteInput
 from .routes.agents.memories import MemoryUpdate
-from .routes.agents.resources import PersonaUpdate
 from .routes.status import InferenceState, ServiceState, Status
 from .run_client import RunClient
 from .space_client import SpaceClient
@@ -93,7 +92,40 @@ class LocalServices:
             raise ServiceError("Tsuchi returned a persona for another agent.", 502)
         return persona
 
-    async def call_instruction(self, key: str, persona_id: UUID | None) -> str:
+    async def save_agent_persona(
+        self,
+        key: str,
+        *,
+        markdown: str,
+        expected_version: int | None,
+        title: str | None = None,
+    ) -> Resource:
+        resolved_title = title.strip() if title and title.strip() else None
+        if resolved_title is None:
+            current = await self.agent_persona(key)
+            if current is not None and current.title.strip():
+                resolved_title = current.title.strip()
+            else:
+                agent = await self.json_request("Tsuchi", "GET", f"/api/agents/{key}")
+                name = agent.get("name", "").strip() if isinstance(agent, dict) else ""
+                resolved_title = name[:200] if name else key[:200]
+        value = await self.json_request(
+            "Tsuchi",
+            "PUT",
+            f"/api/agents/{key}/persona",
+            json={
+                "title": resolved_title,
+                "markdown": markdown,
+                "expected_version": expected_version,
+            },
+        )
+        persona = parse_resource(value)
+        require_active(persona, ResourceKind.PERSONA)
+        if persona.agent_key != key:
+            raise ServiceError("Tsuchi returned a persona for another agent.", 502)
+        return persona
+
+    async def call_instruction(self, key: str) -> str:
         instruction = (
             "You are the user's agent. Have a spoken conversation. "
             "Keep replies short. You have no tools."
@@ -101,19 +133,10 @@ class LocalServices:
         owned = await self.agent_persona(key)
         if owned is not None:
             instruction += "\nYour saved persona:\n" + owned.markdown
-        if persona_id is not None and (owned is None or persona_id != owned.id):
-            selected = await self.resource(key, persona_id)
-            if (
-                selected.agent_key != key
-                or selected.kind != ResourceKind.PERSONA
-                or selected.deleted_at is not None
-            ):
-                raise ServiceError("The selected persona is no longer available.", 409)
-            instruction += "\nSelected persona:\n" + selected.markdown
         if len(instruction) > 8000:
             raise ServiceError(
                 "Voice call instructions exceed the 8,000-character limit. "
-                "Shorten the saved persona or remove the additional selection.",
+                "Shorten the saved persona.",
                 422,
             )
         return instruction
@@ -257,28 +280,6 @@ class LocalServices:
         if inference.state == "ready" and inference.model_id is not None:
             inference.model_state = await self.model_state(inference.model_id)
         return Status(tsuchi=storage, hikari=inference)
-
-    async def update_persona(
-        self, key: str, resource_id: UUID, value: PersonaUpdate
-    ) -> Resource:
-        current = await self.resource(key, resource_id)
-        require_active(current, ResourceKind.PERSONA, value.expected_version)
-        content = current.model_dump(
-            mode="json",
-            exclude={
-                "id",
-                "agent_key",
-                "version",
-                "created_at",
-                "updated_at",
-                "deleted_at",
-            },
-        )
-        content.update(value.model_dump(mode="json"))
-        result = await self.json_request(
-            "Tsuchi", "PUT", f"/api/agents/{key}/resources/{resource_id}", json=content
-        )
-        return parse_resource(result)
 
     async def update_memory(
         self, key: str, resource_id: UUID, value: MemoryUpdate

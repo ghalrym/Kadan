@@ -1,45 +1,11 @@
-from typing import Annotated, Literal
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ...pydantic_models.resources import AgentKey, Resource, ResourceKind, Title
+from ...pydantic_models.resources import AgentKey, Resource, ResourceKind
 
 router = APIRouter()
-
-
-class ResourceCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    # Conversations and Space items have their own routes.
-    kind: Literal["persona"]
-    title: Title
-    markdown: str = Field(default="", max_length=48000)
-    parent_id: UUID | None = None
-    tags: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(
-        default_factory=list, max_length=100
-    )
-
-    @field_validator("title")
-    @classmethod
-    def nonblank_title(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("Title cannot be blank")
-        return value.strip()
-
-
-class PersonaUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    title: Title
-    markdown: str = Field(max_length=48000)
-    expected_version: int = Field(ge=1)
-
-    @field_validator("title")
-    @classmethod
-    def nonblank_title(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("Title cannot be blank")
-        return value.strip()
 
 
 @router.get("/api/agents/{key}/resources")
@@ -62,20 +28,3 @@ async def list_resources(
 @router.get("/api/agents/{key}/resources/{resource_id}")
 async def get_resource(key: AgentKey, resource_id: UUID, request: Request) -> Resource:
     return await request.app.state.services.resource(key, resource_id)
-
-
-@router.post("/api/agents/{key}/resources", status_code=201)
-async def create_resource(key: AgentKey, value: ResourceCreate, request: Request):
-    return await request.app.state.services.json_request(
-        "Tsuchi",
-        "POST",
-        f"/api/agents/{key}/resources",
-        json=value.model_dump(mode="json"),
-    )
-
-
-@router.put("/api/agents/{key}/resources/{resource_id}")
-async def update_persona(
-    key: AgentKey, resource_id: UUID, value: PersonaUpdate, request: Request
-) -> Resource:
-    return await request.app.state.services.update_persona(key, resource_id, value)

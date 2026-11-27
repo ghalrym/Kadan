@@ -1,9 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router";
-import { ArrowUp, ArrowUpRight, ChevronDown, Mic, NotebookPen, Paperclip, Square, UserRound, X } from "lucide-react";
+import { ArrowUp, ArrowUpRight, Mic, NotebookPen, Paperclip, Square, X } from "lucide-react";
 import type { ChatAttachments } from "./attachments";
 import AttachmentPicker from "./AttachmentPicker";
-import type { Resource, Status } from "./types";
+import type { Status } from "./types";
 import VoiceCallControl, { type VoiceCall } from "./VoiceCallControl";
 import { microphoneUnavailable, VoiceInput, type VoiceState } from "./voiceInput";
 
@@ -41,9 +41,6 @@ interface Props {
   stopping?: boolean;
   blocked: boolean;
   status: Status | null;
-  personas: Resource[];
-  persona: string;
-  onPersona: (id: string) => void;
   pet: ReactNode;
   autoFocus?: boolean;
   voiceCall: VoiceCall;
@@ -61,9 +58,6 @@ export default function Composer({
   stopping,
   blocked,
   status,
-  personas,
-  persona,
-  onPersona,
   pet,
   autoFocus,
   voiceCall,
@@ -165,27 +159,7 @@ export default function Composer({
           event.target.value = "";
         }} />
         <div className="composer-bar">
-          {ready.chat && personas.length > 0 ? (
-            <label className={`chip persona ${persona ? "active" : ""}`}>
-              <UserRound size={14} />
-              <span className="sr-only">Persona for next response</span>
-              <select
-                value={persona}
-                onChange={(event) => onPersona(event.target.value)}
-                disabled={locked}
-              >
-                <option value="">No persona</option>
-                {personas.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.title}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown size={13} />
-            </label>
-          ) : (
-            <span />
-          )}
+          <span />
           <div className="send-actions">
             <button className="icon" type="button" aria-label="Attach files" title="Attach files · up to 10 files, 100 MiB total"
               disabled={blocked || callActive || !ready.storage} onClick={() => filePicker.current?.click()}>

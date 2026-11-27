@@ -107,6 +107,10 @@ class Boundary:
     async def agent_persona(self, key):
         assert key == "test"
 
+    async def save_agent_persona(self, key, markdown, expected_version, *, title=None):
+        assert key == "test"
+        raise AssertionError("Unexpected persona save")
+
     async def inference_status(self):
         return SimpleNamespace(state="ready", model_id="selected-model")
 
@@ -1641,33 +1645,6 @@ def test_owned_persona_applies_without_a_selected_persona(boundary, monkeypatch)
     assert "Use concise answers." in first[0].content
 
 
-@pytest.mark.parametrize("same_persona", [True, False])
-def test_explicit_persona_supplements_owned_persona_once(
-    boundary, monkeypatch, same_persona
-):
-    owned = persona_record(boundary, "Owned instructions")
-    selected = (
-        owned if same_persona else persona_record(boundary, "Selected instructions")
-    )
-    original_resource = boundary.resource
-
-    async def read(key):
-        return owned
-
-    async def resource(key, resource_id):
-        if resource_id == selected.id:
-            return selected
-        return await original_resource(key, resource_id)
-
-    monkeypatch.setattr(boundary, "agent_persona", read)
-    monkeypatch.setattr(boundary, "resource", resource)
-    run = boundary.current.model_copy(update={"persona_id": selected.id})
-    context = asyncio.run(boundary.controller.context(run))
-    assert context[0].content.count("Owned instructions") == 1
-    if not same_persona:
-        assert context[0].content.endswith("Selected persona:\nSelected instructions")
-
-
 def test_recovery_does_not_reread_owned_persona(boundary, monkeypatch):
     async def unavailable(key):
         raise AssertionError("Prepared work must keep its persona snapshot")
@@ -1684,37 +1661,23 @@ def test_recovery_does_not_reread_owned_persona(boundary, monkeypatch):
 
 def test_persona_save_uses_agent_scope_and_read_version(boundary, monkeypatch):
     persona = persona_record(boundary)
-    original_request = boundary.json_request
     writes = []
 
-    async def request(service, method, path, **kwargs):
-        if path.endswith("/persona"):
-            writes.append((method, path, kwargs["json"]))
-            return persona.model_dump(mode="json")
-        return await original_request(service, method, path, **kwargs)
+    async def save_persona(key, markdown, expected_version, *, title=None):
+        writes.append((key, markdown, expected_version, title))
+        return persona
 
-    monkeypatch.setattr(boundary, "json_request", request)
+    monkeypatch.setattr(boundary, "save_agent_persona", save_persona)
     boundary.controller.inference = Commands(
         command(
             "update_persona",
-            title="My persona",
             markdown="Be concise.",
             expected_version=None,
         ),
         finish(),
     )
     asyncio.run(boundary.controller.process(boundary.current))
-    assert writes == [
-        (
-            "PUT",
-            "/api/agents/test/persona",
-            {
-                "title": "My persona",
-                "markdown": "Be concise.",
-                "expected_version": None,
-            },
-        )
-    ]
+    assert writes == [("test", "Be concise.", None, None)]
     assert tool_result(boundary, -2)["persona"]["version"] == 1
     assert boundary.current.status == "completed"
 
@@ -1766,14 +1729,10 @@ def test_cancelled_run_cannot_start_persona_save(boundary):
 
 
 def test_persona_conflict_is_a_tool_result(boundary, monkeypatch):
-    original_request = boundary.json_request
+    async def conflict(key, markdown, expected_version, *, title=None):
+        raise ServiceError("Persona changed; read it again.", 409)
 
-    async def conflict(service, method, path, **kwargs):
-        if path.endswith("/persona"):
-            raise ServiceError("Persona changed; read it again.", 409)
-        return await original_request(service, method, path, **kwargs)
-
-    monkeypatch.setattr(boundary, "json_request", conflict)
+    monkeypatch.setattr(boundary, "save_agent_persona", conflict)
     boundary.controller.inference = Commands(
         command(
             "update_persona",
@@ -1788,113 +1747,14 @@ def test_persona_conflict_is_a_tool_result(boundary, monkeypatch):
     assert boundary.current.status == "completed"
 
 
-def selected_reference(markdown="Saved selected text"):
-    from kadan.api.pydantic_models.agent_runs import ReferenceSnapshot
-
-    return ReferenceSnapshot(
-        resource_id=uuid4(), kind="space", title="Plan", version=3, markdown=markdown
-    )
-
-
-@pytest.mark.parametrize("selected", [False, True])
-def test_reference_scope_matches_budget_preparation_binding_and_validation(
-    boundary, selected
-):
-    boundary.current.references = [selected_reference()] if selected else []
-    expected = [
-        tool for tool in ALL_TOOLS if tool.name != "read_request_references" or selected
-    ]
+def test_bound_tools_matches_all_tools_and_omits_request_references(boundary):
+    expected = list(ALL_TOOLS)
     assert boundary.controller.bound_tools(boundary.current) == expected
     status = SimpleNamespace(context_limit=65536)
     assert boundary.controller.transcript_limit(status, boundary.current) == (
         context_characters(65536) - tool_characters(expected)
     )
-    if selected:
-        boundary.controller.inference = Commands(
-            command("read_request_references"), finish()
-        )
-    else:
-        boundary.controller.inference = Commands(
-            *[command("read_request_references")] * (MAX_ERROR_RETRIES + 1),
-            send(content="I had trouble reading that.", end_run=True),
-        )
-    asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.controller.inference.tools[0] == [tool.name for tool in expected]
-    if selected:
-        assert boundary.current.status == "completed"
-        assert (
-            tool_result(boundary, -2)["references"][0]["markdown"]
-            == "Saved selected text"
-        )
-        assert all(
-            "Saved selected text" not in item.model_dump_json()
-            for item in boundary.current.transcript
-            if item.role != "result"
-        )
-    else:
-        assert boundary.current.status == "completed"
-        assert "unknown tool" in boundary.current.error
-        assert not any(item.role == "result" for item in boundary.current.transcript)
-        assert [item.content for item in boundary.deliveries] == [
-            "I had trouble reading that."
-        ]
-
-
-def test_saved_reference_reader_replays_from_global_registry_without_selection(
-    boundary,
-):
-    boundary.start_owned(
-        transcript=[
-            RunMessage(role="system", content="Saved instructions"),
-            RunCall(command=command("read_request_references")),
-        ]
-    )
-    boundary.controller.inference = Commands(finish())
-    asyncio.run(boundary.controller.advance(boundary.current))
-    assert tool_result(boundary, -2)["references"] == []
-    assert boundary.current.status == "completed"
-    assert "read_request_references" not in boundary.controller.inference.tools[0]
-
-
-def test_cancelled_run_cannot_replay_saved_reference_reader(boundary):
-    boundary.start_owned(
-        references=[selected_reference()],
-        transcript=[RunCall(command=command("read_request_references"))],
-    )
-    boundary.cancel()
-    with pytest.raises(ServiceError, match="no longer owned"):
-        asyncio.run(boundary.controller.infer_command(RunState(run=boundary.current)))
-    assert len(boundary.current.transcript) == 1
-
-
-def test_selected_reference_over_context_budget_fails_without_truncation(boundary):
-    boundary.current.references = [selected_reference("x" * 12000)]
-    context = asyncio.run(boundary.controller.context(boundary.current))
-    reserve = tool_characters(boundary.controller.bound_tools(boundary.current))
-    tokens = (
-        RESERVED_TOKENS
-        + (reserve + sum(len(item.content) for item in context) + 1000) // 3
-    )
-
-    async def status():
-        return SimpleNamespace(
-            state="ready", model_id="selected-model", context_limit=tokens
-        )
-
-    boundary.inference_status = status
-    boundary.controller.inference = Commands(
-        command("read_request_references"),
-        send(content="I struggled to finish reading that.", end_run=True),
-    )
-    asyncio.run(boundary.controller.process(boundary.current))
-    assert boundary.current.status == "completed"
-    assert "context limit" in boundary.current.error
-    assert len(boundary.controller.inference.calls) == 2
-    assert boundary.controller.inference.tools[-1] == ["send_message"]
-    assert tool_result(boundary)["references"][0]["markdown"] == "x" * 12000
-    assert [item.content for item in boundary.deliveries] == [
-        "I struggled to finish reading that."
-    ]
+    assert all(tool.name != "read_request_references" for tool in expected)
 
 
 def test_historical_codex_event_run_starts_from_the_event(boundary):

@@ -20,7 +20,6 @@ router = APIRouter()
 class CallStart(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["start"]
-    persona_id: UUID | None
 
 
 @router.websocket("/api/agents/{key}/calls")
@@ -33,9 +32,9 @@ async def voice_call(key: AgentKey, socket: WebSocket):
         message = await asyncio.wait_for(socket.receive(), 15)
         if message["type"] == "websocket.disconnect":
             return
-        start = CallStart.model_validate_json(message.get("text") or "")
+        CallStart.model_validate_json(message.get("text") or "")
         services = socket.app.state.services
-        instruction = await services.call_instruction(key, start.persona_id)
+        instruction = await services.call_instruction(key)
         url = services.settings.hikari_url
         url = (
             ("wss" if url.startswith("https:") else "ws")

@@ -83,6 +83,7 @@ async function app(petResponses = [], agentResponses = [[agent]]) {
     "./Pet": { agentPet: () => ({ url: "hatchling" }) },
     "./pet": { agentHue: () => 252 },
     "./PetEditor": { default: "PetEditor" },
+    "./PersonaEditor": { default: "PersonaEditor" },
     "./PetContext": { PetContext: { Provider: "PetProvider" } },
     "./api": {
       agentPath: key => `/agents/${key}`,
@@ -159,16 +160,17 @@ test("the sidebar moves between chat, Plugins and the agent page", async () => {
   assert.equal(count("AgentPage"), 0);
 });
 
-test("hiding the editor preserves agent-scoped persona loading for chat", async () => {
+test("chat and agent page open the single persona editor without listing a persona library", async () => {
   const view = await app();
-  assert.ok(view.requests.length > 0);
-  for (const request of view.requests.filter(request => request.kind)) {
-    assert.deepEqual(request, { key: agent.key, kind: "persona" });
-  }
+  assert.deepEqual(view.requests.filter(request => request.kind), []);
   const chat = view.findAll(node => node.type === "Chat")[0];
   assert.equal(chat.props.agentKey, agent.key);
   assert.equal(chat.props.chain, chain);
-  assert.equal(chat.props.personas[0], persona);
+  chat.props.onEditPersona();
+  view.render();
+  const editor = view.findAll(node => node.type === "PersonaEditor")[0];
+  assert.equal(editor.props.agentKey, agent.key);
+  assert.equal(editor.props.agentName, agent.name);
 });
 
 test("retry reloads the selected pet after a failed effect and clears its error on success", async () => {
@@ -455,5 +457,4 @@ test("a previous agent's chat callback cannot update the newly loaded agent", as
   const chat = view.findAll(node => node.type === "Chat")[0];
   assert.equal(chat.props.agentKey, "other");
   assert.equal(chat.props.chain, otherChain);
-  assert.equal(chat.props.personas[0], otherPersona);
 });

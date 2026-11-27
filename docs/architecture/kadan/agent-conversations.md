@@ -32,7 +32,7 @@ silently mixing snapshots. Coverage and content cuts are explicit. The existing
 resource read fetches the full stored snapshot before these bounds are applied;
 there is no new index, endpoint or independent history store.
 
-Browser selection is local, and per-agent drafts use the tab's session storage. The outbox retains the original message identity, mode and persona for reconciliation and retry. Browser state is not a durable work queue.
+Browser selection is local, and per-agent drafts use the tab's session storage. The outbox retains the original message identity, mode and attachments for reconciliation and retry. Browser state is not a durable work queue.
 
 The user expectations for [agent conversations](../../user-expectations/kadan/agent-conversations.md) describe the product behavior. See [Persona instructions](personas.md) for instruction snapshots.
 
@@ -55,19 +55,11 @@ All routes are scoped to `/api/agents/{key}`, reject unknown fields and return p
 
 `ConversationSummary` has `id`, `agent_key`, `title` (the display title above), `message_count`, `preview`, `version`, `created_at` and `updated_at`. Summaries omit message bodies; the chat view loads the open conversation as a resource and then follows it through the conversation runs snapshot. A conversation ID that is missing, trashed or not a conversation returns 404. The list pages through Tsuchi 200 records at a time and merges pages by ID, keeping the newest version when a concurrent write moves a record between pages.
 
-The frontend loads summaries and personas together, then loads only the open conversation. The selection is remembered with the agent key it belongs to, so a refresh that switches agents never requests the old chat under the new agent. Chat snapshots update the matching summary locally (`conversations.ts` mirrors the display-title rule), so the sidebar follows new messages without listing again. Empty chats are hidden from lists unless open, and **New chat** reuses an empty chat before creating another.
+The frontend loads conversation summaries first, then loads only the open conversation. The selection is remembered with the agent key it belongs to, so a refresh that switches agents never requests the old chat under the new agent. Chat snapshots update the matching summary locally (`conversations.ts` mirrors the display-title rule), so the sidebar follows new messages without listing again. Empty chats are hidden from lists unless open, and **New chat** reuses an empty chat before creating another.
 
-## Request references
+## Tool binding
 
-See [References for one response](../../user-expectations/kadan/request-references.md) for user-visible guarantees.
-
-Chat's explicit reference picker lists active Markdown spaces and memories from the selected agent. It uses the existing document and memory list endpoints, which transport full resource records; no separate background retrieval is added. Search results are limited independently per source. Rows clear while loading or after failure, and late responses cannot replace newer query results. A run submission carries up to three `references` entries containing `resource_id` and `expected_version`, separately from message text and persona tags. Tsuchi validates their namespace, kind, active state, versions and combined 12,000-character Markdown limit in the same transaction that appends the message and queues the run. Rejection saves neither message nor run.
-
-The durable run stores each selected resource's identity, kind, title, version and Markdown. Retrying a message identity compares the original selections before returning the saved run; it does not re-resolve edited or trashed references. Resumed runs and image completion runs retain these snapshots. Runs without selections keep their existing stored shape by omitting empty reference metadata. The browser outbox keeps the selected versions on uncertain sends and retries, clearing the selection only after confirming that submission. Saving a note does not attach references. Existing outbox entries from before reference selection are recovered with an empty selection.
-
-The runner adds a static selection hint and offers `read_request_references`. Saved Markdown is returned as a tool result with reference-data provenance and an explicit statement that it grants no authorization and overrides no instructions. It is not concatenated into the user's message or system instructions. The established tool-response rendering remains unchanged. The model decides whether to read and use the references; selection does not guarantee use. Reading spends one command and its returned data consumes the ordinary context budget, so a request can still reach the existing command or context limit.
-
-`bound_tools(run)` omits only `read_request_references` when the run has no selections, consistently for context preparation, transcript budgeting, inference binding and fresh-command validation. Connected [Remote MCP integrations](mcp-integrations.md) dynamically supply pinned MCP tools and the two-tool MCP gateway. The global registry retains the reader so checkpointed calls can replay through existing ownership and cancellation fencing. No other useful tools are pruned to fit context.
+`bound_tools(run)` binds Kadan's core conversation, memory, Space, image and single-persona tools consistently for context preparation, transcript budgeting, inference binding and fresh-command validation. Connected [Remote MCP integrations](mcp-integrations.md) dynamically supply pinned MCP tools and the two-tool MCP gateway. No other useful tools are pruned to fit context. When users mention saved Space pages or memories in chat, the agent finds and reads them through its normal tools rather than per-message reference pickers.
 
 ## Model decisions and delivery
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { Egg, Menu } from "lucide-react";
-import { agentPath, allResources, api } from "./api";
+import { agentPath, api } from "./api";
 import { getDesktopServerConfig, isDesktopApp } from "./desktop";
 import { latestConversation } from "./agentRuns";
 import { emptyConversation, pickConversation, summarize, upsertConversation } from "./conversations";
@@ -11,6 +11,7 @@ import Hatch from "./Hatch";
 import Pet, { agentPet } from "./Pet";
 import { agentHue } from "./pet";
 import PetEditor from "./PetEditor";
+import PersonaEditor from "./PersonaEditor";
 import RenameAgent from "./RenameAgent";
 import RunnerAssignment from "./RunnerAssignment";
 import Plugins from "./Plugins";
@@ -33,13 +34,13 @@ export default function App() {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [pets, setPets] = useState<Record<string, PetJob | null>>({});
   const [editingPet, setEditingPet] = useState(false);
+  const [editingPersona, setEditingPersona] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [assigningRunner, setAssigningRunner] = useState(false);
   const [confirm, setConfirm] = useState<{ title: string; message: string; confirm: string; run: () => Promise<void> } | null>(null);
   const petSelectionRevision = useRef(0);
   const petReadRevision = useRef(0);
   const pendingPetSelection = useRef(0);
-  const [personas, setPersonas] = useState<Resource[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   /** The open chat, remembered with the agent it belongs to. */
   const [selection, setSelection] = useState<{ owner: string; id: string } | null>(null);
@@ -172,6 +173,7 @@ export default function App() {
       if (agentKey.current !== (first?.key ?? "")) {
         setBusy(false);
         setEditingPet(false);
+        setEditingPersona(false);
         setRenaming(false);
         setAssigningRunner(false);
         setConfirm(null);
@@ -204,18 +206,15 @@ export default function App() {
     void refreshPetSelection(key, () => current, true).catch(() => {});
     return () => { current = false; };
   }, [key, refreshPetSelection, petRetry]);
-  // Chats and personas load together; the open chat loads separately below.
+  // Chats load first; the open chat loads separately below.
   useEffect(() => {
     if (!key) return;
     let current = true;
     const revision = refreshRevision.current;
     const isCurrent = () => current && revision === refreshRevision.current;
     setLoading(true);
-    Promise.all([
-      api<ConversationSummary[]>(`${agentPath(key)}/conversations`),
-      allResources(key, "persona"),
-    ])
-      .then(async ([rows, profiles]) => {
+    api<ConversationSummary[]>(`${agentPath(key)}/conversations`)
+      .then(async (rows) => {
         if (!isCurrent()) return;
         const preferred = selectedRef.current?.owner === key ? selectedRef.current.id : null;
         let id = pickConversation(rows, preferred);
@@ -226,7 +225,6 @@ export default function App() {
           id = created.id;
         }
         setConversations(rows);
-        setPersonas(profiles);
         setSelection((value) => value?.owner === key && value.id === id ? value : { owner: key, id });
       })
       .catch((e) => {
@@ -448,6 +446,7 @@ export default function App() {
             agent={agent}
             disabled={disabled}
             onEditPet={() => setEditingPet(true)}
+            onEditPersona={() => setEditingPersona(true)}
             onRename={() => setRenaming(true)}
             onRunner={() => setAssigningRunner(true)}
           />
@@ -459,12 +458,12 @@ export default function App() {
             agentKey={key}
             agentName={agent?.name || key}
             chain={chain}
-            personas={personas}
             status={status}
             entrance={hatched ? "jumping" : "waving"}
             onChange={updateChain}
             onBusy={(value) => { if (agentKey.current === key) setBusy(value); }}
             onEditPet={() => setEditingPet(true)}
+            onEditPersona={() => setEditingPersona(true)}
             blocked={loading}
             refreshStatus={refreshStatus}
           />
@@ -508,6 +507,14 @@ export default function App() {
         onSelect={(id) => selectPet(key, id)}
         onRefreshSelection={refreshEditedPet}
         onClose={() => setEditingPet(false)}
+      />}
+      {editingPersona && agent && <PersonaEditor
+        agentKey={key}
+        agentName={agent.name}
+        onClose={() => {
+          setEditingPersona(false);
+          restoreFocus();
+        }}
       />}
       {serverSettingsOpen && <ServerSettings
         onConnected={(nextHost) => {

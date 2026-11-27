@@ -24,12 +24,12 @@ from kadan.api.services import LocalServices
 @pytest.mark.parametrize(
     "body",
     [
-        {"content": "Hi", "expected_version": 1},
-        {"content": " ", "expected_version": 1, "persona_id": None},
+        {"content": " ", "expected_version": 1},
+        {"content": "Hi", "expected_version": 1, "persona_id": None},
+        {"content": "Hi", "expected_version": 1, "references": []},
         {
             "content": "Hi",
             "expected_version": 1,
-            "persona_id": None,
             "tools": [{"type": "shell"}],
         },
     ],
@@ -307,7 +307,7 @@ def test_poll_keeps_run_creation_order_with_identity_tiebreak(polling_boundary):
 
 def test_create_run_still_returns_full_record(polling_boundary):
     boundary = polling_boundary
-    value = RunInput(content="Draw a tree", expected_version=4, persona_id=None)
+    value = RunInput(content="Draw a tree", expected_version=4)
     result = asyncio.run(
         create_run("alpha", boundary.conversation.id, value, boundary.request)
     )

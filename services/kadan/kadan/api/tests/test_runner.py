@@ -294,8 +294,6 @@ def test_api_run_client_only_persists_enqueue_and_cancellation():
         value = RunInput(
             message_id=run.id,
             content="Hello",
-            references=[],
-            persona_id=None,
             expected_version=1,
         )
         assert await client.enqueue("agent", run.conversation_id, value) == run

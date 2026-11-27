@@ -13,11 +13,11 @@ from kadan.api.routes import calls
 PERSONA_ID = UUID("10000000-0000-4000-8000-000000000002")
 
 
-def socket(url="http://hikari-api:8000", persona_id=None):
+def socket(url="http://hikari-api:8000"):
     value = AsyncMock()
     value.receive.return_value = {
         "type": "websocket.receive",
-        "text": json.dumps({"type": "start", "persona_id": persona_id}),
+        "text": json.dumps({"type": "start"}),
     }
     value.app = SimpleNamespace(
         state=SimpleNamespace(
@@ -33,13 +33,11 @@ def socket(url="http://hikari-api:8000", persona_id=None):
 def test_call_resolves_persona_before_connecting_and_relays_after_sending_start(
     monkeypatch,
 ):
-    browser = socket("https://hikari.local/prefix", str(PERSONA_ID))
+    browser = socket("https://hikari.local/prefix")
     upstream = AsyncMock()
 
     async def connect_call(*args, **kwargs):
-        browser.app.state.services.call_instruction.assert_awaited_once_with(
-            "test", PERSONA_ID
-        )
+        browser.app.state.services.call_instruction.assert_awaited_once_with("test")
         return upstream
 
     connect = AsyncMock(side_effect=connect_call)

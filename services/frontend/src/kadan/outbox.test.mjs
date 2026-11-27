@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { chatStorageKeys, confirmSend, copyPendingToDraft, discardUnassignedPending, queueSend, readPending } from "./outbox.ts";
 
-const first = { id: "a", content: "First", generate: true, persona: "persona-a", references: [{ resource_id: "space", expected_version: 2, title: "Plan" }] };
-const next = { id: "b", content: "Next draft", generate: false, persona: "", references: [] };
+const first = { id: "a", content: "First", generate: true };
+const next = { id: "b", content: "Next draft", generate: false };
 
 test("copying an unassigned submission preserves newer draft text and the pending submission", () => {
   const pending = Object.freeze({ ...first });
@@ -56,7 +56,7 @@ test("a failed send cannot be overwritten by the next draft", () => {
   assert.deepEqual(queueSend(pending, first), first);
 });
 
-test("reload preserves the original ID, text, send mode and persona until confirmed", () => {
+test("reload preserves the original ID, text and send mode until confirmed", () => {
   const pending = readPending(JSON.stringify(first));
   assert.deepEqual(confirmSend(pending, [{ id: "older" }]), first);
   assert.equal(confirmSend(pending, [{ id: first.id }]), null);
@@ -85,22 +85,8 @@ test("attachment retries preserve ordered snapshots", () => {
   }
 });
 
-test("uncertain delivery retry keeps the original selected identity and version", () => {
-  const restored = readPending(JSON.stringify(first));
-  const changed = { ...first, references: [{ resource_id: "new", expected_version: 9, title: "New" }] };
-  assert.deepEqual(queueSend(restored, changed).references, first.references);
-});
-
-test("invalid saved reference selections cannot become retry requests", () => {
-  for (const references of [null, [null], [first.references[0], first.references[0]], [{ resource_id: "x", expected_version: 0, title: "x" }], Array(4).fill(first.references[0])]) {
-    assert.equal(readPending(JSON.stringify({ ...first, references })), null);
-  }
-});
-
-
-test("legacy pending messages retain identity and content with empty references", () => {
-  const { references, ...legacy } = first;
+test("legacy pending messages drop retired persona and reference fields while keeping content", () => {
+  const legacy = { ...first, persona: "old-persona", references: [{ resource_id: "space", expected_version: 2, title: "Plan" }] };
   const restored = readPending(JSON.stringify(legacy));
-  assert.deepEqual(restored, legacy);
-  assert.deepEqual(queueSend(restored, { ...first, references }), restored);
+  assert.deepEqual(restored, first);
 });

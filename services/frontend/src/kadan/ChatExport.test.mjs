@@ -110,7 +110,7 @@ test("Chat passes saved history to export while its draft and optimistic outgoin
     react: {
       Fragment: "Fragment", useEffect() {}, useLayoutEffect() {}, useCallback: callback => callback,
       useRef: current => ({ current }),
-      useState: initial => [slot++ === 13 ? outgoing : typeof initial === "function" ? initial() : initial, () => {}],
+      useState: initial => [slot++ === 10 ? outgoing : typeof initial === "function" ? initial() : initial, () => {}],
     },
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "lucide-react": {},
@@ -118,10 +118,8 @@ test("Chat passes saved history to export while its draft and optimistic outgoin
     "./Markdown": { default: "Markdown" },
     "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true }) },
     "./Pet": { default: "Pet", useMood: () => ["idle", () => {}] },
-    "./Activity": {},
     "./attachments": { ChatAttachments: class { entries = []; } },
     "./SaveChatResult": {},
-    "./RequestReferences": { default: "RequestReferences" },
     "./AgentCard": {}, "./ChatExport": { default: "ChatExport" },
     "./VoiceCallControl": { useVoiceCall: () => ({ active: false }) },
     "./presence": {}, "./PetContext": { useAgentPet: () => null },
@@ -137,7 +135,7 @@ test("Chat passes saved history to export while its draft and optimistic outgoin
     exports, require: name => { assert.ok(name in modules, name); return modules[name]; },
     sessionStorage: { getItem: key => key === outbox.chatStorageKeys("haru", snapshot.id).draft ? "Unsent draft" : null },
   });
-  const tree = exports.default({ agentKey: "haru", agentName: "Haru", chain: snapshot, personas: [], status: null });
+  const tree = exports.default({ agentKey: "haru", agentName: "Haru", chain: snapshot, status: null, onEditPersona() {} });
   function elements(node) {
     return !node || typeof node !== "object" ? [] : [node, ...[node.props?.children].flat(Infinity).flatMap(elements)];
   }

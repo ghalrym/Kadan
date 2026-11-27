@@ -19,9 +19,10 @@ const run = (id, status, error = null) => ({
 });
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-// Exercise Chat's poll, send and Stop handlers with in-memory hooks and API boundaries.
+// Exercise Chat's poll, send, Stop and AgentCard handlers with in-memory hooks and API boundaries.
 async function chat(initialRuns, initialConversation = chain, storedPending = null, callOptions = {}) {
   const slots = [], effects = [], timers = [], requests = [], callStarts = [];
+  let personaEdits = 0;
   let callDisabled;
   const storage = callOptions.storage ?? new Map();
   if (storedPending) storage.set(outbox.chatStorageKeys("guide", initialConversation.id).pending, JSON.stringify(storedPending));
@@ -64,14 +65,12 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "lucide-react": {},
     "react-router": { Link: "Link" },
-    "./RequestReferences": { default: "RequestReferences" },
     "./Markdown": { default: "Markdown" },
     "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true, ...callOptions.ready }) },
     "./Pet": { default: "Pet", useMood: () => ["idle", () => {}] },
     "./AgentCard": { default: "AgentCard" },
     "./ChatExport": { default: "ChatExport" },
-    "./Activity": { default: "Activity" },
-    "./VoiceCallControl": { useVoiceCall: (_agent, _persona, disabled) => {
+    "./VoiceCallControl": { useVoiceCall: (_agent, disabled) => {
       callDisabled = disabled;
       return { active: false, unavailable: null, ...callOptions.voiceCall, start: (...args) => callStarts.push(args) };
     } },
@@ -117,9 +116,9 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
   function render() {
     cursor = 0;
     tree = exports.default({
-      agentKey: "guide", agentName: "Guide", chain: selectedChain, personas: callOptions.personas ?? [], status: null,
-      entrance: "idle", onChange(value) { selectedChain = value; }, onBusy() {}, onEditPet() {}, blocked: false,
-      refreshStatus: async () => {},
+      agentKey: "guide", agentName: "Guide", chain: selectedChain, status: null,
+      entrance: "idle", onChange(value) { selectedChain = value; }, onBusy() {}, onEditPet() {},
+      onEditPersona() { personaEdits++; }, blocked: false, refreshStatus: async () => {},
     });
     effects.splice(0).forEach(effect => effect());
   }
@@ -132,6 +131,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
   render();
   return {
     render, requests, storage, attachments, callStarts, timerDelays,
+    personaEdits: () => personaEdits,
     callDisabled: () => callDisabled,
     streamingMessages: () => elements()
       .filter(node => node.type === "article" && typeof node.props?.className === "string" && node.props.className.includes("streaming"))
@@ -147,15 +147,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     notices: () => elements().filter(node => node.props?.className === "notice").map(node => node.props.children),
     alerts: () => elements().filter(node => node.props?.role === "alert").map(node => node.props.children[0]),
     receipts: () => elements().filter(node => node.props?.className === "receipt").map(node => node.props.children),
-    references: () => elements().find(node => node.type === "RequestReferences").props,
     composer: () => elements().find(node => node.type === "Composer").props,
-    activity() {
-      if (!elements().some(node => node.type === "AgentCard")) {
-        elements().find(node => node.props?.["aria-label"] === "Open Guide’s card").props.onClick();
-        render();
-      }
-      return elements().find(node => node.type === "AgentCard").props.activity.props;
-    },
     async poll(runs, conversation = selectedChain) {
       snapshotRuns = runs;
       selectedChain = conversation;
@@ -186,29 +178,17 @@ test("failed responses never show a failure notice in chat", async () => {
   assert.deepEqual(view.notices(), []);
 });
 
-test("the chosen persona survives leaving the chat and is dropped once deleted", async () => {
-  const personas = [{ id: "persona", title: "Me" }];
-  const first = await chat([], chain, null, { personas });
-  first.composer().onPersona("persona");
-  assert.equal(first.storage.get(`${outbox.chatStorageKeys("guide", chain.id).draft}.persona`), "persona");
-  const reopened = await chat([], chain, null, { personas, storage: first.storage });
-  assert.equal(reopened.composer().persona, "persona");
-  const deleted = await chat([], chain, null, { personas: [], storage: first.storage });
-  assert.equal(deleted.composer().persona, "");
-});
-
-test("cancelled outcomes move to Activity behind newer queued, running and successful responses", async () => {
+test("cancelled notice clears once newer queued, running or completed responses arrive", async () => {
   const previous = run("previous", "cancelled");
   const view = await chat([previous]);
   assert.deepEqual(view.notices(), ["Response stopped"]);
   for (const next of ["queued", "running", "completed"]) {
     await view.poll([previous, run("newer", next)]);
     assert.ok(!view.notices().some(text => /failed|stopped/.test(text)));
-    assert.ok(view.activity().runs.includes(previous));
   }
 });
 
-test("sending another message retains a cancelled response in Activity", async () => {
+test("sending another message clears the stopped notice", async () => {
   const view = await chat([run("previous", "cancelled")]);
   const finishSend = view.holdSend();
   view.composer().onChange("Try another question");
@@ -217,7 +197,6 @@ test("sending another message retains a cancelled response in Activity", async (
   view.render();
   assert.equal(view.composer().sending, true);
   assert.ok(!view.notices().some(text => /failed|stopped/.test(text)));
-  assert.equal(view.activity().runs[0].status, "cancelled");
   finishSend({
     run: run("newer", "queued"),
     conversation: { ...chain, version: 2, messages: [message("sent-message", "user", "Try another question")] },
@@ -226,7 +205,6 @@ test("sending another message retains a cancelled response in Activity", async (
   view.render();
   assert.equal(view.composer().sending, false);
   assert.ok(!view.notices().some(text => /failed|stopped/.test(text)));
-  assert.equal(view.activity().runs[0].status, "cancelled");
 });
 
 test("only the current stop is repeated beside Messages; failed runs stay hidden", async () => {
@@ -241,7 +219,7 @@ test("only the current stop is repeated beside Messages; failed runs stay hidden
   assert.deepEqual(view.notices(), []);
 });
 
-test("Stop updates queued and running responses while retaining earlier failures in Activity", async () => {
+test("Stop updates queued and running responses", async () => {
   const view = await chat([
     run("failed", "failed", "Context limit reached"), run("running", "running"), run("queued", "queued"),
   ]);
@@ -268,25 +246,11 @@ test("replacing the conversation hides its old outcomes while the new poll waits
   const failPoll = view.replaceConversation({ ...chain, id: "replacement" });
   assert.equal(view.requests.at(-1).path, "/agents/guide/conversations/replacement/runs");
   assert.deepEqual(view.notices(), []);
-  assert.equal(view.activity().loading, true);
   failPoll(new Error("Storage offline"));
   await settle();
   view.render();
   assert.deepEqual(view.notices(), []);
   assert.deepEqual(view.alerts(), ["Updates unavailable: Storage offline"]);
-  assert.equal(view.activity().loading, true);
-  assert.equal(view.activity().error, "Updates unavailable: Storage offline");
-});
-
-test("activity reuses chat's snapshot without adding a polling request", async () => {
-  const records = [run("queued", "queued")];
-  const view = await chat(records);
-  assert.equal(view.requests.length, 1);
-  assert.equal(view.activity().loading, false);
-  assert.equal(view.activity().runs, records);
-  await view.poll([run("queued", "completed")]);
-  assert.equal(view.requests.length, 2);
-  assert.equal(view.activity().runs[0].status, "completed");
 });
 
 for (const generate of [true, false]) {
@@ -302,6 +266,8 @@ for (const generate of [true, false]) {
     assert.deepEqual(view.receipts(), ["Sending…"]);
     assert.equal(view.requests.at(-1).path, `/agents/guide/conversations/conversation/${generate ? "runs" : "notes"}`);
     assert.equal(view.requests.at(-1).body.content, content);
+    assert.equal("references" in view.requests.at(-1).body, false);
+    assert.equal("persona_id" in view.requests.at(-1).body, false);
     const saved = { ...chain, version: 2, messages: [first, message("sent-message", "user", content)] };
     const queued = run("B", "queued");
     finishSend(generate ? { run: queued, conversation: saved } : saved);
@@ -352,10 +318,8 @@ test("note submission snapshots ordered attachments separately from upload confi
   assert.equal(view.storage.has(key), false);
 });
 
-test("failed run retry keeps original references and attachments while newer uploads remain unresolved", async () => {
+test("failed run retry keeps original attachments while newer uploads remain unresolved", async () => {
   const view = await chat([]);
-  view.references().onChange([{ resource_id: "original-space", expected_version: 4, title: "Plan" }]);
-  view.render();
   view.attachments.entries = [{ id: "file-b" }, { id: "file-a" }];
   const fail = view.holdSend();
   view.composer().onChange("Read these files");
@@ -363,13 +327,11 @@ test("failed run retry keeps original references and attachments while newer upl
   view.composer().onSend(true);
   const original = view.requests.find(request => request.body).body;
   assert.deepEqual(Array.from(original.attachment_ids), ["file-b", "file-a"]);
-  assert.deepEqual(JSON.parse(JSON.stringify(original.references)), [{ resource_id: "original-space", expected_version: 4 }]);
   fail.reject(new Error("Lost send response"));
   await settle();
   view.attachments.entries = [{ id: "new-file" }];
   view.attachments.ready = false;
   view.render();
-  view.references().onChange([{ resource_id: "new-memory", expected_version: 6, title: "New" }]);
   view.composer().onChange("New draft");
   view.render();
   const finish = view.holdSend();
@@ -396,14 +358,14 @@ test("new sends with unresolved attachments cannot submit", async () => {
 
 test("reloaded retry preserves attachments independently of the draft", async () => {
   for (const attachment_ids of [undefined, ["saved-b", "saved-a"]]) {
-    const pending = { id: "earlier", content: "Continue", generate: true, persona: "original", ...(attachment_ids && { attachment_ids }) };
+    const pending = { id: "earlier", content: "Continue", generate: true, ...(attachment_ids && { attachment_ids }) };
     const view = await chat([], chain, pending);
     view.attachments.entries = [{ id: "draft-file" }];
     const finish = view.holdSend();
     view.retry();
     const request = view.requests.find(request => request.body).body;
     assert.equal(request.message_id, "earlier");
-    assert.equal(request.persona_id, "original");
+    assert.equal("persona_id" in request, false);
     assert.deepEqual(Array.from(request.attachment_ids), attachment_ids ?? []);
     assert.deepEqual(view.attachments.entries, [{ id: "draft-file" }]);
     finish({ run: run("queued", "queued"), conversation: { ...chain, version: 2, messages: [message("earlier", "user", "Continue")] } });
@@ -424,22 +386,26 @@ test("only saved assistant replies with text offer saving in the current agent a
   assert.equal(controls[0].message, reply);
 });
 
-
-test("normal Call remains available when text language is unavailable", async () => {
+test("agent card offers Call and Persona actions with no Activity panel", async () => {
   const view = await chat([], chain, null, { ready: { storage: true, chat: false } });
   const card = view.card();
   assert.equal(card.callDisabled, false);
   assert.equal(view.callDisabled(), false);
   assert.equal(card.callTitle, "Start a voice call");
+  assert.equal(card.personaDisabled, false);
+  assert.equal("activity" in card, false);
   card.onCall();
   assert.deepEqual(view.callStarts, [[]]);
+  card.onEditPersona();
+  assert.equal(view.personaEdits(), 1);
 });
 
-test("Call needs Tsuchi for persona instructions", async () => {
+test("Call and Persona both need Tsuchi storage", async () => {
   const view = await chat([], chain, null, { ready: { storage: false, chat: false } });
   const card = view.card();
   assert.equal(card.callDisabled, true);
   assert.equal(view.callDisabled(), true);
+  assert.equal(card.personaDisabled, true);
   assert.match(card.callTitle, /storage.*persona/);
 });
 
@@ -448,40 +414,6 @@ test("Call reports missing browser support before starting", async () => {
   const card = view.card();
   assert.equal(card.callDisabled, true);
   assert.equal(card.callTitle, "Calls require HTTPS or localhost.");
-});
-
-
-test("selected reference versions travel separately and clear on confirmed send", async () => {
-  const view = await chat([]);
-  view.references().onChange([{ resource_id: "space", expected_version: 4, title: "Plan" }]);
-  view.composer().onChange("Use the plan");
-  view.render();
-  const resolve = view.holdSend();
-  view.composer().onSend(true);
-  view.render();
-  assert.equal(view.references().selected.length, 1);
-  const body = view.requests.find(item => item.body?.content === "Use the plan").body;
-  assert.deepEqual(JSON.parse(JSON.stringify(body.references)), [{ resource_id: "space", expected_version: 4 }]);
-  assert.equal(body.content, "Use the plan");
-  resolve({ run: run("new", "queued"), conversation: { ...chain, version: 2,
-    messages: [message("sent-message", "user", "Use the plan")] } });
-  await settle();
-  view.render();
-  assert.equal(view.references().selected.length, 0);
-});
-
-test("saving a note retains selections and sends no references", async () => {
-  const view = await chat([]);
-  view.references().onChange([{ resource_id: "memory", expected_version: 2, title: "Fact" }]);
-  view.composer().onChange("A note");
-  view.render();
-  const resolve = view.holdSend();
-  view.composer().onSend(false);
-  resolve({ ...chain, version: 2, messages: [message("sent-message", "user", "A note")] });
-  await settle();
-  view.render();
-  assert.equal(view.references().selected.length, 1);
-  assert.equal(view.requests.find(item => item.body?.content === "A note").body.references, undefined);
 });
 
 test("live streaming drafts render before completion and clear once the final reply is saved", async () => {
@@ -502,4 +434,3 @@ test("live streaming drafts render before completion and clear once the final re
   assert.equal(view.savedResults().length, 1);
   assert.equal(view.timerDelays.at(-1), 2000);
 });
-

@@ -9,7 +9,7 @@ const source = ts.transpileModule(
   { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } },
 ).outputText;
 
-test("the agent card exposes one ordinary Call action without a trial flag or backend choice", () => {
+test("the agent card exposes Call with Persona directly under it and no Activity section", () => {
   const jsx = (type, props) => ({ type, props });
   const modules = {
     react: { useEffect() {}, useLayoutEffect() {}, useRef: current => ({ current }), useState: initial => [initial, () => {}] },
@@ -21,15 +21,22 @@ test("the agent card exposes one ordinary Call action without a trial flag or ba
   const exports = {};
   runInNewContext(source, { exports, require: name => modules[name] });
   const calls = [];
+  const personas = [];
   const tree = exports.default({
     agentName: "Guide", sheet: null, mood: "idle", presence: "Ready", onClose() {},
-    callDisabled: false, callTitle: "Start a voice call", onCall: (...args) => calls.push(args), activity: null,
+    callDisabled: false, callTitle: "Start a voice call", onCall: (...args) => calls.push(args),
+    personaDisabled: false, onEditPersona: (...args) => personas.push(args),
   });
   const actions = tree.props.children.find(child => child.props?.className === "agent-card-actions");
   const buttons = [actions.props.children].flat();
-  assert.equal(buttons.length, 1);
+  assert.equal(buttons.length, 2);
   assert.equal(buttons[0].props.disabled, false);
   assert.equal(buttons[0].props.children[1], "Call");
+  assert.equal(buttons[1].props.disabled, false);
+  assert.equal(buttons[1].props.children[1], "Persona");
   buttons[0].props.onClick();
+  buttons[1].props.onClick();
   assert.deepEqual(calls, [[]]);
+  assert.deepEqual(personas, [[]]);
+  assert.equal(tree.props.children.length, 2);
 });

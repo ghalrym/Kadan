@@ -12,14 +12,13 @@ Saved work can continue after the browser closes. A queued message does not prom
 | [Reading chat](reading-chat.md) | Keep the current reading position or jump to the latest message. |
 | [Finding chat text](finding-chat-text.md) | Find literal text in the saved conversation. |
 | [Conversation history](conversation-history.md) | Let the agent search and read older delivered chat within explicit limits. |
-| [Conversation activity](conversation-activity.md) | Review queued, failed, stopped and completed work without inferring external success. |
 | [Renaming agents](renaming-agents.md) | Change a display name while preserving identity and saved work. |
 | [Agent memory](memories.md) | Let agents maintain memories while users inspect saved records. |
 | [Chat attachments](chat-attachments.md) | Upload files, attach them to messages or notes and recover uncertain submissions. |
 | [Saving chat notes](saving-chat-notes.md) | Save text without requesting a reply, including when inference is unavailable. |
 | [Forgetting memories](forgetting-memories.md) | Ask an agent to move an outdated memory to recoverable trash. |
 | [Stopping chat work](stopping-chat-work.md) | Cancel response work and image jobs with separate controls. |
-| [Personas](personas.md) | Let agents maintain saved response instructions, with optional additional named personas. |
+| [Personas](personas.md) | Edit the agent's single Markdown persona and let the agent maintain its saved instructions. |
 | [Shared agent instructions](agent-instructions.md) | Change operator-maintained instructions for subsequent agent work. |
 | [Agent actions](agent-actions.md) | Know which tools agents use during chat, with explicit limits on recovery. |
 | [Plugins and T3 Code](plugins.md) | Connect T3 Code and other remote MCP tool services, let the agent delegate coding threads and receive background updates. |

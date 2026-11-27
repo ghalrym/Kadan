@@ -1,12 +1,8 @@
-import type { SelectedReference } from "./RequestReferences";
-
 export interface PendingMessage {
   id: string;
   content: string;
   generate: boolean;
-  persona: string;
   attachment_ids?: string[];
-  references?: SelectedReference[];
 }
 
 export function chatStorageKeys(agentKey: string, conversationId: string) {
@@ -17,18 +13,26 @@ export function chatStorageKeys(agentKey: string, conversationId: string) {
 export function readPending(raw: string | null): PendingMessage | null {
   try {
     const value = JSON.parse(raw || "null");
-    return value && typeof value.id === "string" &&
-      typeof value.content === "string" && typeof value.generate === "boolean" &&
-      typeof value.persona === "string" &&
-      (value.references === undefined ||
-        (Array.isArray(value.references) && value.references.length <= 3 &&
-          value.references.every((item: SelectedReference) => item && typeof item.resource_id === "string" &&
-            Number.isInteger(item.expected_version) && item.expected_version >= 1 && typeof item.title === "string") &&
-          new Set(value.references.map((item: SelectedReference) => item.resource_id)).size === value.references.length)) &&
-      (value.attachment_ids === undefined ||
-        (Array.isArray(value.attachment_ids) && value.attachment_ids.length <= 100 &&
-          value.attachment_ids.every((id: unknown) => typeof id === "string") &&
-          new Set(value.attachment_ids).size === value.attachment_ids.length)) ? value : null;
+    if (
+      !value || typeof value.id !== "string" ||
+      typeof value.content !== "string" || typeof value.generate !== "boolean"
+    ) {
+      return null;
+    }
+    if (
+      value.attachment_ids !== undefined &&
+      !(Array.isArray(value.attachment_ids) && value.attachment_ids.length <= 100 &&
+        value.attachment_ids.every((id: unknown) => typeof id === "string") &&
+        new Set(value.attachment_ids).size === value.attachment_ids.length)
+    ) {
+      return null;
+    }
+    return {
+      id: value.id,
+      content: value.content,
+      generate: value.generate,
+      ...(value.attachment_ids !== undefined && { attachment_ids: value.attachment_ids }),
+    };
   } catch {
     return null;
   }

@@ -28,7 +28,7 @@ function message(event) { socket.onmessage({ data: JSON.stringify(event) }); }
 function session() { return new VoiceCallSession(state => states.push(state), error => errors.push(error)); }
 async function connected() {
   const call = session();
-  await call.start("test", "selected-persona");
+  await call.start("test");
   socket.readyState = 1;
   socket.onopen();
   message({ type: "ready" });
@@ -105,7 +105,7 @@ test("stopping playback cancels all scheduled segments and invalidates queued en
 test("capture continues during playback and onset cancels old audio before sending new speech", async () => {
   const call = await connected();
   assert.equal(socket.url, "wss://kadan.local/kadan/api/agents/test/calls");
-  assert.deepEqual(socket.sent[0], { type: "start", persona_id: "selected-persona" });
+  assert.deepEqual(socket.sent[0], { type: "start" });
   speech(); silence();
   assert.deepEqual(socket.sent.map(event => event.type), ["start", "interrupt", "utterance"]);
   assert.equal(socket.sent[2].turn, 1);
@@ -250,12 +250,12 @@ test("untrusted origins and denied permissions return useful errors", async () =
 });
 
 
-test("starting without an additional persona sends an explicit null selection", async () => {
+test("starting a call sends a plain start event using the agent's single persona", async () => {
   const call = session();
-  await call.start("test", null);
+  await call.start("test");
   socket.readyState = 1;
   socket.onopen();
-  assert.deepEqual(socket.sent[0], { type: "start", persona_id: null });
+  assert.deepEqual(socket.sent[0], { type: "start" });
   call.end();
 });
 

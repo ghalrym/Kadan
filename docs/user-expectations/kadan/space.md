@@ -29,6 +29,6 @@ Opening a page shows it formatted; **Edit** changes its title and text. Saving r
 
 ## Limits
 
-Space belongs to one agent and has no sharing. Kadan does not continuously sync items, edit slides, preview arbitrary file contents, or read text inside uploaded PDFs or recordings. Opening an item does not add it to the agent's next reply; use [references](request-references.md) for that. Agents can [find stored files and share their links](file-delivery.md).
+Space belongs to one agent and has no sharing. Kadan does not continuously sync items, edit slides, preview arbitrary file contents, or read text inside uploaded PDFs or recordings. Opening an item does not add it to the agent's next reply; the agent uses its tools to find and read Space items when mentioned. Agents can [find stored files and share their links](file-delivery.md).
 
 See [Space design](../../architecture/kadan/space.md).

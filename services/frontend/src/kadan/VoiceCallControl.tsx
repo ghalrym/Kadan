@@ -5,7 +5,7 @@ import { callUnavailable, VoiceCallSession, type CallState } from "./voiceCall";
 export type VoiceCall = ReturnType<typeof useVoiceCall>;
 
 /** Owns the call session so it outlives the agent card that starts it. */
-export function useVoiceCall(agentKey: string, personaId: string | null, disabled: boolean) {
+export function useVoiceCall(agentKey: string, disabled: boolean) {
   const session = useRef<VoiceCallSession | null>(null);
   const [call, setCall] = useState<CallState | null>(null);
   const [active, setActive] = useState(false);
@@ -21,7 +21,7 @@ export function useVoiceCall(agentKey: string, personaId: string | null, disable
     });
     session.current = next;
     setActive(true);
-    void next.start(agentKey, personaId);
+    void next.start(agentKey);
   }
 
   return {

@@ -19,7 +19,7 @@ Lists in the sidebar reflect what Kadan last loaded. Changes made on Tsuchi's pa
 
 The Agent page gathers settings for the agent itself:
 
-- Its pet, with **Edit pet** to [change it](pets.md), and **Rename** to [rename the agent](renaming-agents.md).
+- Its pet, with **Edit pet** to [change it](pets.md), **Persona** to [edit its persona](personas.md), and **Rename** to [rename the agent](renaming-agents.md).
 - **Memories**, where users can search, read and [correct](memories.md) what the agent chose to remember.
 - **Runner**, where **Manage runner** opens [runner assignment](runner-availability.md).
 

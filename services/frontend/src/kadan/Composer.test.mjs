@@ -45,8 +45,7 @@ function compose(overrides = {}) {
   return Composer({
     attachments: { ready: true, entries: [] },
     agentName: "Haru", value: "My pending question", onChange() {}, onSend() {},
-    sending: false, blocked: false, status, personas: [{ id: "persona", title: "Me" }],
-    persona: "persona", onPersona() {}, pet: null, voiceCall: { active: false },
+    sending: false, blocked: false, status, pet: null, voiceCall: { active: false },
     onDictating() {}, ...overrides,
   });
 }
@@ -79,7 +78,7 @@ test("missing model leaves the draft editable and preserves explicit note sendin
   assert.deepEqual(sends, [false]);
 });
 
-test("ready model removes the prompt and keeps chat and persona selection", () => {
+test("ready model removes the prompt and offers chat without a multi-persona picker", () => {
   const sends = [];
   const tree = compose({
     status: { ...status, hikari: { ...status.hikari, state: "ready" } },
@@ -88,7 +87,7 @@ test("ready model removes the prompt and keeps chat and persona selection", () =
   assert.equal(prompt(tree), undefined);
   assert.equal(find(tree, "textarea").props.value, "My pending question");
   assert.equal(find(tree, "textarea").props.placeholder, "Message Haru");
-  assert.equal(find(tree, "select").props.value, "persona");
+  assert.equal(find(tree, "select"), undefined);
   find(tree, "form").props.onSubmit({ preventDefault() {} });
   assert.deepEqual(sends, [true]);
 });

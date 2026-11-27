@@ -2,12 +2,10 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } f
 import { Link } from "react-router";
 import { ArrowUp, ArrowDown, ArrowUpRight, RotateCw, Search, X } from "lucide-react";
 import Markdown from "./Markdown";
-import RequestReferences, { type SelectedReference } from "./RequestReferences";
 import Composer, { readiness } from "./Composer";
 import Pet, { useMood } from "./Pet";
 import AgentCard from "./AgentCard";
 import ChatExport from "./ChatExport";
-import Activity from "./Activity";
 import { useVoiceCall } from "./VoiceCallControl";
 import { activeLabel } from "./presence";
 import { useAgentPet } from "./PetContext";
@@ -24,12 +22,12 @@ interface Props {
   agentKey: string;
   agentName: string;
   chain: Resource;
-  personas: Resource[];
   status: Status | null;
   entrance: PetState;
   onChange: (value: Resource) => void;
   onBusy: (value: boolean) => void;
   onEditPet: () => void;
+  onEditPersona: () => void;
   blocked: boolean;
   refreshStatus: () => Promise<void>;
 }
@@ -90,12 +88,12 @@ export default function Chat({
   agentKey,
   agentName,
   chain,
-  personas,
   status,
   entrance,
   onChange,
   onBusy,
   onEditPet,
+  onEditPersona,
   blocked,
   refreshStatus,
 }: Props) {
@@ -114,23 +112,10 @@ export default function Chat({
     attachments.start();
     return () => attachments.stop();
   }, [attachments]);
-  // The chosen persona survives visits to other pages, such as Hikari Settings.
-  const personaKey = `${draftKey}.persona`;
-  const [persona, setPersona] = useState(() => {
-    const saved = sessionStorage.getItem(personaKey) ?? "";
-    return personas.some((item) => item.id === saved) ? saved : "";
-  });
-  function choosePersona(id: string) {
-    setPersona(id);
-    if (id) sessionStorage.setItem(personaKey, id);
-    else sessionStorage.removeItem(personaKey);
-  }
-  const [references, setReferences] = useState<SelectedReference[]>(pending.current?.references ?? []);
   const [sending, setSending] = useState(false);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [images, setImages] = useState<ImageJob[]>([]);
   const [pollError, setPollError] = useState("");
-  const [activityConversation, setActivityConversation] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
   const generating = runs.some(activeRun);
   const imagePending = images.some((job) => cancellableImage(job) || job.status === "cancelling" || (job.status === "completed" && !job.delivered_message_id));
@@ -161,7 +146,7 @@ export default function Chat({
   const ready = readiness(status);
   const [dictating, setDictating] = useState(false);
   const voiceCall = useVoiceCall(
-    agentKey, persona || null,
+    agentKey,
     sending || blocked || dictating || !ready.storage,
   );
   // Hikari loads the model on demand; the first reply waits for it without a deadline.
@@ -265,7 +250,6 @@ export default function Chat({
           accept(snapshot.conversation);
           setRuns(snapshot.runs);
           setImages(snapshot.images);
-          setActivityConversation(chain.id);
           setPollError("");
           active = sendLock.current || snapshot.runs.some(activeRun) || snapshot.images.some(
             (job) => cancellableImage(job) || job.status === "cancelling" || (job.status === "completed" && !job.delivered_message_id),
@@ -299,7 +283,6 @@ export default function Chat({
   function syncPending(messages: Resource["messages"]) {
     const stored = readPending(sessionStorage.getItem(pendingKey));
     const confirmed = confirmSend(stored, messages);
-    if (stored?.generate && !confirmed) setReferences([]);
     savePending(confirmed);
   }
   function savePending(value: PendingMessage | null) {
@@ -330,11 +313,9 @@ export default function Chat({
       return;
     }
     const message = queueSend(pending.current, retry ?? {
-      id: randomUuid(), content: text, generate, persona, attachment_ids: attachments.ids(),
-      references: generate ? references : [],
+      id: randomUuid(), content: text, generate, attachment_ids: attachments.ids(),
     });
     const messageId = message.id;
-    const personaId = message.persona;
     if (!query) {
       followLatest.current = true;
       setAway(false);
@@ -350,7 +331,7 @@ export default function Chat({
       role: "user",
       content: text,
       created_at: new Date().toISOString(),
-      resource_ids: generate && personaId ? [personaId] : [],
+      resource_ids: [],
       attachment_ids: message.attachment_ids ?? [],
       sources: [],
     });
@@ -374,8 +355,6 @@ export default function Chat({
         const result = await api<{ run: AgentRun; conversation: Resource }>(`${path}/runs`, {
           content: text,
           expected_version: currentChain.current.version,
-          persona_id: personaId || null,
-          references: (message.references ?? []).map(({ resource_id, expected_version }) => ({ resource_id, expected_version })),
           message_id: messageId,
           attachment_ids: message.attachment_ids ?? [],
         });
@@ -457,13 +436,11 @@ export default function Chat({
         setCard(false);
         voiceCall.start();
       }}
-      activity={<Activity
-        conversation={chain}
-        runs={runs}
-        images={images}
-        loading={activityConversation !== chain.id}
-        error={pollError}
-      />}
+      personaDisabled={!ready.storage || blocked}
+      onEditPersona={() => {
+        setCard(false);
+        onEditPersona();
+      }}
     />
   );
   function toggleCard() {
@@ -602,7 +579,7 @@ export default function Chat({
                     <footer>
                       {message.resource_ids.map((id) => (
                         <span className="tag" key={id}>
-                          {personas.find((p) => p.id === id)?.title || `Resource ${id.slice(0, 8)}`}
+                          {`Resource ${id.slice(0, 8)}`}
                         </span>
                       ))}
                       {message.sources?.length > 0 &&
@@ -692,8 +669,6 @@ export default function Chat({
           }}>Discard</button>
         </div>
       )}
-      <RequestReferences agentKey={agentKey} selected={references} onChange={setReferences}
-        disabled={sending || blocked || !!recovery} />
       <Composer
         agentName={agentName}
         attachments={attachments}
@@ -705,9 +680,6 @@ export default function Chat({
         sending={sending}
         blocked={blocked}
         status={status}
-        personas={personas}
-        persona={persona}
-        onPersona={choosePersona}
         pet={null}
         autoFocus
         voiceCall={voiceCall}

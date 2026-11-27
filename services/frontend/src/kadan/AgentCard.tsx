@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
-import { Phone } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef } from "react";
+import { Phone, UserRound } from "lucide-react";
 import Pet from "./Pet";
 import type { PetSheet, PetState } from "./pet";
 
@@ -15,11 +15,23 @@ interface Props {
   callDisabled: boolean;
   callTitle: string;
   onCall: () => void;
-  activity: ReactNode;
+  personaDisabled: boolean;
+  onEditPersona: () => void;
 }
 
-/** The agent's contact card, opened from its pet: presence, calling and conversation activity. */
-export default function AgentCard({ agentName, sheet, mood, presence, onClose, callDisabled, callTitle, onCall, activity }: Props) {
+/** The agent's contact card, opened from its pet: presence, calling and persona editing. */
+export default function AgentCard({
+  agentName,
+  sheet,
+  mood,
+  presence,
+  onClose,
+  callDisabled,
+  callTitle,
+  onCall,
+  personaDisabled,
+  onEditPersona,
+}: Props) {
   const card = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -66,8 +78,15 @@ export default function AgentCard({ agentName, sheet, mood, presence, onClose, c
           <Phone size={18} />
           Call
         </button>
+        <button
+          disabled={personaDisabled}
+          title={`Edit ${agentName}’s persona`}
+          onClick={() => onEditPersona()}
+        >
+          <UserRound size={18} />
+          Persona
+        </button>
       </div>
-      {activity}
     </div>
   );
 }

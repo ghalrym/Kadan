@@ -10,7 +10,6 @@ import pytest
 from kadan.api.config import ServiceError, Settings
 from kadan.api.pydantic_models.resources import Message, Resource
 from kadan.api.routes.agents.conversations.notes import NoteInput
-from kadan.api.routes.agents.resources import PersonaUpdate
 from kadan.api.services import LocalServices
 
 CONVERSATION_ID = UUID("10000000-0000-4000-8000-000000000001")
@@ -301,19 +300,12 @@ def test_note_persists_without_contacting_hikari():
     assert all(not path.startswith("/v1/") for _, path in boundary.requests)
 
 
-def test_edit_persona_preserves_existing_metadata():
-    persona = resource(
-        "persona",
-        markdown="Old",
-        tags=["personal"],
-        parent_id=CONVERSATION_ID,
-        attachment_ids=[MESSAGE_ID],
-        sources=[{"label": "Source", "url": "https://example.com"}],
-    )
+def test_save_agent_persona_persists_owned_persona_and_defaults_title():
+    persona = resource("persona", title="Test Agent", markdown="Old")
     calls = []
 
     def boundary(request):
-        if request.method == "GET":
+        if request.method == "GET" and request.url.path.endswith("/persona"):
             return httpx.Response(200, json=persona.model_dump(mode="json"))
         body = json.loads(request.content)
         calls.append(body)
@@ -323,16 +315,18 @@ def test_edit_persona_preserves_existing_metadata():
 
     result = run(
         boundary,
-        lambda service: service.update_persona(
+        lambda service: service.save_agent_persona(
             "test",
-            PERSONA_ID,
-            PersonaUpdate(title="Edited", markdown="New", expected_version=1),
+            markdown="New instructions",
+            expected_version=1,
         ),
     )
-    assert result.markdown == "New"
-    assert calls[0]["attachment_ids"] == [str(MESSAGE_ID)]
-    assert calls[0]["tags"] == ["personal"]
-    assert calls[0]["parent_id"] == str(CONVERSATION_ID)
+    assert result.markdown == "New instructions"
+    assert calls[0] == {
+        "title": "Test Agent",
+        "markdown": "New instructions",
+        "expected_version": 1,
+    }
 
 
 @pytest.mark.parametrize("unavailable", [False, True])
@@ -474,19 +468,8 @@ def test_agent_persona_rejects_wrong_owner_kind_or_trashed_resource(changes):
         )
 
 
-@pytest.mark.parametrize(
-    "owned_present, selected",
-    [
-        (False, None),
-        (True, None),
-        (False, "other"),
-        (True, "same"),
-        (True, "other"),
-    ],
-)
-def test_call_instruction_snapshots_owned_and_selected_personas(
-    owned_present, selected
-):
+@pytest.mark.parametrize("owned_present", [False, True])
+def test_call_instruction_snapshots_owned_persona(owned_present):
     async def check():
         service = LocalServices(None, Settings(_env_file=None))
         owned = (
@@ -494,31 +477,12 @@ def test_call_instruction_snapshots_owned_and_selected_personas(
             if owned_present
             else None
         )
-        selected_id = (
-            UUID("10000000-0000-4000-8000-000000000004")
-            if selected == "other"
-            else PERSONA_ID
-            if selected
-            else None
-        )
         service.agent_persona = AsyncMock(return_value=owned)
-        service.resource = AsyncMock(
-            return_value=resource(
-                "persona",
-                id=selected_id or PERSONA_ID,
-                markdown="Selected instruction.",
-            )
-        )
-        instruction = await service.call_instruction("test", selected_id)
+        instruction = await service.call_instruction("test")
         assert "Have a spoken conversation." in instruction
         assert "You have no tools." in instruction
         assert instruction.count("Owned instruction.") == int(owned_present)
-        assert instruction.count("Selected instruction.") == int(selected == "other")
         service.agent_persona.assert_awaited_once_with("test")
-        if selected == "other":
-            service.resource.assert_awaited_once_with("test", selected_id)
-        else:
-            service.resource.assert_not_awaited()
         if owned:
             owned.markdown = "Later edit."
             assert "Later edit." not in instruction
@@ -526,54 +490,18 @@ def test_call_instruction_snapshots_owned_and_selected_personas(
     asyncio.run(check())
 
 
-@pytest.mark.parametrize(
-    "changes",
-    [
-        {"agent_key": "other"},
-        {"kind": "memory"},
-        {"deleted_at": NOW},
-    ],
-)
-def test_call_instruction_rejects_unavailable_selected_persona(changes):
-    async def check():
-        service = LocalServices(None, Settings(_env_file=None))
-        service.agent_persona = AsyncMock(return_value=None)
-        service.resource = AsyncMock(
-            return_value=resource(**{"kind": "persona", **changes})
-        )
-        with pytest.raises(
-            ServiceError, match="selected persona is no longer available"
-        ):
-            await service.call_instruction("test", PERSONA_ID)
-
-    asyncio.run(check())
-
-
-@pytest.mark.parametrize("with_selected", [False, True])
-def test_call_instruction_preserves_full_text_at_limit_and_rejects_overflow(
-    with_selected,
-):
+def test_call_instruction_preserves_full_text_at_limit_and_rejects_overflow():
     async def check():
         service = LocalServices(None, Settings(_env_file=None))
         owned = resource("persona", markdown="")
         service.agent_persona = AsyncMock(return_value=owned)
-        selected_id = (
-            UUID("10000000-0000-4000-8000-000000000004") if with_selected else None
-        )
-        service.resource = AsyncMock(
-            return_value=resource(
-                "persona",
-                id=selected_id or PERSONA_ID,
-                markdown="Selected instruction.",
-            )
-        )
-        base = await service.call_instruction("test", selected_id)
+        base = await service.call_instruction("test")
         owned.markdown = "x" * (8000 - len(base))
-        instruction = await service.call_instruction("test", selected_id)
+        instruction = await service.call_instruction("test")
         assert len(instruction) == 8000
         assert owned.markdown in instruction
         owned.markdown += "x"
         with pytest.raises(ServiceError, match="8,000-character limit"):
-            await service.call_instruction("test", selected_id)
+            await service.call_instruction("test")
 
     asyncio.run(check())

@@ -17,15 +17,12 @@ from kadan.api.services import LocalServices
 
 @pytest.mark.parametrize("model", [NoteInput, RunInput])
 def test_attachment_list_preserves_order_and_defaults_to_no_files(model):
-    extra = {"persona_id": None} if model is RunInput else {}
     ids = [uuid4(), uuid4()]
     assert (
-        model(
-            content="See files", expected_version=1, attachment_ids=ids, **extra
-        ).attachment_ids
+        model(content="See files", expected_version=1, attachment_ids=ids).attachment_ids
         == ids
     )
-    assert model(content="A note", expected_version=1, **extra).attachment_ids == []
+    assert model(content="A note", expected_version=1).attachment_ids == []
 
 
 @pytest.mark.parametrize("model", [NoteInput, RunInput])
@@ -33,16 +30,14 @@ def test_attachment_list_preserves_order_and_defaults_to_no_files(model):
     "ids", [["not-an-id"], [uuid4()] * 2, [uuid4() for _ in range(101)]]
 )
 def test_invalid_duplicate_and_excess_attachments_are_rejected(model, ids):
-    extra = {"persona_id": None} if model is RunInput else {}
     with pytest.raises(ValidationError):
-        model(content="See files", expected_version=1, attachment_ids=ids, **extra)
+        model(content="See files", expected_version=1, attachment_ids=ids)
 
 
 @pytest.mark.parametrize("model", [NoteInput, RunInput])
 def test_attachments_do_not_silently_enable_blank_messages(model):
-    extra = {"persona_id": None} if model is RunInput else {}
     with pytest.raises(ValidationError):
-        model(content=" ", expected_version=1, attachment_ids=[uuid4()], **extra)
+        model(content=" ", expected_version=1, attachment_ids=[uuid4()])
 
 
 def test_note_keeps_attachment_ids_without_contacting_inference():
@@ -78,7 +73,6 @@ def test_run_forwards_attachments_in_atomic_storage_request_and_propagates_rejec
     value = RunInput(
         content="Use these files",
         expected_version=2,
-        persona_id=None,
         attachment_ids=[uuid4(), uuid4()],
     )
     conversation_id = uuid4()

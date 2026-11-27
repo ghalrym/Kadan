@@ -38,13 +38,13 @@ class RunClient:
             role="user",
             content=value.content,
             attachment_ids=value.attachment_ids,
-            resource_ids=[value.persona_id] if value.persona_id else [],
+            resource_ids=[],
         )
         body = {
             "message": message.model_dump(mode="json"),
             "expected_version": value.expected_version,
-            "references": [item.model_dump(mode="json") for item in value.references],
-            "persona_id": str(value.persona_id) if value.persona_id else None,
+            "references": [],
+            "persona_id": None,
         }
         saved = await self.services.json_request(
             "Tsuchi",
