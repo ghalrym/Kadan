@@ -86,6 +86,10 @@ INKLING_BASE_MODELS: tuple[str, ...] = (
     "inkling-2-mini-iq4-nl",
     "inkling-2-mini-q8-0",
 )
+INKLING_ABLITERATED_MODELS: tuple[str, ...] = (
+    "inkling-2-mini-abliterated-iq4-nl",
+    "inkling-2-mini-abliterated-q8-0",
+)
 INKLING_DEFAULT_MODEL_ID = "inkling-2-mini-iq4-nl"
 MAX_STEPS_PER_TURN = 32
 MAX_CONSECUTIVE_VALIDATION_ERRORS = 4
@@ -142,9 +146,52 @@ def _select_base_checkpoint(catalog: HikariModels) -> Checkpoint | None:
     return None
 
 
+def _select_inkling_checkpoint(catalog: HikariModels) -> Checkpoint | None:
+    """Select the ready Inkling 2 Mini checkpoint on Kadan Server.
+
+    Prefers a downloaded base checkpoint when present so coding runs use base weights,
+    and otherwise falls back to Kadan Server's active Inkling 2 Mini LLM checkpoint so
+    Inkling works out of the box against whatever variant the server is serving.
+    """
+    base_ckpt = _select_base_checkpoint(catalog)
+    if (
+        base_ckpt is not None
+        and base_ckpt.inference_available
+        and base_ckpt.status == "complete"
+    ):
+        return base_ckpt
+    if catalog.selected_model_id:
+        selected = next(
+            (item for item in catalog.models if item.id == catalog.selected_model_id),
+            None,
+        )
+        if selected is not None and (
+            selected.kind == "llm" or selected.id.startswith("inkling-2-mini-")
+        ):
+            if selected.inference_available and selected.status == "complete":
+                return selected
+            if base_ckpt is None:
+                return selected
+    llm_ckpt = next(
+        (
+            item
+            for item in catalog.models
+            if item.kind == "llm" or item.id.startswith("inkling-2-mini-")
+        ),
+        None,
+    )
+    return base_ckpt or llm_ckpt
+
+
+def _checkpoint_weight_variant(model_id: str | None) -> Literal["base", "abliterated"]:
+    if model_id in INKLING_ABLITERATED_MODELS:
+        return "abliterated"
+    return resolve_task_weight_variant(task_class="harness") or "base"
+
+
 def _model_label(model_id: str) -> str:
-    if model_id == "inkling-2-mini-q8-0":
-        return "Inkling 2 Mini (High precision)"
+    if model_id in ("inkling-2-mini-q8-0", "inkling-2-mini-abliterated-q8-0"):
+        return "Inkling 2 Mini (Q8)"
     return "Inkling 2 Mini"
 
 
@@ -237,6 +284,9 @@ class InklingHarnessSession(HarnessSession):
         self.services = services
         self._state = state if state is not None else InklingSessionState()
         self._context_limit_override = context_limit
+        self._weight_variant: Literal["base", "abliterated"] = (
+            _checkpoint_weight_variant(config.model)
+        )
         self._toolset = toolset or InklingToolset(config.working_dir)
         self._max_steps = max_steps
         self._session_id = config.harness_session_id or f"inkling:{config.thread_id}"
@@ -284,18 +334,20 @@ class InklingHarnessSession(HarnessSession):
         self._pending_responses.clear()
 
     async def _resolve_context_limit(self) -> int:
-        if self._context_limit_override is not None:
-            return clamp_context_limit(self._context_limit_override)
         try:
             raw = await self.services.json_request("Hikari", "GET", "/v1/models")
             catalog = HikariModels.model_validate(raw)
-            ckpt = _select_base_checkpoint(catalog)
+            ckpt = _select_inkling_checkpoint(catalog)
             if ckpt is not None:
-                return clamp_context_limit(
-                    ckpt.context_limit or ckpt.architecture_context_limit
-                )
+                self._weight_variant = _checkpoint_weight_variant(ckpt.id)
+                if self._context_limit_override is None:
+                    return clamp_context_limit(
+                        ckpt.context_limit or ckpt.architecture_context_limit
+                    )
         except (ServiceError, ValidationError, httpx.HTTPError):
             logger.debug("Falling back to default Inkling context limit", exc_info=True)
+        if self._context_limit_override is not None:
+            return clamp_context_limit(self._context_limit_override)
         return DEFAULT_CONTEXT_LIMIT
 
     async def _hydrate_from_activity_if_needed(self) -> None:
@@ -423,7 +475,7 @@ class InklingHarnessSession(HarnessSession):
     async def _run_compaction_completion(
         self, dropped_messages: Sequence[dict[str, Any]]
     ) -> str:
-        weight_variant = resolve_task_weight_variant(task_class="harness")
+        weight_variant = self._weight_variant
         payload: dict[str, Any] = {
             "messages": self._state.working_memory.build_compaction_messages(
                 dropped_messages
@@ -462,7 +514,7 @@ class InklingHarnessSession(HarnessSession):
         yielding one internal dict `{"_step_result": ...}` with text, tool_calls, and
         cache/timing telemetry.
         """
-        weight_variant = resolve_task_weight_variant(task_class="harness")
+        weight_variant = self._weight_variant
         max_tokens = min(
             DEFAULT_MAX_OUTPUT_TOKENS,
             max(256, budget.context_limit - budget.prompt_tokens),
@@ -794,6 +846,7 @@ class InklingHarnessSession(HarnessSession):
                         self._state.working_memory.verified_checks,
                         client=self.services.client,
                         hikari_url=self.services.settings.hikari_url,
+                        weight_variant=self._weight_variant,
                     )
                     if ver.needs_verification:
                         verification_nudged = True
@@ -968,6 +1021,7 @@ class InklingHarnessSession(HarnessSession):
                         session_approved=self._state.approved_for_session,
                         client=self.services.client,
                         hikari_url=self.services.settings.hikari_url,
+                        weight_variant=self._weight_variant,
                     )
                     if approval.requires_approval:
                         req_id = f"inkling-cmd-{step}-{call_id}"
@@ -1089,6 +1143,7 @@ class InklingHarnessSession(HarnessSession):
                 self._state.recent_steps,
                 client=self.services.client,
                 hikari_url=self.services.settings.hikari_url,
+                weight_variant=self._weight_variant,
             )
             if loop_decision.action == "nudge":
                 self._state.messages.append(
@@ -1155,14 +1210,11 @@ class InklingHarnessSession(HarnessSession):
 
 
 class InklingHarnessAdapter(HarnessAdapter):
-    """First-party local Inkling 2 Mini coding harness adapter."""
+    """First-party Inkling 2 Mini coding harness backed by Kadan Server's Hikari engine."""
 
     harness_id = INKLING_HARNESS_ID
-    display_name = "Inkling (Local)"
-    description = (
-        "Built-in local coding assistant powered by Inkling 2 Mini on this computer. "
-        "No external account or API key required."
-    )
+    display_name = "Inkling"
+    description = "Kadan Server model."
 
     def __init__(self, *, max_steps: int = MAX_STEPS_PER_TURN):
         self._max_steps = max_steps
@@ -1183,7 +1235,7 @@ class InklingHarnessAdapter(HarnessAdapter):
             HarnessModelInfo(
                 id=INKLING_DEFAULT_MODEL_ID,
                 label="Inkling 2 Mini",
-                description="Local standard Inkling 2 Mini coding model (base weights).",
+                description="Kadan Server coding model.",
                 options={"reasoning_effort": ["low", "medium", "high"]},
             )
         ]
@@ -1200,10 +1252,7 @@ class InklingHarnessAdapter(HarnessAdapter):
                 auth=HarnessAuthStatus(
                     status="unavailable",
                     login_method="local",
-                    message=(
-                        "Kadan's local AI service is not running right now. "
-                        "Open Kadan Server to check Hikari Settings."
-                    ),
+                    message="Kadan Server is offline.",
                 ),
                 models=default_models,
                 default_model=INKLING_DEFAULT_MODEL_ID,
@@ -1214,57 +1263,45 @@ class InklingHarnessAdapter(HarnessAdapter):
                 supports_images=True,
             )
 
-        base_ckpt = _select_base_checkpoint(catalog)
+        ckpt = _select_inkling_checkpoint(catalog)
         model_id = (
-            base_ckpt.id
-            if base_ckpt is not None
-            else _companion_base_model_id(catalog.selected_model_id)
+            ckpt.id
+            if ckpt is not None
+            else (catalog.selected_model_id or INKLING_DEFAULT_MODEL_ID)
         )
         models = [
             HarnessModelInfo(
                 id=model_id,
                 label=_model_label(model_id),
-                description="Local standard Inkling 2 Mini coding model (base weights).",
+                description="Kadan Server coding model.",
                 options={"reasoning_effort": ["low", "medium", "high"]},
             )
         ]
 
-        if base_ckpt is None or not base_ckpt.inference_available:
+        if ckpt is None or not ckpt.inference_available:
             auth = HarnessAuthStatus(
                 status="unavailable",
                 login_method="local",
-                message=(
-                    "Local Inkling 2 Mini is not available on this machine yet. "
-                    "Open Kadan Server and check Hikari → Settings."
-                ),
+                message="Download Inkling 2 Mini in Kadan Server → Hikari → Settings.",
             )
-        elif base_ckpt.status == "complete":
+        elif ckpt.status == "complete":
             auth = HarnessAuthStatus(
                 status="ready",
                 login_method="local",
-                account_label="On this computer",
-                message=(
-                    "Inkling 2 Mini is downloaded and ready on this computer. "
-                    "No external account or API key is needed."
-                ),
+                account_label="Kadan Server",
+                message="Ready on Kadan Server.",
             )
-        elif base_ckpt.status == "downloading":
+        elif ckpt.status == "downloading":
             auth = HarnessAuthStatus(
                 status="waiting",
                 login_method="local",
-                message=(
-                    "Inkling 2 Mini is currently downloading. "
-                    "Check progress in Kadan Server → Hikari → Settings."
-                ),
+                message="Downloading on Kadan Server…",
             )
         else:
             auth = HarnessAuthStatus(
                 status="unavailable",
                 login_method="local",
-                message=(
-                    "Download the standard Inkling 2 Mini model in Kadan Server → "
-                    "Hikari → Settings to use Inkling (Local). No account or API key is needed."
-                ),
+                message="Download Inkling 2 Mini in Kadan Server → Hikari → Settings.",
             )
 
         return HarnessAvailability(

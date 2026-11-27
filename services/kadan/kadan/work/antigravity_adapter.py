@@ -76,9 +76,7 @@ def _has_local_antigravity_auth() -> bool:
         if candidate.is_file():
             return True
     t3_root = Path.home() / ".t3" / "userdata" / "providers" / "antigravity"
-    if t3_root.is_dir() and any(t3_root.iterdir()):
-        return True
-    return False
+    return bool(t3_root.is_dir() and any(t3_root.iterdir()))
 
 
 class AntigravityHarnessAdapter(HarnessAdapter):
@@ -86,7 +84,7 @@ class AntigravityHarnessAdapter(HarnessAdapter):
 
     harness_id = "antigravity"
     display_name = "Antigravity"
-    description = "Google Antigravity coding harness over Agent Client Protocol."
+    description = "Google Antigravity"
 
     def __init__(self, *, process_factory: ProcessFactory | None = None):
         self._process_factory = process_factory
@@ -115,21 +113,21 @@ class AntigravityHarnessAdapter(HarnessAdapter):
             auth = HarnessAuthStatus(
                 status="unavailable",
                 login_method="api_key",
-                message="Google Antigravity is not installed on this computer yet.",
+                message="Not installed on this computer.",
             )
         elif cred:
             auth = HarnessAuthStatus(
                 status="ready",
                 login_method="api_key",
                 account_label=label,
-                message=f"Connected ({label}).",
+                message="Connected.",
             )
         elif _has_local_antigravity_auth():
             auth = HarnessAuthStatus(
                 status="ready",
                 login_method="browser",
-                account_label="Local Antigravity sign-in",
-                message="Connected using this computer's Antigravity sign-in.",
+                account_label="Local sign-in",
+                message="Connected.",
             )
         else:
             auth = HarnessAuthStatus(
@@ -137,7 +135,7 @@ class AntigravityHarnessAdapter(HarnessAdapter):
                 login_method="api_key",
                 authorize_url="https://aistudio.google.com/apikey",
                 needs_code=True,
-                message="Sign in to Google Antigravity or enter your Google AI key.",
+                message="Paste your Google AI key.",
             )
         return HarnessAvailability(
             harness_id=self.harness_id,

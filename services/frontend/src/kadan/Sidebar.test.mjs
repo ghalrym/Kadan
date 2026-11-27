@@ -98,7 +98,7 @@ test("sidebar shows single Chat navigation without multi-chat controls or Tsuchi
   const serverRow = footerChildren[1];
   assert.equal(serverRow.props.className, "sidebar-server-row");
   const rowNodes = elements(serverRow);
-  assert.ok(rowNodes.find(node => node.props?.className === "server-settings-trigger"));
+  assert.ok(rowNodes.find(node => typeof node.props?.className === "string" && node.props.className.includes("server-settings-trigger")));
   assert.ok(rowNodes.some(node => node.type === "small" && node.props.children === "127.0.0.1:9000"));
 });
 

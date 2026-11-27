@@ -104,8 +104,8 @@ test("WorkThreadView renders streamed activity, inline approval card, and active
       auth: { status: "ready" },
     },
   ];
-  // State order in WorkThreadView: detail, harnesses, loading, busy, error, draft, snoozeOpen, customSnooze, confirmDelete
-  const states = [detail, harnesses, false, false, "", "Also add a test", false, "", false];
+  // State order: detail, harnesses, projects, selectedProjectId, selectedModelKey, loading, busy, error, draft, snoozeOpen, customSnooze, confirmDelete, attachedImages, folderDialogOpen
+  const states = [detail, harnesses, [], "", "", false, false, "", "Also add a test", false, "", false, [], false];
   let idx = 0;
 
   const WorkThreadView = loadTs("./WorkThreadView.tsx", {
@@ -122,7 +122,9 @@ test("WorkThreadView renders streamed activity, inline approval card, and active
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
     "lucide-react": new Proxy({}, { get: (_, name) => String(name) }),
     "./ConfirmDialog": { default: "ConfirmDialog" },
+    "./FolderPickerDialog": { default: "FolderPickerDialog" },
     "./Markdown": { default: ({ children }) => ({ type: "md", props: { children } }) },
+    "./desktop": { isDesktopApp: () => false, pickDesktopFolder: async () => ({ path: null, cancelled: false, supported: false }) },
     "./work": work,
   }).default;
 
@@ -136,13 +138,11 @@ test("WorkThreadView renders streamed activity, inline approval card, and active
   assert.ok(fullText.includes("Steer"));
   assert.ok(fullText.includes("Queue"));
 
-  // Activity rows include user message, assistant message, and file change.
   const activityRows = nodes.filter(n => typeof n.type === "function" && n.type.name === "ActivityRow");
   assert.equal(activityRows.length, 3);
   const fileRowTree = activityRows[2].type(activityRows[2].props);
   assert.ok(textOf(fileRowTree).includes("services/api.py"));
 
-  // Pending approval card is rendered inline with Approve and Decline buttons.
   const pendingSection = nodes.find(n => typeof n.type === "function" && n.type.name === "PendingCard");
   assert.ok(pendingSection);
   assert.equal(pendingSection.props.request.id, "req-1");
@@ -151,118 +151,38 @@ test("WorkThreadView renders streamed activity, inline approval card, and active
   assert.ok(textOf(pendingTree).includes("Decline"));
 });
 
-
-test("harnessAuthLabel renders plain-language local states for Inkling (Local)", () => {
-  assert.equal(
-    work.harnessAuthLabel({ status: "ready", login_method: "local" }, true),
-    "Ready (Local)",
-  );
-  assert.equal(
-    work.harnessAuthLabel({ status: "waiting", login_method: "local" }, true),
-    "Downloading…",
-  );
-  assert.equal(
-    work.harnessAuthLabel({ status: "unavailable", login_method: "local" }, true),
-    "Model download needed",
-  );
-  assert.equal(
-    work.harnessAuthLabel({ status: "unavailable", login_method: "local" }, false),
-    "Offline",
-  );
-  // External harnesses preserve sign-in labels.
-  assert.equal(
-    work.harnessAuthLabel({ status: "sign_in_required", login_method: "device_code" }, true),
-    "Sign in needed",
-  );
-});
-
-test("WorkSetup Harnesses tab shows Inkling (Local) without external sign-in controls", () => {
+test("WorkThreadView opens directly to chat with project and model pickers when threadId is null", async () => {
   const jsx = (type, props) => ({ type, props });
+  const createdCalls = [];
+  const projects = [{ id: "proj-1", title: "Aidoru", root_path: "/home/andrew/Aidoru", version: 1 }];
   const harnesses = [
     {
       id: "inkling",
-      display_name: "Inkling (Local)",
-      description: "Built-in local coding assistant powered by Inkling 2 Mini on this computer.",
+      display_name: "Inkling",
       installed: true,
       supports_steer: true,
       supports_images: true,
-      default_model: "inkling-2-mini-iq4-nl",
-      models: [{ id: "inkling-2-mini-iq4-nl", label: "Inkling 2 Mini" }],
-      auth: {
-        status: "unavailable",
-        login_method: "local",
-        authorize_url: null,
-        user_code: null,
-        needs_code: false,
-        account_label: null,
-        message: "Download the standard Inkling 2 Mini model in Kadan Server → Hikari → Settings.",
-      },
+      default_model: "inkling-2-mini-abliterated-iq4-nl",
+      models: [{ id: "inkling-2-mini-abliterated-iq4-nl", label: "Inkling 2 Mini" }],
+      auth: { status: "ready", login_method: "local", message: "Ready on Kadan Server." },
     },
   ];
-  // State order in WorkSetup: tab, projects, harnesses, loading, busy, error, notice, ...
-  const states = ["harnesses", [], harnesses, false, false, "", ""];
-  let idx = 0;
-
-  const WorkSetup = loadTs("./WorkSetup.tsx", {
-    react: {
-      useCallback: fn => fn,
-      useEffect() {},
-      useState: initial => {
-        const i = idx++;
-        const val = i < states.length ? states[i] : (typeof initial === "function" ? initial() : initial);
-        return [val, () => {}];
-      },
-    },
-    "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
-    "lucide-react": new Proxy({}, { get: (_, name) => String(name) }),
-    "./work": work,
-  }).default;
-
-  const tree = WorkSetup({ initialTab: "harnesses", onThreadCreated() {}, onChanged() {} });
-  const fullText = textOf(tree);
-
-  assert.ok(fullText.includes("Inkling (Local)"));
-  assert.ok(fullText.includes("Model download needed"));
-  assert.ok(fullText.includes("Hikari → Settings"));
-  assert.ok(fullText.includes("Check status"));
-  assert.ok(!fullText.includes("Sign in to Inkling"));
-  assert.ok(!fullText.includes("Sign out"));
-});
-
-test("WorkThreadView enables screenshot attachment control for Inkling (Local) threads", () => {
-  const jsx = (type, props) => ({ type, props });
-  const detail = {
-    thread: {
-      id: "thr-ink",
-      project_id: "proj-1",
-      title: "Fix button alignment",
-      harness: "inkling",
-      model: "inkling-2-mini-iq4-nl",
-      run_status: "idle",
-      bucket: "default",
-      snoozed_until: null,
-      pending_requests: [],
-      version: 1,
-    },
-    project: { id: "proj-1", title: "Kadan", root_path: "/repo", version: 1 },
-    runs: [],
-    activity: [
-      { id: "u1", kind: "user_message", text: "Check screenshot", data: { image_count: 1 } },
-    ],
-  };
-  const harnesses = [
-    {
-      id: "inkling",
-      display_name: "Inkling (Local)",
-      installed: true,
-      supports_steer: true,
-      supports_images: true,
-      default_model: "inkling-2-mini-iq4-nl",
-      models: [{ id: "inkling-2-mini-iq4-nl", label: "Inkling 2 Mini" }],
-      auth: { status: "ready", login_method: "local", message: "Ready on this computer." },
-    },
+  const states = [
+    null,
+    harnesses,
+    projects,
+    "proj-1",
+    "inkling::inkling-2-mini-abliterated-iq4-nl",
+    false,
+    false,
+    "",
+    "Fix the login redirect",
+    false,
+    "",
+    false,
+    [],
+    false,
   ];
-  const states = [detail, harnesses, false, false, "", "", false, "", false, []];
   let idx = 0;
 
   const WorkThreadView = loadTs("./WorkThreadView.tsx", {
@@ -279,24 +199,114 @@ test("WorkThreadView enables screenshot attachment control for Inkling (Local) t
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
     "lucide-react": new Proxy({}, { get: (_, name) => String(name) }),
     "./ConfirmDialog": { default: "ConfirmDialog" },
+    "./FolderPickerDialog": { default: "FolderPickerDialog" },
     "./Markdown": { default: ({ children }) => ({ type: "md", props: { children } }) },
-    "./work": work,
+    "./desktop": { isDesktopApp: () => false, pickDesktopFolder: async () => ({ path: null, cancelled: false, supported: false }) },
+    "./work": {
+      ...work,
+      createWorkThread: async body => {
+        createdCalls.push(body);
+        return { id: "thr-new" };
+      },
+    },
   }).default;
 
-  const tree = WorkThreadView({ threadId: "thr-ink", onChanged() {}, onDeleted() {} });
+  const createdIds = [];
+  const tree = WorkThreadView({
+    threadId: null,
+    onThreadCreated: id => createdIds.push(id),
+    onChanged() {},
+    onDeleted() {},
+  });
   const nodes = elements(tree);
   const fullText = textOf(tree);
 
-  assert.ok(fullText.includes("Inkling (Local)"));
-  assert.ok(fullText.includes("Image"));
-  const activityRow = nodes.find(n => typeof n.type === "function" && n.type.name === "ActivityRow");
-  assert.ok(activityRow);
-  const rowTree = activityRow.type(activityRow.props);
-  assert.ok(textOf(rowTree).includes("1 image"));
+  assert.ok(fullText.includes("Aidoru"));
+  assert.ok(!fullText.includes("Task title"));
+  const textarea = nodes.find(n => n.type === "textarea");
+  assert.ok(textarea);
+  textarea.props.onKeyDown({ key: "Enter", shiftKey: false, preventDefault() {} });
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.equal(createdCalls.length, 1);
+  assert.equal(createdCalls[0].project_id, "proj-1");
+  assert.equal(createdCalls[0].harness, "inkling");
+  assert.equal(createdCalls[0].prompt, "Fix the login redirect");
+  assert.equal("title" in createdCalls[0], false);
+  assert.deepEqual(createdIds, ["thr-new"]);
 });
 
+test("harnessAuthLabel renders concise plain-language states", () => {
+  assert.equal(work.harnessAuthLabel({ status: "ready", login_method: "local" }, true), "Ready");
+  assert.equal(work.harnessAuthLabel({ status: "waiting", login_method: "local" }, true), "Downloading…");
+  assert.equal(work.harnessAuthLabel({ status: "unavailable", login_method: "local" }, true), "Download needed");
+  assert.equal(work.harnessAuthLabel({ status: "unavailable", login_method: "local" }, false), "Offline");
+  assert.equal(work.harnessAuthLabel({ status: "sign_in_required", login_method: "device_code" }, true), "Sign in");
+});
 
-test("WorkThreadView queues image-bearing follow-ups instead of steering while an Inkling run is active", async () => {
+test("SettingsPage renders compact Coding assistants list without external sign-in controls for Inkling", () => {
+  const jsx = (type, props) => ({ type, props });
+  const harnesses = [
+    {
+      id: "inkling",
+      display_name: "Inkling",
+      description: "Kadan Server model.",
+      installed: true,
+      supports_steer: true,
+      supports_images: true,
+      default_model: "inkling-2-mini-iq4-nl",
+      models: [{ id: "inkling-2-mini-iq4-nl", label: "Inkling 2 Mini" }],
+      auth: {
+        status: "unavailable",
+        login_method: "local",
+        authorize_url: null,
+        user_code: null,
+        needs_code: false,
+        account_label: null,
+        message: "Download Inkling 2 Mini in Kadan Server → Hikari → Settings.",
+      },
+    },
+  ];
+  // State order: harnesses, projects, loading, busy, error, expandedSignIn, signInInputs, folderDialogOpen
+  const states = [harnesses, [], false, false, "", null, {}, false];
+  let idx = 0;
+
+  const SettingsPage = loadTs("./SettingsPage.tsx", {
+    react: {
+      useCallback: fn => fn,
+      useEffect() {},
+      useState: initial => {
+        const i = idx++;
+        const val = i < states.length ? states[i] : (typeof initial === "function" ? initial() : initial);
+        return [val, () => {}];
+      },
+    },
+    "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
+    "lucide-react": new Proxy({}, { get: (_, name) => String(name) }),
+    "./FolderPickerDialog": { default: "FolderPickerDialog" },
+    "./desktop": { pickDesktopFolder: async () => ({ path: null, cancelled: false, supported: false }) },
+    "./work": work,
+  }).default;
+
+  const tree = SettingsPage({
+    desktopMode: true,
+    desktopHost: "http://192.168.0.19:8000",
+    status: null,
+    onOpenServerSettings() {},
+    onChanged() {},
+  });
+  const fullText = textOf(tree);
+
+  assert.ok(fullText.includes("Coding assistants"));
+  assert.ok(fullText.includes("Inkling"));
+  assert.ok(fullText.includes("Download needed"));
+  assert.ok(fullText.includes("Hikari → Settings"));
+  assert.ok(fullText.includes("Check"));
+  assert.ok(!fullText.includes("Sign in"));
+  assert.ok(!fullText.includes("Sign out"));
+});
+
+test("WorkThreadView enables screenshot attachment control and queues image follow-ups for Inkling threads", async () => {
   const jsx = (type, props) => ({ type, props });
   const sentCalls = [];
   const sampleDataUrl =
@@ -316,23 +326,28 @@ test("WorkThreadView queues image-bearing follow-ups instead of steering while a
     },
     project: { id: "proj-1", title: "Kadan", root_path: "/repo", version: 1 },
     runs: [],
-    activity: [],
+    activity: [
+      { id: "u1", kind: "user_message", text: "Check screenshot", data: { image_count: 1 } },
+    ],
   };
   const harnesses = [
     {
       id: "inkling",
-      display_name: "Inkling (Local)",
+      display_name: "Inkling",
       installed: true,
       supports_steer: true,
       supports_images: true,
       default_model: "inkling-2-mini-iq4-nl",
       models: [{ id: "inkling-2-mini-iq4-nl", label: "Inkling 2 Mini" }],
-      auth: { status: "ready", login_method: "local", message: "Ready on this computer." },
+      auth: { status: "ready", login_method: "local", message: "Ready on Kadan Server." },
     },
   ];
   const states = [
     detail,
     harnesses,
+    [],
+    "",
+    "",
     false,
     false,
     "",
@@ -341,6 +356,7 @@ test("WorkThreadView queues image-bearing follow-ups instead of steering while a
     "",
     false,
     [{ name: "bug.png", dataUrl: sampleDataUrl }],
+    false,
   ];
   let idx = 0;
 
@@ -358,7 +374,9 @@ test("WorkThreadView queues image-bearing follow-ups instead of steering while a
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
     "lucide-react": new Proxy({}, { get: (_, name) => String(name) }),
     "./ConfirmDialog": { default: "ConfirmDialog" },
+    "./FolderPickerDialog": { default: "FolderPickerDialog" },
     "./Markdown": { default: ({ children }) => ({ type: "md", props: { children } }) },
+    "./desktop": { isDesktopApp: () => false, pickDesktopFolder: async () => ({ path: null, cancelled: false, supported: false }) },
     "./work": {
       ...work,
       getWorkThreadDetail: async () => detail,
@@ -371,7 +389,9 @@ test("WorkThreadView queues image-bearing follow-ups instead of steering while a
 
   const tree = WorkThreadView({ threadId: "thr-ink-active", onChanged() {}, onDeleted() {} });
   const nodes = elements(tree);
+  const fullText = textOf(tree);
 
+  assert.ok(fullText.includes("Image"));
   const steerBtn = nodes.find(n => n.type === "button" && textOf(n).trim() === "Steer");
   assert.ok(steerBtn);
   assert.equal(steerBtn.props.disabled, true);

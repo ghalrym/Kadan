@@ -7,6 +7,7 @@ import {
   Clock,
   FileCode2,
   Folder,
+  FolderPlus,
   ImagePlus,
   Send,
   Square,
@@ -15,14 +16,22 @@ import {
   X,
 } from "lucide-react";
 import ConfirmDialog from "./ConfirmDialog";
+import FolderPickerDialog from "./FolderPickerDialog";
 import Markdown from "./Markdown";
+import { isDesktopApp, pickDesktopFolder } from "./desktop";
 import {
+  createWorkProject,
+  createWorkThread,
+  decodeModelSelection,
   deleteWorkThread,
+  encodeModelSelection,
   formatSnoozeLabel,
   getWorkThreadDetail,
+  harnessAuthLabel,
   interruptWorkThread,
   isThreadActive,
   listWorkHarnesses,
+  listWorkProjects,
   organizeWorkThread,
   pendingRequestsFor,
   respondWorkPendingRequest,
@@ -32,13 +41,39 @@ import {
   type WorkActivityItem,
   type WorkHarness,
   type WorkPendingRequest,
+  type WorkProject,
   type WorkThreadDetail,
 } from "./work";
 
+const LAST_PROJECT_KEY = "kadan:work:lastProjectId";
+const LAST_MODEL_KEY = "kadan:work:lastModel";
+const ADD_FOLDER_VALUE = "__add_folder__";
+const MANAGE_ASSISTANTS_VALUE = "__manage_assistants__";
+
 interface Props {
-  threadId: string;
+  threadId: string | null;
+  onThreadCreated?: (threadId: string) => void;
+  onOpenSettings?: () => void;
   onChanged: () => void;
   onDeleted: () => void;
+}
+
+function readStorage(key: string): string {
+  try {
+    return typeof localStorage !== "undefined" ? (localStorage.getItem(key) ?? "") : "";
+  } catch {
+    return "";
+  }
+}
+
+function writeStorage(key: string, value: string): void {
+  try {
+    if (typeof localStorage !== "undefined" && value) {
+      localStorage.setItem(key, value);
+    }
+  } catch {
+    // Ignore storage errors.
+  }
 }
 
 function tomorrowMorningIso(): string {
@@ -46,6 +81,88 @@ function tomorrowMorningIso(): string {
   next.setDate(next.getDate() + 1);
   next.setHours(9, 0, 0, 0);
   return next.toISOString();
+}
+
+function pickInitialModel(harnesses: WorkHarness[]): string {
+  const saved = readStorage(LAST_MODEL_KEY);
+  if (saved) {
+    const { harness, model } = decodeModelSelection(saved);
+    const match = harnesses.find((h) => h.id === harness && h.auth.status === "ready");
+    if (match) {
+      const validModel =
+        model && match.models.some((m) => m.id === model)
+          ? model
+          : (match.default_model ?? match.models[0]?.id ?? null);
+      return encodeModelSelection(match.id, validModel);
+    }
+  }
+  const preferred = harnesses.find((h) => h.auth.status === "ready") ?? harnesses[0];
+  if (!preferred) return "";
+  return encodeModelSelection(
+    preferred.id,
+    preferred.default_model ?? preferred.models[0]?.id ?? null,
+  );
+}
+
+function ModelPicker({
+  harnesses,
+  value,
+  disabled,
+  onChange,
+  onOpenSettings,
+}: {
+  harnesses: WorkHarness[];
+  value: string;
+  disabled: boolean;
+  onChange: (harnessId: string, modelId: string | null) => void;
+  onOpenSettings?: () => void;
+}) {
+  if (harnesses.length === 0) return null;
+  return (
+    <select
+      className="work-composer-select"
+      aria-label="Model"
+      value={value}
+      disabled={disabled}
+      onChange={(event) => {
+        const next = event.target.value;
+        if (next === MANAGE_ASSISTANTS_VALUE) {
+          onOpenSettings?.();
+          return;
+        }
+        const decoded = decodeModelSelection(next);
+        onChange(decoded.harness, decoded.model);
+      }}
+    >
+      {harnesses.map((h) => {
+        const ready = h.auth.status === "ready";
+        const groupLabel = ready
+          ? h.display_name
+          : `${h.display_name} (${harnessAuthLabel(h.auth, h.installed)})`;
+        const models =
+          h.models.length > 0
+            ? h.models
+            : [{ id: h.default_model ?? "", label: h.display_name, description: "", options: {} }];
+        return (
+          <optgroup key={h.id} label={groupLabel}>
+            {models.map((m) => {
+              const optionValue = encodeModelSelection(h.id, m.id || null);
+              return (
+                <option
+                  key={optionValue}
+                  value={optionValue}
+                  disabled={!ready && optionValue !== value}
+                >
+                  {m.label}
+                </option>
+              );
+            })}
+          </optgroup>
+        );
+      })}
+      {onOpenSettings && <option value={MANAGE_ASSISTANTS_VALUE}>Manage assistants…</option>}
+    </select>
+  );
 }
 
 function PendingCard({
@@ -61,7 +178,10 @@ function PendingCard({
   const isApproval = request.kind === "approval";
 
   return (
-    <section className={`work-pending-card ${isApproval ? "is-approval" : "is-question"}`} aria-live="polite">
+    <section
+      className={`work-pending-card ${isApproval ? "is-approval" : "is-question"}`}
+      aria-live="polite"
+    >
       <div className="work-pending-head">
         <strong>{request.title || (isApproval ? "Approval needed" : "Question")}</strong>
         {request.tool_name && <span className="work-pill">{request.tool_name}</span>}
@@ -218,9 +338,19 @@ function ActivityRow({ item }: { item: WorkActivityItem }) {
   );
 }
 
-export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props) {
+export default function WorkThreadView({
+  threadId,
+  onThreadCreated,
+  onOpenSettings,
+  onChanged,
+  onDeleted,
+}: Props) {
+  const isNew = threadId === null;
   const [detail, setDetail] = useState<WorkThreadDetail | null>(null);
   const [harnesses, setHarnesses] = useState<WorkHarness[]>([]);
+  const [projects, setProjects] = useState<WorkProject[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [selectedModelKey, setSelectedModelKey] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -229,35 +359,66 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
   const [customSnooze, setCustomSnooze] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [attachedImages, setAttachedImages] = useState<{ name: string; dataUrl: string }[]>([]);
+  const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const feedEndRef = useRef<HTMLDivElement>(null);
 
-  const load = useCallback(async (showSpinner = false) => {
-    if (showSpinner) setLoading(true);
-    try {
-      const next = await getWorkThreadDetail(threadId);
-      setDetail(next);
-      setError("");
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      if (showSpinner) setLoading(false);
-    }
-  }, [threadId]);
+  const load = useCallback(
+    async (showSpinner = false) => {
+      if (!threadId) return;
+      if (showSpinner) setLoading(true);
+      try {
+        const next = await getWorkThreadDetail(threadId);
+        setDetail(next);
+        setError("");
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        if (showSpinner) setLoading(false);
+      }
+    },
+    [threadId],
+  );
 
   useEffect(() => {
+    if (isNew) {
+      setDetail(null);
+      setLoading(true);
+      void Promise.all([listWorkProjects(), listWorkHarnesses()])
+        .then(([projList, harnessList]) => {
+          setProjects(projList);
+          setHarnesses(harnessList);
+          const savedProject = readStorage(LAST_PROJECT_KEY);
+          const initialProject =
+            (savedProject && projList.some((p) => p.id === savedProject)
+              ? savedProject
+              : projList[0]?.id) ?? "";
+          setSelectedProjectId((prev) =>
+            prev && projList.some((p) => p.id === prev) ? prev : initialProject,
+          );
+          setSelectedModelKey((prev) => prev || pickInitialModel(harnessList));
+          setError("");
+        })
+        .catch((err) => {
+          setError((err as Error).message);
+        })
+        .finally(() => setLoading(false));
+      return;
+    }
+
     void load(true);
     void listWorkHarnesses()
       .then(setHarnesses)
       .catch(() => {});
-  }, [load]);
+  }, [isNew, load]);
 
   const active = detail ? isThreadActive(detail.thread.run_status) : false;
 
   useEffect(() => {
+    if (isNew) return;
     const intervalMs = active ? 1200 : 6000;
     const timer = setInterval(() => void load(false), intervalMs);
     return () => clearInterval(timer);
-  }, [active, load]);
+  }, [isNew, active, load]);
 
   useEffect(() => {
     feedEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -285,9 +446,77 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
     }
   }
 
+  async function addFolderPath(path: string) {
+    setBusy(true);
+    setError("");
+    try {
+      const created = await createWorkProject({ root_path: path });
+      const nextProjects = await listWorkProjects();
+      setProjects(nextProjects);
+      setSelectedProjectId(created.id);
+      writeStorage(LAST_PROJECT_KEY, created.id);
+      onChanged();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleChooseFolder() {
+    setError("");
+    if (isDesktopApp()) {
+      const picked = await pickDesktopFolder();
+      if (picked.supported) {
+        if (picked.path) await addFolderPath(picked.path);
+        return;
+      }
+    }
+    setFolderDialogOpen(true);
+  }
+
   async function handleSend(mode: "send" | "steer" | "queue") {
-    const text = draft.trim() || (attachedImages.length > 0 ? "Inspect the attached image(s)." : "");
+    const text =
+      draft.trim() || (attachedImages.length > 0 ? "Inspect the attached image(s)." : "");
     if (!text) return;
+
+    if (isNew) {
+      if (!selectedProjectId) {
+        await handleChooseFolder();
+        return;
+      }
+      const chosen = decodeModelSelection(selectedModelKey || pickInitialModel(harnesses));
+      const harnessId = chosen.harness || harnesses[0]?.id || "inkling";
+      const harnessInfo = harnesses.find((h) => h.id === harnessId) ?? null;
+      const modelId = chosen.model || harnessInfo?.default_model || null;
+      setBusy(true);
+      setError("");
+      try {
+        const created = await createWorkThread({
+          project_id: selectedProjectId,
+          harness: harnessId,
+          model: modelId,
+          prompt: text,
+          images:
+            harnessInfo?.supports_images && attachedImages.length > 0
+              ? attachedImages.map((img) => img.dataUrl)
+              : undefined,
+        });
+        writeStorage(LAST_PROJECT_KEY, selectedProjectId);
+        writeStorage(LAST_MODEL_KEY, encodeModelSelection(harnessId, modelId));
+        setDraft("");
+        setAttachedImages([]);
+        onChanged();
+        onThreadCreated?.(created.id);
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
+    if (!threadId) return;
     // Live steering is text-only; always queue image-bearing follow-ups so attachments are preserved.
     const effectiveMode = mode === "steer" && attachedImages.length > 0 ? "queue" : mode;
     setBusy(true);
@@ -310,6 +539,7 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
   }
 
   async function handleInterrupt() {
+    if (!threadId) return;
     setBusy(true);
     setError("");
     try {
@@ -327,6 +557,7 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
     action: "default" | "snooze" | "settle" | "unsettle",
     extra?: { snooze_minutes?: number; snoozed_until?: string },
   ) {
+    if (!threadId) return;
     setBusy(true);
     setError("");
     setSnoozeOpen(false);
@@ -342,6 +573,7 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
   }
 
   async function handleRespond(requestId: string, response: Record<string, unknown>) {
+    if (!threadId) return;
     setBusy(true);
     setError("");
     try {
@@ -356,7 +588,13 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
   }
 
   async function handleHarnessOrModelChange(nextHarness: string, nextModel: string | null) {
-    if (!detail) return;
+    if (isNew) {
+      const encoded = encodeModelSelection(nextHarness, nextModel);
+      setSelectedModelKey(encoded);
+      writeStorage(LAST_MODEL_KEY, encoded);
+      return;
+    }
+    if (!detail || !threadId) return;
     setBusy(true);
     setError("");
     try {
@@ -365,6 +603,7 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
         model: nextModel,
         expected_version: detail.thread.version,
       });
+      writeStorage(LAST_MODEL_KEY, encodeModelSelection(nextHarness, nextModel));
       await load(false);
       onChanged();
     } catch (err) {
@@ -375,6 +614,7 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
   }
 
   async function handleDelete() {
+    if (!threadId) return;
     setBusy(true);
     setError("");
     try {
@@ -387,7 +627,7 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
     }
   }
 
-  if (loading && !detail) {
+  if (!isNew && loading && !detail) {
     return (
       <div className="center-empty" role="status">
         <span className="sr-only">Loading work thread</span>
@@ -400,168 +640,137 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
     );
   }
 
-  if (!detail) {
+  if (!isNew && !detail) {
     return (
       <div className="center-empty">
-        <h2>Could not open this work thread</h2>
+        <h2>Could not open this thread</h2>
         <p className="center-hint">{error || "It may have been deleted."}</p>
       </div>
     );
   }
 
-  const { thread, project, activity } = detail;
-  const pending = pendingRequestsFor(thread);
-  const currentHarness = harnesses.find((h) => h.id === thread.harness) ?? null;
+  const thread = detail?.thread ?? null;
+  const project = detail?.project ?? projects.find((p) => p.id === selectedProjectId) ?? null;
+  const activity = detail?.activity ?? [];
+  const pending = thread ? pendingRequestsFor(thread) : [];
+
+  const activeModelValue = thread
+    ? encodeModelSelection(
+        thread.harness,
+        thread.model ?? harnesses.find((h) => h.id === thread.harness)?.default_model ?? null,
+      )
+    : selectedModelKey;
+  const activeHarnessId = thread
+    ? thread.harness
+    : decodeModelSelection(selectedModelKey).harness;
+  const currentHarness = harnesses.find((h) => h.id === activeHarnessId) ?? null;
 
   return (
     <div className="work-thread-view">
-      <header className="work-thread-header">
-        <div className="work-thread-title-group">
-          <div className="work-thread-title-row">
-            <h2>{thread.title}</h2>
-            <span className={`work-status-badge status-${thread.run_status}`}>
-              {workStatusLabel(thread.run_status)}
-            </span>
-          </div>
-          <div className="work-thread-meta">
-            {project && (
-              <span className="work-meta-chip">
-                <Folder size={13} />
-                {project.title}
+      {thread && (
+        <header className="work-thread-header">
+          <div className="work-thread-title-group">
+            <div className="work-thread-title-row">
+              <h2>{thread.title}</h2>
+              <span className={`work-status-badge status-${thread.run_status}`}>
+                {workStatusLabel(thread.run_status)}
               </span>
-            )}
-            {thread.bucket === "snoozed" && thread.snoozed_until && (
-              <span className="work-meta-chip">
-                <Clock size={13} />
-                Snoozed ({formatSnoozeLabel(thread.snoozed_until)})
-              </span>
-            )}
-          </div>
-        </div>
-
-        <div className="work-thread-controls">
-          {harnesses.length > 0 && (
-            <div className="work-picker-group">
-              <select
-                aria-label="Coding harness"
-                value={thread.harness}
-                disabled={busy || active}
-                onChange={(event) => {
-                  const chosen = harnesses.find((h) => h.id === event.target.value);
-                  void handleHarnessOrModelChange(
-                    event.target.value,
-                    chosen?.default_model ?? null,
-                  );
-                }}
-              >
-                {harnesses.map((h) => (
-                  <option key={h.id} value={h.id}>
-                    {h.display_name}
-                  </option>
-                ))}
-              </select>
-              {currentHarness && currentHarness.models.length > 0 && (
-                <select
-                  aria-label="Model"
-                  value={thread.model ?? currentHarness.default_model ?? ""}
-                  disabled={busy || active}
-                  onChange={(event) =>
-                    void handleHarnessOrModelChange(thread.harness, event.target.value || null)
-                  }
-                >
-                  {currentHarness.models.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-              )}
             </div>
-          )}
-
-          <div className="work-snooze-wrap">
-            <button
-              className="button"
-              disabled={busy}
-              onClick={() => setSnoozeOpen((open) => !open)}
-              title="Snooze this thread"
-            >
-              <Clock size={14} />
-              {thread.bucket === "snoozed" ? "Resnooze" : "Snooze"}
-            </button>
-            {snoozeOpen && (
-              <div className="menu work-snooze-menu" role="menu">
-                <button onClick={() => void handleOrganize("snooze", { snooze_minutes: 30 })}>
-                  For 30 minutes
-                </button>
-                <button onClick={() => void handleOrganize("snooze", { snooze_minutes: 120 })}>
-                  For 2 hours
-                </button>
-                <button
-                  onClick={() =>
-                    void handleOrganize("snooze", { snoozed_until: tomorrowMorningIso() })
-                  }
-                >
-                  Until tomorrow morning
-                </button>
-                <div className="work-snooze-custom">
-                  <input
-                    type="datetime-local"
-                    aria-label="Snooze until date and time"
-                    value={customSnooze}
-                    onChange={(event) => setCustomSnooze(event.target.value)}
-                  />
-                  <button
-                    className="primary"
-                    disabled={!customSnooze}
-                    onClick={() => {
-                      const parsed = new Date(customSnooze);
-                      if (!Number.isNaN(parsed.getTime())) {
-                        void handleOrganize("snooze", { snoozed_until: parsed.toISOString() });
-                      }
-                    }}
-                  >
-                    Set time
-                  </button>
-                </div>
-                {thread.bucket === "snoozed" && (
-                  <button onClick={() => void handleOrganize("default")}>Wake now</button>
-                )}
+            {thread.bucket === "snoozed" && thread.snoozed_until && (
+              <div className="work-thread-meta">
+                <span className="work-meta-chip">
+                  <Clock size={13} />
+                  Snoozed ({formatSnoozeLabel(thread.snoozed_until)})
+                </span>
               </div>
             )}
           </div>
 
-          {thread.bucket === "settled" ? (
-            <button
-              className="button"
-              disabled={busy}
-              onClick={() => void handleOrganize("unsettle")}
-            >
-              <ArchiveRestore size={14} />
-              Unsettle
-            </button>
-          ) : (
-            <button
-              className="button"
-              disabled={busy}
-              onClick={() => void handleOrganize("settle")}
-            >
-              <Archive size={14} />
-              Settle
-            </button>
-          )}
+          <div className="work-thread-controls">
+            <div className="work-snooze-wrap">
+              <button
+                className="button"
+                disabled={busy}
+                onClick={() => setSnoozeOpen((open) => !open)}
+                title="Snooze this thread"
+              >
+                <Clock size={14} />
+                {thread.bucket === "snoozed" ? "Resnooze" : "Snooze"}
+              </button>
+              {snoozeOpen && (
+                <div className="menu work-snooze-menu" role="menu">
+                  <button onClick={() => void handleOrganize("snooze", { snooze_minutes: 30 })}>
+                    For 30 minutes
+                  </button>
+                  <button onClick={() => void handleOrganize("snooze", { snooze_minutes: 120 })}>
+                    For 2 hours
+                  </button>
+                  <button
+                    onClick={() =>
+                      void handleOrganize("snooze", { snoozed_until: tomorrowMorningIso() })
+                    }
+                  >
+                    Until tomorrow morning
+                  </button>
+                  <div className="work-snooze-custom">
+                    <input
+                      type="datetime-local"
+                      aria-label="Snooze until date and time"
+                      value={customSnooze}
+                      onChange={(event) => setCustomSnooze(event.target.value)}
+                    />
+                    <button
+                      className="primary"
+                      disabled={!customSnooze}
+                      onClick={() => {
+                        const parsed = new Date(customSnooze);
+                        if (!Number.isNaN(parsed.getTime())) {
+                          void handleOrganize("snooze", { snoozed_until: parsed.toISOString() });
+                        }
+                      }}
+                    >
+                      Set time
+                    </button>
+                  </div>
+                  {thread.bucket === "snoozed" && (
+                    <button onClick={() => void handleOrganize("default")}>Wake now</button>
+                  )}
+                </div>
+              )}
+            </div>
 
-          <button
-            className="icon"
-            aria-label="Delete work thread"
-            title="Delete thread"
-            disabled={busy}
-            onClick={() => setConfirmDelete(true)}
-          >
-            <Trash2 size={15} />
-          </button>
-        </div>
-      </header>
+            {thread.bucket === "settled" ? (
+              <button
+                className="button"
+                disabled={busy}
+                onClick={() => void handleOrganize("unsettle")}
+              >
+                <ArchiveRestore size={14} />
+                Unsettle
+              </button>
+            ) : (
+              <button
+                className="button"
+                disabled={busy}
+                onClick={() => void handleOrganize("settle")}
+              >
+                <Archive size={14} />
+                Settle
+              </button>
+            )}
+
+            <button
+              className="icon"
+              aria-label="Delete work thread"
+              title="Delete thread"
+              disabled={busy}
+              onClick={() => setConfirmDelete(true)}
+            >
+              <Trash2 size={15} />
+            </button>
+          </div>
+        </header>
+      )}
 
       {error && (
         <div className="banner" role="alert">
@@ -576,9 +785,24 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
       )}
 
       <div className="work-activity-feed">
-        {activity.length === 0 ? (
+        {isNew ? (
+          <div className="work-new-empty">
+            <h2>{project ? project.title : "New thread"}</h2>
+            {!project && !loading && (
+              <button
+                type="button"
+                className="button"
+                disabled={busy}
+                onClick={() => void handleChooseFolder()}
+              >
+                <FolderPlus size={15} />
+                Choose a project folder
+              </button>
+            )}
+          </div>
+        ) : activity.length === 0 ? (
           <div className="work-empty-feed">
-            <p className="quiet">Send a message below to start working in this project.</p>
+            <p className="quiet">Send a message below to get started.</p>
           </div>
         ) : (
           activity.map((item) => <ActivityRow key={item.id} item={item} />)
@@ -589,12 +813,7 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
       {pending.length > 0 && (
         <div className="work-pending-stack">
           {pending.map((req) => (
-            <PendingCard
-              key={req.id}
-              request={req}
-              busy={busy}
-              onRespond={handleRespond}
-            />
+            <PendingCard key={req.id} request={req} busy={busy} onRespond={handleRespond} />
           ))}
         </div>
       )}
@@ -618,13 +837,16 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
           </div>
         )}
         <textarea
-          rows={2}
+          rows={isNew ? 3 : 2}
+          autoFocus={isNew}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           placeholder={
             active
               ? "Add a follow-up or update while this runs…"
-              : "Describe what you want done next…"
+              : isNew
+                ? "What would you like to work on?"
+                : "Follow up…"
           }
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
@@ -641,69 +863,138 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
             }
           }}
         />
-        <div className="work-composer-actions">
-          {currentHarness?.supports_images && (
-            <label className="button work-attach-btn">
-              <ImagePlus size={14} />
-              Image
-              <input
-                type="file"
-                accept="image/png,image/jpeg"
-                multiple
-                hidden
-                disabled={busy}
-                onChange={(event) => {
-                  handleSelectImages(event.target.files);
-                  event.target.value = "";
-                }}
-              />
-            </label>
-          )}
-          {active ? (
-            <>
-              <button
-                className="button"
-                disabled={busy}
-                onClick={() => void handleInterrupt()}
-              >
-                <Square size={14} />
-                Stop
-              </button>
-              {currentHarness?.supports_steer && (
+        <div className="work-composer-bar">
+          <div className="work-composer-pickers">
+            {isNew ? (
+              projects.length === 0 ? (
+                <button
+                  type="button"
+                  className="button work-composer-pill"
+                  disabled={busy}
+                  onClick={() => void handleChooseFolder()}
+                >
+                  <FolderPlus size={13} />
+                  Add folder
+                </button>
+              ) : (
+                <label className="work-composer-project">
+                  <Folder size={13} aria-hidden="true" />
+                  <select
+                    className="work-composer-select"
+                    aria-label="Project"
+                    value={selectedProjectId}
+                    disabled={busy}
+                    onChange={(event) => {
+                      const val = event.target.value;
+                      if (val === ADD_FOLDER_VALUE) {
+                        void handleChooseFolder();
+                        return;
+                      }
+                      setSelectedProjectId(val);
+                      writeStorage(LAST_PROJECT_KEY, val);
+                    }}
+                  >
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.title}
+                      </option>
+                    ))}
+                    <option value={ADD_FOLDER_VALUE}>+ Add folder…</option>
+                  </select>
+                </label>
+              )
+            ) : (
+              project && (
+                <span className="work-meta-chip" title={project.root_path}>
+                  <Folder size={13} />
+                  {project.title}
+                </span>
+              )
+            )}
+
+            <ModelPicker
+              harnesses={harnesses}
+              value={activeModelValue}
+              disabled={busy || active}
+              onChange={(h, m) => void handleHarnessOrModelChange(h, m)}
+              onOpenSettings={onOpenSettings}
+            />
+          </div>
+
+          <div className="work-composer-actions">
+            {currentHarness?.supports_images && (
+              <label className="button work-attach-btn">
+                <ImagePlus size={14} />
+                Image
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg"
+                  multiple
+                  hidden
+                  disabled={busy}
+                  onChange={(event) => {
+                    handleSelectImages(event.target.files);
+                    event.target.value = "";
+                  }}
+                />
+              </label>
+            )}
+            {active ? (
+              <>
                 <button
                   className="button"
-                  disabled={busy || !draft.trim() || attachedImages.length > 0}
-                  title={
-                    attachedImages.length > 0
-                      ? "Follow-ups with images are queued as the next turn"
-                      : undefined
-                  }
-                  onClick={() => void handleSend("steer")}
+                  disabled={busy}
+                  onClick={() => void handleInterrupt()}
                 >
-                  Steer
+                  <Square size={14} />
+                  Stop
                 </button>
-              )}
+                {currentHarness?.supports_steer && (
+                  <button
+                    className="button"
+                    disabled={busy || !draft.trim() || attachedImages.length > 0}
+                    title={
+                      attachedImages.length > 0
+                        ? "Follow-ups with images are queued as the next turn"
+                        : undefined
+                    }
+                    onClick={() => void handleSend("steer")}
+                  >
+                    Steer
+                  </button>
+                )}
+                <button
+                  className="primary"
+                  disabled={busy || (!draft.trim() && attachedImages.length === 0)}
+                  onClick={() => void handleSend("queue")}
+                >
+                  <Send size={14} />
+                  Queue
+                </button>
+              </>
+            ) : (
               <button
                 className="primary"
                 disabled={busy || (!draft.trim() && attachedImages.length === 0)}
-                onClick={() => void handleSend("queue")}
+                onClick={() => void handleSend("send")}
               >
                 <Send size={14} />
-                Queue
+                Send
               </button>
-            </>
-          ) : (
-            <button
-              className="primary"
-              disabled={busy || (!draft.trim() && attachedImages.length === 0)}
-              onClick={() => void handleSend("send")}
-            >
-              <Send size={14} />
-              Send
-            </button>
-          )}
+            )}
+          </div>
         </div>
       </footer>
+
+      {folderDialogOpen && (
+        <FolderPickerDialog
+          onSelect={(path) => {
+            setFolderDialogOpen(false);
+            void addFolderPath(path);
+          }}
+          onClose={() => setFolderDialogOpen(false)}
+        />
+      )}
 
       {confirmDelete && (
         <ConfirmDialog

@@ -431,7 +431,7 @@ class ClaudeHarnessAdapter(HarnessAdapter):
 
     harness_id = "claude"
     display_name = "Claude Code"
-    description = "Anthropic's coding agent using your Claude subscription."
+    description = "Anthropic Claude"
 
     def __init__(self, *, process_factory: ProcessFactory | None = None):
         self._process_factory = process_factory
@@ -461,7 +461,7 @@ class ClaudeHarnessAdapter(HarnessAdapter):
                 status="unavailable",
                 login_method="oauth_code",
                 needs_code=True,
-                message="Claude Code is not installed on this server yet.",
+                message="Not installed on this computer.",
             )
         elif in_flight is not None and in_flight.status in {
             "starting",
@@ -474,21 +474,21 @@ class ClaudeHarnessAdapter(HarnessAdapter):
                 status="ready",
                 login_method="oauth_code",
                 account_label=label,
-                message=f"Connected ({label}).",
+                message="Connected.",
             )
         elif _local_claude_signed_in():
             auth = HarnessAuthStatus(
                 status="ready",
                 login_method="oauth_code",
-                account_label="Local Claude sign-in",
-                message="Connected using this server's Claude sign-in.",
+                account_label="Local sign-in",
+                message="Connected.",
             )
         else:
             auth = HarnessAuthStatus(
                 status="sign_in_required",
                 login_method="oauth_code",
                 needs_code=True,
-                message="Sign in with Claude to run coding threads.",
+                message="Sign in to connect.",
             )
         return HarnessAvailability(
             harness_id=self.harness_id,

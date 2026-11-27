@@ -25,7 +25,7 @@ import Sidebar, { type Page } from "./Sidebar";
 import SpaceLibrary from "./SpaceLibrary";
 import AgentPage from "./AgentPage";
 import ServerSettings from "./ServerSettings";
-import WorkSetup from "./WorkSetup";
+import SettingsPage from "./SettingsPage";
 import WorkThreadView from "./WorkThreadView";
 import { listWorkThreads, organizeWorkThread, parseWorkHash, type WorkThread } from "./work";
 import { PetContext } from "./PetContext";
@@ -405,7 +405,14 @@ export default function App() {
             if (typeof window !== "undefined" && window.location?.hash?.startsWith("#work/")) {
               window.history?.replaceState?.(null, "", window.location.pathname + window.location.search);
             }
-            if (name === "chat" || name === "space" || name === "plugins" || name === "agent") {
+            if (
+              name === "chat" ||
+              name === "group-chat" ||
+              name === "space" ||
+              name === "plugins" ||
+              name === "agent" ||
+              name === "settings"
+            ) {
               show({ name });
             }
           }}
@@ -416,11 +423,11 @@ export default function App() {
             }
             show({ name: "work-thread", threadId });
           }}
-          onOpenWorkSetup={(tab) => {
+          onNewWorkThread={() => {
             if (typeof window !== "undefined" && window.location?.hash?.startsWith("#work/")) {
               window.history?.replaceState?.(null, "", window.location.pathname + window.location.search);
             }
-            show({ name: "work-setup", tab });
+            show({ name: "work-new" });
           }}
           onUnsettleWorkThread={(threadId) => {
             void organizeWorkThread(threadId, { action: "unsettle" })
@@ -493,27 +500,36 @@ export default function App() {
           </div>
         ) : page.name === "group-chat" ? (
           <GroupChat agentKey={key} agentName={agent?.name || key} status={status} />
-        ) : page.name === "work-thread" ? (
+        ) : page.name === "work-thread" || page.name === "work-new" ? (
           <WorkThreadView
-            key={page.threadId}
-            threadId={page.threadId}
+            key={page.name === "work-thread" ? page.threadId : "work-new"}
+            threadId={page.name === "work-thread" ? page.threadId : null}
+            onThreadCreated={(threadId) => {
+              window.history.replaceState(null, "", `#work/${threadId}`);
+              show({ name: "work-thread", threadId });
+            }}
+            onOpenSettings={() => {
+              if (window.location.hash.startsWith("#work/")) {
+                window.history.replaceState(null, "", window.location.pathname + window.location.search);
+              }
+              show({ name: "settings" });
+            }}
             onChanged={() => void refreshWorkThreads()}
             onDeleted={() => {
               void refreshWorkThreads();
               if (window.location.hash.startsWith("#work/")) {
                 window.history.replaceState(null, "", window.location.pathname + window.location.search);
               }
-              show({ name: "work-setup", tab: "new" });
+              show({ name: "work-new" });
             }}
           />
-        ) : page.name === "work-setup" ? (
-          <WorkSetup
-            initialTab={page.tab ?? "new"}
+        ) : page.name === "settings" ? (
+          <SettingsPage
+            desktopMode={desktopMode}
+            desktopHost={desktopHost}
+            status={status}
+            onOpenServerSettings={desktopMode ? () => setServerSettingsOpen(true) : undefined}
             onChanged={() => void refreshWorkThreads()}
-            onThreadCreated={(threadId) => {
-              window.history.replaceState(null, "", `#work/${threadId}`);
-              show({ name: "work-thread", threadId });
-            }}
           />
         ) : page.name === "plugins" ? (
           <Plugins agentName={agent?.name || key} />

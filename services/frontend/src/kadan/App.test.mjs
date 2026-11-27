@@ -75,7 +75,7 @@ async function app(petResponses = [], agentResponses = [[agent]]) {
     "./ConfirmDialog": { default: "ConfirmDialog" },
     "./AgentPage": { default: "AgentPage" },
     "./ServerSettings": { default: "ServerSettings" },
-    "./WorkSetup": { default: "WorkSetup" },
+    "./SettingsPage": { default: "SettingsPage" },
     "./WorkThreadView": { default: "WorkThreadView" },
     "./work": {
       listWorkThreads: async () => [],

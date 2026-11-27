@@ -35,6 +35,22 @@ if TYPE_CHECKING:
     from ..api.services import LocalServices
 
 
+def auto_thread_title(
+    prompt: str | None, *, has_images: bool = False, max_chars: int = 60
+) -> str:
+    """Derive a concise readable thread title from the first prompt."""
+    if prompt:
+        for raw_line in prompt.splitlines():
+            line = " ".join(raw_line.strip().lstrip("#*-•> ").split())
+            if not line:
+                continue
+            if len(line) <= max_chars:
+                return line
+            cut = line[:max_chars].rsplit(" ", 1)[0].rstrip(" ,;:-")
+            return f"{cut or line[:max_chars]}…"
+    return "Image task" if has_images else "New thread"
+
+
 def work_thread_url(thread_id: UUID) -> str:
     """Canonical in-app anchor link for opening a Work thread inside Kadan."""
     return f"#work/{thread_id}"
@@ -254,10 +270,13 @@ class WorkClient:
             avail = await adapter.check_availability(self.services)
             resolved_model = avail.default_model
 
+        resolved_title = (data.title or "").strip() or auto_thread_title(
+            data.prompt, has_images=bool(data.images)
+        )
         thread_payload: dict[str, Any] = {
             "client_request_id": data.client_request_id,
             "project_id": str(project.id),
-            "title": data.title,
+            "title": resolved_title,
             "harness": data.harness,
             "model": resolved_model,
             "model_options": data.model_options,

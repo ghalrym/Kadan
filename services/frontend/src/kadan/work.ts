@@ -197,20 +197,32 @@ export function workStatusLabel(status: WorkRunStatus): string {
 export function harnessAuthLabel(auth: WorkHarnessAuth, installed: boolean): string {
   if (auth.login_method === "local") {
     if (!installed) return "Offline";
-    if (auth.status === "ready") return "Ready (Local)";
+    if (auth.status === "ready") return "Ready";
     if (auth.status === "starting" || auth.status === "waiting" || auth.status === "verifying") {
       return "Downloading…";
     }
-    if (auth.status === "error") return "Needs attention";
-    return "Model download needed";
+    if (auth.status === "error") return "Error";
+    return "Download needed";
   }
   if (!installed || auth.status === "unavailable") return "Not installed";
   if (auth.status === "ready") return "Connected";
   if (auth.status === "starting" || auth.status === "waiting" || auth.status === "verifying") {
     return "Signing in…";
   }
-  if (auth.status === "error") return "Sign-in problem";
-  return "Sign in needed";
+  if (auth.status === "error") return "Sign-in error";
+  return "Sign in";
+}
+
+export function encodeModelSelection(harnessId: string, modelId: string | null): string {
+  return `${harnessId}::${modelId ?? ""}`;
+}
+
+export function decodeModelSelection(value: string): { harness: string; model: string | null } {
+  const sep = value.indexOf("::");
+  if (sep < 0) return { harness: value, model: null };
+  const harness = value.slice(0, sep);
+  const model = value.slice(sep + 2) || null;
+  return { harness, model };
 }
 
 export function formatSnoozeLabel(iso: string | null): string {
@@ -263,7 +275,7 @@ export const signOutHarness = (harnessId: string) =>
 export const listWorkThreads = () => api<WorkThread[]>("/work/threads");
 export const createWorkThread = (body: {
   project_id: string;
-  title: string;
+  title?: string | null;
   harness: string;
   model?: string | null;
   prompt?: string | null;

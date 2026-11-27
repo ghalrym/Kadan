@@ -897,8 +897,8 @@ async def test_inkling_compaction_resets_onto_static_prefix_and_rejects_oversize
 async def test_inkling_availability_states_and_interrupt_during_pending_question(
     tmp_path,
 ):
-    # 1. Base checkpoint missing when only abliterated is downloaded -> plain-language download guidance.
-    def missing_base_handler(request: httpx.Request) -> httpx.Response:
+    # 1a. Kadan Server with abliterated Inkling 2 Mini downloaded is ready out of the box.
+    def abliterated_ready_handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/models":
             return httpx.Response(
                 200,
@@ -906,15 +906,41 @@ async def test_inkling_availability_states_and_interrupt_during_pending_question
                     "selected_model_id": "inkling-2-mini-abliterated-iq4-nl",
                     "models": [
                         {
-                            "id": "inkling-2-mini-iq4-nl",
-                            "kind": "llm",
-                            "status": "not_downloaded",
-                            "inference_available": True,
-                        },
-                        {
                             "id": "inkling-2-mini-abliterated-iq4-nl",
                             "kind": "llm",
                             "status": "complete",
+                            "inference_available": True,
+                            "context_limit": 65536,
+                        },
+                    ],
+                },
+            )
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(abliterated_ready_handler),
+        base_url="http://hikari",
+    ) as client:
+        services = LocalServices(client, KadanSettings(hikari_url="http://hikari"))
+        avail = await InklingHarnessAdapter().check_availability(services)
+        assert avail.installed is True
+        assert avail.display_name == "Inkling"
+        assert avail.auth.status == "ready"
+        assert avail.auth.login_method == "local"
+        assert avail.default_model == "inkling-2-mini-abliterated-iq4-nl"
+
+    # 1b. No Inkling 2 Mini checkpoint downloaded yet -> plain-language download guidance.
+    def missing_model_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(
+                200,
+                json={
+                    "selected_model_id": "inkling-2-mini-iq4-nl",
+                    "models": [
+                        {
+                            "id": "inkling-2-mini-iq4-nl",
+                            "kind": "llm",
+                            "status": "not_downloaded",
                             "inference_available": True,
                         },
                     ],
@@ -923,7 +949,7 @@ async def test_inkling_availability_states_and_interrupt_during_pending_question
         return httpx.Response(404)
 
     async with httpx.AsyncClient(
-        transport=httpx.MockTransport(missing_base_handler), base_url="http://hikari"
+        transport=httpx.MockTransport(missing_model_handler), base_url="http://hikari"
     ) as client:
         services = LocalServices(client, KadanSettings(hikari_url="http://hikari"))
         avail = await InklingHarnessAdapter().check_availability(services)
@@ -1225,3 +1251,85 @@ async def test_work_runner_queues_image_followup_instead_of_text_only_steer(tmp_
         "type": "image_url",
         "image_url": {"url": SAMPLE_PNG_DATA_URL},
     }
+
+
+@pytest.mark.anyio
+async def test_inkling_works_out_of_the_box_with_abliterated_server_and_auto_titles(
+    tmp_path,
+):
+    """When Kadan Server only serves the abliterated Inkling checkpoint, Work uses it cleanly and auto-names threads."""
+    tsuchi_app = create_tsuchi_app(TsuchiSettings(data_dir=tmp_path / "tsuchi"))
+    tsuchi_transport = httpx.ASGITransport(app=tsuchi_app)
+    project_dir = tmp_path / "repo"
+    project_dir.mkdir()
+    seen_variants: list[str | None] = []
+
+    def hikari_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(
+                200,
+                json={
+                    "selected_model_id": "inkling-2-mini-abliterated-iq4-nl",
+                    "models": [
+                        {
+                            "id": "inkling-2-mini-abliterated-iq4-nl",
+                            "kind": "llm",
+                            "status": "complete",
+                            "inference_available": True,
+                            "context_limit": 65536,
+                        }
+                    ],
+                },
+            )
+        if request.url.path == "/v1/chat/completions":
+            body = json.loads(request.content.decode())
+            seen_variants.append(body.get("weight_variant"))
+            return httpx.Response(
+                200,
+                content=_sse_stream_bytes(content_chunks=["Done."]),
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(404)
+
+    hikari_transport = httpx.MockTransport(hikari_handler)
+
+    class RoutingTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            if request.url.host == "tsuchi":
+                return await tsuchi_transport.handle_async_request(request)
+            return await hikari_transport.handle_async_request(request)
+
+    async with (
+        tsuchi_app.router.lifespan_context(tsuchi_app),
+        httpx.AsyncClient(transport=RoutingTransport()) as client,
+    ):
+        services = LocalServices(
+            client,
+            KadanSettings(tsuchi_url="http://tsuchi", hikari_url="http://hikari"),
+        )
+        services.work = WorkClient(
+            services, registry=HarnessRegistry([InklingHarnessAdapter()])
+        )
+        project = await services.work.create_project(
+            WorkProjectCreate(root_path=str(project_dir))
+        )
+        # No manual title supplied: auto-named from the first prompt.
+        thread, _ = await services.work.create_thread(
+            WorkThreadCreate(
+                project_id=project.id,
+                harness="inkling",
+                prompt="Fix the sign-in redirect bug in auth.ts",
+            )
+        )
+        assert thread.title == "Fix the sign-in redirect bug in auth.ts"
+
+        runner = WorkRunner(services)
+        await runner.reconcile_once()
+        active = runner._active.get(thread.id)
+        if active is not None and active.task is not None:
+            await asyncio.wait_for(active.task, timeout=15.0)
+        detail = await services.work.get_thread_detail(UUID(str(thread.id)))
+        await runner.close()
+
+    assert detail.thread.run_status == "completed"
+    assert seen_variants == ["abliterated"]

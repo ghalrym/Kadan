@@ -11,18 +11,18 @@ The **Work** section in Kadan's sidebar organizes your threads into four buckets
 3. **Snoozed:** Threads set aside for a chosen duration or until a chosen time. When the snooze expires, Kadan automatically moves the thread back to **Default** even if your browser is closed. You can also wake a snoozed thread early.
 4. **Settled:** Completed or older threads tucked out of the active workspace. The **Settled** section collapses out of the way, can be searched by title or coding assistant, and lets you move any thread back to **Default** with **Unsettle**.
 
-## Setting up projects and coding assistants
+## Starting a thread and managing settings
 
-Open **Work** setup from the buttons beside **WORK** in the sidebar:
+Click **`+`** beside **WORK** in the sidebar to open a new coding thread directly—no title or setup form required. Choose a project folder and model right in the composer and send your first message; Kadan automatically names the thread from your prompt.
 
-- **Projects:** Add an existing folder on this computer using Kadan's folder picker. Removing a project removes its saved threads from Kadan while leaving your folder on disk untouched.
-- **Harnesses:** View availability and readiness for **Inkling (Local)** as well as **Codex**, **Claude Code**, **Antigravity**, and **Grok**.
-  - **Inkling (Local)** runs directly on your computer using Kadan's built-in Inkling 2 Mini model and needs no external account or API key. If the standard Inkling 2 Mini model is not yet downloaded, Kadan shows plain-language guidance to download it in Kadan Server → Hikari → Settings.
-  - External assistants can be signed in to directly from the browser. Saved credentials are never shown back in the browser after you connect, and you can sign out at any time.
+- **Projects:** Switch folders or click **+ Add folder…** directly from the composer's project picker (opening your computer's native folder picker in Kadan Desktop), or manage saved folders under **Settings → Projects**. Removing a project removes its saved threads from Kadan while leaving your folder on disk untouched.
+- **Coding assistants:** Manage connections under **Settings → Coding assistants** for **Inkling**, **Codex**, **Claude Code**, **Antigravity**, and **Grok**.
+  - **Inkling** runs through Kadan Server's built-in Inkling 2 Mini inference engine and needs no external account or API key—once Inkling 2 Mini is downloaded on Kadan Server, it is ready to use immediately.
+  - External assistants can be signed in to directly from Settings. Saved credentials are never shown back after you connect, and you can sign out at any time.
 
 ## Working in a thread
 
-Opening a thread shows its project folder, current status, and coding assistant and model pickers. Every thread runs directly in its project folder.
+Opening a thread shows its status and activity stream, with the project folder and unified model picker right in the composer. Every thread runs directly in its project folder.
 
 - **Live progress:** Assistant output, thinking progress, tool actions, changed files, and step diagnostics stream into the thread as work runs and remain saved if you reload or restart Kadan.
 - **Screenshots and mockups:** In **Inkling (Local)** threads, you can attach PNG or JPEG screenshots directly in the thread composer so the assistant can inspect UI issues or visual mockups without an external vision service.

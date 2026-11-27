@@ -142,7 +142,7 @@ class WorkThreadDetail(BaseModel):
 
 class WorkThreadCreate(WorkModel):
     project_id: UUID
-    title: str = Field(min_length=1, max_length=500)
+    title: str | None = Field(default=None, max_length=500)
     harness: WorkHarnessId = "inkling"
     model: str | None = Field(default=None, max_length=256)
     model_options: dict[str, JsonValue] = Field(default_factory=dict)
@@ -152,10 +152,11 @@ class WorkThreadCreate(WorkModel):
 
     @field_validator("title")
     @classmethod
-    def nonblank_title(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("Title cannot be blank")
-        return value.strip()
+    def clean_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
 
 
 class WorkThreadPatch(WorkModel):

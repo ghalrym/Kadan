@@ -86,8 +86,10 @@ async def evaluate_base_decisions(
     hikari_url: str,
     state: str,
     questions: Sequence[dict[str, Any]],
+    *,
+    weight_variant: str | None = HARNESS_WEIGHT_VARIANT,
 ) -> dict[str, float]:
-    """Call Hikari `POST /v1/decisions` explicitly requesting base Inkling weights."""
+    """Call Hikari `POST /v1/decisions` using the active Inkling weight variant."""
     cleaned_state = state.strip()
     if not cleaned_state or not questions:
         return {}
@@ -96,7 +98,7 @@ async def evaluate_base_decisions(
     body: dict[str, Any] = {
         "state": trimmed_state,
         "questions": payload_questions,
-        "weight_variant": HARNESS_WEIGHT_VARIANT,
+        "weight_variant": weight_variant or HARNESS_WEIGHT_VARIANT,
     }
     serialized_len = len(json.dumps(body, ensure_ascii=False))
     if serialized_len > 15_800:
@@ -154,6 +156,7 @@ async def classify_command_approval(
     session_approved: bool,
     client: httpx.AsyncClient,
     hikari_url: str,
+    weight_variant: str | None = HARNESS_WEIGHT_VARIANT,
 ) -> CommandApprovalDecision:
     """Decide whether a proposed shell command needs explicit user approval."""
     hard_reason = _matches_hard_approval(command)
@@ -204,7 +207,9 @@ async def classify_command_approval(
         }
     ]
     try:
-        scores = await evaluate_base_decisions(client, hikari_url, state, questions)
+        scores = await evaluate_base_decisions(
+            client, hikari_url, state, questions, weight_variant=weight_variant
+        )
         prob = scores.get("requires_approval")
         if prob is not None:
             needs = prob >= 0.5
@@ -273,6 +278,7 @@ async def evaluate_loop_stuck(
     *,
     client: httpx.AsyncClient,
     hikari_url: str,
+    weight_variant: str | None = HARNESS_WEIGHT_VARIANT,
 ) -> LoopGuardrailDecision:
     """Detect stuck or repetitive failing cycles using a single-pass Decisions check."""
     trigger = detect_repetition_trigger(recent_steps)
@@ -317,7 +323,9 @@ async def evaluate_loop_stuck(
         },
     ]
     try:
-        scores = await evaluate_base_decisions(client, hikari_url, state, questions)
+        scores = await evaluate_base_decisions(
+            client, hikari_url, state, questions, weight_variant=weight_variant
+        )
         stuck = scores.get("is_stuck", 0.0)
         ask = scores.get("should_ask_user", 0.0)
         if stuck >= 0.65 and ask >= 0.70:
@@ -383,6 +391,7 @@ async def evaluate_completion_verification(
     *,
     client: httpx.AsyncClient,
     hikari_url: str,
+    weight_variant: str | None = HARNESS_WEIGHT_VARIANT,
 ) -> VerificationDecision:
     """Check whether edited files need a verification pass before finishing the turn."""
     if not modified_files:
@@ -425,7 +434,9 @@ async def evaluate_completion_verification(
         "or briefly note why no check applies before concluding."
     )
     try:
-        scores = await evaluate_base_decisions(client, hikari_url, state, questions)
+        scores = await evaluate_base_decisions(
+            client, hikari_url, state, questions, weight_variant=weight_variant
+        )
         score = scores.get("needs_verification")
         if score is not None:
             return VerificationDecision(

@@ -11,7 +11,6 @@ import {
   RefreshCw,
   Search,
   Settings,
-  SlidersHorizontal,
   Users,
   X,
 } from "lucide-react";
@@ -31,8 +30,9 @@ export type Page =
   | { name: "space" }
   | { name: "plugins" }
   | { name: "agent" }
-  | { name: "work-thread"; threadId: string }
-  | { name: "work-setup"; tab?: "new" | "projects" | "harnesses" };
+  | { name: "settings" }
+  | { name: "work-new" }
+  | { name: "work-thread"; threadId: string };
 
 interface Props {
   agent: Agent | null;
@@ -48,7 +48,7 @@ interface Props {
   onServerSettings?: () => void;
   workThreads?: WorkThread[];
   onOpenWorkThread?: (threadId: string) => void;
-  onOpenWorkSetup?: (tab: "new" | "projects" | "harnesses") => void;
+  onNewWorkThread?: () => void;
   onUnsettleWorkThread?: (threadId: string) => void;
   onWakeWorkThread?: (threadId: string) => void;
 }
@@ -156,22 +156,13 @@ export default function Sidebar(props: Props) {
           <span className="panel-label">WORK</span>
           <div className="work-sidebar-actions">
             <button
-              className="icon work-mini-btn"
+              className={`icon work-mini-btn ${page.name === "work-new" ? "selected" : ""}`}
               aria-label="New work thread"
               title="New work thread"
               disabled={!key}
-              onClick={() => props.onOpenWorkSetup?.("new")}
+              onClick={() => props.onNewWorkThread?.()}
             >
               <Plus size={14} />
-            </button>
-            <button
-              className="icon work-mini-btn"
-              aria-label="Work projects and harnesses"
-              title="Projects & Harnesses"
-              disabled={!key}
-              onClick={() => props.onOpenWorkSetup?.("projects")}
-            >
-              <SlidersHorizontal size={13} />
             </button>
           </div>
         </div>
@@ -293,29 +284,25 @@ export default function Sidebar(props: Props) {
           </button>
         )}
         <div className="sidebar-server-row">
-          {props.onServerSettings ? (
-            <button
-              className="server-settings-trigger"
-              onClick={props.onServerSettings}
-              title={serverTooltip}
-            >
-              <Settings size={15} />
-              <span className="server-settings-nav">
-                <span className="server-settings-label">
-                  <span>Server settings</span>
-                  <span className={`dot ${serverDot}`} aria-hidden="true" />
-                </span>
-                {props.desktopHost && (
-                  <small>{props.desktopHost.replace(/^https?:\/\//, "")}</small>
-                )}
+          <button
+            className={`server-settings-trigger ${page.name === "settings" ? "selected" : ""}`}
+            aria-current={page.name === "settings" ? "page" : undefined}
+            onClick={() => props.onPage("settings")}
+            title={serverTooltip}
+          >
+            <Settings size={15} />
+            <span className="server-settings-nav">
+              <span className="server-settings-label">
+                <span>Settings</span>
+                <span className={`dot ${serverDot}`} aria-hidden="true" />
               </span>
-            </button>
-          ) : (
-            <span className="server-status-label" title={serverTooltip}>
-              <span className={`dot ${serverDot}`} aria-hidden="true" />
-              {serverStatusText}
+              {props.desktopHost ? (
+                <small>{props.desktopHost.replace(/^https?:\/\//, "")}</small>
+              ) : (
+                <small>{serverStatusText}</small>
+              )}
             </span>
-          )}
+          </button>
           <button className="icon services-refresh" aria-label="Refresh server status and agent" title="Refresh"
             disabled={disabled} onClick={props.onRefresh}>
             <RefreshCw size={14} className={loading ? "spin" : ""} />

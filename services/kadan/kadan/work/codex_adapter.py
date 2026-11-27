@@ -7,7 +7,6 @@ thread's local project folder.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import shutil
@@ -484,7 +483,7 @@ class CodexHarnessAdapter(HarnessAdapter):
 
     harness_id = "codex"
     display_name = "Codex"
-    description = "OpenAI's coding agent using your ChatGPT Codex sign-in."
+    description = "OpenAI Codex"
 
     def __init__(self, *, process_factory: ProcessFactory | None = None):
         self._process_factory = process_factory
@@ -531,7 +530,7 @@ class CodexHarnessAdapter(HarnessAdapter):
             auth = HarnessAuthStatus(
                 status="unavailable",
                 login_method="device_code",
-                message="Codex is not installed on this server yet.",
+                message="Not installed on this computer.",
             )
         elif in_flight is not None and in_flight.status in {
             "starting",
@@ -544,18 +543,13 @@ class CodexHarnessAdapter(HarnessAdapter):
                 status="ready",
                 login_method="device_code",
                 account_label=label,
-                message=f"Connected ({label}).",
+                message="Connected.",
             )
         else:
-            hikari_ok = await self._hikari_codex_connected(services)
             auth = HarnessAuthStatus(
                 status="sign_in_required",
                 login_method="device_code",
-                message=(
-                    "Sign in with ChatGPT Codex to run coding threads."
-                    if not hikari_ok
-                    else "Sign in once here to authorize Codex for coding workspaces."
-                ),
+                message="Sign in to connect.",
             )
         return HarnessAvailability(
             harness_id=self.harness_id,

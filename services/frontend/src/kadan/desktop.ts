@@ -101,6 +101,23 @@ export async function installDesktopUpdate(): Promise<DesktopInstallResult> {
   return (await response.json()) as DesktopInstallResult;
 }
 
+export interface DesktopFolderPickResult {
+  path: string | null;
+  cancelled: boolean;
+  supported: boolean;
+}
+
+export async function pickDesktopFolder(): Promise<DesktopFolderPickResult> {
+  if (!isDesktopApp()) {
+    return { path: null, cancelled: false, supported: false };
+  }
+  const response = await fetch("/__kadan_desktop__/pick-folder", { method: "POST" });
+  if (!response.ok) {
+    return { path: null, cancelled: false, supported: false };
+  }
+  return (await response.json()) as DesktopFolderPickResult;
+}
+
 export async function testDesktopServerConnection(
   host: string,
 ): Promise<ServerTestResult> {

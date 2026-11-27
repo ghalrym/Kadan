@@ -63,6 +63,7 @@ pub async fn start_loopback_proxy(
     let app = Router::new()
         .route("/__kadan_desktop__/config", get(get_config).put(put_config))
         .route("/__kadan_desktop__/test", post(test_connection))
+        .route("/__kadan_desktop__/pick-folder", post(pick_folder))
         .route("/__kadan_desktop__/updates", get(check_desktop_updates))
         .route("/__kadan_desktop__/updates/install", post(install_desktop_update))
         .route("/kadan/api/work/{*path}", any(proxy_local_work))
@@ -223,6 +224,112 @@ fn build_upstream_url(base: &str, path_and_query: &str, ws: bool) -> String {
         trimmed.to_string()
     };
     format!("{base_url}{path_and_query}")
+}
+
+#[derive(Serialize)]
+struct PickFolderResponse {
+    path: Option<String>,
+    cancelled: bool,
+    supported: bool,
+}
+
+fn run_native_folder_dialog() -> Option<Result<Option<String>, String>> {
+    #[cfg(target_os = "linux")]
+    {
+        for (bin, args) in [
+            (
+                "zenity",
+                &["--file-selection", "--directory", "--title=Choose project folder"][..],
+            ),
+            (
+                "kdialog",
+                &["--getexistingdirectory", ".", "--title", "Choose project folder"][..],
+            ),
+        ] {
+            match std::process::Command::new(bin).args(args).output() {
+                Ok(out) if out.status.success() => {
+                    let chosen = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    return Some(Ok(if chosen.is_empty() { None } else { Some(chosen) }));
+                }
+                Ok(_) => return Some(Ok(None)),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Some(Err(err.to_string())),
+            }
+        }
+        None
+    }
+    #[cfg(target_os = "macos")]
+    {
+        match std::process::Command::new("osascript")
+            .args([
+                "-e",
+                "POSIX path of (choose folder with prompt \"Choose project folder\")",
+            ])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                let chosen = String::from_utf8_lossy(&out.stdout)
+                    .trim()
+                    .trim_end_matches('/')
+                    .to_string();
+                Some(Ok(if chosen.is_empty() { None } else { Some(chosen) }))
+            }
+            Ok(_) => Some(Ok(None)),
+            Err(err) => Some(Err(err.to_string())),
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let script = "Add-Type -AssemblyName System.Windows.Forms; \
+            $d = New-Object System.Windows.Forms.FolderBrowserDialog; \
+            $d.Description = 'Choose project folder'; \
+            if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.SelectedPath }";
+        match std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", script])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                let chosen = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                Some(Ok(if chosen.is_empty() { None } else { Some(chosen) }))
+            }
+            Ok(_) => Some(Ok(None)),
+            Err(err) => Some(Err(err.to_string())),
+        }
+    }
+}
+
+async fn pick_folder() -> Response {
+    let result = tokio::task::spawn_blocking(run_native_folder_dialog).await;
+    match result {
+        Ok(Some(Ok(Some(path)))) => Json(PickFolderResponse {
+            path: Some(path),
+            cancelled: false,
+            supported: true,
+        })
+        .into_response(),
+        Ok(Some(Ok(None))) => Json(PickFolderResponse {
+            path: None,
+            cancelled: true,
+            supported: true,
+        })
+        .into_response(),
+        Ok(None) => Json(PickFolderResponse {
+            path: None,
+            cancelled: false,
+            supported: false,
+        })
+        .into_response(),
+        Ok(Some(Err(detail))) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "detail": detail })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "detail": err.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 async fn check_desktop_updates() -> Response {

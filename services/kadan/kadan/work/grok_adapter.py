@@ -77,7 +77,7 @@ class GrokHarnessAdapter(HarnessAdapter):
 
     harness_id = "grok"
     display_name = "Grok"
-    description = "xAI Grok Build CLI coding harness over Agent Client Protocol."
+    description = "xAI Grok"
 
     def __init__(self, *, process_factory: ProcessFactory | None = None):
         self._process_factory = process_factory
@@ -103,21 +103,21 @@ class GrokHarnessAdapter(HarnessAdapter):
                 status="unavailable",
                 login_method="api_key",
                 authorize_url="https://console.x.ai/",
-                message="Grok CLI is not installed on this server yet.",
+                message="Not installed on this computer.",
             )
         elif cred:
             auth = HarnessAuthStatus(
                 status="ready",
                 login_method="api_key",
                 account_label=label,
-                message=f"Connected ({label}).",
+                message="Connected.",
             )
         elif _has_local_grok_auth():
             auth = HarnessAuthStatus(
                 status="ready",
                 login_method="api_key",
-                account_label="Local xAI key",
-                message="Connected using this server's xAI credentials.",
+                account_label="Local key",
+                message="Connected.",
             )
         else:
             auth = HarnessAuthStatus(
@@ -125,7 +125,7 @@ class GrokHarnessAdapter(HarnessAdapter):
                 login_method="api_key",
                 authorize_url="https://console.x.ai/",
                 needs_code=True,
-                message="Sign in at xAI Console and paste your access key to connect Grok.",
+                message="Paste your xAI access key.",
             )
         return HarnessAvailability(
             harness_id=self.harness_id,
