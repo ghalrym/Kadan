@@ -20,6 +20,7 @@ from .models import (
     AgentRunState,
     Asset,
     AssetMetadata,
+    ConversationCompactionUpdate,
     ConversationTaskPage,
     ConversationTaskStatus,
     ExportManifest,
@@ -1818,6 +1819,14 @@ class Repository:
         if "pinned" not in value.model_fields_set:
             # Editors that predate pinning must not unpin a record.
             content["pinned"] = current.pinned
+        if current.kind == ResourceKind.CONVERSATION:
+            for field_name in (
+                "compacted_summary",
+                "compacted_through_message_id",
+                "compacted_at",
+            ):
+                if field_name not in value.model_fields_set:
+                    content[field_name] = getattr(current, field_name)
         updated = resource_adapter.validate_python(
             {
                 **content,
@@ -1944,6 +1953,56 @@ class Repository:
             return self._update_resource(
                 db, key, current, value, expected_version, "message_added"
             )
+
+    def update_conversation_compaction(
+        self,
+        key: str,
+        resource_id: UUID,
+        value: ConversationCompactionUpdate,
+    ) -> Resource:
+        with self.connect(write=True) as db:
+            current = self._resource(db, key, resource_id)
+            self._active(current)
+            if current.kind != ResourceKind.CONVERSATION:
+                raise StorageError("Only conversations can be compacted", 409)
+            self._check_version(current, value.expected_version)
+            if value.require_idle and db.execute(
+                "SELECT 1 FROM agent_runs WHERE agent_key = ? AND conversation_id = ? "
+                "AND status IN ('queued', 'running') LIMIT 1",
+                (key, str(resource_id)),
+            ).fetchone():
+                raise StorageError(
+                    "Conversation has active work and cannot be idle-compacted", 409
+                )
+            message_indices = {
+                message.id: index for index, message in enumerate(current.messages)
+            }
+            target_index = message_indices.get(value.compacted_through_message_id)
+            if target_index is None:
+                raise StorageError(
+                    "Compaction anchor message was not found in this conversation", 409
+                )
+            if current.compacted_through_message_id is not None:
+                current_index = message_indices.get(
+                    current.compacted_through_message_id
+                )
+                if current_index is not None and target_index < current_index:
+                    raise StorageError(
+                        "Compaction cannot move backwards to an earlier message", 409
+                    )
+            now = utc_now()
+            updated = current.model_copy(
+                update={
+                    "compacted_summary": value.compacted_summary,
+                    "compacted_through_message_id": value.compacted_through_message_id,
+                    "compacted_at": value.compacted_at or now,
+                    "version": current.version + 1,
+                    "updated_at": now,
+                }
+            )
+            self._save_resource(db, updated)
+            self._activity(db, key, "compacted", "resource", str(resource_id), updated.title)
+            return updated
 
     @staticmethod
     def _asset(db: sqlite3.Connection, key: str, asset_id: UUID) -> Asset:

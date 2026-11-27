@@ -6,7 +6,9 @@ Tsuchi stores conversation records without owning agent execution. Kadan queues 
 
 The append checks the resource version and rejects conflicts instead of overwriting concurrent changes. Message identifiers cannot repeat. Ordered stored messages and durable agent-run state are distinct: a conversation edit alone neither invokes Hikari nor delivers an agent result.
 
-Multiple conversations can coexist in a namespace; Kadan presents each active one as a chat. Trash and restore add or remove a chat from Kadan's list without other changes. See [Multiple chats](../kadan/agent-conversations.md#multiple-chats).
+Multiple conversations can coexist in a namespace in Tsuchi storage, though Kadan exposes one persistent conversation per agent. Trash and restore add or remove a chat from Kadan's list without other changes. See [Persistent conversation and compaction](../kadan/agent-conversations.md#persistent-conversation-and-compaction).
+
+Each conversation resource also stores optional durable rolling compaction state (`compacted_summary`, `compacted_through_message_id`, and `compacted_at`). `PUT /api/agents/{key}/resources/{id}/compaction` updates only these fields under `expected_version` optimistic locking, rejects missing or backwards message anchors, and optionally enforces `require_idle: true` (rejecting with 409 when any `queued` or `running` run exists for the conversation). Compaction never deletes or mutates stored messages, and metadata-only `PUT /resources/{id}` updates that omit compaction fields preserve the saved compaction state.
 
 `POST /api/agents/{key}/resources/{id}/event-runs` queues a run woken by an
 external event, such as a finished Codex run. It carries an opaque `trigger_event`

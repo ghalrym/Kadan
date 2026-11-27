@@ -64,15 +64,24 @@ def test_list_pages_through_every_chat(tsuchi, call):
     assert offsets == ["0", "200"]
 
 
-def test_create_chat(tsuchi, call):
+def test_create_chat_returns_existing_persistent_conversation(tsuchi, call):
     created = call(create_conversation, "alpha", ConversationCreate())
     assert (created.kind, created.title, created.parent_id) == (
         "conversation",
         "New chat",
         None,
     )
-    created = call(create_conversation, "alpha", ConversationCreate(title=" Beds "))
-    assert created.title == "Beds"
+    # Subsequent POST returns the existing active persistent conversation instead of creating another.
+    reused = call(create_conversation, "alpha", ConversationCreate(title=" Beds "))
+    assert reused.id == created.id
+    assert reused.title == "New chat"
+    assert len(tsuchi.writes("POST")) == 1
+
+    # After trashing, POST creates a fresh persistent conversation with the requested title.
+    call(delete_conversation, "alpha", created.id)
+    fresh = call(create_conversation, "alpha", ConversationCreate(title=" Beds "))
+    assert fresh.id != created.id
+    assert fresh.title == "Beds"
     assert tsuchi.requests[-1][3] == {"kind": "conversation", "title": "Beds"}
 
 

@@ -95,6 +95,9 @@ def test_correction_preserves_existing_metadata_and_sends_expected_version():
             "created_at",
             "updated_at",
             "deleted_at",
+            "compacted_summary",
+            "compacted_through_message_id",
+            "compacted_at",
         },
     ) | {
         "title": "Corrected title",

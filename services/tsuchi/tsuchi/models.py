@@ -193,11 +193,33 @@ class ConversationContent(ResourceContent):
     kind: Literal[ResourceKind.CONVERSATION]
     deck: None = None
     messages: list[Message] = Field(default_factory=list)
+    compacted_summary: str | None = Field(default=None, max_length=200000)
+    compacted_through_message_id: UUID | None = None
+    compacted_at: datetime | None = None
+
+    @field_validator("compacted_at")
+    @classmethod
+    def aware_compacted_at(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Compaction timestamp requires a timezone")
+        return value.astimezone(UTC)
 
     @model_validator(mode="after")
     def unique_message_ids(self) -> Self:
         if len({message.id for message in self.messages}) != len(self.messages):
             raise ValueError("Message IDs must be unique")
+        if (self.compacted_summary is None) != (
+            self.compacted_through_message_id is None
+        ):
+            raise ValueError(
+                "Compacted summary and compacted_through_message_id must be set together"
+            )
+        if self.compacted_summary is not None and not self.compacted_summary.strip():
+            raise ValueError("Compacted summary cannot be blank")
+        if self.compacted_at is not None and self.compacted_summary is None:
+            raise ValueError("Compaction timestamp requires a compacted summary")
         return self
 
 
@@ -274,6 +296,29 @@ class ResourceVersion(Model):
 
 class MessageAppend(VersionInput):
     message: Message
+
+
+class ConversationCompactionUpdate(VersionInput):
+    compacted_summary: str = Field(min_length=1, max_length=200000)
+    compacted_through_message_id: UUID
+    compacted_at: datetime | None = None
+    require_idle: bool = False
+
+    @field_validator("compacted_summary")
+    @classmethod
+    def nonblank_summary(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Compacted summary cannot be blank")
+        return value.strip()
+
+    @field_validator("compacted_at")
+    @classmethod
+    def aware_compacted_at(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Compaction timestamp requires a timezone")
+        return value.astimezone(UTC)
 
 
 class AssetMetadata(Metadata):

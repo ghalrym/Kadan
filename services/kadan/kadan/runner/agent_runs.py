@@ -48,6 +48,14 @@ from .agent_inference import (
     ToolCommand,
     tool_characters,
 )
+from .compaction import (
+    IN_RUN_RECENT_TAIL_MESSAGES,
+    format_summary_section,
+    generate_rolling_summary,
+    persist_in_run_compaction,
+    should_compact_in_run,
+    split_uncompacted,
+)
 from .conversation_history import (
     ReadHistoryArguments,
     SearchHistoryArguments,
@@ -724,9 +732,93 @@ class AgentRuns(RunClient):
             records.append(record)
         return records
 
+    async def _compact_in_run(
+        self,
+        run: AgentRun,
+        conversation: Resource,
+        messages: list[Message],
+        uncompacted: list[Message],
+        compacted_summary: str | None,
+        inference_status,
+    ) -> tuple[Resource, str | None, list[Message]]:
+        to_compact = [
+            message
+            for message in uncompacted[:-IN_RUN_RECENT_TAIL_MESSAGES]
+            if message.id != run.trigger_message_id
+        ]
+        if not to_compact:
+            return conversation, compacted_summary, uncompacted
+        try:
+            status = inference_status or await self.services.inference_status()
+            if status.state != "ready":
+                return conversation, compacted_summary, uncompacted
+            new_summary = await generate_rolling_summary(
+                self.inference,
+                agent_key=run.agent_key,
+                conversation_id=run.conversation_id,
+                existing_summary=compacted_summary,
+                messages=to_compact,
+                model_id=status.model_id,
+                context_limit=getattr(status, "context_limit", None),
+                priority="interactive",
+            )
+            updated = await persist_in_run_compaction(
+                self.services,
+                agent_key=run.agent_key,
+                conversation=conversation,
+                compacted_summary=new_summary,
+                compacted_through_message_id=to_compact[-1].id,
+                verify_owned=(lambda: self.owned(run))
+                if run.status == "running"
+                else None,
+            )
+            updated_messages = updated.messages
+            if run.trigger_message_id is not None:
+                target = next(
+                    (
+                        index
+                        for index, item in enumerate(updated_messages)
+                        if item.id == run.trigger_message_id and item.role == "user"
+                    ),
+                    None,
+                )
+                if target is not None:
+                    updated_messages = updated_messages[: target + 1]
+            summary, remaining = split_uncompacted(
+                updated_messages,
+                updated.compacted_summary,
+                updated.compacted_through_message_id,
+            )
+            if run.trigger_message_id is not None and not any(
+                item.id == run.trigger_message_id for item in remaining
+            ):
+                remaining = [messages[-1]]
+            logger.info(
+                "In-run compacted conversation agent=%s conversation=%s through=%s compacted=%d remaining=%d",
+                run.agent_key,
+                run.conversation_id,
+                to_compact[-1].id,
+                len(to_compact),
+                len(remaining),
+            )
+            return updated, summary, remaining
+        except (ServiceError, ValidationError, OSError) as error:
+            if is_lease_lost(error):
+                raise
+            logger.warning(
+                "In-run compaction failed for run=%s; continuing with tail history: %s",
+                run.id,
+                error,
+            )
+            return conversation, compacted_summary, uncompacted
+
     @traced("kadan.agent_runs.context")
     async def context(
-        self, run: AgentRun, limit: int | None = None
+        self,
+        run: AgentRun,
+        limit: int | None = None,
+        *,
+        inference_status=None,
     ) -> list[TranscriptEntry]:
         instruction_file = Path(self.services.settings.agent_instruction_file)
         try:
@@ -742,7 +834,7 @@ class AgentRuns(RunClient):
         owned_persona = await self.services.agent_persona(run.agent_key)
         if owned_persona:
             instructions += "\nYour saved persona:\n" + owned_persona.markdown
-        system = RunMessage(role="system", content=instructions)
+        base_system = RunMessage(role="system", content=instructions)
         messages = conversation.messages
         # A later queued request may already be saved when this one starts.
         if run.trigger_message_id is not None:
@@ -804,17 +896,85 @@ class AgentRuns(RunClient):
         if limit is None:
             mcp_servers = await self.active_mcp_servers()
             limit = MAX_CONTEXT - tool_characters(self.bound_tools(run, mcp_servers))
-        budget = (
-            limit - entry_characters(system) - (entry_characters(event) if event else 0)
+        base_budget = (
+            limit
+            - entry_characters(base_system)
+            - (entry_characters(event) if event else 0)
         )
-        if budget < 0:
+        if base_budget < 0:
             raise ServiceError(
                 "Agent instructions and event exceed the context limit.", 422
             )
 
+        compacted_summary, uncompacted = split_uncompacted(
+            messages,
+            conversation.compacted_summary,
+            conversation.compacted_through_message_id,
+        )
+        if run.trigger_message_id is not None and not any(
+            item.id == run.trigger_message_id for item in uncompacted
+        ):
+            uncompacted = [messages[-1]]
+
+        uncompacted_chars = sum(
+            entry_characters(
+                RunMessage(
+                    role=item.role,
+                    content=item.content,
+                    attachment_ids=item.attachment_ids
+                    if item.id == run.trigger_message_id
+                    else [],
+                )
+            )
+            for item in uncompacted
+        )
+        initial_summary_section = format_summary_section(compacted_summary)
+        if should_compact_in_run(
+            uncompacted,
+            uncompacted_chars=uncompacted_chars,
+            summary_chars=len(initial_summary_section),
+            available_budget=base_budget,
+        ):
+            conversation, compacted_summary, uncompacted = await self._compact_in_run(
+                run,
+                conversation,
+                messages,
+                uncompacted,
+                compacted_summary,
+                inference_status,
+            )
+
+        if compacted_summary:
+            trigger_size = 0
+            if run.trigger_message_id is not None:
+                trigger_msg = next(
+                    (
+                        item
+                        for item in reversed(uncompacted)
+                        if item.id == run.trigger_message_id
+                    ),
+                    None,
+                )
+                if trigger_msg is not None:
+                    trigger_size = entry_characters(
+                        RunMessage(
+                            role=trigger_msg.role,
+                            content=trigger_msg.content,
+                            attachment_ids=trigger_msg.attachment_ids,
+                        )
+                    )
+            summary_section = format_summary_section(
+                compacted_summary, max(0, base_budget - trigger_size)
+            )
+            system = RunMessage(role="system", content=instructions + summary_section)
+            budget = base_budget - len(summary_section)
+        else:
+            system = base_system
+            budget = base_budget
+
         history: list[RunMessage] = []
         included_message_ids: set[UUID] = set()
-        for message in reversed(messages):
+        for message in reversed(uncompacted):
             if message.role not in {"user", "assistant"}:
                 continue
             turn = RunMessage(
@@ -886,7 +1046,10 @@ class AgentRuns(RunClient):
                     status = await self.services.inference_status()
                     limit = self.transcript_limit(status, run)
                     run = await self.update(
-                        run, transcript=await self.context(run, limit)
+                        run,
+                        transcript=await self.context(
+                            run, limit, inference_status=status
+                        ),
                     )
                     break
                 except (ServiceError, ValidationError, OSError) as error:

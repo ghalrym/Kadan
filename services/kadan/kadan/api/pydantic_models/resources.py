@@ -62,6 +62,9 @@ class Resource(BaseModel):
     attachment_ids: list[UUID] = Field(default_factory=list)
     deck: Deck | None = None
     messages: list[Message] = Field(default_factory=list)
+    compacted_summary: str | None = None
+    compacted_through_message_id: UUID | None = None
+    compacted_at: datetime | None = None
     pinned: bool = False
     version: int
     created_at: datetime

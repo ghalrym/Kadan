@@ -8,7 +8,7 @@ Hatching requires a name and a unique permanent key. Invalid or duplicate keys p
 
 Each agent has one ever-persistent conversation thread stored in Tsuchi. Kadan opens that thread automatically when it loads, creating it on first use. Whenever more than 30 minutes pass between messages (including when you return and send a new message after being inactive for over 30 minutes), Kadan draws a timestamp divider bar across the chat (`--- XX:XX am/pm ---`) so the elapsed time is clear.
 
-The thread handles context compaction automatically so users never need to start new chats or manually compact. After more than 30 minutes of inactivity, the server auto-compacts older messages into a durable rolling summary in the background while keeping all earlier messages intact in saved history.
+The thread handles context compaction automatically so users never need to start new chats or manually compact. After more than 30 minutes of inactivity, the server auto-compacts older messages into a durable rolling summary in the background while keeping all earlier messages intact in saved history. During long active sessions, Kadan also compacts older messages automatically as the thread approaches the model's context budget, keeping the most recent messages verbatim and preserving all saved history.
 
 One unsent draft is kept per agent in the current browser tab; it can be lost when the tab closes and is not a saved message. When refresh opens a different agent, Kadan waits for that agent’s thread rather than showing the previous agent’s. If loading fails, it reports the error; retry refreshes the records. A failed refresh for the same agent leaves its last loaded chat visible.
 

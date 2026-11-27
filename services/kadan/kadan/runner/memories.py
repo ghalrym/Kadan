@@ -125,6 +125,9 @@ class AgentMemories:
                 "created_at",
                 "updated_at",
                 "deleted_at",
+                "compacted_summary",
+                "compacted_through_message_id",
+                "compacted_at",
             },
         )
         content.update(

@@ -10,6 +10,7 @@ from ..api.pydantic_models.agent_runs import AgentRun
 from ..api.pydantic_models.runners import Runner
 from ..api.services import LocalServices
 from .agent_runs import AgentRuns
+from .compaction import IdleCompactor
 from .config import RunnerSettings
 from .image_jobs import ImageJobs
 from .pet_jobs import PetJobs
@@ -26,6 +27,7 @@ class RunnerServices(LocalServices):
         self.images = ImageJobs(self)
         self.pets = PetJobs(self)
         self.t3 = T3ThreadEvents(self)
+        self.compactor = IdleCompactor(self)
 
 
 class AgentRunner:
@@ -34,6 +36,7 @@ class AgentRunner:
         self.settings = settings
         self.owner = services.runs.owner
         self.work: dict[str, tuple[AgentRun, asyncio.Task]] = {}
+        self.assigned_keys: tuple[str, ...] = ()
 
     async def assignments(self) -> Runner:
         path = f"/api/runners/{self.settings.id}"
@@ -62,6 +65,7 @@ class AgentRunner:
 
     async def reconcile(self) -> None:
         runner = await self.assignments()
+        self.assigned_keys = tuple(runner.agent_keys)
         values = await self.services.json_request("Tsuchi", "GET", "/api/agent-runs")
         runs = [AgentRun.model_validate(value) for value in values]
         by_id = {run.id: run for run in runs}
@@ -122,12 +126,15 @@ class AgentRunner:
 async def serve(client, settings, runner_settings: RunnerSettings, stop: asyncio.Event):
     services = RunnerServices(client, settings, uuid4())
     runner = AgentRunner(services, runner_settings)
+    services.compactor.set_agent_keys_provider(lambda: runner.assigned_keys)
     services.images.start()
     services.pets.start()
     services.t3.start()
+    services.compactor.start()
     try:
         await runner.run(stop)
     finally:
+        await services.compactor.close()
         await services.images.close()
         await services.pets.close()
         await services.t3.close()

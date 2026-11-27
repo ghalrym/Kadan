@@ -20,6 +20,7 @@ from .models import (
     AssetMetadata,
     AssetUpdate,
     ChatResultInput,
+    ConversationCompactionUpdate,
     ConversationTaskPage,
     ImageJob,
     ImageJobState,
@@ -466,9 +467,17 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     @router.put("/agents/{key}/resources/{resource_id}", response_model=Resource)
     def update_resource(key: AgentKey, resource_id: UUID, value: ResourceUpdate):
         fields = value.model_dump(exclude={"expected_version"})
-        if "pinned" not in value.model_fields_set:
-            # Leave it unset so the saved pin is kept.
-            del fields["pinned"]
+        for name in (
+            {
+                "pinned",
+                "compacted_summary",
+                "compacted_through_message_id",
+                "compacted_at",
+            }
+            - value.model_fields_set
+        ):
+            # Leave unset fields out so saved pin and compaction state are kept.
+            fields.pop(name, None)
         content = resource_input_adapter.validate_python(fields)
         return repository.update_resource(
             key, resource_id, content, value.expected_version
@@ -511,6 +520,14 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         return repository.append_message(
             key, resource_id, value.message, value.expected_version
         )
+
+    @router.put(
+        "/agents/{key}/resources/{resource_id}/compaction", response_model=Resource
+    )
+    def update_conversation_compaction(
+        key: AgentKey, resource_id: UUID, value: ConversationCompactionUpdate
+    ):
+        return repository.update_conversation_compaction(key, resource_id, value)
 
     @router.get("/agents/{key}/assets", response_model=list[Asset])
     def list_assets(

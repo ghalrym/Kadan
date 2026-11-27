@@ -11,11 +11,11 @@ An agent conversation separates durable work, model inference and visible messag
 
 ## Conversation selection and context
 
-Each agent can have many conversations; see [Multiple chats](#multiple-chats) for storage and the list and edit routes. Every run belongs to one conversation (`run.conversation_id`), so ownership, queueing and delivery below apply per conversation without change. Agent keys match `[a-z0-9][a-z0-9_-]{0,63}` and are permanent namespace identifiers; creating an agent stores no model state.
+Each agent has one ever-persistent conversation thread in Kadan; see [Persistent conversation and compaction](#persistent-conversation-and-compaction) for storage, compaction and routes. Every run belongs to one conversation (`run.conversation_id`), so ownership, queueing and delivery below apply per conversation without change. Agent keys match `[a-z0-9][a-z0-9_-]{0,63}` and are permanent namespace identifiers; creating an agent stores no model state.
 
 Kadan proxies `GET /api/agents/{key}` and `PUT /api/agents/{key}` to Tsuchi for name reconciliation and renaming. The write accepts a normalized, nonblank `name` (at most 500 characters) and required `expected_name`, compared exactly with the current name inside one write transaction. A mismatch returns 409 unless the requested name is already saved, making a repeated successful request harmless. Only the name column changes; namespace keys and associated state remain intact. The browser retains the draft on failure and requires a reload before retrying. Successful saves update the roster name without changing selection or reloading the conversation.
 
-The runner includes at most 97 recent user and assistant messages, subject to the selected model's context budget and bound tool definitions. Older history remains in Tsuchi. This separates durable records from the bounded input to one run.
+When preparing context, the runner includes the conversation's `compacted_summary` (when present and anchored to a saved message) in the system prompt, followed by uncompacted user and assistant messages after `compacted_through_message_id` (at most 97 recent messages, subject to the selected model's context budget and bound tool definitions). Older history remains intact in Tsuchi for scrolling, search, export, and conversation-history tools. This separates durable records from the bounded input to one run.
 
 A user-triggered run ends its history at the triggering record. Attachments on that turn and background events are separate observations. An ordinary turn has no extra routing message or task dump. The agent can query image job records for its conversation through `read_task_status`. This includes terminal outcomes.
 
@@ -36,11 +36,20 @@ Browser selection is local, and per-agent drafts use the tab's session storage. 
 
 The user expectations for [agent conversations](../../user-expectations/kadan/agent-conversations.md) describe the product behavior. See [Persona instructions](personas.md) for instruction snapshots.
 
-## Multiple chats
+## Persistent conversation and compaction
 
-Each chat is a Tsuchi `conversation` resource in the agent's namespace; Kadan keeps no separate chat store. Chats are not grouped: a conversation's `parent_id` is left as Tsuchi stored it and Kadan neither reads nor sets it. Saved pages, slides and files live in [Space](space.md), not in chats.
+Each agent's persistent chat is stored as a Tsuchi `conversation` resource in the agent's namespace; Kadan keeps no separate chat store. Saved pages, slides and files live in [Space](space.md), not in chats.
 
-Renaming a chat rewrites the whole conversation resource through Tsuchi's versioned update while runs append messages to it concurrently. Kadan therefore edits Tsuchi's own JSON (keeping fields it does not model), sends the version it read and, on a version conflict, re-reads and retries up to five times before reporting that the chat is busy. A conflict can never overwrite a newer message list. Trashing a chat uses the same retry. Trashing a chat while a reply is running leaves that run unable to save further messages; Tsuchi stops offering runs for trashed conversations.
+To enforce one persistent thread per agent while remaining backwards-compatible with existing routes, `POST /api/agents/{key}/conversations` returns the agent's existing active conversation when one already exists (guarded by a per-agent lock) instead of creating duplicate chats. If an agent has no active conversation (first use, or after trashing in Tsuchi), `POST /conversations` creates a new one.
+
+Durable rolling compaction state (`compacted_summary`, `compacted_through_message_id`, `compacted_at`) lives directly on the Tsuchi conversation resource and is updated through `PUT /api/agents/{key}/resources/{id}/compaction` with `expected_version` optimistic locking. Compaction never deletes or mutates visible chat messages.
+
+Two automatic compaction paths run in `kadan-runner` (`kadan/runner/compaction.py`):
+
+1. **In-run budget compaction:** During `AgentRuns.context`, when there are more than 8 uncompacted user/assistant messages and either the uncompacted text plus existing summary exceeds 65% of the available context character budget or there are more than 60 uncompacted messages, the runner compacts all older uncompacted messages before the most recent 8 messages (never compacting `trigger_message_id`) via Hikari at `interactive` priority, persists the updated rolling summary to Tsuchi (retrying on 409 if a trailing user message arrived concurrently without changing the compacted prefix), and continues preparing the run seamlessly. Transient compaction errors fall back to ordinary tail trimming so user replies are not blocked.
+2. **Background idle auto-compaction:** `IdleCompactor` runs periodically in `kadan-runner` for agents assigned to that runner. When an agent's persistent thread has uncompacted messages after `compacted_through_message_id`, has no active or queued runs, its latest message is older than 30 minutes, and Hikari language inference is ready, it folds all uncompacted messages into the rolling summary at `background` priority and persists the result with `expected_version` and `require_idle: true`. If a user message or run arrives concurrently, Tsuchi rejects the stale write with 409 and the compactor skips cleanly without clobbering state.
+
+Renaming a chat rewrites the whole conversation resource through Tsuchi's versioned update while runs append messages to it concurrently. Kadan therefore edits Tsuchi's own JSON (keeping fields it does not model, including compaction state), sends the version it read and, on a version conflict, re-reads and retries up to five times before reporting that the chat is busy. A conflict can never overwrite a newer message list. Trashing a chat uses the same retry. Trashing a chat while a reply is running leaves that run unable to save further messages; Tsuchi stops offering runs for trashed conversations.
 
 New chats are stored with the title `New chat`. The single conversation that Kadan created per agent before multiple chats was titled `Chain`. When the stored title, stripped, is one of these defaults and the chat has a user message, the summary title is that first nonblank user message with whitespace collapsed, cut to 60 characters including a trailing `…`. The rule is applied when summaries are built, so the stored title is never rewritten and a renamed chat keeps its name. The preview uses the same first user message, cut to 160 characters, or is empty.
 
@@ -49,13 +58,11 @@ All routes are scoped to `/api/agents/{key}`, reject unknown fields and return p
 | Route | Result |
 | --- | --- |
 | `GET /conversations` | `ConversationSummary[]`: every active chat, newest `updated_at` first, then by ID |
-| `POST /conversations` | 201 with the full conversation `Resource`; optional `title` (nonblank, stripped, default `New chat`) |
+| `POST /conversations` | 201 with the agent's existing active persistent conversation `Resource`, or creates a new one if none exists (optional `title`, default `New chat`) |
 | `PUT /conversations/{conversation_id}` | `ConversationSummary`; optional `title`. An empty body returns the current summary without writing, and a `null` title is rejected |
 | `DELETE /conversations/{conversation_id}` | 204; the chat moves to Tsuchi's trash |
 
 `ConversationSummary` has `id`, `agent_key`, `title` (the display title above), `message_count`, `preview`, `version`, `created_at` and `updated_at`. Summaries omit message bodies; the chat view loads the open conversation as a resource and then follows it through the conversation runs snapshot. A conversation ID that is missing, trashed or not a conversation returns 404. The list pages through Tsuchi 200 records at a time and merges pages by ID, keeping the newest version when a concurrent write moves a record between pages.
-
-The frontend loads conversation summaries first, then loads only the open conversation. The selection is remembered with the agent key it belongs to, so a refresh that switches agents never requests the old chat under the new agent. Chat snapshots update the matching summary locally (`conversations.ts` mirrors the display-title rule), so the sidebar follows new messages without listing again. Empty chats are hidden from lists unless open, and **New chat** reuses an empty chat before creating another.
 
 ## Tool binding
 

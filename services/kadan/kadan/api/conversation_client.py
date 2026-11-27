@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -79,6 +80,7 @@ CHAT_MISSING = "This chat no longer exists. Reload your chats."
 class ConversationClient:
     def __init__(self, services: LocalServices):
         self.services = services
+        self._create_locks: dict[str, asyncio.Lock] = {}
 
     def path(self, key: str, resource_id: UUID | None = None) -> str:
         base = f"/api/agents/{key}/resources"
@@ -135,14 +137,19 @@ class ConversationClient:
         ]
 
     async def create(self, key: str, title: str) -> Resource:
-        return parse(
-            await self.services.json_request(
-                "Tsuchi",
-                "POST",
-                self.path(key),
-                json={"kind": ResourceKind.CONVERSATION.value, "title": title},
+        lock = self._create_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            existing = await self.all(key, ResourceKind.CONVERSATION)
+            if existing:
+                return existing[0]
+            return parse(
+                await self.services.json_request(
+                    "Tsuchi",
+                    "POST",
+                    self.path(key),
+                    json={"kind": ResourceKind.CONVERSATION.value, "title": title},
+                )
             )
-        )
 
     async def update(
         self, key: str, conversation_id: UUID, changes: dict[str, Any]

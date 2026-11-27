@@ -359,3 +359,27 @@ class AgentInference:
             raise ServiceError(
                 "The agent returned an invalid tool command.", 502, "invalid_command"
             ) from error
+
+    @traced("kadan.agent_inference.complete_text")
+    async def complete_text(
+        self,
+        messages: list[BaseMessage],
+        model_id: str | None,
+        conversation_key: str,
+        *,
+        priority: Literal["interactive", "background"] = "background",
+    ) -> str:
+        model = HikariChatModel(
+            client=self.client,
+            hikari_url=self.hikari_url,
+            model_id=model_id,
+            conversation_key=conversation_key,
+            priority=priority,
+        )
+        response = await model.ainvoke(messages)
+        text = response.content.strip() if isinstance(response.content, str) else ""
+        if not text:
+            raise ServiceError(
+                "Hikari returned an empty compaction summary.", 502, "empty_summary"
+            )
+        return text
