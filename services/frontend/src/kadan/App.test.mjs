@@ -66,6 +66,7 @@ async function app(petResponses = [], agentResponses = [[agent]]) {
     "lucide-react": {},
     "./Chat": { default: "Chat" },
     "./RenameAgent": { default: "RenameAgent" },
+    "./DeleteAgent": { default: "DeleteAgent" },
     "./RunnerAssignment": { default: "RunnerAssignment" },
     "./Plugins": { default: "Plugins" },
     "./Sidebar": { default: "Sidebar" },

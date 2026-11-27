@@ -36,13 +36,13 @@ const mocks = {
   react: reactUrl,
   "react/jsx-runtime": jsxUrl,
   "react-dom": moduleUrl("export const flushSync = callback => callback();"),
-  "lucide-react": moduleUrl("export const Egg='', Menu='';"),
+  "lucide-react": moduleUrl("export const Menu='';"),
   "./api": moduleUrl("export const agentPath = () => ''; export const api = () => { throw Error('Unexpected request'); }; export const allResources = api;"),
   "./desktop": moduleUrl("export const isDesktopApp = () => false; export const getDesktopServerConfig = async () => ({ active_host: '', saved_servers: [] }); export const installDesktopUpdate = async () => ({ ok: true, target_version: null, restarting: false, message: '' });"),
   "./Pet": moduleUrl("export default 'Pet'; export const agentPet = () => null; export const useMood = () => [];"),
   "./pet": moduleUrl("export const agentHue = () => 0;"),
   "./PetContext": moduleUrl("export const PetContext = { Provider: 'Provider' }; export const useAgentPet = () => null;"),
-  ...Object.fromEntries(["Chat", "Hatch", "PetEditor", "PersonaEditor", "RenameAgent", "RunnerAssignment", "Plugins", "Sidebar", "SpaceLibrary", "ConfirmDialog", "AgentPage", "ServerSettings"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
+  ...Object.fromEntries(["Chat", "PetEditor", "PersonaEditor", "RenameAgent", "DeleteAgent", "RunnerAssignment", "Plugins", "Sidebar", "SpaceLibrary", "ConfirmDialog", "AgentPage", "ServerSettings"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
 };
 const loader = registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -68,7 +68,7 @@ loader.deregister();
 const originals = new Map(["matchMedia", "document"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 // Slots follow App's useState calls; refs and effects do not consume these slots.
 const AGENT = 0, EDITING_PERSONA = 3, RENAMING = 4, ASSIGNING_RUNNER = 5, SELECTION = 6,
-  CHAIN = 7, PAGE = 8, LOADING = 13, BUSY = 14, RESOURCE_OWNER = 20;
+  CHAIN = 7, PAGE = 8, LOADING = 13, BUSY = 14, RESOURCE_OWNER = 18;
 const original = { id: "original", agent_key: "agent", title: "New chat", version: 3, messages: [] };
 const replacement = { ...original, id: "replacement", version: 1 };
 const select = (conversation) => {
@@ -160,14 +160,13 @@ test("the agent page opens runner assignment, which closes again", () => {
   assert.equal(find("RunnerAssignment"), undefined);
 });
 
-test("hatching is only offered while there is no agent", () => {
-  chat();
-  assert.equal(find("Hatch"), undefined);
-  state[AGENT] = null;
-  state[LOADING] = false;
-  render();
-  assert.ok(find("Hatch"));
-  assert.equal(find("Chat"), undefined);
+test("agent self-rename callback updates the displayed agent name without remounting chat", () => {
+  const first = chat();
+  first.props.onAgentName("Mi");
+  assert.equal(state[AGENT].name, "Mi");
+  const updated = chat();
+  assert.equal(updated.key, first.key);
+  assert.equal(updated.props.agentName, "Mi");
 });
 
 test("plugins open while chat is busy and returning keeps the conversation", () => {
@@ -204,6 +203,20 @@ test("chat and the agent page open the single persona editor modal, which closes
   assert.equal(state[EDITING_PERSONA], false);
   render();
   assert.equal(find("PersonaEditor"), undefined);
+});
+
+test("agent page opens the delete-agent confirmation dialog, which closes again", () => {
+  state[LOADING] = false;
+  render();
+  find("Sidebar").props.onPage("agent");
+  render();
+  find("AgentPage").props.onDelete();
+  render();
+  const dialog = find("DeleteAgent");
+  assert.equal(dialog.props.agent.key, "agent");
+  dialog.props.onClose();
+  render();
+  assert.equal(find("DeleteAgent"), undefined);
 });
 
 for (const slot of [LOADING, BUSY]) {

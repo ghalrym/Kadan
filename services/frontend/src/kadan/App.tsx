@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { Egg, Menu } from "lucide-react";
+import { Menu } from "lucide-react";
 import { agentPath, api } from "./api";
 import {
   getDesktopServerConfig,
@@ -12,12 +12,12 @@ import { latestConversation } from "./agentRuns";
 import { pickConversation } from "./conversations";
 import type { Agent, ConversationSummary, PetJob, Resource, Status } from "./types";
 import Chat from "./Chat";
-import Hatch from "./Hatch";
 import Pet, { agentPet } from "./Pet";
 import { agentHue } from "./pet";
 import PetEditor from "./PetEditor";
 import PersonaEditor from "./PersonaEditor";
 import RenameAgent from "./RenameAgent";
+import DeleteAgent from "./DeleteAgent";
 import RunnerAssignment from "./RunnerAssignment";
 import Plugins from "./Plugins";
 import Sidebar, { type Page } from "./Sidebar";
@@ -59,8 +59,6 @@ export default function App() {
   const navigation = useRef<HTMLElement>(null);
   const openNavigation = useRef<HTMLButtonElement>(null);
   const closeNavigation = useRef<HTMLButtonElement>(null);
-  const [creating, setCreating] = useState(false);
-  const [hatched, setHatched] = useState(false);
   const [resourceRevision, setResourceRevision] = useState(0);
   const key = agent?.key ?? "";
   const [resourceOwner, setResourceOwner] = useState("");
@@ -68,6 +66,7 @@ export default function App() {
   const [desktopHost, setDesktopHost] = useState("");
   const [updateNotice, setUpdateNotice] = useState("");
   const handledDesktopUpdateId = useRef<string | null>(null);
+  const [deletingAgent, setDeletingAgent] = useState(false);
   const desktopMode = isDesktopApp();
   const currentAgentKey = useRef(key);
   const agentKey = currentAgentKey;
@@ -215,6 +214,7 @@ export default function App() {
         setEditingPet(false);
         setEditingPersona(false);
         setRenaming(false);
+        setDeletingAgent(false);
         setAssigningRunner(false);
         setPage({ name: "chat" });
       }
@@ -418,11 +418,12 @@ export default function App() {
         ) : !key ? (
           <div className="center-empty">
             <Pet sheet={agentPet("kadan")} state="waiting" size={144} look grounded className="hero-pet" />
-            <h2>Meet your agent</h2>
-            <p className="center-hint">Give it a name to get started.</p>
-            <button className="primary" disabled={!!error} onClick={() => setCreating(true)}>
-              <Egg size={16} />
-              Hatch your agent
+            <h2>{error ? "Could not reach Kadan Server" : "Setting up your agent"}</h2>
+            <p className="center-hint">
+              {error ? "Check your server connection and try again." : "Connecting to your server…"}
+            </p>
+            <button className="primary" onClick={() => void refreshAgent()}>
+              Retry
             </button>
           </div>
         ) : page.name === "plugins" ? (
@@ -435,6 +436,7 @@ export default function App() {
             onEditPersona={() => setEditingPersona(true)}
             onRename={() => setRenaming(true)}
             onRunner={() => setAssigningRunner(true)}
+            onDelete={() => setDeletingAgent(true)}
           />
         ) : page.name === "space" ? (
           <SpaceLibrary key={key} agentKey={key} />
@@ -445,11 +447,12 @@ export default function App() {
             agentName={agent?.name || key}
             chain={chain}
             status={status}
-            entrance={hatched ? "jumping" : "waving"}
+            entrance="waving"
             onChange={updateChain}
             onBusy={(value) => { if (agentKey.current === key) setBusy(value); }}
             onEditPet={() => setEditingPet(true)}
             onEditPersona={() => setEditingPersona(true)}
+            onAgentName={(name) => setAgent((current) => current?.key === key && current.name !== name ? { ...current, name } : current)}
             blocked={loading}
             refreshStatus={refreshStatus}
           />
@@ -469,6 +472,23 @@ export default function App() {
         onUpdated={(saved) => setAgent((current) => current?.key === saved.key ? { ...current, name: saved.name } : current)}
         onClose={() => {
           setRenaming(false);
+          restoreFocus();
+        }}
+      />}
+      {deletingAgent && agent && <DeleteAgent
+        agent={agent}
+        onDeleted={() => {
+          setDeletingAgent(false);
+          setAgent(null);
+          setPets({});
+          setSelection(null);
+          setChain(null);
+          setResourceOwner("");
+          setPage({ name: "chat" });
+          void refreshAgent();
+        }}
+        onClose={() => {
+          setDeletingAgent(false);
           restoreFocus();
         }}
       />}
@@ -505,22 +525,6 @@ export default function App() {
           void refreshStatus();
         }}
         onClose={() => { setServerSettingsOpen(false); restoreFocus(); }}
-      />}
-      {!agent && <Hatch
-        open={creating}
-        onClose={() => {
-          setCreating(false);
-          restoreFocus();
-        }}
-        onHatched={(created) => {
-          ++refreshRevision.current;
-          setHatched(true);
-          setCreating(false);
-          transition(() => {
-            setAgent(created);
-            setPage({ name: "chat" });
-          });
-        }}
       />}
     </div>
     </PetContext.Provider>

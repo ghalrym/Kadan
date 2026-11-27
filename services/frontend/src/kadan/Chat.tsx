@@ -27,6 +27,7 @@ interface Props {
   onBusy: (value: boolean) => void;
   onEditPet: () => void;
   onEditPersona: () => void;
+  onAgentName?: (name: string) => void;
   blocked: boolean;
   refreshStatus: () => Promise<void>;
 }
@@ -94,6 +95,7 @@ export default function Chat({
   onBusy,
   onEditPet,
   onEditPersona,
+  onAgentName,
   blocked,
   refreshStatus,
 }: Props) {
@@ -141,8 +143,8 @@ export default function Chat({
   currentChain.current = latestConversation(currentChain.current, chain);
   const mutation = useRef(0);
   const sendLock = useRef(false);
-  const callbacks = useRef({ onChange, refreshStatus });
-  callbacks.current = { onChange, refreshStatus };
+  const callbacks = useRef({ onChange, refreshStatus, onAgentName });
+  callbacks.current = { onChange, refreshStatus, onAgentName };
   const ready = readiness(status);
   const [dictating, setDictating] = useState(false);
   const voiceCall = useVoiceCall(
@@ -248,6 +250,7 @@ export default function Chat({
         const snapshot = await api<RunSnapshot>(`${agentPath(agentKey)}/conversations/${chain.id}/runs`);
         if (!closed && revision === mutation.current) {
           accept(snapshot.conversation);
+          if (snapshot.agent_name?.trim()) callbacks.current.onAgentName?.(snapshot.agent_name);
           setRuns(snapshot.runs);
           setImages(snapshot.images);
           setPollError("");

@@ -1,8 +1,6 @@
 # Agent conversations
 
-Kadan lets users hatch an agent and talk with it in one ever-persistent chat thread. Creating an agent saves its records in Tsuchi without downloading or running a model. Users can [rename agents](renaming-agents.md); deleting agents is not available.
-
-Hatching requires a name and a unique permanent key. Invalid or duplicate keys produce an error without replacing an existing agent. After an uncertain creation, refresh the agent list before trying again. Kadan opens the first agent returned by Tsuchi after refreshing; other existing agents are not selectable in Kadan. Both applications use the same [namespaces](../tsuchi/namespaces.md).
+Kadan opens directly into one ever-persistent chat thread with your agent — no setup form or hatch screen is required. On a fresh installation, the server automatically provisions a default **Kadan Agent** with the default avatar, a starter persona, and an opening greeting asking what you would like to name it. As you chat, the agent asks one natural question at a time to learn its name (renaming itself live in Kadan), your name (saved to memory), and its vibe, role, communication style, and appearance. Users can also [rename agents](renaming-agents.md) manually at any time, or permanently delete the agent and all its memories from the [Agent page](navigation.md) (after typing `<agent name> Delete`) to start fresh.
 
 ## Single persistent chat
 

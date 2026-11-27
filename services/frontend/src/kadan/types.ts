@@ -125,6 +125,7 @@ export interface RunSnapshot {
   runs: AgentRun[];
   images: ImageJob[];
   conversation: Resource;
+  agent_name?: string | null;
 }
 
 export interface PetManifest {

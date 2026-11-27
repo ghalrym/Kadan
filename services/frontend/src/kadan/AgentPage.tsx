@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Brain, ChevronRight, Palette, Pencil, RefreshCw, Search, Server, UserRound } from "lucide-react";
+import { ArrowLeft, Brain, ChevronRight, Palette, Pencil, RefreshCw, Search, Server, Trash2, UserRound } from "lucide-react";
 import { agentPath, api } from "./api";
 import Pet, { useMood } from "./Pet";
 import { useAgentPet } from "./PetContext";
@@ -13,6 +13,7 @@ interface Props {
   onEditPersona: () => void;
   onRename: () => void;
   onRunner: () => void;
+  onDelete: () => void;
 }
 
 function Memories({ agentKey, agentName }: { agentKey: string; agentName: string }) {
@@ -97,7 +98,7 @@ function Memories({ agentKey, agentName }: { agentKey: string; agentName: string
 }
 
 /** Everything about the agent itself: its look, name, memories and where its work runs. */
-export default function AgentPage({ agent, disabled, onEditPet, onEditPersona, onRename, onRunner }: Props) {
+export default function AgentPage({ agent, disabled, onEditPet, onEditPersona, onRename, onRunner, onDelete }: Props) {
   const sheet = useAgentPet(agent.key);
   const [mood, react] = useMood("idle");
   return (
@@ -132,6 +133,21 @@ export default function AgentPage({ agent, disabled, onEditPet, onEditPersona, o
           </header>
           <div>
             <button disabled={disabled} onClick={onRunner}><Server size={15} />Manage runner</button>
+          </div>
+        </section>
+        <section className="page-card danger-card" aria-labelledby="delete-agent-section-title">
+          <header>
+            <h2 id="delete-agent-section-title">Delete agent</h2>
+            <p>
+              Permanently delete {agent.name}, all saved memories, chat history, persona, Space items,
+              and pets to start fresh with a new agent.
+            </p>
+          </header>
+          <div>
+            <button className="danger-button" disabled={disabled} onClick={onDelete}>
+              <Trash2 size={15} />
+              Delete agent
+            </button>
           </div>
         </section>
       </div>

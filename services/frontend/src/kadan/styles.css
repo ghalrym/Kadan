@@ -1264,7 +1264,7 @@ main:focus {
   animation: pop 300ms var(--spring);
 }
 
-/* Hatch dialog */
+/* Dialogs */
 dialog {
   width: min(400px, calc(100% - 32px));
   max-height: calc(100dvh - 32px);
@@ -1285,10 +1285,12 @@ dialog::backdrop {
   animation: fade 240ms var(--out);
 }
 .rename-agent,
+.delete-agent,
 .runner-assignment {
   overflow-y: auto;
 }
 .rename-agent form,
+.delete-agent form,
 .runner-assignment form {
   display: flex;
   flex-direction: column;
@@ -1298,9 +1300,32 @@ dialog::backdrop {
 }
 .rename-agent .field-hint,
 .rename-agent .error,
+.delete-agent .field-hint,
+.delete-agent .error,
 .runner-assignment p,
 .runner-assignment dl {
   margin: 0;
+}
+.danger-card {
+  border-color: color-mix(in srgb, var(--error) 28%, var(--line));
+}
+.danger-button {
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 35%, transparent);
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+}
+.danger-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--error) 18%, transparent);
+}
+.danger-primary {
+  background: var(--error);
+  color: #190707;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 8px 18px;
+}
+.danger-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--error) 88%, #fff);
 }
 .runner-assignment dl {
   display: grid;
@@ -1312,50 +1337,6 @@ dialog::backdrop {
 }
 .runner-assignment dd {
   margin: 0;
-}
-.hatch form {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 0 24px 22px;
-}
-.hatch .close {
-  position: absolute;
-  right: 10px;
-  top: 10px;
-}
-.hatch-stage {
-  display: grid;
-  place-items: center;
-  height: 150px;
-  margin: -64px auto 0;
-  width: 200px;
-  isolation: isolate;
-}
-.hatch-stage::before {
-  content: "";
-  position: absolute;
-  width: 170px;
-  height: 120px;
-  top: -24px;
-  left: 50%;
-  transform: translateX(-50%);
-  border-radius: 50%;
-  background: radial-gradient(closest-side, var(--accent-glow), transparent);
-  z-index: -1;
-  transition: background 500ms;
-}
-.hatch h2 {
-  text-align: center;
-  margin-bottom: 4px;
-}
-.hatch .field-hint {
-  margin-top: -6px;
-}
-.hatch input[name="key"] {
-  font-family: var(--mono);
-  font-size: 13px;
 }
 .form-actions {
   display: flex;

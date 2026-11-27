@@ -21,7 +21,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 
 // Exercise Chat's poll, send, Stop and AgentCard handlers with in-memory hooks and API boundaries.
 async function chat(initialRuns, initialConversation = chain, storedPending = null, callOptions = {}) {
-  const slots = [], effects = [], timers = [], requests = [], callStarts = [];
+  const slots = [], effects = [], timers = [], requests = [], callStarts = [], agentNames = [];
   let personaEdits = 0;
   let callDisabled;
   const storage = callOptions.storage ?? new Map();
@@ -30,7 +30,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     ids() { return this.entries.map(item => item.id); },
     removeMany(ids) { this.entries = this.entries.filter(item => !ids.includes(item.id)); },
   };
-  let cursor = 0, tree, snapshotRuns = initialRuns, sendResponse, replacementResponse;
+  let cursor = 0, tree, snapshotRuns = initialRuns, snapshotAgentName = null, sendResponse, replacementResponse;
   let selectedChain = initialConversation;
   const react = {
     Fragment: "Fragment",
@@ -88,7 +88,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
         if (path === `/agents/guide/conversations/${selectedChain.id}/runs`) {
           if (body) return sendResponse;
           if (replacementResponse) return replacementResponse;
-          return { runs: snapshotRuns, images: [], conversation: selectedChain };
+          return { runs: snapshotRuns, images: [], conversation: selectedChain, ...(snapshotAgentName ? { agent_name: snapshotAgentName } : {}) };
         }
         if (path === `/agents/guide/conversations/${selectedChain.id}/notes`) return sendResponse;
         if (path.endsWith("/cancel")) {
@@ -118,7 +118,8 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     tree = exports.default({
       agentKey: "guide", agentName: "Guide", chain: selectedChain, status: null,
       entrance: "idle", onChange(value) { selectedChain = value; }, onBusy() {}, onEditPet() {},
-      onEditPersona() { personaEdits++; }, blocked: false, refreshStatus: async () => {},
+      onEditPersona() { personaEdits++; }, onAgentName(name) { agentNames.push(name); },
+      blocked: false, refreshStatus: async () => {},
     });
     effects.splice(0).forEach(effect => effect());
   }
@@ -130,7 +131,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
   await settle();
   render();
   return {
-    render, requests, storage, attachments, callStarts, timerDelays,
+    render, requests, storage, attachments, callStarts, timerDelays, agentNames,
     personaEdits: () => personaEdits,
     callDisabled: () => callDisabled,
     streamingMessages: () => elements()
@@ -151,9 +152,10 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
       .filter(node => node.props?.className === "time-break" && node.props?.role === "separator")
       .map(node => elements(node).find(child => child.type === "time")?.props?.children ?? ""),
     composer: () => elements().find(node => node.type === "Composer").props,
-    async poll(runs, conversation = selectedChain) {
+    async poll(runs, conversation = selectedChain, agentName = null) {
       snapshotRuns = runs;
       selectedChain = conversation;
+      snapshotAgentName = agentName;
       assert.ok(timers.length, "poll schedules its next snapshot");
       await timers.shift()();
       render();
@@ -455,4 +457,11 @@ test("inactivity over 30 minutes inserts a time separator bar while shorter gaps
   assert.equal(breaks.length, 2);
   assert.match(breaks[0], /10:00 am/);
   assert.match(breaks[1], /11:01 am/);
+});
+
+test("polling forwards updated agent_name so self-renaming updates the UI live", async () => {
+  const view = await chat([]);
+  assert.deepEqual(view.agentNames, []);
+  await view.poll([], chain, "Mi");
+  assert.deepEqual(view.agentNames, ["Mi"]);
 });

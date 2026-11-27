@@ -21,5 +21,6 @@ The Agent page gathers settings for the agent itself:
 - Its pet, with **Edit pet** to [change it](pets.md), **Persona** to [edit its persona](personas.md), and **Rename** to [rename the agent](renaming-agents.md).
 - **Memories**, where users can search, read and [correct](memories.md) what the agent chose to remember.
 - **Runner**, where **Manage runner** opens [runner assignment](runner-availability.md).
+- **Delete agent**, which asks you to type `<agent name> Delete` before permanently removing the agent, all its memories, chat history, persona, Space items, and pets so you can start fresh with a new default agent.
 
 See [Agent conversations](agent-conversations.md) for how chats behave.
