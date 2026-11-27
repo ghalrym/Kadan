@@ -745,3 +745,78 @@ def test_weight_variant_and_task_class_routing():
     assert seen[0]["weight_variant"] == "base"
     assert seen[1]["weight_variant"] == "abliterated"
     assert seen[2]["weight_variant"] == "base"
+
+
+def test_call_and_chat_model_forward_and_validate_sampling_controls():
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=completed("Varied reply"),
+        )
+
+    async def check():
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            inference = AgentInference(client, "http://hikari")
+            await inference.call(
+                [HumanMessage(content="Hey")],
+                "inkling-2-mini-iq4-nl",
+                "kadan:kadan:conv-1",
+                TOOLS,
+                reasoning_effort="low",
+                temperature=0.7,
+                top_p=0.95,
+                top_k=40,
+                min_p=0.05,
+                repetition_penalty=1.08,
+                presence_penalty=0.4,
+                seed=7,
+            )
+            await inference.call(
+                [HumanMessage(content="Greedy")],
+                "inkling-2-mini-iq4-nl",
+                "kadan:kadan:conv-1",
+                TOOLS,
+            )
+            for bad_kwargs in (
+                {"temperature": -0.1},
+                {"temperature": 2.5},
+                {"temperature": True},
+                {"top_p": 0.0},
+                {"top_k": -1},
+                {"min_p": 1.1},
+                {"repetition_penalty": 0.9},
+                {"presence_penalty": 2.5},
+                {"seed": -1},
+            ):
+                with pytest.raises(ValidationError):
+                    HikariChatModel(
+                        client=client,
+                        hikari_url="http://hikari",
+                        **bad_kwargs,
+                    )
+
+    asyncio.run(check())
+    assert seen[0]["reasoning_effort"] == "low"
+    assert seen[0]["temperature"] == 0.7
+    assert seen[0]["top_p"] == 0.95
+    assert seen[0]["top_k"] == 40
+    assert seen[0]["min_p"] == 0.05
+    assert seen[0]["repetition_penalty"] == 1.08
+    assert seen[0]["presence_penalty"] == 0.4
+    assert seen[0]["seed"] == 7
+    for omitted in (
+        "reasoning_effort",
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "repetition_penalty",
+        "presence_penalty",
+        "seed",
+    ):
+        assert omitted not in seen[1]

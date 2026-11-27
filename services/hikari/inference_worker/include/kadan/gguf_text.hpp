@@ -121,6 +121,10 @@ public:
     ImageSpan encode_image(std::span<const std::uint8_t> png_bytes);
     // false commits a token without computing the vocabulary projection.
     serving::Token step(unsigned token, bool logits) override;
+    // Commits a single token and returns the full vocabulary logits for custom sampling.
+    std::vector<float> step_logits(unsigned token);
+    bool eos(unsigned token) const;
+    std::size_t committed_tokens() const;
     // Layer-major bounded prefill. Progress token counts commit only after all
     // layers of a chunk; failures poison the request state until reset.
     serving::Token prefill(

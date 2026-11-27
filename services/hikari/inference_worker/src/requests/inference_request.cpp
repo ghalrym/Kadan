@@ -1,3 +1,6 @@
+#include <cmath>
+#include <limits>
+
 #include "kadan/inference_request.hpp"
 
 #include "kadan/inkling_variant.hpp"
@@ -9,6 +12,48 @@ template <class T> std::optional<T> optional(const Json& body, const char* key) 
     if (!body.contains(key) || body.at(key).is_null())
         return std::nullopt;
     return body.at(key).get<T>();
+}
+
+std::optional<float> optional_bounded_float(
+    const Json& body,
+    const char* key,
+    float min_value,
+    float max_value,
+    bool min_inclusive,
+    const char* message
+) {
+    if (!body.contains(key) || body.at(key).is_null())
+        return std::nullopt;
+    const auto& value = body.at(key);
+    preparation_check(value.is_number() && !value.is_boolean(), message, 422);
+    const double raw = value.get<double>();
+    preparation_check(
+        std::isfinite(raw) && raw <= static_cast<double>(max_value)
+            && (min_inclusive ? raw >= static_cast<double>(min_value)
+                              : raw > static_cast<double>(min_value)),
+        message,
+        422
+    );
+    return static_cast<float>(raw);
+}
+
+std::optional<std::uint64_t> optional_uint64(
+    const Json& body, const char* key, std::uint64_t max_value, const char* message
+) {
+    if (!body.contains(key) || body.at(key).is_null())
+        return std::nullopt;
+    const auto& value = body.at(key);
+    preparation_check(value.is_number_integer() && !value.is_boolean(), message, 422);
+    if (value.is_number_unsigned()) {
+        const auto raw = value.get<std::uint64_t>();
+        preparation_check(raw <= max_value, message, 422);
+        return raw;
+    }
+    const auto raw = value.get<std::int64_t>();
+    preparation_check(
+        raw >= 0 && static_cast<std::uint64_t>(raw) <= max_value, message, 422
+    );
+    return static_cast<std::uint64_t>(raw);
 }
 }  // namespace
 
@@ -71,6 +116,50 @@ InferenceRequest parse_request(const Json& envelope) {
         input.max_tokens = input.max_output_tokens;
         input.reasoning_tokens = optional<std::size_t>(body, "reasoning_tokens");
         input.reasoning_effort = optional<std::string>(body, "reasoning_effort");
+        input.temperature = optional_bounded_float(
+            body,
+            "temperature",
+            0.0f,
+            2.0f,
+            true,
+            "Temperature must be between 0 and 2."
+        );
+        input.top_p = optional_bounded_float(
+            body, "top_p", 0.0f, 1.0f, false, "top_p must be in (0, 1]."
+        );
+        if (const auto top_k = optional_uint64(
+                body,
+                "top_k",
+                static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()),
+                "top_k must be a non-negative integer."
+            )) {
+            input.top_k = static_cast<std::size_t>(*top_k);
+        }
+        input.min_p = optional_bounded_float(
+            body, "min_p", 0.0f, 1.0f, true, "min_p must be between 0 and 1."
+        );
+        input.repetition_penalty = optional_bounded_float(
+            body,
+            "repetition_penalty",
+            1.0f,
+            2.0f,
+            true,
+            "repetition_penalty must be between 1 and 2."
+        );
+        input.presence_penalty = optional_bounded_float(
+            body,
+            "presence_penalty",
+            -2.0f,
+            2.0f,
+            true,
+            "presence_penalty must be between -2 and 2."
+        );
+        input.seed = optional_uint64(
+            body,
+            "seed",
+            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()),
+            "seed must be a non-negative integer."
+        );
 
         if (body.contains("tools") && !body.at("tools").is_null()) {
             input.lfm3_tools = body.at("tools");

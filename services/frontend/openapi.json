@@ -993,6 +993,20 @@
             "title": "Messages",
             "type": "array"
           },
+          "min_p": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Minimum probability threshold relative to the top token in [0, 1].",
+            "title": "Min P"
+          },
           "model": {
             "anyOf": [
               {
@@ -1009,6 +1023,20 @@
               }
             ],
             "title": "Model"
+          },
+          "presence_penalty": {
+            "anyOf": [
+              {
+                "maximum": 2.0,
+                "minimum": -2.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Additive logit penalty for tokens seen in the recent penalty window in [-2, 2].",
+            "title": "Presence Penalty"
           },
           "priority": {
             "default": "interactive",
@@ -1049,16 +1077,58 @@
             "description": "Reasoning is closed after this many tokens so the reply keeps its share of max_tokens.",
             "title": "Reasoning Tokens"
           },
+          "repetition_penalty": {
+            "anyOf": [
+              {
+                "maximum": 2.0,
+                "minimum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Multiplicative penalty for tokens seen in the recent penalty window in [1, 2].",
+            "title": "Repetition Penalty"
+          },
           "reuse_prefix": {
             "default": true,
             "description": "Disable to compare against full prefill.",
             "title": "Reuse Prefix",
             "type": "boolean"
           },
+          "seed": {
+            "anyOf": [
+              {
+                "maximum": 9.223372036854776e+18,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional RNG seed for reproducible stochastic sampling.",
+            "title": "Seed"
+          },
           "stream": {
             "default": false,
             "title": "Stream",
             "type": "boolean"
+          },
+          "temperature": {
+            "anyOf": [
+              {
+                "maximum": 2.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Sampling temperature in [0, 2]; omitted or 0 uses greedy decoding.",
+            "title": "Temperature"
           },
           "tools": {
             "anyOf": [
@@ -1074,6 +1144,33 @@
               }
             ],
             "title": "Tools"
+          },
+          "top_k": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional top-k candidate cap (0 disables top-k).",
+            "title": "Top K"
+          },
+          "top_p": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Nucleus sampling cumulative probability cutoff in (0, 1].",
+            "title": "Top P"
           },
           "weight_variant": {
             "anyOf": [

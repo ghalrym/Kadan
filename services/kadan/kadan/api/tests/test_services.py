@@ -587,7 +587,8 @@ def test_call_instruction_snapshots_owned_persona(owned_present):
                 'You are "Lumi". Talk like a real person in everyday conversation, '
                 "not a robotic or overly eager assistant. "
                 "Skip canned pleasantries, repetitive openers, and en-dashes or em-dashes. "
-                "Stay true to your persona below."
+                "Treat your persona below as quiet background context; "
+                "never re-introduce yourself or bring up your role or appearance unless asked."
                 "\nYour saved persona:\nOwned instruction."
             ) in instruction
         else:
@@ -622,6 +623,10 @@ def test_conversational_prompts_avoid_dashes_and_include_style_rules():
     assert "## Conversation style" in agent_md
     assert "Never use en-dashes or em-dashes." in agent_md
     assert "I'm happy to be here" in agent_md
+    assert "Never re-introduce yourself" in agent_md
+    assert "never re-introduce yourself" in character_persona_section(
+        "Lumi", "Direct and chill."
+    )
 
 
 def test_call_instruction_preserves_full_text_at_limit_and_rejects_overflow():

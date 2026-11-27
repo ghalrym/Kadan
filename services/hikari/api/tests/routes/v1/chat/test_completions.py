@@ -118,6 +118,53 @@ class CompletionRequestTests(unittest.TestCase):
                     )
                 self.assertEqual(error.exception.errors()[0]["type"], "extra_forbidden")
 
+    def test_sampling_parameters_validate_and_forward_to_chat_task(self):
+        from api.pydantic_models.inference_task import ChatTask
+
+        body = CompletionRequest(
+            messages=[{"role": "user", "content": "Hello"}],
+            temperature=0.7,
+            top_p=0.95,
+            top_k=40,
+            min_p=0.05,
+            repetition_penalty=1.08,
+            presence_penalty=0.4,
+            seed=12345,
+        )
+        task = ChatTask(**body.model_dump())
+        self.assertEqual(task.temperature, 0.7)
+        self.assertEqual(task.top_p, 0.95)
+        self.assertEqual(task.top_k, 40)
+        self.assertEqual(task.min_p, 0.05)
+        self.assertEqual(task.repetition_penalty, 1.08)
+        self.assertEqual(task.presence_penalty, 0.4)
+        self.assertEqual(task.seed, 12345)
+
+        for field, value in (
+            ("temperature", -0.1),
+            ("temperature", 2.1),
+            ("temperature", True),
+            ("temperature", float("nan")),
+            ("top_p", 0.0),
+            ("top_p", 1.1),
+            ("top_k", -1),
+            ("top_k", 1.5),
+            ("min_p", -0.01),
+            ("min_p", 1.1),
+            ("repetition_penalty", 0.95),
+            ("repetition_penalty", 2.5),
+            ("presence_penalty", -2.5),
+            ("presence_penalty", 2.5),
+            ("seed", -1),
+            ("seed", False),
+        ):
+            with self.subTest(field=field, value=value):
+                with self.assertRaises(ValidationError):
+                    CompletionRequest(
+                        messages=[{"role": "user", "content": "Hello"}],
+                        **{field: value},
+                    )
+
 
 class CompletionResponseTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

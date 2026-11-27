@@ -99,13 +99,7 @@ creation/update times. The conversation resource and an optional current
 `agent_name` (fetched gracefully from Tsuchi's agent record so self-renames appear
 immediately in polling clients) remain part of the snapshot.
 
-Conversation inference runs at `interactive` priority so chat replies are
-scheduled ahead of background Hikari requests between turns. While a
-plain text reply streams from Hikari, the runner publishes throttled ephemeral
-draft updates to Tsuchi (`PUT /api/agents/{key}/runs/{run_id}/draft`). Drafts
-live only in Tsuchi process memory—never in SQLite and without incrementing
-run versions—and clear automatically on delivery, cancellation, completion, or
-if the turn resolves to a non-message tool call.
+Conversation inference runs at `interactive` priority with `reasoning_effort="low"` and conversational sampling defaults (`temperature=0.7`, `top_p=0.95`, `min_p=0.05`, `presence_penalty=0.4`) so chat replies are scheduled ahead of background Hikari requests between turns, respond quickly without over-analyzing casual turns, and avoid turn-to-turn repetition (background compaction, memory extraction, and decision fallbacks remain deterministic). While a plain text reply streams from Hikari, the runner publishes throttled ephemeral draft updates to Tsuchi (`PUT /api/agents/{key}/runs/{run_id}/draft`). Drafts live only in Tsuchi process memory—never in SQLite and without incrementing run versions—and clear automatically on delivery, cancellation, completion, or if the turn resolves to a non-message tool call.
 
 This narrows the polling response contract: internal transcripts, instructions,
 tool results, leases, ownership and image-upload coordination are omitted. Clients

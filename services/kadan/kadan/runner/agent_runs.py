@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID, uuid4, uuid5
 
 from kadan_tracing import traced, traced_job
@@ -124,6 +124,13 @@ MAX_CONTEXT = 48000
 # estimates transcript space. Reserve generation separately from template overhead.
 CHARACTERS_PER_TOKEN = 3
 RESERVED_TOKENS = REASONING_TOKENS + REPLY_TOKENS + 1024
+# Interactive chat defaults: light reasoning and stochastic sampling with a
+# mild presence penalty so replies stay natural instead of echoing prior turns.
+CHAT_REASONING_EFFORT: Literal["low", "medium", "high"] = "low"
+CHAT_TEMPERATURE = 0.7
+CHAT_TOP_P = 0.95
+CHAT_MIN_P = 0.05
+CHAT_PRESENCE_PENALTY = 0.4
 
 
 def is_lease_lost(error: BaseException) -> bool:
@@ -1479,6 +1486,11 @@ class AgentRuns(RunClient):
                 f"kadan:{run.agent_key}:{run.conversation_id}",
                 tools,
                 priority="interactive",
+                reasoning_effort=CHAT_REASONING_EFFORT,
+                temperature=CHAT_TEMPERATURE,
+                top_p=CHAT_TOP_P,
+                min_p=CHAT_MIN_P,
+                presence_penalty=CHAT_PRESENCE_PENALTY,
                 on_text_delta=publish_draft if can_stream_draft else None,
             )
             command = call.command

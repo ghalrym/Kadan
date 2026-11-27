@@ -7,7 +7,7 @@ from uuid import uuid4
 import anyio
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from api.pydantic_models.chat import ChatMessage, ChatTool
 from api.pydantic_models.inference_task import (
@@ -56,10 +56,72 @@ class CompletionRequest(BaseModel):
         description="Reasoning is closed after this many tokens so the reply keeps its share of max_tokens.",
     )
     reasoning_effort: Literal["low", "medium", "high"] | None = None
+    temperature: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=2.0,
+        allow_inf_nan=False,
+        description="Sampling temperature in [0, 2]; omitted or 0 uses greedy decoding.",
+    )
+    top_p: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=1.0,
+        allow_inf_nan=False,
+        description="Nucleus sampling cumulative probability cutoff in (0, 1].",
+    )
+    top_k: int | None = Field(
+        default=None,
+        ge=0,
+        strict=True,
+        description="Optional top-k candidate cap (0 disables top-k).",
+    )
+    min_p: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        allow_inf_nan=False,
+        description="Minimum probability threshold relative to the top token in [0, 1].",
+    )
+    repetition_penalty: float | None = Field(
+        default=None,
+        ge=1.0,
+        le=2.0,
+        allow_inf_nan=False,
+        description="Multiplicative penalty for tokens seen in the recent penalty window in [1, 2].",
+    )
+    presence_penalty: float | None = Field(
+        default=None,
+        ge=-2.0,
+        le=2.0,
+        allow_inf_nan=False,
+        description="Additive logit penalty for tokens seen in the recent penalty window in [-2, 2].",
+    )
+    seed: int | None = Field(
+        default=None,
+        ge=0,
+        le=2**63 - 1,
+        strict=True,
+        description="Optional RNG seed for reproducible stochastic sampling.",
+    )
     priority: Literal["interactive", "background"] = Field(
         default="interactive",
         description="Interactive turns run ahead of queued background turns between requests.",
     )
+
+    @field_validator(
+        "temperature",
+        "top_p",
+        "min_p",
+        "repetition_penalty",
+        "presence_penalty",
+        mode="before",
+    )
+    @classmethod
+    def reject_bool_sampling_floats(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("Sampling parameters must be numbers, not booleans")
+        return value
 
     @model_validator(mode="after")
     def validate_weight_variant(self):

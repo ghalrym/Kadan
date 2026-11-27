@@ -1,6 +1,8 @@
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <optional>
+#include <random>
 #include <vector>
 
 #include "kadan/chat_prompt.hpp"
@@ -9,6 +11,7 @@
 #include "kadan/inkling_variant.hpp"
 #include "kadan/preparation.hpp"
 #include "kadan/text_decision.hpp"
+#include "kadan/text_sampling.hpp"
 #include "kadan/text_tokenizer.hpp"
 #include "kadan/utf8_stream.hpp"
 
@@ -246,6 +249,20 @@ public:
             max_output_ = capacity_ - prompt_tokens_;
         }
         reasoning_tokens_ = input.reasoning_tokens;
+        sampling_ = text::SamplingConfig{};
+        if (input.temperature.has_value())
+            sampling_.temperature = *input.temperature;
+        if (input.top_p.has_value())
+            sampling_.top_p = *input.top_p;
+        if (input.top_k.has_value())
+            sampling_.top_k = *input.top_k;
+        if (input.min_p.has_value())
+            sampling_.min_p = *input.min_p;
+        if (input.repetition_penalty.has_value())
+            sampling_.repetition_penalty = *input.repetition_penalty;
+        if (input.presence_penalty.has_value())
+            sampling_.presence_penalty = *input.presence_penalty;
+        sampling_.seed = input.seed;
 
         std::vector<text::ImageTag> prompt_images;
         prompt_images.reserve(scheduled_images_.size());
@@ -313,6 +330,7 @@ public:
         }
         model_->checkpoint_static_at(static_boundary);
         model_->checkpoint_at(leading);
+        history_start_ = static_boundary;
         // Admission belongs before execution so fresh pressure can release/replan.
         try {
             model_->set_cancel(cancel);
@@ -360,6 +378,49 @@ public:
         const double image_encode_ms =
             image_spans.empty() ? 0.0 : milliseconds(image_done - image_started);
 
+        std::uint64_t rng_state = 0;
+        if (sampling_.seed.has_value()) {
+            rng_state = text::splitmix64(*sampling_.seed);
+        } else {
+            std::random_device rd;
+            const auto now_ns = static_cast<std::uint64_t>(
+                std::chrono::steady_clock::now().time_since_epoch().count()
+            );
+            const auto id_hash =
+                static_cast<std::uint64_t>(std::hash<std::string>{}(request.id));
+            rng_state = text::splitmix64(
+                (static_cast<std::uint64_t>(rd()) << 32) ^ static_cast<std::uint64_t>(rd())
+                ^ now_ns ^ id_hash
+            );
+        }
+
+        std::vector<unsigned> penalty_history;
+        auto record_penalty_token = [&](unsigned id) {
+            if (!sampling_.has_penalties() || tokenizer_->is_special(id))
+                return;
+            penalty_history.push_back(id);
+            const std::size_t cap = std::max<std::size_t>(sampling_.penalty_window, 256) * 2;
+            if (penalty_history.size() > cap) {
+                const std::size_t keep = std::max<std::size_t>(sampling_.penalty_window, 256);
+                penalty_history.erase(
+                    penalty_history.begin(),
+                    penalty_history.end() - static_cast<std::ptrdiff_t>(keep)
+                );
+            }
+        };
+        if (sampling_.has_penalties()) {
+            const std::size_t start =
+                history_start_ < prompt_.size() ? history_start_ : 0;
+            for (std::size_t i = start; i < prompt_.size(); ++i)
+                record_penalty_token(prompt_[i]);
+        }
+
+        auto sample_from = [&](std::vector<float>& logits) -> Token {
+            const unsigned chosen =
+                text::sample_logits(logits, sampling_, penalty_history, rng_state);
+            return {chosen, model_->eos(chosen), model_->committed_tokens()};
+        };
+
         const auto suffix = std::span<const unsigned>(prompt_).subspan(reused_tokens_);
         progress_("prefill_begin", suffix.size());
         model_->set_projection_timing(bool(request.trace));
@@ -368,7 +429,12 @@ public:
         Token selected;
         {
             InferenceTrace tracing(request.trace, "prefill");
-            selected = model_->prefill(suffix, image_spans, progress_);
+            if (sampling_.is_greedy()) {
+                selected = model_->prefill(suffix, image_spans, progress_);
+            } else {
+                auto logits = model_->prefill_logits(suffix, image_spans, progress_);
+                selected = sample_from(logits);
+            }
             tracing.text_metrics(phase_metrics(suffix.size(), model_->take_timing()));
         }
         const auto prefill_done = std::chrono::steady_clock::now();
@@ -442,6 +508,8 @@ public:
                         !tokenizer_->is_special(selected.id),
                         "chat_unexpected_control_token"
                     );
+                    if (!parser.in_tool_json())
+                        record_penalty_token(selected.id);
                     if (parser.in_thinking()) {
                         ++thinking_tokens;
                         if (!thinking_started_at)
@@ -451,6 +519,15 @@ public:
                     pending += tokenizer_->decode(selected.id);
                     flush_pending_utf8(false);
                 }
+
+                auto next_token = [&](unsigned input_token) -> Token {
+                    // Use greedy decoding inside tool JSON so sampling/penalties never
+                    // corrupt structured tool names, keys, or argument values.
+                    if (sampling_.is_greedy() || parser.in_tool_json())
+                        return model_->step(input_token, true);
+                    auto logits = model_->step_logits(input_token);
+                    return sample_from(logits);
+                };
 
                 // Close thinking block if caller supplied a reasoning_tokens budget.
                 if (!forced_close_thinking && reasoning_tokens_.has_value()
@@ -463,17 +540,17 @@ public:
                     model_->step(selected.id, false);
                     model_->step(*id_end_message_, false);
                     model_->step(*id_message_model_, false);
-                    selected = model_->step(*id_content_text_, true);
-                    steps += 4;
-                    generated += 3;
                     parser.on_special(InklingStreamParser::Special::end_message);
                     parser.on_special(InklingStreamParser::Special::message_model);
                     parser.on_special(InklingStreamParser::Special::content_text);
+                    selected = next_token(*id_content_text_);
+                    steps += 4;
+                    generated += 3;
                     continue;
                 }
 
                 if (generated + 1 < max_output_) {
-                    selected = model_->step(selected.id, true);
+                    selected = next_token(selected.id);
                     ++steps;
                 }
             }
@@ -733,7 +810,9 @@ private:
     std::vector<text::PreparedDecisionQuestion> prepared_decisions_;
     std::vector<ScheduledImage> scheduled_images_;
     std::size_t capacity_ = 65536, max_output_ = 65536;
+    std::size_t history_start_ = 0;
     std::optional<std::size_t> reasoning_tokens_;
+    text::SamplingConfig sampling_;
 
     std::optional<std::uint32_t> id_message_model_;
     std::optional<std::uint32_t> id_content_thinking_;

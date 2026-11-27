@@ -224,6 +224,10 @@ public:
         return phase_ == Phase::thinking;
     }
 
+    bool in_tool_json() const {
+        return phase_ == Phase::tool_json;
+    }
+
     void on_special(Special token) {
         if (phase_ == Phase::tool_json) {
             if (token != Special::end_message)

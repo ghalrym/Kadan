@@ -24,7 +24,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, field_validator
 
 from ..api.config import ServiceError
 from ..api.pydantic_models.agent_runs import RunCall, ToolCommand
@@ -132,9 +132,34 @@ class HikariChatModel(BaseChatModel):
     max_tokens: int | None = Field(default=None, ge=1, strict=True)
     reasoning_tokens: int | None = Field(default=None, ge=1, strict=True)
     reasoning_effort: Literal["low", "medium", "high"] | None = None
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0, allow_inf_nan=False)
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0, allow_inf_nan=False)
+    top_k: int | None = Field(default=None, ge=0, strict=True)
+    min_p: float | None = Field(default=None, ge=0.0, le=1.0, allow_inf_nan=False)
+    repetition_penalty: float | None = Field(
+        default=None, ge=1.0, le=2.0, allow_inf_nan=False
+    )
+    presence_penalty: float | None = Field(
+        default=None, ge=-2.0, le=2.0, allow_inf_nan=False
+    )
+    seed: int | None = Field(default=None, ge=0, le=2**63 - 1, strict=True)
     on_text_delta: Callable[[str], Awaitable[None]] | None = Field(
         default=None, exclude=True
     )
+
+    @field_validator(
+        "temperature",
+        "top_p",
+        "min_p",
+        "repetition_penalty",
+        "presence_penalty",
+        mode="before",
+    )
+    @classmethod
+    def _reject_bool_sampling_floats(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("Sampling parameters must be numbers, not booleans")
+        return value
 
     @property
     def _llm_type(self) -> str:
@@ -239,6 +264,20 @@ class HikariChatModel(BaseChatModel):
         }
         if self.reasoning_effort is not None:
             payload["reasoning_effort"] = self.reasoning_effort
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
+        if self.top_p is not None:
+            payload["top_p"] = self.top_p
+        if self.top_k is not None:
+            payload["top_k"] = self.top_k
+        if self.min_p is not None:
+            payload["min_p"] = self.min_p
+        if self.repetition_penalty is not None:
+            payload["repetition_penalty"] = self.repetition_penalty
+        if self.presence_penalty is not None:
+            payload["presence_penalty"] = self.presence_penalty
+        if self.seed is not None:
+            payload["seed"] = self.seed
         if self.reuse_prefix and self.conversation_key:
             payload["conversation_id"] = self.conversation_key
         else:
@@ -360,6 +399,14 @@ class AgentInference:
         tools: Sequence[BaseTool],
         *,
         priority: Literal["interactive", "background"] = "interactive",
+        reasoning_effort: Literal["low", "medium", "high"] | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        repetition_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        seed: int | None = None,
         weight_variant: WeightVariant | None = None,
         task_class: TaskClass | None = None,
         on_text_delta: Callable[[str], Awaitable[None]] | None = None,
@@ -374,6 +421,14 @@ class AgentInference:
             weight_variant=resolved_variant,
             conversation_key=conversation_key,
             priority=priority,
+            reasoning_effort=reasoning_effort,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
+            presence_penalty=presence_penalty,
+            seed=seed,
             on_text_delta=on_text_delta,
         ).bind_tools(tools)
         response = await model.ainvoke(messages)
@@ -419,6 +474,13 @@ class AgentInference:
         max_tokens: int | None = None,
         reasoning_tokens: int | None = None,
         reasoning_effort: Literal["low", "medium", "high"] | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        repetition_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        seed: int | None = None,
         weight_variant: WeightVariant | None = None,
         task_class: TaskClass | None = None,
     ) -> str:
@@ -436,6 +498,13 @@ class AgentInference:
             max_tokens=max_tokens,
             reasoning_tokens=reasoning_tokens,
             reasoning_effort=reasoning_effort,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
+            presence_penalty=presence_penalty,
+            seed=seed,
         )
         response = await model.ainvoke(messages)
         text = response.content.strip() if isinstance(response.content, str) else ""

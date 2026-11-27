@@ -522,6 +522,12 @@ export type CompletionRequest = {
    */
   messages: Array<ChatMessageInput>
   /**
+   * Min P
+   *
+   * Minimum probability threshold relative to the top token in [0, 1].
+   */
+  min_p?: number | null
+  /**
    * Model
    */
   model?:
@@ -530,6 +536,12 @@ export type CompletionRequest = {
     | 'inkling-2-mini-abliterated-iq4-nl'
     | 'inkling-2-mini-abliterated-q8-0'
     | null
+  /**
+   * Presence Penalty
+   *
+   * Additive logit penalty for tokens seen in the recent penalty window in [-2, 2].
+   */
+  presence_penalty?: number | null
   /**
    * Priority
    *
@@ -547,19 +559,49 @@ export type CompletionRequest = {
    */
   reasoning_tokens?: number | null
   /**
+   * Repetition Penalty
+   *
+   * Multiplicative penalty for tokens seen in the recent penalty window in [1, 2].
+   */
+  repetition_penalty?: number | null
+  /**
    * Reuse Prefix
    *
    * Disable to compare against full prefill.
    */
   reuse_prefix?: boolean
   /**
+   * Seed
+   *
+   * Optional RNG seed for reproducible stochastic sampling.
+   */
+  seed?: number | null
+  /**
    * Stream
    */
   stream?: boolean
   /**
+   * Temperature
+   *
+   * Sampling temperature in [0, 2]; omitted or 0 uses greedy decoding.
+   */
+  temperature?: number | null
+  /**
    * Tools
    */
   tools?: Array<ChatTool> | null
+  /**
+   * Top K
+   *
+   * Optional top-k candidate cap (0 disables top-k).
+   */
+  top_k?: number | null
+  /**
+   * Top P
+   *
+   * Nucleus sampling cumulative probability cutoff in (0, 1].
+   */
+  top_p?: number | null
   /**
    * Weight Variant
    *

@@ -684,6 +684,33 @@ serving::Token Engine::step(unsigned token, bool logits) {
     }
 }
 
+std::vector<float> Engine::step_logits(unsigned token) {
+    auto& m = *impl_;
+    need(m.active && !m.poisoned && m.tokens < m.p.context, "gguf_text_step_state");
+    try {
+        const std::array<unsigned, 1> row{token};
+        auto values = m.model->forward(row, m.tokens, true, {});
+        m.weights->advance(1);
+        ++m.tokens;
+        m.prefix.commit(row);
+        need(values.size() == m.model->vocabulary(), "gguf_text_logits");
+        return values;
+    } catch (...) {
+        m.poisoned = true;
+        m.prefix.clear();
+        m.live_images.clear();
+        throw;
+    }
+}
+
+bool Engine::eos(unsigned token) const {
+    return impl_->model->eos(token);
+}
+
+std::size_t Engine::committed_tokens() const {
+    return impl_->tokens;
+}
+
 serving::Token Engine::prefill(
     std::span<const unsigned> prompt,
     const std::function<void(const char*, std::size_t)>& progress

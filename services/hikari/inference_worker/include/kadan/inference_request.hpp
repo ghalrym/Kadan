@@ -73,6 +73,13 @@ struct ChatRequest {
     std::optional<std::size_t> max_tokens;
     std::optional<std::size_t> reasoning_tokens;
     std::optional<std::string> reasoning_effort;
+    std::optional<float> temperature;
+    std::optional<float> top_p;
+    std::optional<std::size_t> top_k;
+    std::optional<float> min_p;
+    std::optional<float> repetition_penalty;
+    std::optional<float> presence_penalty;
+    std::optional<std::uint64_t> seed;
 };
 
 struct VisionRequest {

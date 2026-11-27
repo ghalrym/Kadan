@@ -246,6 +246,7 @@ class Commands:
         self.calls = []
         self.tools = []
         self.priorities = []
+        self.call_kwargs = []
 
     async def call(
         self, messages, model_id, conversation_key, tools, *, priority="interactive", **kwargs
@@ -253,6 +254,7 @@ class Commands:
         self.calls.append(messages)
         self.tools.append([tool.name for tool in tools])
         self.priorities.append(priority)
+        self.call_kwargs.append(kwargs)
         result = self.results.pop(0)
         if isinstance(result, BaseException):
             raise result
@@ -280,6 +282,12 @@ def test_finish_completes_without_delivering_a_message(boundary):
     assert boundary.current.status == "completed"
     assert boundary.deliveries == []
     assert len(boundary.conversation.messages) == 1
+    kwargs = boundary.controller.inference.call_kwargs[0]
+    assert kwargs["reasoning_effort"] == "low"
+    assert kwargs["temperature"] == 0.7
+    assert kwargs["top_p"] == 0.95
+    assert kwargs["min_p"] == 0.05
+    assert kwargs["presence_penalty"] == 0.4
 
 
 def test_message_is_delivered_while_run_is_still_running(boundary):
@@ -1732,7 +1740,8 @@ def test_owned_persona_applies_without_a_selected_persona(boundary, monkeypatch)
         'You are "Test Agent". Talk like a real person in everyday conversation, '
         "not a robotic or overly eager assistant. "
         "Skip canned pleasantries, repetitive openers, and en-dashes or em-dashes. "
-        "Stay true to your persona below."
+        "Treat your persona below as quiet background context; "
+        "never re-introduce yourself or bring up your role or appearance unless asked."
         "\nYour saved persona:\nUse concise answers."
     ) in first[0].content
     persona.markdown = "Use detailed answers."
@@ -1994,7 +2003,14 @@ def test_streaming_draft_publishes_with_interactive_priority(boundary):
     seen_priorities = []
 
     async def infer(
-        messages, model_id, conversation_key, tools, *, priority="interactive", on_text_delta=None
+        messages,
+        model_id,
+        conversation_key,
+        tools,
+        *,
+        priority="interactive",
+        on_text_delta=None,
+        **kwargs,
     ):
         seen_priorities.append(priority)
         assert on_text_delta is not None
@@ -2013,7 +2029,14 @@ def test_streaming_draft_publishes_with_interactive_priority(boundary):
 
 def test_streaming_draft_clears_when_model_returns_non_message_tool(boundary):
     async def infer(
-        messages, model_id, conversation_key, tools, *, priority="interactive", on_text_delta=None
+        messages,
+        model_id,
+        conversation_key,
+        tools,
+        *,
+        priority="interactive",
+        on_text_delta=None,
+        **kwargs,
     ):
         assert priority == "interactive"
         assert on_text_delta is not None

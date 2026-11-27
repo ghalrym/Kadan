@@ -175,6 +175,58 @@ int main() {
         }
         assert(bad_priority);
     }
+    {
+        auto sampled = chat;
+        sampled["input"]["temperature"] = 0.7;
+        sampled["input"]["top_p"] = 0.95;
+        sampled["input"]["top_k"] = 40;
+        sampled["input"]["min_p"] = 0.05;
+        sampled["input"]["repetition_penalty"] = 1.08;
+        sampled["input"]["presence_penalty"] = 0.4;
+        sampled["input"]["seed"] = 12345;
+        const auto& req = std::get<ChatRequest>(parse_request(sampled).input);
+        assert(req.temperature && *req.temperature > 0.69f && *req.temperature < 0.71f);
+        assert(req.top_p && *req.top_p > 0.94f && *req.top_p < 0.96f);
+        assert(req.top_k == 40u);
+        assert(req.min_p && *req.min_p > 0.049f && *req.min_p < 0.051f);
+        assert(
+            req.repetition_penalty && *req.repetition_penalty > 1.07f
+            && *req.repetition_penalty < 1.09f
+        );
+        assert(
+            req.presence_penalty && *req.presence_penalty > 0.39f
+            && *req.presence_penalty < 0.41f
+        );
+        assert(req.seed == 12345u);
+
+        for (const auto& [field, invalid] : std::vector<std::pair<std::string, Json>>{
+                 {"temperature", Json(-0.1)},
+                 {"temperature", Json(2.1)},
+                 {"temperature", Json(true)},
+                 {"top_p", Json(0.0)},
+                 {"top_p", Json(1.1)},
+                 {"top_k", Json(-1)},
+                 {"top_k", Json(1.5)},
+                 {"min_p", Json(-0.01)},
+                 {"min_p", Json(1.01)},
+                 {"repetition_penalty", Json(0.9)},
+                 {"repetition_penalty", Json(2.1)},
+                 {"presence_penalty", Json(-2.1)},
+                 {"presence_penalty", Json(2.1)},
+                 {"seed", Json(-1)},
+                 {"seed", Json(false)}
+             }) {
+            auto bad = chat;
+            bad["input"][field] = invalid;
+            bool rejected = false;
+            try {
+                (void)parse_request(bad);
+            } catch (const RequestError& error) {
+                rejected = error.status == 422;
+            }
+            assert(rejected);
+        }
+    }
     auto decisions = envelope;
     decisions["input"] = {
         {"feature", "decisions"}, {"state", "text"}, {"questions", Json::array()}

@@ -3,7 +3,14 @@
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from api.pydantic_models.chat import ChatMessage, ChatTool
 from api.pydantic_models.decisions import DecisionQuestion
@@ -75,7 +82,32 @@ class ChatTask(TaskInput):
     max_tokens: int | None = Field(default=None, ge=1, strict=True)
     reasoning_tokens: int | None = Field(default=None, ge=1, strict=True)
     reasoning_effort: Literal["low", "medium", "high"] | None = None
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0, allow_inf_nan=False)
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0, allow_inf_nan=False)
+    top_k: int | None = Field(default=None, ge=0, strict=True)
+    min_p: float | None = Field(default=None, ge=0.0, le=1.0, allow_inf_nan=False)
+    repetition_penalty: float | None = Field(
+        default=None, ge=1.0, le=2.0, allow_inf_nan=False
+    )
+    presence_penalty: float | None = Field(
+        default=None, ge=-2.0, le=2.0, allow_inf_nan=False
+    )
+    seed: int | None = Field(default=None, ge=0, le=2**63 - 1, strict=True)
     priority: Literal["interactive", "background"] = "interactive"
+
+    @field_validator(
+        "temperature",
+        "top_p",
+        "min_p",
+        "repetition_penalty",
+        "presence_penalty",
+        mode="before",
+    )
+    @classmethod
+    def reject_bool_sampling_floats(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("Sampling parameters must be numbers, not booleans")
+        return value
 
     @model_validator(mode="after")
     def validate_weight_variant(self):
