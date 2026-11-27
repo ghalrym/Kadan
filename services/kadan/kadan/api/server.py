@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from kadan_tracing import RequestTracing, configure, shutdown
 
 from .config import ServiceError, Settings
-from .routes import agents, calls, health, mcp, runners, status, transcriptions, updates
+from .routes import agents, health, mcp, runners, status, transcriptions, updates
 from .routes.agents import (
     assets,
     conversations,
@@ -55,7 +55,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         updates.router,
         mcp.router,
         transcriptions.router,
-        calls.router,
         agents.router,
         resources.router,
         workspace.router,

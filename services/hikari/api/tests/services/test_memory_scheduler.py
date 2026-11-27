@@ -20,7 +20,7 @@ def ledger(ram=64, vram=(24,)):
                 {"vram_total": 2 * v * GIB, "vram_free": v * GIB} for v in vram
             ],
         },
-        ["llm", "tts", "speech", "formatting", "image"],
+        ["llm", "tts", "speech", "image"],
     )
 
 
@@ -47,7 +47,7 @@ class CapacityTests(unittest.TestCase):
         machine = ledger(ram=64, vram=(24,))
         slot = WorkerSlot(
             name="cpu_worker",
-            kind="formatting",
+            kind="speech",
             devices=[],
             budget=[0, 0],
             requirement=requirement(15, 0),
@@ -136,10 +136,10 @@ class CapacityTests(unittest.TestCase):
     def test_host_only_worker_needs_no_device(self):
         machine = ledger(vram=(1,))
         load(machine, "image", [0, 1])
-        machine.workers["formatting"].requirement = requirement(4, 0)
+        machine.workers["speech"].requirement = requirement(4, 0)
         self.assertEqual(
-            plan_load(machine, "formatting"),
-            [Action("load", "formatting", [4 * GIB, 0])],
+            plan_load(machine, "speech"),
+            [Action("load", "speech", [4 * GIB, 0])],
         )
 
     def test_unknown_requirement_waits(self):

@@ -14,12 +14,8 @@ class TranscriptionRequest(BaseModel):
     audio: str = Field(
         min_length=1, description="Base64 mono 16-bit PCM WAV data URL at 16000 Hz"
     )
-    model: Literal["medium"] | None = None
+    model: Literal["qwen3-asr-1.7b"] | None = None
     language: str | None = None
-    formatting: bool | None = Field(
-        default=None,
-        description="Null or omitted uses the saved formatting setting. Enabled uses S1-mini by Superwhisper to normalize the transcript; raw_text is always retained.",
-    )
 
     @field_validator("audio")
     @classmethod
@@ -32,12 +28,8 @@ class TranscriptionRequest(BaseModel):
 
 class TranscriptionResponse(BaseModel):
     text: str
-    raw_text: str
     language: str | None
     model: str
-    formatting_status: Literal["disabled", "formatted", "failed", "empty"]
-    formatting_model: str | None = None
-    formatting_error: str | None = None
 
 
 class TranscriptionUnavailable(BaseModel):
@@ -52,7 +44,7 @@ class TranscriptionUnavailable(BaseModel):
 async def transcribe_audio(
     body: TranscriptionRequest, request: Request
 ) -> TranscriptionResponse:
-    """Queue native Whisper and preserve its raw transcript and formatting status."""
+    """Queue native Qwen3-ASR transcription."""
     if not body.audio.startswith("data:audio/wav;base64,"):
         raise HTTPException(
             422,

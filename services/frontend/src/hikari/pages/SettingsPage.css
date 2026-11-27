@@ -3,7 +3,6 @@
 .tone-image { --tone: var(--image); }
 .tone-tts { --tone: var(--tts); }
 .tone-stt { --tone: var(--stt); }
-.tone-formatter { --tone: #9fd8ff; }
 
 .models-layout { max-width: 820px; }
 .models-intro { display: flex; flex-direction: column; gap: 6px; padding: 8px 0 6px; }

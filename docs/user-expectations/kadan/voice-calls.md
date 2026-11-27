@@ -1,19 +1,7 @@
 # Voice calls
 
-The **Call** action on an agent's card opens a separate spoken conversation using Hikari's fixed LFM3-Audio-2B model for recognition, reply text and speech. There is one call path and no trial switch. Its checkpoint must already be downloaded and available in Hikari. Calls can start even when text chat is unavailable; they still need Tsuchi to read the agent's saved persona. A missing worker or checkpoint reports an error instead of downloading automatically or falling back to another model.
+Live voice calls are currently unavailable while Kadan rebuilds spoken conversations on its Apache 2.0 local model stack.
 
-Calls have no tools, access to Space items or memories, or saved transcript. They do not continue any text chat. End call or leaving the chat releases the microphone and discards call history.
+The **Call** button remains visible on each agent's card as a disabled placeholder. Hovering over it shows **Coming soon**.
 
-Starting a call shows whether Kadan is starting browser audio, waiting for the microphone, preparing recording, or connecting to the call server. Setup has one twenty-second deadline across these stages. A timeout ends setup and reports the stage that stalled; check the browser prompt or service named in the error and start a new call. End call also cancels setup. If microphone permission arrives after cancellation or timeout, Kadan immediately stops that stream and does not open a call.
-
-Kadan reads the agent's saved persona when the call starts. The call keeps this snapshot until it ends; later edits apply to the next call. If the persona is unavailable, in trash, or cannot be read from Tsuchi, the call reports the problem and does not start. Combined spoken instructions, including Kadan's brief conversation instructions, must fit within 8,000 characters; oversized personas cause an error instead of being cut off. Calls use spoken-conversation instructions with no tools, separate from the shared text-agent instructions. See [Personas](personas.md).
-
-The microphone keeps listening during spoken replies. Speaking interrupts the previous reply, discards its remaining audio, and cancels its generation. Only fully played, acknowledged replies are retained as assistant context after an interruption. Mute disables microphone input and discards unfinished speech while allowing the reply to play. Utterances are completed before recognition; each is limited to twenty seconds and currently supports English. HTTPS or localhost and browser microphone permission are required. Headphones reduce acoustic feedback; energy-based voice detection and browser echo cancellation can still mistake noise or loudspeaker audio for speech.
-
-The default LFM3 reply includes text and one complete buffered audio segment. Playback waits for generation to finish; this is not incremental speech streaming or simultaneous listening and generation inside the model. The voice comes from LFM3, without a Ryan speaker choice or voice cloning. Loading and generation can take time, and there is no latency, audible-quality or maximum-context memory-fit guarantee. Generated speech is limited to sixty seconds per turn; oversized or incomplete outputs fail rather than being silently truncated.
-
-Only bounded recent whole messages are retained for the current connection. If the retained prompt cannot fit the model, the call reports an error rather than cropping individual messages. Reconnecting starts a new call. Cancellation waits for confirmed executor cleanup and removes temporary utterance files before acknowledging completion; it cannot undo audio already heard.
-
-Hikari's standalone Whisper transcription, including Kadan's existing composer dictation, and its Qwen text-to-speech playground remain separate capabilities. Calls do not add MP3 transcription tools to agents.
-
-See [Hikari live voice calls](../hikari/voice-calls.md) for client playback acknowledgements and [Voice input](voice-input.md) for composer dictation.
+Hikari's standalone speech-to-text transcription (including Kadan's composer dictation) and text-to-speech remain available. See [Voice input](voice-input.md) for composer dictation.

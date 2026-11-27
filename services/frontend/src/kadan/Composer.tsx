@@ -3,7 +3,6 @@ import { ArrowUp, Mic, NotebookPen, Paperclip, Square, X } from "lucide-react";
 import type { ChatAttachments } from "./attachments";
 import AttachmentPicker from "./AttachmentPicker";
 import type { Status } from "./types";
-import VoiceCallControl, { type VoiceCall } from "./VoiceCallControl";
 import { microphoneUnavailable, VoiceInput, type VoiceState } from "./voiceInput";
 
 export function readiness(status: Status | null) {
@@ -41,7 +40,6 @@ interface Props {
   status: Status | null;
   pet: ReactNode;
   autoFocus?: boolean;
-  voiceCall: VoiceCall;
   onDictating: (active: boolean) => void;
 }
 
@@ -58,7 +56,6 @@ export default function Composer({
   status,
   pet,
   autoFocus,
-  voiceCall,
   onDictating,
 }: Props) {
   const filePicker = useRef<HTMLInputElement>(null);
@@ -72,8 +69,7 @@ export default function Composer({
   const ready = readiness(status);
   const issue = attention(status);
   const empty = !value.trim();
-  const callActive = voiceCall.active;
-  const locked = sending || blocked || voice !== null || callActive;
+  const locked = sending || blocked || voice !== null;
   const sendLocked = locked || !attachments.ready;
   useEffect(() => () => microphone.current?.cancel(), []);
   useEffect(() => onDictating(voice !== null), [voice, onDictating]);
@@ -118,7 +114,6 @@ export default function Composer({
           {issue.label}
         </p>
       )}
-      <VoiceCallControl voiceCall={voiceCall} />
       <form
         className={`composer ${sending ? "is-sending" : ""}`}
         onSubmit={(event) => {
@@ -140,7 +135,7 @@ export default function Composer({
           maxLength={16000}
           rows={1}
           // Keep typing while the agent replies, as in a text conversation.
-          disabled={blocked || !ready.storage || callActive}
+          disabled={blocked || !ready.storage}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
@@ -148,7 +143,7 @@ export default function Composer({
             }
           }}
         />
-        <AttachmentPicker attachments={attachments} disabled={blocked || callActive} />
+        <AttachmentPicker attachments={attachments} disabled={blocked} />
         {attachmentError && <p role="alert">{attachmentError}</p>}
         <input ref={filePicker} type="file" multiple hidden aria-label="Choose attachments" onChange={event => {
           try { attachments.add(Array.from(event.target.files ?? [])); setAttachmentError(""); }
@@ -159,7 +154,7 @@ export default function Composer({
           <span />
           <div className="send-actions">
             <button className="icon" type="button" aria-label="Attach files" title="Attach files · up to 10 files, 100 MiB total"
-              disabled={blocked || callActive || !ready.storage} onClick={() => filePicker.current?.click()}>
+              disabled={blocked || !ready.storage} onClick={() => filePicker.current?.click()}>
               <Paperclip size={16} />
             </button>
             {ready.chat && (
@@ -168,7 +163,7 @@ export default function Composer({
                 type="button"
                 aria-label={voice === "recording" ? "Stop recording and transcribe" : "Record a voice message"}
                 title={microphoneUnavailable() ?? "Record a voice message · review the text before sending"}
-                disabled={callActive || sending || blocked || voice === "requesting" || voice === "transcribing" || !!microphoneUnavailable()}
+                disabled={sending || blocked || voice === "requesting" || voice === "transcribing" || !!microphoneUnavailable()}
                 onClick={record}
               >
                 {voice === "recording" ? <Square size={16} /> : <Mic size={16} />}

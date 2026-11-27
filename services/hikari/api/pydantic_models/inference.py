@@ -8,13 +8,10 @@ Feature = Literal[
     "llm",
     "image",
     "stt",
-    "audio_call",
-    "stt_formatting",
     "tts",
     "decisions",
     "models",
     "model_context",
-    "whisper_formatting",
 ]
 Operation = Literal["generate", "completion", "load", "unload", "download", "configure"]
 

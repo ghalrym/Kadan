@@ -2,10 +2,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from api.pydantic_models.inference_task import (
-    InferenceTask,
-    TranscriptionFormattingTask,
-)
+from api.pydantic_models.inference_task import InferenceTask
 
 
 class InferenceTaskTests(unittest.TestCase):
@@ -71,10 +68,3 @@ class InferenceTaskTests(unittest.TestCase):
         ):
             with self.subTest(value=value), self.assertRaises(ValidationError):
                 InferenceTask.model_validate(value)
-
-
-class NativeTranscriptionFormattingLimitTests(unittest.TestCase):
-    def test_native_transcript_formatting_keeps_its_32000_character_limit(self):
-        self.assertEqual(len(TranscriptionFormattingTask(text="x" * 32000).text), 32000)
-        with self.assertRaises(ValidationError):
-            TranscriptionFormattingTask(text="x" * 32001)

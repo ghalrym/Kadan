@@ -206,11 +206,7 @@ export default function SpeechToTextPage() {
 
   const fileName = clip instanceof File ? clip.name : 'Recording'
   const shownTime = recording ? elapsed : duration
-  const transcript =
-    text?.text ||
-    (text?.formatting_status === 'formatted'
-      ? 'No text after formatting.'
-      : 'No speech detected.')
+  const transcript = text?.text || 'No speech detected.'
 
   return (
     <div className="scroll-page">
@@ -331,12 +327,6 @@ export default function SpeechToTextPage() {
               </button>
             </div>
             <div className="panel-body stack">
-              {text.formatting_status === 'failed' && (
-                <p role="alert" className="recording-error">
-                  Formatting failed: {text.formatting_error} Raw transcription
-                  shown.
-                </p>
-              )}
               {copyError && (
                 <p role="alert" className="recording-error">
                   {copyError}
@@ -349,12 +339,6 @@ export default function SpeechToTextPage() {
               >
                 {transcript}
               </p>
-              {text.formatting_status === 'formatted' && (
-                <details className="transcript-raw">
-                  <summary className="eyebrow">Raw transcription</summary>
-                  <p className="transcript-text muted">{text.raw_text}</p>
-                </details>
-              )}
             </div>
           </Panel>
         )}

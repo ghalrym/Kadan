@@ -197,15 +197,6 @@ int main() {
     assert(!std::get<DecisionRequest>(parsed_decision.input).model.has_value());
     assert(std::get<DecisionRequest>(parsed_decision.input).questions.size() == 1);
 
-    auto audio_call = envelope;
-    audio_call["input"] = {
-        {"feature", "audio_call"},
-        {"mode", "tts"},
-        {"script", "Hello world"}
-    };
-    const auto parsed_a = parse_request(audio_call);
-    assert(parsed_a.workload == kadan::Workload::lfm3_audio);
-
     auto llm_sel = envelope;
     llm_sel["operation"] = "configure";
     llm_sel["input"] = {

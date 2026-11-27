@@ -1,4 +1,4 @@
-// The transcription worker: native Whisper for English audio.
+// The transcription worker: native Qwen3-ASR 1.7B.
 #include "kadan/worker_runtime.hpp"
 
 int main() {
@@ -6,7 +6,7 @@ int main() {
     return run_worker(
         {kadan::Workload::speech, true, [](WorkerEnvironment& environment) {
              auto& channel = environment.channel;
-             return whisper_engine(
+             return qwen3_asr_engine(
                  environment.resources,
                  [&channel](const char* phase, std::size_t value) {
                      channel.progress(phase, value);

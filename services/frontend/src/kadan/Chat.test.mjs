@@ -21,9 +21,8 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 
 // Exercise Chat's poll, send, Stop and AgentCard handlers with in-memory hooks and API boundaries.
 async function chat(initialRuns, initialConversation = chain, storedPending = null, callOptions = {}) {
-  const slots = [], effects = [], timers = [], requests = [], callStarts = [], agentNames = [];
+  const slots = [], effects = [], timers = [], requests = [], agentNames = [];
   let personaEdits = 0;
-  let callDisabled;
   const storage = callOptions.storage ?? new Map();
   if (storedPending) storage.set(outbox.chatStorageKeys("guide", initialConversation.id).pending, JSON.stringify(storedPending));
   const attachments = { ready: true, entries: [], start() {}, stop() {},
@@ -70,10 +69,6 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     "./Pet": { default: "Pet", useMood: () => ["idle", () => {}] },
     "./AgentCard": { default: "AgentCard" },
     "./ChatExport": { default: "ChatExport" },
-    "./VoiceCallControl": { useVoiceCall: (_agent, disabled) => {
-      callDisabled = disabled;
-      return { active: false, unavailable: null, ...callOptions.voiceCall, start: (...args) => callStarts.push(args) };
-    } },
     "./PetContext": { useAgentPet: () => null },
     "./presence": { activeLabel: () => "Not active yet" },
     "./agentRuns": agentRuns,
@@ -131,9 +126,8 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
   await settle();
   render();
   return {
-    render, requests, storage, attachments, callStarts, timerDelays, agentNames,
+    render, requests, storage, attachments, timerDelays, agentNames,
     personaEdits: () => personaEdits,
-    callDisabled: () => callDisabled,
     streamingMessages: () => elements()
       .filter(node => node.type === "article" && typeof node.props?.className === "string" && node.props.className.includes("streaming"))
       .map(node => elements(node).find(child => child.type === "Markdown")?.props?.children ?? ""),
@@ -391,34 +385,19 @@ test("only saved assistant replies with text offer saving in the current agent a
   assert.equal(controls[0].message, reply);
 });
 
-test("agent card offers Call and Persona actions with no Activity panel", async () => {
+test("agent card offers Persona action with no Activity panel", async () => {
   const view = await chat([], chain, null, { ready: { storage: true, chat: false } });
   const card = view.card();
-  assert.equal(card.callDisabled, false);
-  assert.equal(view.callDisabled(), false);
-  assert.equal(card.callTitle, "Start a voice call");
   assert.equal(card.personaDisabled, false);
   assert.equal("activity" in card, false);
-  card.onCall();
-  assert.deepEqual(view.callStarts, [[]]);
   card.onEditPersona();
   assert.equal(view.personaEdits(), 1);
 });
 
-test("Call and Persona both need Tsuchi storage", async () => {
+test("Persona needs Tsuchi storage", async () => {
   const view = await chat([], chain, null, { ready: { storage: false, chat: false } });
   const card = view.card();
-  assert.equal(card.callDisabled, true);
-  assert.equal(view.callDisabled(), true);
   assert.equal(card.personaDisabled, true);
-  assert.match(card.callTitle, /storage.*persona/);
-});
-
-test("Call reports missing browser support before starting", async () => {
-  const view = await chat([], chain, null, { voiceCall: { unavailable: "Calls require HTTPS or localhost." } });
-  const card = view.card();
-  assert.equal(card.callDisabled, true);
-  assert.equal(card.callTitle, "Calls require HTTPS or localhost.");
 });
 
 test("live streaming drafts render before completion and clear once the final reply is saved", async () => {

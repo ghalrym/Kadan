@@ -11,7 +11,7 @@ const { outputText } = ts.transpileModule(source, {
 
 const capabilities = [
   { id: 'inkling-2-mini', label: 'Language', short: 'Language' },
-  { id: 'whisper-medium', label: 'Speech to text', short: 'STT' },
+  { id: 'qwen3-asr-1.7b', label: 'Speech to text', short: 'STT' },
 ]
 function rows(status = 'not_downloaded', overrides = {}) {
   return capabilities.map(capability => ({ capability, model: {

@@ -198,7 +198,7 @@ export const listSpeechModels = <ThrowOnError extends boolean = false>(
 /**
  * Transcribe Audio
  *
- * Queue native Whisper and preserve its raw transcript and formatting status.
+ * Queue native Qwen3-ASR transcription.
  */
 export const transcribeAudio = <ThrowOnError extends boolean = false>(
   options: Options<TranscribeAudioData, ThrowOnError>,

@@ -19,11 +19,7 @@ enum class Workload {
     llm,
     image,
     speech,
-    formatting,
-    tts,
-    lfm3_llm,
-    lfm3_vision,
-    lfm3_audio
+    tts
 };
 enum class State {
     loading,

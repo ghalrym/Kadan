@@ -1,4 +1,4 @@
-# The transcription worker program (native Whisper). Build from services/hikari:
+# The transcription worker program (native Qwen3-ASR 1.7B). Build from services/hikari:
 #   docker build -f inference_worker/workers/speech/Dockerfile .
 ARG CUDA_VERSION=13.0.3
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS cuda-toolkit
@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir cmake==3.31.6
 COPY inference_worker/ /src/inference_worker/
 RUN cmake -S /src/inference_worker -B /build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
-      -DKADAN_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 -DKADAN_ENABLE_WHISPER_BLAS=ON \
+      -DKADAN_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 \
     && cmake --build /build --target kadan-worker-speech --parallel 4 \
     && cmake --install /build --prefix /out --component kadan-worker-speech
 

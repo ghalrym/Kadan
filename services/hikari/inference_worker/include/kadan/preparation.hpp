@@ -92,12 +92,8 @@ public:
     std::string selected_llm_id() const;
     void set_selected_llm_id(const std::string& model);
     std::size_t default_llm_context() const;
-    std::string whisper_selected() const;
-    std::string whisper_model(const std::string& name) const;
     Json context(const std::string& model) const;
     void set_context(const std::string& model, const Json& value);
-    bool whisper_formatting() const;
-    void set_whisper_formatting(bool enabled);
     Json status() const;
     Json architecture_context(const std::string& model) const;
 
@@ -143,19 +139,7 @@ Json worker_requirement(
     const std::optional<Json>& context = std::nullopt
 );
 
-// Converts checkpoint containers and tokenizer metadata only; never runs a model.
-void export_whisper(
-    const fs::path& source,
-    const std::string& expected,
-    const fs::path& destination,
-    const std::atomic_bool& cancel
-);
-void export_whisper_assets(
-    std::size_t vocabulary,
-    const fs::path& data,
-    const fs::path& destination,
-    const std::atomic_bool& cancel
-);
+// Converts tokenizer metadata only; never runs a model.
 void export_speech_tokenizer(
     const fs::path& checkpoint,
     const fs::path& destination,
@@ -190,12 +174,6 @@ void prepare_input(
     ChatRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
-    VisionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
-);
-void prepare_input(
-    AudioCallRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
-);
-void prepare_input(
     DecisionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
@@ -208,19 +186,10 @@ void prepare_input(
     TranscriptionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
-    TranscriptionFormattingRequest&,
-    InferenceRequest&,
-    ModelStore&,
-    const std::atomic_bool&
-);
-void prepare_input(
     DownloadRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
     ContextRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
-);
-void prepare_input(
-    WhisperFormattingRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
 );
 void prepare_input(
     LlmSelectionRequest&, InferenceRequest&, ModelStore&, const std::atomic_bool&
@@ -228,5 +197,9 @@ void prepare_input(
 Json present_chat(const InferenceRequest&, Json result);
 Json present_image(const InferenceRequest&, const std::vector<fs::path>& images);
 Json present_speech(const InferenceRequest&, const fs::path& output);
-Json present_transcription(const InferenceRequest&, const std::string& text);
+Json present_transcription(
+    const InferenceRequest&,
+    const std::string& text,
+    const std::optional<std::string>& language = std::nullopt
+);
 }  // namespace kadan::serving

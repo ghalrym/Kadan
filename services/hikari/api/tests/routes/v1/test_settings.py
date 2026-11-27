@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from api.pydantic_models.inference_task import LlmSelectionTask, WhisperFormattingTask
+from api.pydantic_models.inference_task import LlmSelectionTask
 from api.pydantic_models.model_store import ModelStoreStatus
 from api.routes.v1 import settings
 from api.services.inference_errors import InferenceFailure
@@ -15,7 +15,7 @@ def checkpoint(model_id, kind, status="not_downloaded"):
         "id": model_id,
         "repo_id": "test/model",
         "revision": "pinned",
-        "license": "MIT",
+        "license": "apache-2.0",
         "estimated_bytes": 20,
         "kind": kind,
         "display_name": model_id,
@@ -36,12 +36,10 @@ def snapshot():
         {
             "models": [
                 checkpoint("inkling-2-mini-iq4-nl", "llm", "downloading"),
-                checkpoint("superwhisper-s1-mini", "formatting", "complete"),
                 checkpoint("flux.2-klein-4b", "image"),
                 checkpoint("qwen-tts-1.7b-custom", "speech"),
-                checkpoint("whisper-medium", "transcription"),
+                checkpoint("qwen3-asr-1.7b", "transcription"),
             ],
-            "whisper_formatting": True,
         }
     )
 
@@ -52,7 +50,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
             result = settings.get_settings()
         self.assertEqual(result.defaults.llm, "inkling-2-mini-iq4-nl")
         self.assertEqual(result.defaults.speech, "qwen-tts-1.7b-custom")
-        self.assertEqual(result.defaults.formatting, "superwhisper-s1-mini")
+        self.assertEqual(result.defaults.transcription, "qwen3-asr-1.7b")
         self.assertEqual(result.models[0].downloaded_bytes, 5)
         self.assertNotIn("tiers", result.model_dump())
 
@@ -66,34 +64,15 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValidationError):
                 settings.SettingsRequest(models=models)
 
-    async def test_formatting_saves_both_states(self):
-        for enabled in (False, True):
-            status = snapshot()
-            status.whisper_formatting = enabled
-            with (
-                patch.object(settings.inference, "models_status", return_value=status),
-                patch.object(settings.inference, "submit", new=AsyncMock()) as submit,
-            ):
-                result = await settings.update_settings(
-                    settings.SettingsRequest(whisper_formatting=enabled)
-                )
-            submit.assert_awaited_once_with(
-                WhisperFormattingTask(enabled=enabled),
-                feature="whisper_formatting",
-                operation="configure",
-            )
-            self.assertEqual(result.whisper_formatting, enabled)
-
     async def test_omitted_settings_are_unchanged(self):
         status = snapshot()
-        status.whisper_formatting = False
         with (
             patch.object(settings.inference, "models_status", return_value=status),
             patch.object(settings.inference, "submit", new=AsyncMock()) as submit,
         ):
             result = await settings.update_settings(settings.SettingsRequest())
         submit.assert_not_awaited()
-        self.assertFalse(result.whisper_formatting)
+        self.assertEqual(result.defaults.llm, "inkling-2-mini-iq4-nl")
 
     async def test_save_failure_is_reported(self):
         with (
@@ -105,7 +84,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
             self.assertRaises(HTTPException) as caught,
         ):
             await settings.update_settings(
-                settings.SettingsRequest(whisper_formatting=False)
+                settings.SettingsRequest(llm_model="inkling-2-mini-q8-0")
             )
         self.assertEqual(caught.exception.status_code, 503)
         self.assertEqual(caught.exception.detail, "Cannot save setting")

@@ -15,8 +15,7 @@ Downloading, loading and successful generation are separate states. Requests can
 | [Image generation](image-generation.md) | Generate artwork from descriptions and inspect progress and results. |
 | [Image editing](image-editing.md) | Edit source images or use reference conditioning with defined preservation limits. |
 | [Text to speech](text-to-speech.md) | Generate completed audio using named speakers and delivery instructions. |
-| [Transcription](transcription.md) | Transcribe supported recordings with optional formatting and raw-text fallback. |
-| [Live voice calls](voice-calls.md) | Build direct spoken conversations with client-managed turns, playback and acknowledgements. |
+| [Transcription](transcription.md) | Transcribe supported recordings directly with Qwen3-ASR 1.7B. |
 | [Request monitoring](request-monitoring.md) | Inspect bounded recent request summaries, timings and resource observations. |
 | [API access](api-access.md) | Discover the running service's contract and submit direct inference requests. |
 | [Remote workers](remote-workers.md) | Run workloads on other computers and understand disconnection behavior. |

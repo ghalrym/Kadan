@@ -44,6 +44,54 @@ struct Pin {
 };
 }  // namespace
 
+std::vector<float>
+slaney_mel_filters(std::size_t bins, std::size_t sample_rate, std::size_t n_fft) {
+    check(
+        (bins == 80 || bins == 128) && sample_rate > 0 && n_fft >= 2 && n_fft % 2 == 0,
+        "stt_mel_filter_config"
+    );
+    const std::size_t freqs = n_fft / 2 + 1;
+    constexpr double f_sp = 200.0 / 3.0;
+    constexpr double min_log_hz = 1000.0;
+    constexpr double min_log_mel = min_log_hz / f_sp;
+    const double logstep = std::log(6.4) / 27.0;
+    auto hz_to_mel = [&](double f) {
+        return f >= min_log_hz ? min_log_mel + std::log(f / min_log_hz) / logstep
+                               : f / f_sp;
+    };
+    auto mel_to_hz = [&](double m) {
+        return m >= min_log_mel ? min_log_hz * std::exp(logstep * (m - min_log_mel))
+                                : m * f_sp;
+    };
+    const double f_min = 0.0;
+    const double f_max = double(sample_rate) / 2.0;
+    const double mel_min = hz_to_mel(f_min);
+    const double mel_max = hz_to_mel(f_max);
+    std::vector<double> mel_f(bins + 2);
+    for (std::size_t i = 0; i < bins + 2; ++i) {
+        const double m =
+            mel_min + (mel_max - mel_min) * double(i) / double(bins + 1);
+        mel_f[i] = mel_to_hz(m);
+    }
+    std::vector<double> fft_freqs(freqs);
+    for (std::size_t k = 0; k < freqs; ++k)
+        fft_freqs[k] = double(k) * double(sample_rate) / double(n_fft);
+    std::vector<float> filters(bins * freqs, 0.0f);
+    for (std::size_t m = 0; m < bins; ++m) {
+        const double f_left = mel_f[m];
+        const double f_center = mel_f[m + 1];
+        const double f_right = mel_f[m + 2];
+        const double enorm = 2.0 / (f_right - f_left);
+        for (std::size_t k = 0; k < freqs; ++k) {
+            const double lower = (fft_freqs[k] - f_left) / (f_center - f_left);
+            const double upper = (f_right - fft_freqs[k]) / (f_right - f_center);
+            const double w = std::max(0.0, std::min(lower, upper)) * enorm;
+            filters[m * freqs + k] = static_cast<float>(w);
+        }
+    }
+    return filters;
+}
+
 LogMel::LogMel(std::shared_ptr<Resources> resources)
     : resources_(std::move(resources)) {
     check(bool(resources_), "stt_resources_required");

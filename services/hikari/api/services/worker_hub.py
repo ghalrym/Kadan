@@ -57,11 +57,9 @@ FEATURE_WORKERS = {
     "decisions": "llm",
     "tts": "tts",
     "stt": "speech",
-    "stt_formatting": "formatting",
     "image": "image",
 }
 
-# Native stores persist the transcription preference; LFM configure is only an ack.
 NATIVE_MODEL_STORES = frozenset(FEATURE_WORKERS.values())
 
 # A checkpoint's catalog kind and the worker type that downloads and runs it.
@@ -69,26 +67,8 @@ CHECKPOINT_WORKERS = {
     "llm": "llm",
     "speech": "tts",
     "transcription": "speech",
-    "formatting": "formatting",
     "image": "image",
-    "audio": "lfm3_audio",
 }
-
-EXPERIMENTAL_MODELS = {
-    "lfm3-audio-2b-bf16": ("lfm3_audio", None),
-}
-EXPERIMENTAL_FEATURES = {
-    "audio_call": "lfm3-audio-2b-bf16",
-}
-
-
-def experimental_worker(model: str | None) -> str | None:
-    if model not in EXPERIMENTAL_MODELS:
-        return None
-    kind, flag = EXPERIMENTAL_MODELS[model]
-    if flag is not None and os.getenv(flag, "").lower() not in ("1", "true", "yes"):
-        raise InferenceFailure(f"Experimental model requires {flag}=true.", 409)
-    return kind
 
 
 # Jobs that have not started executing can move to another worker.
@@ -121,7 +101,6 @@ def gib(budget: list[int]) -> str:
 def settings(models: ModelStoreStatus) -> tuple:
     """What a model store snapshot says that can change a memory requirement."""
     return (
-        models.whisper_formatting,
         models.selected_model_id,
         tuple(
             sorted(
@@ -147,15 +126,6 @@ def target_worker(request: InferenceTask) -> str | None:
     """The worker type for a job; None for store work (settings, downloads)."""
     if request.operation in ("download", "configure"):
         return None
-    model = requested_model(request) or EXPERIMENTAL_FEATURES.get(request.feature)
-    experiment = experimental_worker(model)
-    if experiment is not None:
-        if request.operation in ("load", "unload"):
-            raise InferenceFailure(
-                "Experimental models load per request; manual residency is unavailable.",
-                422,
-            )
-        return experiment
     return FEATURE_WORKERS[request.feature]
 
 
@@ -322,12 +292,7 @@ class WorkerHub:
             for model in worker.models.models:
                 if model.id not in visible or model.id in known:
                     continue
-                try:
-                    kind = experimental_worker(model.id) or CHECKPOINT_WORKERS.get(
-                        model.kind
-                    )
-                except InferenceFailure:
-                    continue
+                kind = CHECKPOINT_WORKERS.get(model.kind)
                 if kind == worker.kind:
                     snapshot.models.append(model.model_copy(deep=True))
                     known.add(model.id)
@@ -357,9 +322,6 @@ class WorkerHub:
             info = hello["machine"]
             computer = self.computers.get(info["id"]) or Computer(info)
             worker = Worker(websocket, hello, computer)
-            for model, (kind, _) in EXPERIMENTAL_MODELS.items():
-                if worker.kind == kind:
-                    experimental_worker(model)
         except (
             TimeoutError,
             ValueError,
@@ -381,7 +343,7 @@ class WorkerHub:
             last_used=time.monotonic(),
         )
         self.workers[worker.id] = worker
-        if self.primary is None and not worker.kind.startswith("lfm3_"):
+        if self.primary is None:
             self.primary = worker.id
         log.info("Worker %s connected on %s", worker.name, computer.name)
         try:
@@ -466,14 +428,7 @@ class WorkerHub:
         if not computer.ledger.workers:
             self.computers.pop(computer.id, None)
         if self.primary == worker.id:
-            self.primary = next(
-                (
-                    current.id
-                    for current in self.workers.values()
-                    if not current.kind.startswith("lfm3_")
-                ),
-                None,
-            )
+            self.primary = next(iter(self.workers), None)
         self._refresh_models()
         for future in worker.controls.values():
             if not future.done():
@@ -522,7 +477,7 @@ class WorkerHub:
     def _store_targets(self, request: InferenceTask) -> list[Worker]:
         """Route settings to persistence owners, downloads to checkpoint owners."""
         if request.operation == "configure":
-            if request.feature in ("whisper_formatting", "llm_selection"):
+            if request.feature == "llm_selection":
                 targets = [
                     worker
                     for worker in self._ready()
@@ -534,18 +489,14 @@ class WorkerHub:
                         503,
                     )
             else:
-                model = requested_model(request)
-                kind = experimental_worker(model)
-                targets = self._ready(kind) if kind else self._ready()
+                targets = self._ready()
         else:
-            kind = experimental_worker(request.input.model_id)
+            kind = None
             for model in self.models.models if self.models is not None else []:
-                if model.id == request.input.model_id and kind is None:
+                if model.id == request.input.model_id:
                     kind = CHECKPOINT_WORKERS.get(model.kind)
             targets, computers = [], set()
             for worker in self._ready(kind):
-                if kind is None and worker.kind.startswith("lfm3_"):
-                    continue
                 if worker.computer.id not in computers:
                     computers.add(worker.computer.id)
                     targets.append(worker)
@@ -767,44 +718,6 @@ class WorkerHub:
             worker.residency_known = False
             worker.resident_model = None
             worker.resident_context = {}
-        if event.state in ("audio_answer", "audio_segment"):
-            if (
-                job.request.feature != "audio_call"
-                or job.request.input.mode != "turn"
-                or not job.request.input.sentence_tts
-                or job.events is None
-            ):
-                job.stream_error = "Unexpected sentence TTS event."
-                asyncio.create_task(self.cancel(event.id))
-            elif job.stream_error is None:
-                try:
-                    payload = (
-                        {"type": "answer", "text": event.answer}
-                        if event.state == "audio_answer"
-                        else {"type": "segment", **event.audio_segment.model_dump()}
-                    )
-                    job.events.put_nowait(payload)
-                except asyncio.QueueFull:
-                    job.stream_error = "Audio turn consumer is too slow."
-                    asyncio.create_task(self.cancel(event.id))
-            return
-        if event.state == "audio_transcript":
-            if (
-                job.request.feature != "audio_call"
-                or job.request.input.mode != "turn"
-                or job.events is None
-            ):
-                job.stream_error = "Unexpected audio transcript event."
-                asyncio.create_task(self.cancel(event.id))
-            elif job.stream_error is None:
-                try:
-                    job.events.put_nowait(
-                        {"type": "transcript", "text": event.transcript}
-                    )
-                except asyncio.QueueFull:
-                    job.stream_error = "Audio turn consumer is too slow."
-                    asyncio.create_task(self.cancel(event.id))
-            return
         if event.state == "content":
             if job.events is not None and job.stream_error is None:
                 try:
@@ -872,10 +785,6 @@ class WorkerHub:
         if source is None or target is None:
             return
         tasks = []
-        if source.whisper_formatting != target.whisper_formatting:
-            tasks.append(
-                {"feature": "whisper_formatting", "enabled": source.whisper_formatting}
-            )
         if source.selected_model_id != target.selected_model_id:
             tasks.append(
                 {"feature": "llm_selection", "model_id": source.selected_model_id}

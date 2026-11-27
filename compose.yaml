@@ -1,27 +1,6 @@
 # Preserve existing volume and container identity across checkout/repository renames.
 name: kadan
 
-x-lfm3-worker: &lfm3_worker
-  build:
-    context: ./services/hikari
-    dockerfile: experimental_worker/Dockerfile
-  init: true
-  restart: unless-stopped
-  environment: &lfm3_environment
-    HIKARI_API_URL: ${HIKARI_API_URL:-ws://api:8000/hikari/v1/workers}
-    HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-insecure-api-key}
-    KADAN_MODEL_DIR: /var/lib/kadan/models
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: nvidia
-            count: 1
-            capabilities: [gpu]
-  depends_on:
-    api:
-      condition: service_healthy
-
 services:
   jaeger:
     image: jaegertracing/jaeger:2.22.0@sha256:836b967b5abcf1f7758066aa6b348619267a2f1459f72d472840570f9bd88a17
@@ -119,15 +98,6 @@ services:
       - ./services/tsuchi/tsuchi:/app/tsuchi
       - ./services/kadan/kadan:/app/kadan
 
-  # Calls use the same pinned audio checkpoint and volume as the former overlay.
-  hikari-worker-lfm3-audio:
-    <<: *lfm3_worker
-    environment:
-      <<: *lfm3_environment
-      HIKARI_EXPERIMENTAL_BACKEND: experimental_worker.audio
-    volumes:
-      - lfm3_audio_model_data:/var/lib/kadan/models
-
   # Language & vision worker: Inkling 2 Mini on Strata.
   hikari-worker-llm:
     build:
@@ -189,7 +159,7 @@ services:
       api:
         condition: service_healthy
 
-  # Transcription worker: native Whisper.
+  # Transcription worker: native Qwen3-ASR 1.7B.
   hikari-worker-speech:
     build:
       context: ./services/hikari
@@ -218,30 +188,7 @@ services:
       api:
         condition: service_healthy
 
-  # Transcript formatting worker: S1-mini on the CPU.
-  hikari-worker-formatting:
-    build:
-      context: ./services/hikari
-      dockerfile: inference_worker/workers/formatting/Dockerfile
-    command: [python, bin/hikari.py, run, worker, formatting]
-    init: true
-    restart: unless-stopped
-    environment:
-      HIKARI_API_URL: ${HIKARI_API_URL:-ws://api:8000/hikari/v1/workers}
-      HIKARI_WORKER_TOKEN: ${HIKARI_WORKER_TOKEN:-insecure-api-key}
-      KADAN_MODEL_DIR: /var/lib/kadan/models
-    volumes:
-      - model_data:/var/lib/kadan/models
-      - ./services/hikari/bin:/app/bin
-      - ./services/hikari/inference_worker:/src/inference_worker
-      # Seeded from this image's build tree on first use; keeps rebuilds incremental.
-      - hikari_worker_formatting_build:/build
-    # CPU only: no GPU reservation.
-    depends_on:
-      api:
-        condition: service_healthy
-
-  # Image worker: Qwen Image.
+  # Image worker: FLUX.2 Klein 4B.
   hikari-worker-image:
     build:
       context: ./services/hikari
@@ -340,6 +287,7 @@ services:
       KADAN_RUNNER_ID: runner-2
 
 volumes:
+  # Retain the old experimental voice-call model volume; no existing data is removed.
   lfm3_audio_model_data:
   model_data:
     name: ${HIKARI_MODEL_VOLUME:-${COMPOSE_PROJECT_NAME}_model_data}
@@ -353,6 +301,7 @@ volumes:
   hikari_worker_decision_build:
   hikari_worker_tts_build:
   hikari_worker_speech_build:
+  # Retain the old native Formatting build volume; no existing data is removed.
   hikari_worker_formatting_build:
   hikari_worker_image_build:
   # Retain the old native Video build volume; no existing data is removed.

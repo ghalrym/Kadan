@@ -64,7 +64,6 @@ InferenceRequest parse_request(const Json& envelope) {
         input.reasoning_effort = optional<std::string>(body, "reasoning_effort");
 
         if (body.contains("tools") && !body.at("tools").is_null()) {
-            input.lfm3_tools = body.at("tools");
             preparation_check(
                 body.at("tools").is_array() && body.at("tools").size() <= 256,
                 "Invalid chat tools list",
@@ -218,46 +217,6 @@ InferenceRequest parse_request(const Json& envelope) {
         }
         request.input = std::move(input);
         request.workload = Workload::llm;
-    } else if (feature == "audio_call") {
-        AudioCallRequest input;
-        if (const auto m = optional<std::string>(body, "model_id"))
-            input.model = *m;
-        else if (const auto m2 = optional<std::string>(body, "model"))
-            input.model = *m2;
-        input.mode = body.value("mode", std::string{});
-        preparation_check(
-            input.mode == "transcribe" || input.mode == "reply"
-                || input.mode == "answer" || input.mode == "tts"
-                || input.mode == "turn",
-            "Unknown audio call operation",
-            422
-        );
-        input.audio = optional<std::string>(body, "audio");
-        input.script = optional<std::string>(body, "script");
-        input.sentence_tts = body.value("sentence_tts", false);
-        input.codec_streaming_probe = body.value("codec_streaming_probe", false);
-        preparation_check(
-            !input.sentence_tts || (input.mode == "turn" && !input.codec_streaming_probe),
-            "Sentence TTS requires a complete turn without the private codec probe",
-            422
-        );
-        preparation_check(
-            !input.codec_streaming_probe || input.mode == "turn",
-            "The private codec probe requires a complete audio turn",
-            422
-        );
-        for (const auto& message : body.value("messages", Json::array())) {
-            const std::string role = message.at("role").get<std::string>();
-            const std::string text = message.at("text").get<std::string>();
-            preparation_check(
-                (role == "system" || role == "user" || role == "assistant") && !text.empty(),
-                "Audio call history must contain text messages without tools",
-                422
-            );
-            input.messages.push_back({role, text, Json::array(), ""});
-        }
-        request.input = std::move(input);
-        request.workload = Workload::lfm3_audio;
     } else if (feature == "decisions") {
         DecisionRequest input;
         if (const auto m = optional<std::string>(body, "model_id"))
@@ -490,18 +449,12 @@ InferenceRequest parse_request(const Json& envelope) {
         input.audio = body.at("audio");
         input.model = optional<std::string>(body, "model");
         input.language = optional<std::string>(body, "language");
-        input.formatting = optional<bool>(body, "formatting");
         request.input = std::move(input);
         request.workload = Workload::speech;
-    } else if (feature == "stt_formatting") {
-        request.input = TranscriptionFormattingRequest{body.at("text")};
-        request.workload = Workload::formatting;
     } else if (feature == "model_context") {
         request.input = ContextRequest{
             body.at("model_id"), optional<std::size_t>(body, "context_limit")
         };
-    } else if (feature == "whisper_formatting") {
-        request.input = WhisperFormattingRequest{body.at("enabled")};
     } else if (feature == "llm_selection") {
         request.input = LlmSelectionRequest{body.at("model_id")};
     } else if (feature == "models") {
@@ -510,8 +463,7 @@ InferenceRequest parse_request(const Json& envelope) {
         };
     } else
         throw RequestError("Invalid task feature", 422);
-    const bool settings = feature == "model_context" || feature == "whisper_formatting"
-                          || feature == "llm_selection";
+    const bool settings = feature == "model_context" || feature == "llm_selection";
     preparation_check(
         settings == (request.operation == Operation::configure),
         "Invalid settings operation",

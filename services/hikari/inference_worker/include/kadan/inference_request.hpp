@@ -11,7 +11,6 @@
 
 #include "kadan/image_upload.hpp"
 #include "kadan/inference_trace.hpp"
-#include "kadan/lfm3.hpp"
 #include "kadan/resources.hpp"
 #include "kadan/text_decision.hpp"
 
@@ -62,8 +61,6 @@ struct ChatMessage {
 struct ChatRequest {
     std::vector<ChatMessage> messages;
     std::vector<ChatTool> tools;
-    std::vector<lfm3::Lfm3ChatMessage> lfm3_messages;
-    Json lfm3_tools;
     std::optional<std::string> model, conversation_id;
     bool reuse_prefix = true;
     bool stream = false;
@@ -73,24 +70,6 @@ struct ChatRequest {
     std::optional<std::size_t> max_tokens;
     std::optional<std::size_t> reasoning_tokens;
     std::optional<std::string> reasoning_effort;
-};
-
-struct VisionRequest {
-    std::string model = "lfm3-vl-2b-bf16";
-    std::string question;
-    std::string media_type;
-    std::string image_base64;
-    std::optional<std::size_t> max_new_tokens;
-};
-
-struct AudioCallRequest {
-    std::string model = "lfm3-audio-2b-bf16";
-    std::string mode;
-    std::optional<std::string> audio;
-    std::optional<std::string> script;
-    std::vector<lfm3::Lfm3ChatMessage> messages;
-    bool sentence_tts = false;
-    bool codec_streaming_probe = false;
 };
 
 struct DecisionRequest {
@@ -123,13 +102,8 @@ struct SpeechRequest {
 struct TranscriptionRequest {
     std::string audio;
     std::optional<std::string> model, language;
-    std::optional<bool> formatting;
-    std::filesystem::path assets;
+    std::filesystem::path tokenizer;
     std::vector<float> pcm;
-};
-
-struct TranscriptionFormattingRequest {
-    std::string text;
 };
 
 struct DownloadRequest {
@@ -142,26 +116,18 @@ struct ContextRequest {
     std::optional<std::size_t> limit;
 };
 
-struct WhisperFormattingRequest {
-    bool enabled;
-};
-
 struct LlmSelectionRequest {
     std::string model;
 };
 
 using TaskInput = std::variant<
     ChatRequest,
-    VisionRequest,
-    AudioCallRequest,
     DecisionRequest,
     ImageRequest,
     SpeechRequest,
     TranscriptionRequest,
-    TranscriptionFormattingRequest,
     DownloadRequest,
     ContextRequest,
-    WhisperFormattingRequest,
     LlmSelectionRequest>;
 
 struct EngineConfiguration {

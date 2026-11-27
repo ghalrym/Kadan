@@ -12,7 +12,6 @@ const modules = {
     export const useState = value => [value, () => {}];`,
   "react-router": "export function Link() {}",
   "./AttachmentPicker": "export default function AttachmentPicker() {}",
-  "./VoiceCallControl": "export default function VoiceCallControl() {}",
   "./voiceInput": "export const microphoneUnavailable = () => null; export class VoiceInput {}",
 };
 const composerUrl = new URL("./Composer.tsx", import.meta.url).href;
@@ -45,7 +44,7 @@ function compose(overrides = {}) {
   return Composer({
     attachments: { ready: true, entries: [] },
     agentName: "Haru", value: "My pending question", onChange() {}, onSend() {},
-    sending: false, blocked: false, status, pet: null, voiceCall: { active: false },
+    sending: false, blocked: false, status, pet: null,
     onDictating() {}, ...overrides,
   });
 }

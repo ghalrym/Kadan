@@ -29,7 +29,7 @@ async def transcribe(
             "Hikari",
             "POST",
             "/v1/audio/transcriptions",
-            json={"audio": value.audio, "formatting": False},
+            json={"audio": value.audio},
             timeout=120,
         )
     )

@@ -3,11 +3,18 @@
 #include <functional>
 #include <memory>
 #include <span>
+#include <vector>
 
 #include "kadan/resources.hpp"
 
 namespace kadan::stt {
-// Whisper-compatible log-mel frontend only. One serialized owner; cancellation
+// Slaney-normalized triangular mel filterbank [bins, n_fft/2 + 1] matching
+// librosa / WhisperFeatureExtractor for 16-kHz audio (no external assets).
+std::vector<float> slaney_mel_filters(
+    std::size_t bins = 128, std::size_t sample_rate = 16000, std::size_t n_fft = 400
+);
+
+// Log-mel frontend only. One serialized owner; cancellation
 // may change concurrently. Caller owns/admit filters, PCM and output spans.
 class LogMel {
 public:

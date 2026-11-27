@@ -1,4 +1,4 @@
-import { getSettings, transcribeAudio, updateSettings } from './generated/sdk.gen'
+import { transcribeAudio } from './generated/sdk.gen'
 import type { TranscriptionRequest, TranscriptionResponse } from './generated/types.gen'
 
 /** Submit inline audio; preserve backend errors and valid silent transcripts. */
@@ -15,7 +15,7 @@ export async function requestTranscription(audio: string, signal: AbortSignal): 
   return result.data
 }
 
-/** Convert browser audio to Whisper's PCM input without sending it to another service. */
+/** Convert browser audio to 16 kHz mono PCM WAV without sending it to another service. */
 export async function recordingToWav(blob: Blob): Promise<string> {
   const decoder = new AudioContext()
   try {
@@ -41,17 +41,4 @@ export async function recordingToWav(blob: Blob): Promise<string> {
       reader.readAsDataURL(new Blob([buffer], { type: 'audio/wav' }))
     })
   } finally { await decoder.close() }
-}
-
-/** Read or persist the worker-owned formatting preference without changing models. */
-export async function requestTranscriptionFormatting(signal: AbortSignal, enabled?: boolean): Promise<boolean> {
-  const result = enabled === undefined
-    ? await getSettings({ signal })
-    : await updateSettings({ body: { whisper_formatting: enabled }, signal })
-  if (!result.response?.ok) {
-    const detail = result.error && typeof result.error === 'object' && 'detail' in result.error ? result.error.detail : null
-    throw new Error(typeof detail === 'string' ? detail : 'Could not save or read transcription formatting.')
-  }
-  if (typeof result.data?.whisper_formatting !== 'boolean') throw new Error('Transcription formatting is unavailable.')
-  return result.data.whisper_formatting
 }

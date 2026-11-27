@@ -3115,6 +3115,44 @@ button.danger:not(.primary) {
 .agent-card-actions button:hover {
   background: var(--hover);
 }
+.agent-card-coming-soon {
+  position: relative;
+  display: block;
+  width: 100%;
+  cursor: not-allowed;
+}
+.agent-card-coming-soon button:disabled {
+  pointer-events: none;
+}
+.agent-card-coming-soon::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) translateY(2px);
+  padding: 5px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--raised);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow: 0 8px 20px -6px #000;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 10;
+  transition:
+    opacity 140ms var(--out),
+    transform 140ms var(--out),
+    visibility 140ms;
+}
+.agent-card-coming-soon:hover::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
 /* Find opens in the pet's space so results stay readable in a narrow chat pane. */
 .conversation-find {
   position: absolute;
@@ -3172,27 +3210,6 @@ button.danger:not(.primary) {
   border-radius: var(--r);
   outline: 2px solid var(--accent);
   outline-offset: 4px;
-}
-
-.call-controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-.call-controls > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-right: auto;
-  color: var(--muted);
-}
-.call-controls .end-call {
-  color: var(--error);
-}
-@media (max-width: 760px) {
-  .call-controls button { min-height: 44px; }
 }
 
 .attachment-draft { display: grid; gap: 8px; margin: 0 16px 12px; }

@@ -38,8 +38,6 @@ const manualCopyError =
   'Could not copy to the clipboard. Select the transcript, then use your browser’s Copy command or Ctrl+C (⌘C on Mac).'
 const result = (text = 'Recognized text') => ({
   text,
-  raw_text: text,
-  formatting_status: 'not_requested',
 })
 
 // Invoke local hooks and JSX records; Panel, clipboard, conversion, requests,
@@ -309,13 +307,9 @@ test('failed copy recovers on retry without leaving a clipboard error beside Cop
   view.unmount()
 })
 
-test('missing clipboard selects only the displayed formatted transcript for manual copying', async () => {
+test('missing clipboard selects the displayed transcript for manual copying', async () => {
   const view = await recognized(
-    {
-      ...result('Formatted text'),
-      raw_text: 'raw text',
-      formatting_status: 'formatted',
-    },
+    result('Recognized text'),
     { clipboard: false },
   )
   const displayed = elements(view.tree).find(
@@ -324,8 +318,7 @@ test('missing clipboard selects only the displayed formatted transcript for manu
   await view.click('Copy')
   assert.equal(alerts(view.tree), copyError)
   assert.deepEqual(view.selectedNodes, [displayed])
-  assert.equal(displayed.textContent, 'Formatted text')
-  assert.match(content(view.tree), /raw text/)
+  assert.equal(displayed.textContent, 'Recognized text')
   assert.deepEqual(view.selectionCalls, [
     'getSelection',
     'createRange',
@@ -359,12 +352,8 @@ for (const selection of [
   })
 }
 
-test('retry clears only clipboard feedback and preserves recognition error, warning and raw transcript', async () => {
-  const view = await recognized({
-    ...result('Raw text'),
-    formatting_status: 'failed',
-    formatting_error: 'Formatter unavailable.',
-  })
+test('retry clears only clipboard feedback and preserves recognition error and transcript', async () => {
+  const view = await recognized(result('Recognized text'))
   await view.click('Transcribe')
   view.conversions.at(-1).resolve('inert audio')
   await view.flush()
@@ -372,10 +361,6 @@ test('retry clears only clipboard feedback and preserves recognition error, warn
   await view.flush()
   const otherErrors = alerts(view.tree)
   assert.match(otherErrors, /Recognition unavailable/)
-  assert.match(
-    otherErrors,
-    /Formatting failed:.*Formatter unavailable.*Raw transcription/,
-  )
   await view.click('Copy')
   view.writes[0].reject(new Error('Denied'))
   await view.flush()
@@ -386,21 +371,17 @@ test('retry clears only clipboard feedback and preserves recognition error, warn
   view.writes[1].resolve()
   await view.flush()
   assert.equal(alerts(view.tree), otherErrors)
-  assert.equal(transcript(view.tree), 'Raw text')
+  assert.equal(transcript(view.tree), 'Recognized text')
   assert.ok(button(view.tree, 'Copied'))
   view.unmount()
 })
 
-test('copy writes the displayed formatted snapshot and confirms for 1500ms only after resolution', async () => {
-  const view = await recognized({
-    ...result('Formatted text'),
-    raw_text: 'raw text',
-    formatting_status: 'formatted',
-  })
+test('copy writes the displayed transcript and confirms for 1500ms only after resolution', async () => {
+  const view = await recognized(result('Recognized text'))
   await view.click('Copy')
   assert.deepEqual(
     view.writes.map((write) => write.text),
-    ['Formatted text'],
+    ['Recognized text'],
   )
   assert.ok(button(view.tree, 'Copy'))
   assert.equal(view.timers.length, 0)
@@ -412,8 +393,7 @@ test('copy writes the displayed formatted snapshot and confirms for 1500ms only 
   assert.ok(button(view.tree, 'Copied'))
   await view.advance(1)
   assert.ok(button(view.tree, 'Copy'))
-  assert.equal(transcript(view.tree), 'Formatted text')
-  assert.match(content(view.tree), /raw text/)
+  assert.equal(transcript(view.tree), 'Recognized text')
   view.unmount()
 })
 
