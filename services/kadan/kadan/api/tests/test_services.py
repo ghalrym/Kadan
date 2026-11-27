@@ -1,6 +1,7 @@
 import asyncio
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock
 from uuid import UUID
 
@@ -17,6 +18,7 @@ from kadan.api.services import (
     ONBOARDING_GREETING_MESSAGE_ID,
     STARTER_PERSONA_MARKDOWN,
     LocalServices,
+    character_persona_section,
 )
 
 CONVERSATION_ID = UUID("10000000-0000-4000-8000-000000000001")
@@ -582,14 +584,17 @@ def test_call_instruction_snapshots_owned_persona(owned_present):
         assert "You have no tools." in instruction
         if owned_present:
             assert (
-                'You are "Lumi", role-playing as the character defined in your persona below. '
-                "Stay naturally in character and speak like a real person, not a robotic assistant."
+                'You are "Lumi". Talk like a real person in everyday conversation, '
+                "not a robotic or overly eager assistant. "
+                "Skip canned pleasantries, repetitive openers, and en-dashes or em-dashes. "
+                "Stay true to your persona below."
                 "\nYour saved persona:\nOwned instruction."
             ) in instruction
         else:
             assert (
-                'You are "Lumi". Speak naturally and warmly like a real person, '
-                "not a robotic assistant."
+                'You are "Lumi". Talk like a real person in everyday conversation, '
+                "not a robotic or overly eager assistant. "
+                "Skip canned pleasantries, repetitive openers, and en-dashes or em-dashes."
             ) in instruction
             assert "Your saved persona:" not in instruction
         assert instruction.count("Owned instruction.") == int(owned_present)
@@ -600,6 +605,23 @@ def test_call_instruction_snapshots_owned_persona(owned_present):
             assert "Later edit." not in instruction
 
     asyncio.run(check())
+
+
+def test_conversational_prompts_avoid_dashes_and_include_style_rules():
+    agent_md = Path(Settings(_env_file=None).agent_instruction_file).read_text()
+    prompts = (
+        agent_md,
+        ONBOARDING_GREETING,
+        STARTER_PERSONA_MARKDOWN,
+        character_persona_section("Lumi", None),
+        character_persona_section("Lumi", "Direct and chill."),
+    )
+    for text in prompts:
+        assert "\u2013" not in text
+        assert "\u2014" not in text
+    assert "## Conversation style" in agent_md
+    assert "Never use en-dashes or em-dashes." in agent_md
+    assert "I'm happy to be here" in agent_md
 
 
 def test_call_instruction_preserves_full_text_at_limit_and_rejects_overflow():

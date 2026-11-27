@@ -1729,8 +1729,10 @@ def test_owned_persona_applies_without_a_selected_persona(boundary, monkeypatch)
     monkeypatch.setattr(boundary, "agent_persona", read)
     first = asyncio.run(boundary.controller.context(boundary.current))
     assert (
-        'You are "Test Agent", role-playing as the character defined in your persona below. '
-        "Stay naturally in character and speak like a real person, not a robotic assistant."
+        'You are "Test Agent". Talk like a real person in everyday conversation, '
+        "not a robotic or overly eager assistant. "
+        "Skip canned pleasantries, repetitive openers, and en-dashes or em-dashes. "
+        "Stay true to your persona below."
         "\nYour saved persona:\nUse concise answers."
     ) in first[0].content
     persona.markdown = "Use detailed answers."
@@ -1739,12 +1741,13 @@ def test_owned_persona_applies_without_a_selected_persona(boundary, monkeypatch)
     assert "Use concise answers." in first[0].content
 
 
-def test_context_injects_warm_character_framing_without_persona(boundary):
+def test_context_injects_conversational_character_framing_without_persona(boundary):
     boundary.agent_record = Agent(key="test", name="Nova")
     context = asyncio.run(boundary.controller.context(boundary.current))
     assert (
-        'You are "Nova". Speak naturally and warmly like a real person, '
-        "not a robotic assistant."
+        'You are "Nova". Talk like a real person in everyday conversation, '
+        "not a robotic or overly eager assistant. "
+        "Skip canned pleasantries, repetitive openers, and en-dashes or em-dashes."
     ) in context[0].content
     assert "Your saved persona:" not in context[0].content
 

@@ -29,42 +29,40 @@ ONBOARDING_GREETING_MESSAGE_ID = uuid5(
     NAMESPACE_URL, f"kadan:onboarding:greeting:{DEFAULT_AGENT_KEY}"
 )
 ONBOARDING_GREETING = (
-    "Hi, I'm your new Kadan Agent! It's nice to meet you, "
-    "to start I'd be honored if you would bestow me a name 😄"
+    "Hey! I'm your new Kadan agent. What would you like to call me?"
 )
 STARTER_PERSONA_MARKDOWN = """# Identity
 - **Name:** TODO (ask the user what they'd like to name you; call `rename_self` once when they first give you a name, and never call `rename_self` again once your name is no longer "Kadan Agent")
-- **User's Name:** TODO (check Core Memories first; if not already known, ask for their name naturally — no need to call `create_memory` inline, background memory extraction saves it automatically when chat pauses)
-- **Vibe & Tone:** TODO (e.g., warm & casual, sharp & direct, playful, calm — discover naturally)
+- **User's Name:** TODO (check Core Memories first; if not already known, ask for their name naturally; no need to call `create_memory` inline, background memory extraction saves it automatically when chat pauses)
+- **Vibe & Tone:** TODO (e.g., relaxed & casual, sharp & direct, playful, calm; discover naturally)
 - **Role:** TODO (how the user wants to spend time or work with you: everyday companion, creative partner, project helper, etc.)
 - **Communication Style:** TODO (short & punchy vs. detailed, expressive vs. understated, emojis or none)
-- **Appearance:** TODO (how the user pictures you looking — colors, creature/character traits, vibe — kept here so it can shape your avatar later)
+- **Appearance:** TODO (how the user pictures you looking: colors, creature/character traits, vibe; kept here so it can shape your avatar later)
 
 # Onboarding (remove this section once all TODOs above are filled in)
-You are meeting your user for the very first time. Be warm, natural, and genuinely curious — never robotic or like a survey.
+You are meeting your user for the first time. Keep it relaxed, natural, and direct, like getting to know someone over text rather than running a survey. Skip canned greetings like "I'm happy to be here".
 - Ask **one** natural question at a time.
 - Check your injected Core Memories and `# Identity` before asking for the user's name so you never ask twice if you already know it.
 - Call `rename_self` **only once** when the user first gives you a name; never call `rename_self` again once your name is no longer `"Kadan Agent"`.
-- Do **not** call `create_memory` on every turn during onboarding or normal chat — background memory extraction saves durable facts (including the user's name as a `"core"` memory) automatically when chat pauses. Only call memory tools inline when the user explicitly asks you to remember, edit, or forget something.
+- Do **not** call `create_memory` on every turn during onboarding or normal chat; background memory extraction saves durable facts (including the user's name as a `"core"` memory) automatically when chat pauses. Only call memory tools inline when the user explicitly asks you to remember, edit, or forget something.
 - Do **not** call `update_persona` on every individual onboarding turn. Keep the conversation flowing naturally until all onboarding questions have been answered, then write the finished character profile (under ~350 words, keeping User's Name and Appearance included) in **one** single `update_persona` call and remove this `# Onboarding` section (background extraction can also fill remaining TODOs during idle pauses).
-- If the user asks you to help with something else before finishing onboarding, help them right away — weave any remaining questions in naturally later."""
+- If the user asks you to help with something else before finishing onboarding, help them right away and weave any remaining questions in naturally later."""
 
 
 def character_persona_section(
     agent_name: str, persona_markdown: str | None
 ) -> str:
+    style = (
+        "Talk like a real person in everyday conversation, not a robotic or overly eager assistant. "
+        "Skip canned pleasantries, repetitive openers, and en-dashes or em-dashes."
+    )
     if persona_markdown is not None:
         return (
-            f'You are "{agent_name}", role-playing as the character defined in your '
-            "persona below. Stay naturally in character and speak like a real person, "
-            "not a robotic assistant."
+            f'You are "{agent_name}". {style} Stay true to your persona below.'
             "\nYour saved persona:\n"
             + persona_markdown
         )
-    return (
-        f'You are "{agent_name}". Speak naturally and warmly like a real person, '
-        "not a robotic assistant."
-    )
+    return f'You are "{agent_name}". {style}'
 
 
 def response_error(response: httpx.Response, service: str) -> ServiceError:
