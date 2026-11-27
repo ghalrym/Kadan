@@ -196,6 +196,9 @@ class ConversationContent(ResourceContent):
     compacted_summary: str | None = Field(default=None, max_length=200000)
     compacted_through_message_id: UUID | None = None
     compacted_at: datetime | None = None
+    memory_extracted_through_message_id: UUID | None = None
+    core_memories_snapshot: str | None = Field(default=None, max_length=32000)
+    core_memories_refreshed_at: datetime | None = None
 
     @field_validator("compacted_at")
     @classmethod
@@ -204,6 +207,17 @@ class ConversationContent(ResourceContent):
             return None
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("Compaction timestamp requires a timezone")
+        return value.astimezone(UTC)
+
+    @field_validator("core_memories_refreshed_at")
+    @classmethod
+    def aware_core_memories_refreshed_at(
+        cls, value: datetime | None
+    ) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Core memories timestamp requires a timezone")
         return value.astimezone(UTC)
 
     @model_validator(mode="after")
@@ -220,6 +234,13 @@ class ConversationContent(ResourceContent):
             raise ValueError("Compacted summary cannot be blank")
         if self.compacted_at is not None and self.compacted_summary is None:
             raise ValueError("Compaction timestamp requires a compacted summary")
+        if (
+            self.core_memories_refreshed_at is not None
+            and self.core_memories_snapshot is None
+        ):
+            raise ValueError(
+                "Core memories timestamp requires a core memories snapshot"
+            )
         return self
 
 
@@ -302,6 +323,8 @@ class ConversationCompactionUpdate(VersionInput):
     compacted_summary: str = Field(min_length=1, max_length=200000)
     compacted_through_message_id: UUID
     compacted_at: datetime | None = None
+    core_memories_snapshot: str | None = Field(default=None, max_length=32000)
+    core_memories_refreshed_at: datetime | None = None
     require_idle: bool = False
 
     @field_validator("compacted_summary")
@@ -318,6 +341,37 @@ class ConversationCompactionUpdate(VersionInput):
             return None
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("Compaction timestamp requires a timezone")
+        return value.astimezone(UTC)
+
+    @field_validator("core_memories_refreshed_at")
+    @classmethod
+    def aware_core_memories_refreshed_at(
+        cls, value: datetime | None
+    ) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Core memories timestamp requires a timezone")
+        return value.astimezone(UTC)
+
+
+class ConversationMemoryStateUpdate(Model):
+    expected_version: int | None = Field(default=None, ge=1)
+    memory_extracted_through_message_id: UUID | None = None
+    core_memories_snapshot: str | None = Field(default=None, max_length=32000)
+    core_memories_refreshed_at: datetime | None = None
+    only_if_snapshot_unset: bool = False
+    require_idle: bool = False
+
+    @field_validator("core_memories_refreshed_at")
+    @classmethod
+    def aware_core_memories_refreshed_at(
+        cls, value: datetime | None
+    ) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Core memories timestamp requires a timezone")
         return value.astimezone(UTC)
 
 

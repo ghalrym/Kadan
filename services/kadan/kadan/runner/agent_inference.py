@@ -104,7 +104,8 @@ class HikariChatModel(BaseChatModel):
     client: httpx.AsyncClient = Field(exclude=True)
     hikari_url: str
     model_id: str | None = None
-    conversation_key: str
+    conversation_key: str | None = None
+    reuse_prefix: bool = True
     priority: Literal["interactive", "background"] = "interactive"
     on_text_delta: Callable[[str], Awaitable[None]] | None = Field(
         default=None, exclude=True
@@ -201,9 +202,12 @@ class HikariChatModel(BaseChatModel):
             "max_tokens": REASONING_TOKENS + REPLY_TOKENS,
             "reasoning_tokens": REASONING_TOKENS,
             "stream": True,
-            "conversation_id": self.conversation_key,
             "priority": self.priority,
         }
+        if self.reuse_prefix and self.conversation_key:
+            payload["conversation_id"] = self.conversation_key
+        else:
+            payload["reuse_prefix"] = False
         if self.model_id is not None:
             payload["model"] = self.model_id
         try:
@@ -365,21 +369,156 @@ class AgentInference:
         self,
         messages: list[BaseMessage],
         model_id: str | None,
-        conversation_key: str,
+        conversation_key: str | None = None,
         *,
         priority: Literal["interactive", "background"] = "background",
+        reuse_prefix: bool = True,
     ) -> str:
         model = HikariChatModel(
             client=self.client,
             hikari_url=self.hikari_url,
             model_id=model_id,
             conversation_key=conversation_key,
+            reuse_prefix=reuse_prefix,
             priority=priority,
         )
         response = await model.ainvoke(messages)
         text = response.content.strip() if isinstance(response.content, str) else ""
         if not text:
             raise ServiceError(
-                "Hikari returned an empty compaction summary.", 502, "empty_summary"
+                "Hikari returned an empty completion.", 502, "empty_summary"
             )
         return text
+
+    @traced("kadan.agent_inference.evaluate_decisions")
+    async def evaluate_decisions(
+        self,
+        state: str,
+        questions: Sequence[dict[str, Any]],
+        *,
+        use_local_decisions: bool = True,
+        model_id: str | None = None,
+    ) -> dict[str, float]:
+        """Evaluate Noul (yes/no probability) questions via Hikari Decisions or JSON fallback."""
+        cleaned_state = state.strip()
+        if not cleaned_state or not questions:
+            return {}
+        if use_local_decisions:
+            payload_questions = [dict(q) for q in questions]
+            # Hikari /v1/decisions enforces state <= 8000 chars and total JSON <= 16000 chars.
+            trimmed_state = cleaned_state[:7500]
+            body = {"state": trimmed_state, "questions": payload_questions}
+            serialized_len = len(json.dumps(body, ensure_ascii=False))
+            if serialized_len > 15800:
+                overflow = serialized_len - 15800
+                trimmed_state = trimmed_state[: max(100, len(trimmed_state) - overflow - 64)].rstrip()
+                body = {"state": trimmed_state, "questions": payload_questions}
+            try:
+                response = await self.client.post(
+                    self.hikari_url + "/v1/decisions",
+                    json=body,
+                    timeout=INFERENCE_TIMEOUT,
+                )
+            except httpx.RequestError as error:
+                raise ServiceError(
+                    "Hikari disconnected during decision evaluation.",
+                    503,
+                    "inference_unavailable",
+                ) from error
+            if not response.is_success:
+                raise ServiceError(
+                    f"Hikari decisions returned HTTP {response.status_code}.",
+                    response.status_code,
+                    "decision_error",
+                )
+            try:
+                data = response.json()
+                answers = data["answers"]
+                scores: dict[str, float] = {}
+                for answer in answers:
+                    key = answer["key"]
+                    value = float(answer["value"])
+                    scores[key] = max(0.0, min(1.0, value))
+                return scores
+            except (ValueError, KeyError, TypeError) as error:
+                raise ServiceError(
+                    "Hikari returned an invalid decisions response.",
+                    502,
+                    "invalid_response",
+                ) from error
+
+        # Lightweight structured-JSON fallback for non-local subscriptions (Claude/Codex).
+        criteria_lines = []
+        expected_keys: list[str] = []
+        for q in questions:
+            key = str(q["key"])
+            expected_keys.append(key)
+            instructions = str(q.get("instructions", "")).strip()
+            true_when = str(q.get("trueWhen") or q.get("true_when") or "").strip()
+            false_when = str(q.get("falseWhen") or q.get("false_when") or "").strip()
+            line = f'- "{key}": {instructions}'
+            if true_when:
+                line += f" (True when: {true_when})"
+            if false_when:
+                line += f" (False when: {false_when})"
+            criteria_lines.append(line)
+        system_prompt = (
+            "Evaluate each binary criterion against the provided context.\n"
+            "Return ONLY a valid JSON object mapping each criterion key to a number "
+            "between 0.0 (definitely false) and 1.0 (definitely true). "
+            "No markdown fences, explanation, or extra keys."
+        )
+        user_prompt = (
+            f"Context:\n{cleaned_state[:7500]}\n\n"
+            "Criteria:\n" + "\n".join(criteria_lines)
+        )
+        raw = await self.complete_text(
+            [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ],
+            model_id,
+            conversation_key=None,
+            priority="background",
+            reuse_prefix=False,
+        )
+        return _parse_decision_json(raw, expected_keys)
+
+
+def _parse_decision_json(raw: str, expected_keys: Sequence[str]) -> dict[str, float]:
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        text = text[start : end + 1]
+    try:
+        parsed = json.loads(text)
+    except ValueError as error:
+        raise ServiceError(
+            "Fallback decision evaluation returned invalid JSON.",
+            502,
+            "invalid_response",
+        ) from error
+    if not isinstance(parsed, dict):
+        raise ServiceError(
+            "Fallback decision evaluation did not return a JSON object.",
+            502,
+            "invalid_response",
+        )
+    scores: dict[str, float] = {}
+    for key in expected_keys:
+        if key not in parsed:
+            continue
+        value = parsed[key]
+        if isinstance(value, bool):
+            scores[key] = 1.0 if value else 0.0
+        elif isinstance(value, (int, float)):
+            scores[key] = max(0.0, min(1.0, float(value)))
+    return scores

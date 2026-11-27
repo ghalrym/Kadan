@@ -13,6 +13,7 @@ from .agent_runs import AgentRuns
 from .compaction import IdleCompactor
 from .config import RunnerSettings
 from .image_jobs import ImageJobs
+from .memory_queue import MemoryQueue
 from .pet_jobs import PetJobs
 from .t3_events import T3ThreadEvents
 
@@ -28,6 +29,7 @@ class RunnerServices(LocalServices):
         self.pets = PetJobs(self)
         self.t3 = T3ThreadEvents(self)
         self.compactor = IdleCompactor(self)
+        self.memory_queue = MemoryQueue(self)
 
 
 class AgentRunner:
@@ -127,13 +129,16 @@ async def serve(client, settings, runner_settings: RunnerSettings, stop: asyncio
     services = RunnerServices(client, settings, uuid4())
     runner = AgentRunner(services, runner_settings)
     services.compactor.set_agent_keys_provider(lambda: runner.assigned_keys)
+    services.memory_queue.set_agent_keys_provider(lambda: runner.assigned_keys)
     services.images.start()
     services.pets.start()
     services.t3.start()
     services.compactor.start()
+    services.memory_queue.start()
     try:
         await runner.run(stop)
     finally:
+        await services.memory_queue.close()
         await services.compactor.close()
         await services.images.close()
         await services.pets.close()

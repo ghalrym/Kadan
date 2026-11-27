@@ -296,7 +296,12 @@ def test_uncertain_create_is_not_retried():
         ),
         (
             UpdateMemoryArguments,
-            {"memory_id": str(MEMORY_ID), "title": "Title", "markdown": "Text"},
+            {
+                "memory_id": str(MEMORY_ID),
+                "title": "Title",
+                "markdown": "Text",
+                "expected_version": True,
+            },
         ),
         (
             UpdateMemoryArguments,
@@ -304,7 +309,7 @@ def test_uncertain_create_is_not_retried():
                 "memory_id": str(MEMORY_ID),
                 "title": "Title",
                 "markdown": "Text",
-                "expected_version": True,
+                "expected_version": 0,
             },
         ),
     ],
@@ -572,7 +577,6 @@ def test_runner_supplies_current_run_to_memory_ownership_check():
 @pytest.mark.parametrize(
     "arguments",
     [
-        {"memory_id": str(MEMORY_ID)},
         {"memory_id": str(MEMORY_ID), "expected_version": True},
         {"memory_id": str(MEMORY_ID), "expected_version": 0},
         {"memory_id": str(MEMORY_ID), "expected_version": 3, "agent_key": "beta"},
@@ -581,6 +585,42 @@ def test_runner_supplies_current_run_to_memory_ownership_check():
 def test_forget_schema_rejects_invalid_versions_and_scope_override(arguments):
     with pytest.raises(ValidationError):
         ForgetMemoryArguments.model_validate(arguments)
+
+
+def test_optional_expected_version_allows_single_call_update_and_forget():
+    update_args = UpdateMemoryArguments.model_validate(
+        {"memory_id": str(MEMORY_ID), "title": "Updated", "markdown": "New text"}
+    )
+    assert update_args.expected_version is None
+    forget_args = ForgetMemoryArguments.model_validate({"memory_id": str(MEMORY_ID)})
+    assert forget_args.expected_version is None
+
+    def storage_update(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=memory(version=7))
+        body = json.loads(request.content)
+        assert body["expected_version"] == 7
+        return httpx.Response(200, json=memory(**body, version=8))
+
+    updated = call(
+        storage_update,
+        lambda memories: memories.update(MEMORY_ID, None, "Updated", "New text", None),
+    )
+    assert updated["version"] == 8
+
+    def storage_forget(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=memory(version=7))
+        assert request.method == "DELETE"
+        assert dict(request.url.params) == {"expected_version": "7"}
+        return httpx.Response(200, json=memory(version=8, deleted_at=NOW))
+
+    forgotten = call(
+        storage_forget,
+        lambda memories: memories.forget(MEMORY_ID, None),
+    )
+    assert forgotten["version"] == 8
+    assert forgotten["deleted_at"]
 
 
 def test_trash_read_option_requires_a_boolean():

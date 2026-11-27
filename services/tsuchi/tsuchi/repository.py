@@ -21,6 +21,7 @@ from .models import (
     Asset,
     AssetMetadata,
     ConversationCompactionUpdate,
+    ConversationMemoryStateUpdate,
     ConversationTaskPage,
     ConversationTaskStatus,
     ExportManifest,
@@ -1742,7 +1743,37 @@ class Repository:
             ),
         )
 
-    def create_resource(self, key: str, value: ResourceInput) -> Resource:
+    def _clear_conversation_memory_snapshots(
+        self, db: sqlite3.Connection, key: str
+    ) -> None:
+        rows = db.execute(
+            "SELECT id, data FROM resources WHERE agent_key = ? AND kind = ? AND deleted = 0",
+            (key, ResourceKind.CONVERSATION.value),
+        ).fetchall()
+        for row in rows:
+            conv = resource_adapter.validate_json(row["data"])
+            if (
+                conv.core_memories_snapshot is not None
+                or conv.core_memories_refreshed_at is not None
+            ):
+                cleared = conv.model_copy(
+                    update={
+                        "core_memories_snapshot": None,
+                        "core_memories_refreshed_at": None,
+                    }
+                )
+                db.execute(
+                    "UPDATE resources SET data = ? WHERE id = ?",
+                    (cleared.model_dump_json(), str(conv.id)),
+                )
+
+    def create_resource(
+        self,
+        key: str,
+        value: ResourceInput,
+        *,
+        preserve_memory_snapshot: bool = False,
+    ) -> Resource:
         now = utc_now()
         resource = resource_adapter.validate_python(
             {
@@ -1758,6 +1789,11 @@ class Repository:
             self._agent(db, key)
             self._validate_links(db, key, value, resource.id)
             self._save_resource(db, resource)
+            if (
+                resource.kind == ResourceKind.MEMORY
+                and not preserve_memory_snapshot
+            ):
+                self._clear_conversation_memory_snapshots(db, key)
             self._activity(
                 db, key, "created", "resource", str(resource.id), resource.title
             )
@@ -1824,13 +1860,25 @@ class Repository:
             return document
 
     def update_resource(
-        self, key: str, resource_id: UUID, value: ResourceInput, expected_version: int
+        self,
+        key: str,
+        resource_id: UUID,
+        value: ResourceInput,
+        expected_version: int,
+        *,
+        preserve_memory_snapshot: bool = False,
     ) -> Resource:
         with self.connect(write=True) as db:
             current = self._resource(db, key, resource_id)
-            return self._update_resource(
+            updated = self._update_resource(
                 db, key, current, value, expected_version, "updated"
             )
+            if (
+                updated.kind == ResourceKind.MEMORY
+                and not preserve_memory_snapshot
+            ):
+                self._clear_conversation_memory_snapshots(db, key)
+            return updated
 
     def _update_resource(
         self,
@@ -1855,6 +1903,9 @@ class Repository:
                 "compacted_summary",
                 "compacted_through_message_id",
                 "compacted_at",
+                "memory_extracted_through_message_id",
+                "core_memories_snapshot",
+                "core_memories_refreshed_at",
             ):
                 if field_name not in value.model_fields_set:
                     content[field_name] = getattr(current, field_name)
@@ -1873,7 +1924,12 @@ class Repository:
         return updated
 
     def trash_resource(
-        self, key: str, resource_id: UUID, expected_version: int
+        self,
+        key: str,
+        resource_id: UUID,
+        expected_version: int,
+        *,
+        preserve_memory_snapshot: bool = False,
     ) -> Resource:
         with self.connect(write=True) as db:
             current = self._resource(db, key, resource_id)
@@ -1904,13 +1960,23 @@ class Repository:
                 }
             )
             self._save_resource(db, updated)
+            if (
+                updated.kind == ResourceKind.MEMORY
+                and not preserve_memory_snapshot
+            ):
+                self._clear_conversation_memory_snapshots(db, key)
             self._activity(
                 db, key, "trashed", "resource", str(resource_id), current.title
             )
             return updated
 
     def restore_resource(
-        self, key: str, resource_id: UUID, expected_version: int
+        self,
+        key: str,
+        resource_id: UUID,
+        expected_version: int,
+        *,
+        preserve_memory_snapshot: bool = False,
     ) -> Resource:
         with self.connect(write=True) as db:
             current = self._resource(db, key, resource_id)
@@ -1926,6 +1992,11 @@ class Repository:
                 }
             )
             self._save_resource(db, updated)
+            if (
+                updated.kind == ResourceKind.MEMORY
+                and not preserve_memory_snapshot
+            ):
+                self._clear_conversation_memory_snapshots(db, key)
             self._activity(
                 db, key, "restored", "resource", str(resource_id), current.title
             )
@@ -1947,7 +2018,13 @@ class Repository:
             ]
 
     def restore_version(
-        self, key: str, resource_id: UUID, version: int, expected_version: int
+        self,
+        key: str,
+        resource_id: UUID,
+        version: int,
+        expected_version: int,
+        *,
+        preserve_memory_snapshot: bool = False,
     ) -> Resource:
         with self.connect(write=True) as db:
             current = self._resource(db, key, resource_id)
@@ -1962,9 +2039,15 @@ class Repository:
             value = resource_input_adapter.validate_python(
                 snapshot.model_dump(exclude={*ResourceRecord.model_fields, "pinned"})
             )
-            return self._update_resource(
+            updated = self._update_resource(
                 db, key, current, value, expected_version, "version_restored"
             )
+            if (
+                updated.kind == ResourceKind.MEMORY
+                and not preserve_memory_snapshot
+            ):
+                self._clear_conversation_memory_snapshots(db, key)
+            return updated
 
     def append_message(
         self, key: str, resource_id: UUID, message: Message, expected_version: int
@@ -2022,17 +2105,100 @@ class Repository:
                         "Compaction cannot move backwards to an earlier message", 409
                     )
             now = utc_now()
-            updated = current.model_copy(
-                update={
-                    "compacted_summary": value.compacted_summary,
-                    "compacted_through_message_id": value.compacted_through_message_id,
-                    "compacted_at": value.compacted_at or now,
-                    "version": current.version + 1,
-                    "updated_at": now,
-                }
-            )
+            updates: dict[str, object] = {
+                "compacted_summary": value.compacted_summary,
+                "compacted_through_message_id": value.compacted_through_message_id,
+                "compacted_at": value.compacted_at or now,
+                "version": current.version + 1,
+                "updated_at": now,
+            }
+            if "core_memories_snapshot" in value.model_fields_set:
+                updates["core_memories_snapshot"] = value.core_memories_snapshot
+                updates["core_memories_refreshed_at"] = (
+                    (value.core_memories_refreshed_at or now)
+                    if value.core_memories_snapshot is not None
+                    else None
+                )
+            updated = current.model_copy(update=updates)
             self._save_resource(db, updated)
             self._activity(db, key, "compacted", "resource", str(resource_id), updated.title)
+            return updated
+
+    def update_conversation_memory_state(
+        self,
+        key: str,
+        resource_id: UUID,
+        value: ConversationMemoryStateUpdate,
+    ) -> Resource:
+        """Advance memory extraction cursor and/or epoch-frozen Core Memories snapshot in place."""
+        with self.connect(write=True) as db:
+            current = self._resource(db, key, resource_id)
+            self._active(current)
+            if current.kind != ResourceKind.CONVERSATION:
+                raise StorageError(
+                    "Memory state applies only to conversations", 409
+                )
+            if value.expected_version is not None:
+                self._check_version(current, value.expected_version)
+            if value.require_idle and db.execute(
+                "SELECT 1 FROM agent_runs WHERE agent_key = ? AND conversation_id = ? "
+                "AND status IN ('queued', 'running') LIMIT 1",
+                (key, str(resource_id)),
+            ).fetchone():
+                raise StorageError(
+                    "Conversation has active work and cannot update memory state",
+                    409,
+                )
+            now = utc_now()
+            updates: dict[str, object] = {}
+            if (
+                "memory_extracted_through_message_id" in value.model_fields_set
+                and value.memory_extracted_through_message_id is not None
+            ):
+                message_indices = {
+                    message.id: index
+                    for index, message in enumerate(current.messages)
+                }
+                target_index = message_indices.get(
+                    value.memory_extracted_through_message_id
+                )
+                if target_index is None:
+                    raise StorageError(
+                        "Memory cursor message was not found in this conversation",
+                        409,
+                    )
+                if current.memory_extracted_through_message_id is not None:
+                    current_index = message_indices.get(
+                        current.memory_extracted_through_message_id
+                    )
+                    if current_index is not None and target_index < current_index:
+                        raise StorageError(
+                            "Memory cursor cannot move backwards to an earlier message",
+                            409,
+                        )
+                updates["memory_extracted_through_message_id"] = (
+                    value.memory_extracted_through_message_id
+                )
+            if "core_memories_snapshot" in value.model_fields_set:
+                if not (
+                    value.only_if_snapshot_unset
+                    and current.core_memories_snapshot is not None
+                ):
+                    updates["core_memories_snapshot"] = value.core_memories_snapshot
+                    updates["core_memories_refreshed_at"] = (
+                        (value.core_memories_refreshed_at or now)
+                        if value.core_memories_snapshot is not None
+                        else None
+                    )
+            if not updates:
+                return current
+            updated = current.model_copy(update=updates)
+            # Update internal tracking metadata in place without bumping resource
+            # version so concurrent user chat sends never hit spurious 409 conflicts.
+            db.execute(
+                "UPDATE resources SET data = ? WHERE id = ?",
+                (updated.model_dump_json(), str(resource_id)),
+            )
             return updated
 
     @staticmethod

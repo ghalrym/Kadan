@@ -27,6 +27,15 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ValidationError
 
 from ..api.config import ServiceError
+from ..api.memory_context import (
+    build_core_memories_snapshot,
+    extract_recall_terms,
+    fetch_active_memories,
+    format_core_memories_section,
+    persist_memory_state,
+    recall_archival_memories,
+    select_core_memories,
+)
 from ..api.pydantic_models.agent_runs import (
     AgentRun,
     AgentRunState,
@@ -416,10 +425,16 @@ class RunConversation:
     async def update_persona(self, args: UpdatePersonaArguments) -> dict:
         # Stop or loss of the lease must fence a write that has not started yet.
         await self.runs.owned(self.run)
+        expected_version = args.expected_version
+        if expected_version is None:
+            current = await self.runs.services.agent_persona(self.run.agent_key)
+            if current is not None:
+                expected_version = current.version
+            await self.runs.owned(self.run)
         persona = await self.runs.services.save_agent_persona(
             self.run.agent_key,
             markdown=args.markdown,
-            expected_version=args.expected_version,
+            expected_version=expected_version,
             title=args.title,
         )
         return {
@@ -860,6 +875,15 @@ class AgentRuns(RunClient):
                 context_limit=getattr(status, "context_limit", None),
                 priority="interactive",
             )
+            snapshot_kwargs: dict[str, object] = {}
+            if hasattr(self.services, "list_resource_kinds"):
+                fresh_snapshot, _ = await build_core_memories_snapshot(
+                    self.services, run.agent_key
+                )
+                snapshot_kwargs = {
+                    "core_memories_snapshot": fresh_snapshot,
+                    "core_memories_refreshed_at": datetime.now(UTC),
+                }
             updated = await persist_in_run_compaction(
                 self.services,
                 agent_key=run.agent_key,
@@ -869,6 +893,7 @@ class AgentRuns(RunClient):
                 verify_owned=(lambda: self.owned(run))
                 if run.status == "running"
                 else None,
+                **snapshot_kwargs,
             )
             updated_messages = updated.messages
             if run.trigger_message_id is not None:
@@ -1028,13 +1053,16 @@ class AgentRuns(RunClient):
             )
             for item in uncompacted
         )
-        initial_summary_section = format_summary_section(compacted_summary)
-        if should_compact_in_run(
+        effective_core_snapshot = conversation.core_memories_snapshot
+        core_ids: set[UUID] | None = None
+        will_compact = should_compact_in_run(
             uncompacted,
             uncompacted_chars=uncompacted_chars,
-            summary_chars=len(initial_summary_section),
+            summary_chars=len(format_summary_section(compacted_summary))
+            + len(format_core_memories_section(effective_core_snapshot)),
             available_budget=base_budget,
-        ):
+        )
+        if will_compact:
             conversation, compacted_summary, uncompacted = await self._compact_in_run(
                 run,
                 conversation,
@@ -1043,34 +1071,80 @@ class AgentRuns(RunClient):
                 compacted_summary,
                 inference_status,
             )
+            effective_core_snapshot = conversation.core_memories_snapshot
+
+        if effective_core_snapshot is None and hasattr(
+            self.services, "list_resource_kinds"
+        ):
+            built_snapshot, core_ids = await build_core_memories_snapshot(
+                self.services, run.agent_key
+            )
+            effective_core_snapshot = built_snapshot
+            try:
+                persisted = await persist_memory_state(
+                    self.services,
+                    agent_key=run.agent_key,
+                    conversation_id=conversation.id,
+                    core_memories_snapshot=built_snapshot,
+                    core_memories_refreshed_at=datetime.now(UTC),
+                    only_if_snapshot_unset=True,
+                    set_snapshot=True,
+                )
+                if persisted is not None:
+                    conversation = persisted
+                    if conversation.core_memories_snapshot is not None:
+                        effective_core_snapshot = conversation.core_memories_snapshot
+            except ServiceError:
+                logger.debug(
+                    "Could not persist initial core memories snapshot for conversation=%s",
+                    conversation.id,
+                )
+
+        trigger_msg = (
+            next(
+                (
+                    item
+                    for item in reversed(uncompacted)
+                    if item.id == run.trigger_message_id
+                ),
+                None,
+            )
+            if run.trigger_message_id is not None
+            else None
+        )
+        trigger_size = (
+            entry_characters(
+                RunMessage(
+                    role=trigger_msg.role,
+                    content=trigger_msg.content,
+                    attachment_ids=trigger_msg.attachment_ids,
+                )
+            )
+            if trigger_msg is not None
+            else 0
+        )
+
+        system_content = instructions
+        budget = base_budget
+        core_section = format_core_memories_section(
+            effective_core_snapshot, max(0, budget - trigger_size)
+        )
+        if core_section:
+            system_content += core_section
+            budget -= len(core_section)
 
         if compacted_summary:
-            trigger_size = 0
-            if run.trigger_message_id is not None:
-                trigger_msg = next(
-                    (
-                        item
-                        for item in reversed(uncompacted)
-                        if item.id == run.trigger_message_id
-                    ),
-                    None,
-                )
-                if trigger_msg is not None:
-                    trigger_size = entry_characters(
-                        RunMessage(
-                            role=trigger_msg.role,
-                            content=trigger_msg.content,
-                            attachment_ids=trigger_msg.attachment_ids,
-                        )
-                    )
             summary_section = format_summary_section(
-                compacted_summary, max(0, base_budget - trigger_size)
+                compacted_summary, max(0, budget - trigger_size)
             )
-            system = RunMessage(role="system", content=instructions + summary_section)
-            budget = base_budget - len(summary_section)
-        else:
-            system = base_system
-            budget = base_budget
+            system_content += summary_section
+            budget -= len(summary_section)
+
+        system = (
+            RunMessage(role="system", content=system_content)
+            if system_content != instructions
+            else base_system
+        )
 
         history: list[RunMessage] = []
         included_message_ids: set[UUID] = set()
@@ -1094,6 +1168,34 @@ class AgentRuns(RunClient):
             history.append(turn)
             included_message_ids.add(message.id)
             budget -= size
+
+        recalled_observation: RunObservation | None = None
+        if (
+            trigger_msg is not None
+            and trigger_msg.role == "user"
+            and hasattr(self.services, "list_resource_kinds")
+            and extract_recall_terms(trigger_msg.content)
+        ):
+            if core_ids is None:
+                active_memories = await fetch_active_memories(
+                    self.services, run.agent_key
+                )
+                core_ids = {item.id for item in select_core_memories(active_memories)}
+            recalled = await recall_archival_memories(
+                self.services,
+                run.agent_key,
+                trigger_msg.content,
+                exclude_ids=core_ids,
+            )
+            if recalled:
+                recalled_observation = RunObservation(
+                    name="recalled_memories",
+                    data={
+                        "note": "Relevant archival memories recalled for this turn.",
+                        "memories": recalled,
+                    },
+                )
+
         recent_errors = await self.recent_run_errors(
             run, messages, included_message_ids
         )
@@ -1112,6 +1214,12 @@ class AgentRuns(RunClient):
             else None
         )
         context: list[TranscriptEntry] = [system, *reversed(history)]
+        if (
+            recalled_observation is not None
+            and entry_characters(recalled_observation) <= budget
+        ):
+            context.append(recalled_observation)
+            budget -= entry_characters(recalled_observation)
         if error_context is not None and entry_characters(error_context) <= budget:
             context.append(error_context)
         if event is not None:
@@ -1503,6 +1611,7 @@ class AgentRuns(RunClient):
             run = await self.update(
                 run, status="completed", owner_id=None, lease_expires_at=None
             )
+            self._wake_memory_queue()
         else:
             run = await self.save_result(
                 run, command.tool, result, conversation.end_run
@@ -1542,6 +1651,11 @@ class AgentRuns(RunClient):
         except (ServiceError, ValidationError) as error:
             return {"error": str(error)}
 
+    def _wake_memory_queue(self) -> None:
+        memory_queue = getattr(self.services, "memory_queue", None)
+        if memory_queue is not None:
+            memory_queue.wakeup.set()
+
     async def save_result(
         self, run: AgentRun, name: str, result: dict, end_run: bool
     ) -> AgentRun:
@@ -1566,4 +1680,5 @@ class AgentRuns(RunClient):
                 name,
                 datetime.now(UTC).isoformat(),
             )
+            self._wake_memory_queue()
         return run

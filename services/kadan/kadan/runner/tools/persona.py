@@ -15,9 +15,13 @@ class UpdatePersonaArguments(Arguments):
         description="Full Markdown instructions for your persona.",
     )
     expected_version: int | None = Field(
+        default=None,
         ge=1,
         strict=True,
-        description="The version returned by read_persona, or null if no persona exists.",
+        description=(
+            "Optional version from read_persona for strict conflict checking. "
+            "Omit to save in a single call using the latest saved version."
+        ),
     )
     title: str | None = Field(
         default=None,
@@ -61,7 +65,7 @@ class PersonaConversation(Protocol):
 
 @conversation_tool
 async def read_persona(args: NoArguments, conversation: PersonaConversation) -> dict:
-    """Read your saved persona and its version before editing it."""
+    """Read your saved persona and its current version."""
     return await conversation.read_persona()
 
 
@@ -69,10 +73,12 @@ async def read_persona(args: NoArguments, conversation: PersonaConversation) -> 
 async def update_persona(
     args: UpdatePersonaArguments, conversation: PersonaConversation
 ) -> dict:
-    """Edit your saved persona for future responses, using the version from read_persona.
+    """Update your saved persona in a single call for future responses.
 
-    Keep it grounded in the user's preferences. Saving does not replace this
-    run's instructions. After a conflict or uncertain save, read before retrying.
+    Omit expected_version to save directly against the latest version, or pass
+    expected_version from read_persona for strict conflict checking. Keep it
+    grounded in the user's preferences. Saving does not replace this run's
+    instructions. After a conflict or uncertain save, read before retrying.
     """
     return await conversation.update_persona(args)
 

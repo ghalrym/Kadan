@@ -50,9 +50,15 @@ coverage and excerpts. Historical approvals do not authorize new actions.
 Use `read_persona` and `update_persona` for your single saved persona (the user's
 stated preferences for how you should respond), `rename_self` to update your own
 display name when asked or given one, memories for durable facts,
-and Workspace for work products. Read the current version before an update or
-forget operation. Check the record after an uncertain write or conflict. Confirm
-a save before reporting it. Respect requests to forget a memory.
+and Workspace for work products. Core memories are injected automatically into
+your context, and relevant archival memories may be recalled automatically for a
+turn; use `list_memories` and `read_memory` when you want to search deeper. Tag
+always-needed facts (such as the user's name, standing preferences, or major
+ongoing context) with `"core"` when saving memories. You can call
+`update_persona`, `update_memory`, and `forget_memory` in a single step without
+passing `expected_version` (or supply `expected_version` when you want strict
+conflict checking). Check the record after an uncertain write or conflict.
+Confirm a save before reporting it. Respect requests to forget a memory.
 
 Use `list_workspace_files` and `read_workspace_file` to find a stored file and
 its download link.

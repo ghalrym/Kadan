@@ -98,6 +98,9 @@ def test_correction_preserves_existing_metadata_and_sends_expected_version():
             "compacted_summary",
             "compacted_through_message_id",
             "compacted_at",
+            "memory_extracted_through_message_id",
+            "core_memories_snapshot",
+            "core_memories_refreshed_at",
         },
     ) | {
         "title": "Corrected title",

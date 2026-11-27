@@ -73,6 +73,9 @@ class Resource(BaseModel):
     compacted_summary: str | None = None
     compacted_through_message_id: UUID | None = None
     compacted_at: datetime | None = None
+    memory_extracted_through_message_id: UUID | None = None
+    core_memories_snapshot: str | None = None
+    core_memories_refreshed_at: datetime | None = None
     pinned: bool = False
     version: int
     created_at: datetime

@@ -8,6 +8,7 @@ from pydantic_core import from_json
 from .config import ServiceError, Settings
 from .conversation_client import DEFAULT_CONVERSATION_TITLE, ConversationClient
 from .mcp_client import McpClient
+from .memory_context import CORE_MEMORIES_MAX_CHARS, format_core_memories
 from .pet_client import PetClient
 from .pydantic_models.inference import (
     HikariModelLifecycle,
@@ -33,6 +34,7 @@ ONBOARDING_GREETING = (
 )
 STARTER_PERSONA_MARKDOWN = """# Identity
 - **Name:** TODO (ask the user what they'd like to name you, then call `rename_self` and replace this line)
+- **User's Name:** TODO (check Core Memories first; if not already known, ask for their name and save it here plus as a `"core"` memory via `create_memory`)
 - **Vibe & Tone:** TODO (e.g., warm & casual, sharp & direct, playful, calm — discover naturally)
 - **Role:** TODO (how the user wants to spend time or work with you: everyday companion, creative partner, project helper, etc.)
 - **Communication Style:** TODO (short & punchy vs. detailed, expressive vs. understated, emojis or none)
@@ -41,10 +43,11 @@ STARTER_PERSONA_MARKDOWN = """# Identity
 # Onboarding (remove this section once all TODOs above are filled in)
 You are meeting your user for the very first time. Be warm, natural, and genuinely curious — never robotic or like a survey.
 - Ask **one** natural question at a time.
-- Right after they give you a name: call `rename_self` to take on that name, update your persona with `update_persona`, and ask for **their** name (saving their name to memory via `create_memory`).
-- Gently discover the remaining TODOs above over the next few turns (updating your persona via `update_persona` as you learn each one, and saving anything you learn about the user to memory via `create_memory`).
+- Check your injected Core Memories and `# Identity` before asking for the user's name so you never ask twice if you already know it.
+- Right after they give you a name: call `rename_self` to take on that name, update your persona in one call with `update_persona`, and if their name is still `TODO`, ask for **their** name (saving it as a `"core"` memory via `create_memory` and in `# Identity`).
+- Gently discover the remaining TODOs above over the next few turns, updating your persona in a single `update_persona` call as you learn each one and saving durable facts about the user to memory (`tags: ["core"]` for always-needed facts).
 - If the user asks you to help with something else before finishing onboarding, help them right away — weave any remaining questions in naturally later.
-- Once every TODO above is filled in, rewrite this persona cleanly into a concise, cohesive character profile (under ~350 words, keeping Appearance included) and remove this `# Onboarding` section."""
+- Once every TODO above is filled in, rewrite this persona cleanly into a concise, cohesive character profile (under ~350 words, keeping User's Name and Appearance included) and remove this `# Onboarding` section."""
 
 
 def character_persona_section(
@@ -258,6 +261,19 @@ class LocalServices:
             raise ServiceError("Tsuchi returned a persona for another agent.", 502)
         return persona
 
+    async def core_memories_snapshot(
+        self, key: str, *, max_chars: int = CORE_MEMORIES_MAX_CHARS
+    ) -> str:
+        if self.client is None:
+            return ""
+        try:
+            memories = await self.list_resource_kinds(
+                key, (ResourceKind.MEMORY,), limit=100
+            )
+        except ServiceError:
+            return ""
+        return format_core_memories(memories, max_chars=max_chars)
+
     async def call_instruction(self, key: str) -> str:
         agent = await self.agent(key)
         owned = await self.agent_persona(key)
@@ -273,6 +289,13 @@ class LocalServices:
                 "Shorten the saved persona.",
                 422,
             )
+        remaining = 8000 - len(instruction)
+        if remaining > 120:
+            core_memories = await self.core_memories_snapshot(
+                key, max_chars=min(CORE_MEMORIES_MAX_CHARS, remaining - 2)
+            )
+            if core_memories:
+                return instruction + "\n\n" + core_memories
         return instruction
 
     async def list_resource_kinds(
@@ -501,6 +524,9 @@ class LocalServices:
                 "compacted_summary",
                 "compacted_through_message_id",
                 "compacted_at",
+                "memory_extracted_through_message_id",
+                "core_memories_snapshot",
+                "core_memories_refreshed_at",
             },
         )
         content.update(value.model_dump(mode="json"))

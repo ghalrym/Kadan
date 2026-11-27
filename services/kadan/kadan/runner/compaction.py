@@ -13,6 +13,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import ValidationError
 
 from ..api.config import ServiceError
+from ..api.memory_context import build_core_memories_snapshot
 from ..api.pydantic_models.agent_runs import AgentRun
 from ..api.pydantic_models.resources import Message, Resource, ResourceKind
 from ..api.services import parse_resource
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
     from ..api.services import LocalServices
 
 logger = logging.getLogger(__name__)
+_UNSET: object = object()
 
 COMPACTION_BUDGET_RATIO = 0.65
 COMPACTION_MAX_UNCOMPACTED_MESSAGES = 60
@@ -199,14 +201,14 @@ async def generate_rolling_summary(
         - 512,
     )
     chunks = chunk_messages_for_compaction(messages, usable)
-    conversation_key = f"kadan:{agent_key}:{conversation_id}:compaction"
     for chunk in chunks:
         prompt = build_compaction_messages(rolling, chunk)
         rolling = await inference.complete_text(
             prompt,
             model_id,
-            conversation_key,
+            conversation_key=None,
             priority=priority,
+            reuse_prefix=False,
         )
         rolling = rolling.strip()
         if len(rolling) > MAX_SUMMARY_CHARACTERS:
@@ -224,6 +226,8 @@ async def persist_compaction(
     compacted_summary: str,
     compacted_through_message_id: UUID,
     compacted_at: datetime | None = None,
+    core_memories_snapshot: str | None | object = _UNSET,
+    core_memories_refreshed_at: datetime | None = None,
     require_idle: bool = False,
 ) -> Resource:
     body: dict[str, object] = {
@@ -234,6 +238,11 @@ async def persist_compaction(
     }
     if compacted_at is not None:
         body["compacted_at"] = compacted_at.astimezone(UTC).isoformat()
+    if core_memories_snapshot is not _UNSET:
+        body["core_memories_snapshot"] = core_memories_snapshot
+        if core_memories_snapshot is not None:
+            refreshed = core_memories_refreshed_at or datetime.now(UTC)
+            body["core_memories_refreshed_at"] = refreshed.astimezone(UTC).isoformat()
     value = await services.json_request(
         "Tsuchi",
         "PUT",
@@ -279,6 +288,8 @@ async def persist_in_run_compaction(
     conversation: Resource,
     compacted_summary: str,
     compacted_through_message_id: UUID,
+    core_memories_snapshot: str | None | object = _UNSET,
+    core_memories_refreshed_at: datetime | None = None,
     verify_owned: Callable[[], Awaitable[object]] | None = None,
 ) -> Resource:
     """Persist in-run compaction, tolerating trailing user messages appended concurrently."""
@@ -287,6 +298,7 @@ async def persist_in_run_compaction(
         if verify_owned is not None:
             await verify_owned()
         try:
+            now = datetime.now(UTC)
             return await persist_compaction(
                 services,
                 agent_key=agent_key,
@@ -294,7 +306,9 @@ async def persist_in_run_compaction(
                 expected_version=current.version,
                 compacted_summary=compacted_summary,
                 compacted_through_message_id=compacted_through_message_id,
-                compacted_at=datetime.now(UTC),
+                compacted_at=now,
+                core_memories_snapshot=core_memories_snapshot,
+                core_memories_refreshed_at=core_memories_refreshed_at or now,
                 require_idle=False,
             )
         except ServiceError as error:
@@ -433,6 +447,16 @@ class IdleCompactor:
                     context_limit=getattr(status, "context_limit", None),
                     priority="background",
                 )
+                now = datetime.now(UTC)
+                snapshot_kwargs: dict[str, object] = {}
+                if hasattr(self.services, "list_resource_kinds"):
+                    fresh_snapshot, _ = await build_core_memories_snapshot(
+                        self.services, agent_key
+                    )
+                    snapshot_kwargs = {
+                        "core_memories_snapshot": fresh_snapshot,
+                        "core_memories_refreshed_at": now,
+                    }
                 await persist_compaction(
                     self.services,
                     agent_key=agent_key,
@@ -440,8 +464,9 @@ class IdleCompactor:
                     expected_version=conversation.version,
                     compacted_summary=new_summary,
                     compacted_through_message_id=uncompacted[-1].id,
-                    compacted_at=datetime.now(UTC),
+                    compacted_at=now,
                     require_idle=True,
+                    **snapshot_kwargs,
                 )
                 compacted_count += 1
                 logger.info(

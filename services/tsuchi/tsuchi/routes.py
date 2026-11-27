@@ -21,6 +21,7 @@ from .models import (
     AssetUpdate,
     ChatResultInput,
     ConversationCompactionUpdate,
+    ConversationMemoryStateUpdate,
     ConversationTaskPage,
     ImageJob,
     ImageJobState,
@@ -453,8 +454,14 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         )
 
     @router.post("/agents/{key}/resources", response_model=Resource, status_code=201)
-    def create_resource(key: AgentKey, value: ResourceInput):
-        return repository.create_resource(key, value)
+    def create_resource(
+        key: AgentKey,
+        value: ResourceInput,
+        preserve_memory_snapshot: bool = False,
+    ):
+        return repository.create_resource(
+            key, value, preserve_memory_snapshot=preserve_memory_snapshot
+        )
 
     @router.post(
         "/agents/{key}/resources/{conversation_id}/messages/{message_id}/document",
@@ -475,7 +482,12 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         return repository.get_resource(key, resource_id)
 
     @router.put("/agents/{key}/resources/{resource_id}", response_model=Resource)
-    def update_resource(key: AgentKey, resource_id: UUID, value: ResourceUpdate):
+    def update_resource(
+        key: AgentKey,
+        resource_id: UUID,
+        value: ResourceUpdate,
+        preserve_memory_snapshot: bool = False,
+    ):
         fields = value.model_dump(exclude={"expected_version"})
         for name in (
             {
@@ -483,27 +495,52 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
                 "compacted_summary",
                 "compacted_through_message_id",
                 "compacted_at",
+                "memory_extracted_through_message_id",
+                "core_memories_snapshot",
+                "core_memories_refreshed_at",
             }
             - value.model_fields_set
         ):
-            # Leave unset fields out so saved pin and compaction state are kept.
+            # Leave unset fields out so saved pin, compaction, and memory state are kept.
             fields.pop(name, None)
         content = resource_input_adapter.validate_python(fields)
         return repository.update_resource(
-            key, resource_id, content, value.expected_version
+            key,
+            resource_id,
+            content,
+            value.expected_version,
+            preserve_memory_snapshot=preserve_memory_snapshot,
         )
 
     @router.delete("/agents/{key}/resources/{resource_id}", response_model=Resource)
     def trash_resource(
-        key: AgentKey, resource_id: UUID, expected_version: Annotated[int, Query(ge=1)]
+        key: AgentKey,
+        resource_id: UUID,
+        expected_version: Annotated[int, Query(ge=1)],
+        preserve_memory_snapshot: bool = False,
     ):
-        return repository.trash_resource(key, resource_id, expected_version)
+        return repository.trash_resource(
+            key,
+            resource_id,
+            expected_version,
+            preserve_memory_snapshot=preserve_memory_snapshot,
+        )
 
     @router.post(
         "/agents/{key}/resources/{resource_id}/restore", response_model=Resource
     )
-    def restore_resource(key: AgentKey, resource_id: UUID, value: VersionInput):
-        return repository.restore_resource(key, resource_id, value.expected_version)
+    def restore_resource(
+        key: AgentKey,
+        resource_id: UUID,
+        value: VersionInput,
+        preserve_memory_snapshot: bool = False,
+    ):
+        return repository.restore_resource(
+            key,
+            resource_id,
+            value.expected_version,
+            preserve_memory_snapshot=preserve_memory_snapshot,
+        )
 
     @router.get(
         "/agents/{key}/resources/{resource_id}/versions",
@@ -517,10 +554,18 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         response_model=Resource,
     )
     def restore_version(
-        key: AgentKey, resource_id: UUID, version: int, value: VersionInput
+        key: AgentKey,
+        resource_id: UUID,
+        version: int,
+        value: VersionInput,
+        preserve_memory_snapshot: bool = False,
     ):
         return repository.restore_version(
-            key, resource_id, version, value.expected_version
+            key,
+            resource_id,
+            version,
+            value.expected_version,
+            preserve_memory_snapshot=preserve_memory_snapshot,
         )
 
     @router.post(
@@ -538,6 +583,14 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         key: AgentKey, resource_id: UUID, value: ConversationCompactionUpdate
     ):
         return repository.update_conversation_compaction(key, resource_id, value)
+
+    @router.put(
+        "/agents/{key}/resources/{resource_id}/memory-state", response_model=Resource
+    )
+    def update_conversation_memory_state(
+        key: AgentKey, resource_id: UUID, value: ConversationMemoryStateUpdate
+    ):
+        return repository.update_conversation_memory_state(key, resource_id, value)
 
     @router.get("/agents/{key}/assets", response_model=list[Asset])
     def list_assets(

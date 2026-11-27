@@ -523,3 +523,101 @@ def test_provider_identity_survives_persistence_and_pairs_the_result_after_repla
     assert "call_id" not in json.loads(saved)["transcript"][0]["command"]
     messages = transcript_messages(AgentRunState.model_validate_json(saved).transcript)
     assert messages[0].tool_calls[0]["id"] == messages[1].tool_call_id == reply[0]["id"]
+
+
+def test_complete_text_reuse_prefix_false_omits_conversation_id():
+    seen = []
+
+    async def check():
+        stream = completed("Background result")
+
+        def respond(request):
+            seen.append(json.loads(request.content))
+            return httpx.Response(
+                200, text=stream, headers={"content-type": "text/event-stream"}
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            text = await AgentInference(client, "http://hikari").complete_text(
+                [HumanMessage(content="Summarize")],
+                "inkling-2-mini-iq4-nl",
+                conversation_key="kadan:alpha:conv",
+                priority="background",
+                reuse_prefix=False,
+            )
+            assert text == "Background result"
+            text2 = await AgentInference(client, "http://hikari").complete_text(
+                [HumanMessage(content="Summarize again")],
+                "inkling-2-mini-iq4-nl",
+                conversation_key=None,
+                priority="background",
+            )
+            assert text2 == "Background result"
+
+    asyncio.run(check())
+    assert len(seen) == 2
+    for payload in seen:
+        assert payload["reuse_prefix"] is False
+        assert "conversation_id" not in payload
+        assert payload["priority"] == "background"
+
+
+def test_evaluate_decisions_local_and_subscription_fallback():
+    seen = []
+
+    async def check():
+        def respond(request):
+            body = json.loads(request.content)
+            seen.append((request.url.path, body))
+            if request.url.path == "/v1/decisions":
+                return httpx.Response(
+                    200,
+                    json={
+                        "answers": [
+                            {"key": "should_save_memory", "type": "Noul", "value": 0.87},
+                            {"key": "is_core_memory", "type": "Noul", "value": 0.12},
+                        ]
+                    },
+                )
+            return httpx.Response(
+                200,
+                text=completed('{"should_save_memory": 0.9, "is_core_memory": false}'),
+                headers={"content-type": "text/event-stream"},
+            )
+
+        questions = [
+            {
+                "key": "should_save_memory",
+                "type": "Noul",
+                "instructions": "Did user share a durable fact?",
+            },
+            {
+                "key": "is_core_memory",
+                "type": "Noul",
+                "instructions": "Is this a core fact?",
+            },
+        ]
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            inference = AgentInference(client, "http://hikari")
+            local_scores = await inference.evaluate_decisions(
+                "User: I live in Seattle.",
+                questions,
+                use_local_decisions=True,
+                model_id="inkling-2-mini-iq4-nl",
+            )
+            fallback_scores = await inference.evaluate_decisions(
+                "User: I live in Seattle.",
+                questions,
+                use_local_decisions=False,
+                model_id=None,
+            )
+            return local_scores, fallback_scores
+
+    local_scores, fallback_scores = asyncio.run(check())
+    assert local_scores == {"should_save_memory": 0.87, "is_core_memory": 0.12}
+    assert fallback_scores == {"should_save_memory": 0.9, "is_core_memory": 0.0}
+    assert seen[0][0] == "/v1/decisions"
+    assert seen[1][0] == "/v1/chat/completions"
+    assert seen[1][1]["reuse_prefix"] is False
+    assert "conversation_id" not in seen[1][1]
+    assert seen[1][1]["priority"] == "background"

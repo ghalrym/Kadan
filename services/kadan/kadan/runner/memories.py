@@ -109,13 +109,16 @@ class AgentMemories:
     async def update(
         self,
         memory_id: UUID,
-        expected_version: int,
+        expected_version: int | None,
         title: str,
         markdown: str,
         tags: list[str] | None,
     ) -> dict:
         current = await self.get(memory_id)
-        require_active(current, ResourceKind.MEMORY, expected_version)
+        resolved_version = (
+            current.version if expected_version is None else expected_version
+        )
+        require_active(current, ResourceKind.MEMORY, resolved_version)
         content = current.model_dump(
             mode="json",
             exclude={
@@ -128,10 +131,13 @@ class AgentMemories:
                 "compacted_summary",
                 "compacted_through_message_id",
                 "compacted_at",
+                "memory_extracted_through_message_id",
+                "core_memories_snapshot",
+                "core_memories_refreshed_at",
             },
         )
         content.update(
-            title=title, markdown=markdown, expected_version=expected_version
+            title=title, markdown=markdown, expected_version=resolved_version
         )
         if tags is not None:
             content["tags"] = tags
@@ -141,18 +147,23 @@ class AgentMemories:
         )
         return memory_content(self.checked(value, memory_id=memory_id))
 
-    async def forget(self, memory_id: UUID, expected_version: int) -> dict:
+    async def forget(
+        self, memory_id: UUID, expected_version: int | None
+    ) -> dict:
         current = await self.get(memory_id)
-        require_active(current, ResourceKind.MEMORY, expected_version)
+        resolved_version = (
+            current.version if expected_version is None else expected_version
+        )
+        require_active(current, ResourceKind.MEMORY, resolved_version)
         await self.check_ownership()
         value = await self.services.json_request(
             "Tsuchi",
             "DELETE",
             f"{self.path}/{memory_id}",
-            params={"expected_version": expected_version},
+            params={"expected_version": resolved_version},
         )
         forgotten = self.checked(value, memory_id=memory_id, include_trashed=True)
-        if forgotten.deleted_at is None or forgotten.version != expected_version + 1:
+        if forgotten.deleted_at is None or forgotten.version != resolved_version + 1:
             raise ServiceError(
                 "Tsuchi did not confirm that the memory was moved to trash. "
                 "Read its trash state before retrying.",

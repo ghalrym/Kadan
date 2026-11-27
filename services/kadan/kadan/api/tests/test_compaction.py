@@ -27,7 +27,13 @@ class FakeInference:
         self.complete_calls = []
 
     async def complete_text(
-        self, messages, model_id, conversation_key, *, priority="background"
+        self,
+        messages,
+        model_id,
+        conversation_key=None,
+        *,
+        priority="background",
+        reuse_prefix=True,
     ):
         self.complete_calls.append(
             {
@@ -35,6 +41,7 @@ class FakeInference:
                 "model_id": model_id,
                 "conversation_key": conversation_key,
                 "priority": priority,
+                "reuse_prefix": reuse_prefix,
             }
         )
         result = self.summaries.pop(0)
@@ -232,6 +239,8 @@ def test_in_run_budget_compaction_triggers_on_char_budget_and_preserves_tail(tmp
 
     assert len(fake.complete_calls) == 1
     assert fake.complete_calls[0]["priority"] == "interactive"
+    assert fake.complete_calls[0]["conversation_key"] is None
+    assert fake.complete_calls[0]["reuse_prefix"] is False
     assert len(boundary.compaction_requests) == 1
     req = boundary.compaction_requests[0]
     assert req["require_idle"] is False
@@ -387,6 +396,8 @@ def test_idle_compactor_compacts_after_30_minutes_with_background_priority(tmp_p
     assert count == 1
     assert len(fake.complete_calls) == 1
     assert fake.complete_calls[0]["priority"] == "background"
+    assert fake.complete_calls[0]["conversation_key"] is None
+    assert fake.complete_calls[0]["reuse_prefix"] is False
     prompt_text = fake.complete_calls[0]["messages"][1].content
     assert "Earlier summary." in prompt_text
     assert "Turn 2" in prompt_text and "Turn 3" in prompt_text
