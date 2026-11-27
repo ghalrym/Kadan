@@ -471,3 +471,51 @@ def test_group_chat_event_run_allows_omitted_origin_run_id(client):
     )
     assert replay.status_code == 201
     assert replay.json()["id"] == run_id
+
+
+def test_group_chat_subscription_refresh_reuses_durable_id_without_duplicates(client):
+    room, _, dot, _ = _seed_room_and_participants(client, max_turns=4)
+    room_id = room["id"]
+    first_exp = (datetime.now(UTC) + timedelta(minutes=30)).isoformat()
+    second_exp = (datetime.now(UTC) + timedelta(hours=2)).isoformat()
+
+    first = client.post(
+        f"/api/group-chat/rooms/{room_id}/subscriptions",
+        json={
+            "participant_id": dot["id"],
+            "event_name": "group_chat.turn_requested",
+            "filters": {"room_id": room_id},
+            "callback_url": "https://dot.example/webhook-v1",
+            "signing_secret": "whsec_dGVzdC1zZWNyZXQtMTIzNDU2Nzg5MDEyMzQ1Ng==",
+            "expires_at": first_exp,
+        },
+    )
+    assert first.status_code == 201
+    first_data = first.json()
+    assert first_data["version"] == 1
+
+    # Refreshing for the same participant + event renews in place and preserves the ID.
+    refreshed = client.post(
+        f"/api/group-chat/rooms/{room_id}/subscriptions",
+        json={
+            "participant_id": dot["id"],
+            "event_name": "group_chat.turn_requested",
+            "filters": {"room_id": room_id},
+            "callback_url": "https://dot.example/webhook-v2",
+            "signing_secret": "whsec_dGVzdC1zZWNyZXQtOTg3NjU0MzIxMDk4NzY1NA==",
+            "expires_at": second_exp,
+        },
+    )
+    assert refreshed.status_code == 201
+    refreshed_data = refreshed.json()
+    assert refreshed_data["id"] == first_data["id"]
+    assert refreshed_data["version"] == 2
+    assert refreshed_data["callback_url"] == "https://dot.example/webhook-v2"
+    assert refreshed_data["status"] == "active"
+
+    listed = client.get(
+        f"/api/group-chat/rooms/{room_id}/subscriptions",
+        params={"participant_id": dot["id"]},
+    ).json()
+    assert len(listed) == 1
+    assert listed[0]["id"] == first_data["id"]

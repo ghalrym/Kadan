@@ -373,9 +373,36 @@ class FakeTsuchiGroupChat:
 
         if path == f"/api/group-chat/rooms/{self.room_id}/subscriptions":
             if method == "GET":
-                return httpx.Response(200, json=list(self.subscriptions.values()))
+                pid = request.url.params.get("participant_id")
+                rows = list(self.subscriptions.values())
+                if pid:
+                    rows = [r for r in rows if r["participant_id"] == pid]
+                return httpx.Response(200, json=rows)
             if method == "POST":
                 body = json.loads(request.content)
+                existing = next(
+                    (
+                        item
+                        for item in self.subscriptions.values()
+                        if item["participant_id"] == body["participant_id"]
+                        and item["event_name"] == body["event_name"]
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    existing.update(
+                        {
+                            "filters": body.get("filters") or {},
+                            "callback_url": body["callback_url"],
+                            "signing_secret": body["signing_secret"],
+                            "status": "active",
+                            "expires_at": body["expires_at"],
+                            "last_error": None,
+                            "version": existing["version"] + 1,
+                            "updated_at": now,
+                        }
+                    )
+                    return httpx.Response(201, json=existing)
                 sub = {
                     "id": body.get("id") or str(uuid4()),
                     "room_id": str(self.room_id),
@@ -724,7 +751,7 @@ def test_mcp_events_list_subscribe_challenge_and_unsubscribe():
             assert mismatch["error"]["data"]["code"] == "challenge_mismatch"
             assert tsuchi.subscriptions == {}
 
-            # Valid challenge succeeds and persists subscription.
+            # Valid challenge succeeds and persists subscription (OpenAI MCP Events contract: id + refreshBefore).
             mode["behavior"] = "echo"
             _, sub_res = await handler.handle_jsonrpc(
                 participant,
@@ -733,7 +760,8 @@ def test_mcp_events_list_subscribe_challenge_and_unsubscribe():
                     "id": 4,
                     "method": "events/subscribe",
                     "params": {
-                        "event": "group_chat.turn_requested",
+                        "name": "group_chat.turn_requested",
+                        "arguments": {"room_id": str(tsuchi.room_id)},
                         "webhook": {
                             "url": "https://dot.example/events",
                             "secret": signing_secret,
@@ -743,9 +771,15 @@ def test_mcp_events_list_subscribe_challenge_and_unsubscribe():
                 },
             )
             assert sub_res is not None and "result" in sub_res
-            sub_id = sub_res["result"]["subscriptionId"]
+            result = sub_res["result"]
+            assert "id" in result and "refreshBefore" in result
+            assert "subscriptionId" not in result and "expiresAt" not in result
+            sub_id = result["id"]
             assert sub_id in tsuchi.subscriptions
             assert tsuchi.subscriptions[sub_id]["participant_id"] == dot["id"]
+            assert tsuchi.subscriptions[sub_id]["filters"] == {
+                "room_id": str(tsuchi.room_id)
+            }
 
             # Browser public participant projection NEVER exposes signing_secret!
             public_participants = await services.group_chat.list_public_participants(
@@ -755,18 +789,123 @@ def test_mcp_events_list_subscribe_challenge_and_unsubscribe():
             assert dot_pub.push_status == "active"
             assert signing_secret not in dot_pub.model_dump_json()
 
-            # events/unsubscribe idempotently revokes the subscription.
+            # events/unsubscribe accepts `id` and idempotently revokes the subscription.
             _, unsub = await handler.handle_jsonrpc(
                 participant,
                 {
                     "jsonrpc": "2.0",
                     "id": 5,
                     "method": "events/unsubscribe",
-                    "params": {"subscriptionId": sub_id},
+                    "params": {"id": sub_id},
                 },
             )
-            assert unsub is not None and unsub["result"]["unsubscribed"] is True
+            assert unsub is not None
+            assert unsub["result"] == {"id": sub_id, "unsubscribed": True}
             assert tsuchi.subscriptions[sub_id]["status"] == "revoked"
+        finally:
+            await client.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_mcp_events_subscribe_refresh_reuses_id_and_unsubscribe_contract():
+    tsuchi = FakeTsuchiGroupChat()
+    dot_token = "kdn_gc_dot_contract_token_456"
+    tsuchi.add_participant(
+        display_name="Dot", kind="external_agent", handle="dot", raw_token=dot_token
+    )
+    raw_secret = b"fedcba9876543210fedcba9876543210"
+    signing_secret = "whsec_" + base64.b64encode(raw_secret).decode("ascii")
+    seen_challenge_sub_ids: list[str] = []
+
+    def webhook_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen_challenge_sub_ids.append(request.headers["x-mcp-subscription-id"])
+        return httpx.Response(200, json={"challenge": body["challenge"]})
+
+    async def scenario():
+        services, client = _make_services(tsuchi, webhook_handler=webhook_handler)
+        try:
+            handler = GroupChatMcpHandler(services)
+            participant = await services.group_chat.authenticate_token(dot_token)
+
+            # events/list advertises `arguments` schema matching events/subscribe.
+            _, listed = await handler.handle_jsonrpc(
+                participant, {"jsonrpc": "2.0", "id": 1, "method": "events/list"}
+            )
+            assert listed is not None
+            event_spec = listed["result"]["events"][0]
+            assert "arguments" in event_spec
+            assert "room_id" in event_spec["arguments"]["properties"]
+
+            # 1. Initial subscribe with `arguments` returns `id` and `refreshBefore`.
+            _, sub1 = await handler.handle_jsonrpc(
+                participant,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "events/subscribe",
+                    "params": {
+                        "name": "group_chat.turn_requested",
+                        "arguments": {"room_id": str(tsuchi.room_id)},
+                        "webhook": {
+                            "url": "https://dot.example/events",
+                            "secret": signing_secret,
+                        },
+                        "ttlSeconds": 600,
+                    },
+                },
+            )
+            assert sub1 is not None and "result" in sub1
+            r1 = sub1["result"]
+            assert set(r1) == {"id", "event", "status", "refreshBefore"}
+            first_id = r1["id"]
+            first_refresh = datetime.fromisoformat(r1["refreshBefore"])
+            assert first_refresh > datetime.now(UTC)
+
+            # 2. Refreshing reuses the exact same durable `id` and extends `refreshBefore`.
+            _, sub2 = await handler.handle_jsonrpc(
+                participant,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "events/subscribe",
+                    "params": {
+                        "name": "group_chat.turn_requested",
+                        "arguments": {"room_id": str(tsuchi.room_id)},
+                        "webhook": {
+                            "url": "https://dot.example/events-v2",
+                            "secret": signing_secret,
+                        },
+                        "ttlSeconds": 3600,
+                    },
+                },
+            )
+            assert sub2 is not None and "result" in sub2
+            r2 = sub2["result"]
+            assert r2["id"] == first_id
+            assert datetime.fromisoformat(r2["refreshBefore"]) > first_refresh
+            assert len(tsuchi.subscriptions) == 1
+            assert tsuchi.subscriptions[first_id]["version"] == 2
+            assert (
+                tsuchi.subscriptions[first_id]["callback_url"]
+                == "https://dot.example/events-v2"
+            )
+            assert seen_challenge_sub_ids == [first_id, first_id]
+
+            # 3. Unsubscribe with `id` revokes the durable subscription.
+            _, unsub = await handler.handle_jsonrpc(
+                participant,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "events/unsubscribe",
+                    "params": {"id": first_id},
+                },
+            )
+            assert unsub is not None
+            assert unsub["result"] == {"id": first_id, "unsubscribed": True}
+            assert tsuchi.subscriptions[first_id]["status"] == "revoked"
         finally:
             await client.aclose()
 

@@ -367,19 +367,27 @@ class GroupChatWebhookEvents:
             and p.agent_key
         ]
         for participant in kadan_participants:
-            page = await self.services.group_chat.list_messages(
-                room.id, after_seq=participant.cursor_seq, limit=100
-            )
-            addressed = [
-                msg
-                for msg in page.messages
-                if participant.id in msg.handoff_to_participant_ids
-                and not msg.handoff_suppressed
-                and msg.participant_id != participant.id
-            ]
-            if not addressed:
+            scan_after = participant.cursor_seq
+            latest_addressed_seq: int | None = None
+            while True:
+                page = await self.services.group_chat.list_messages(
+                    room.id, after_seq=scan_after, limit=100
+                )
+                for msg in page.messages:
+                    if (
+                        participant.id in msg.handoff_to_participant_ids
+                        and not msg.handoff_suppressed
+                        and msg.participant_id != participant.id
+                    ):
+                        latest_addressed_seq = msg.seq
+                if not page.has_more or not page.messages:
+                    break
+                next_after = page.messages[-1].seq
+                if next_after <= scan_after:
+                    break
+                scan_after = next_after
+            if latest_addressed_seq is None:
                 continue
-            latest_addressed_seq = addressed[-1].seq
             await self.services.group_chat.maybe_wake_kadan_agents(
                 room.id,
                 [participant.id],

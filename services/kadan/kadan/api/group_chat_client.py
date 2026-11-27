@@ -440,7 +440,10 @@ class GroupChatClient:
                 include_running=skip_if_running,
             ):
                 continue
-            event_id = uuid5(room_id, f"group-chat-wake:{target.id}:{trigger_seq}")
+            event_id = uuid5(
+                room_id,
+                f"group-chat-wake:{target.id}:after-{target.cursor_seq}:{trigger_seq}",
+            )
             payload = {
                 "room_id": str(room_id),
                 "participant_id": str(target.id),

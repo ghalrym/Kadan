@@ -3608,6 +3608,41 @@ class Repository:
                     "Paused or revoked participants cannot subscribe to events", 403
                 )
             now = utc_now()
+            existing_row = db.execute(
+                "SELECT data FROM group_chat_event_subscriptions "
+                "WHERE room_id = ? AND participant_id = ? AND event_name = ? "
+                "ORDER BY updated_at DESC LIMIT 1",
+                (str(room_id), str(value.participant_id), value.event_name),
+            ).fetchone()
+            if existing_row is not None:
+                existing = GroupChatEventSubscription.model_validate_json(
+                    existing_row[0]
+                )
+                renewed = existing.model_copy(
+                    update={
+                        "filters": value.filters,
+                        "callback_url": value.callback_url,
+                        "signing_secret": value.signing_secret,
+                        "status": "active",
+                        "expires_at": value.expires_at,
+                        "last_error": None,
+                        "version": existing.version + 1,
+                        "updated_at": now,
+                    }
+                )
+                db.execute(
+                    "UPDATE group_chat_event_subscriptions "
+                    "SET status = ?, expires_at = ?, updated_at = ?, data = ? WHERE id = ?",
+                    (
+                        renewed.status,
+                        renewed.expires_at.isoformat(),
+                        now.isoformat(),
+                        renewed.model_dump_json(),
+                        str(renewed.id),
+                    ),
+                )
+                return renewed
+
             sub = GroupChatEventSubscription(
                 id=value.id or uuid4(),
                 room_id=room_id,

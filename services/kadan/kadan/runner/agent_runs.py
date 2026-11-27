@@ -1679,6 +1679,9 @@ class AgentRuns(RunClient):
                 for msg in unread
                 if msg["addressed_to_me"]
             ]
+            last_included_seq = (
+                page.messages[-1].seq if page.messages else participant.cursor_seq
+            )
             return {
                 "room_id": str(page.room.id),
                 "room_title": page.room.title,
@@ -1686,7 +1689,9 @@ class AgentRuns(RunClient):
                 "my_handle": participant.handle,
                 "my_display_name": participant.display_name,
                 "cursor_seq": participant.cursor_seq,
+                "last_included_seq": last_included_seq,
                 "latest_seq": page.latest_seq,
+                "has_more": page.has_more,
                 "trigger_seq": base.get("trigger_seq"),
                 "addressed_by": addressed_by,
                 "unread_messages": unread,
@@ -1740,12 +1745,24 @@ class AgentRuns(RunClient):
             return
         room_raw = obs.data.get("room_id")
         pid_raw = obs.data.get("my_participant_id")
-        latest_seq = obs.data.get("latest_seq")
+        consumed_seq = obs.data.get("last_included_seq")
+        if not isinstance(consumed_seq, int) or isinstance(consumed_seq, bool):
+            unread_items = obs.data.get("unread_messages")
+            if isinstance(unread_items, list) and unread_items:
+                seqs = [
+                    item["seq"]
+                    for item in unread_items
+                    if isinstance(item, dict)
+                    and isinstance(item.get("seq"), int)
+                    and not isinstance(item.get("seq"), bool)
+                ]
+                consumed_seq = max(seqs) if seqs else 0
+            else:
+                consumed_seq = 0
         if (
             not isinstance(room_raw, str)
             or not isinstance(pid_raw, str)
-            or not isinstance(latest_seq, int)
-            or latest_seq <= 0
+            or consumed_seq <= 0
         ):
             return
         try:
@@ -1753,7 +1770,7 @@ class AgentRuns(RunClient):
                 UUID(room_raw),
                 UUID(pid_raw),
                 last_seen_at=datetime.now(UTC),
-                cursor_seq=latest_seq,
+                cursor_seq=consumed_seq,
             )
         except (ServiceError, ValueError):
             logger.debug(

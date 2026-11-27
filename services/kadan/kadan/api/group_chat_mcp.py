@@ -10,7 +10,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 import httpx
 
@@ -212,7 +212,7 @@ GROUP_CHAT_MCP_EVENTS: list[dict[str, Any]] = [
                 "turn_cap_reached": {"type": "boolean"},
             },
         },
-        "filters": {
+        "arguments": {
             "type": "object",
             "properties": {
                 "room_id": {
@@ -896,12 +896,15 @@ class GroupChatMcpHandler:
         except ValueError as error:
             raise ServiceError(str(error), 422, "invalid_arguments") from error
 
-        filters = params.get("filters") or {}
+        raw_args = (
+            params.get("arguments") if "arguments" in params else params.get("filters")
+        )
+        filters = raw_args if raw_args is not None else {}
         if not isinstance(filters, dict):
-            raise ServiceError("filters must be an object.", 422, "invalid_arguments")
+            raise ServiceError("arguments must be an object.", 422, "invalid_arguments")
         if "room_id" in filters and str(filters["room_id"]) != str(participant.room_id):
             raise ServiceError(
-                "room_id filter does not match this participant's room.",
+                "room_id argument does not match this participant's room.",
                 422,
                 "invalid_filter",
             )
@@ -919,7 +922,21 @@ class GroupChatMcpHandler:
             min(MAX_SUBSCRIPTION_TTL_SECONDS, int(ttl_raw)),
         )
 
-        subscription_id = uuid4()
+        # Reuse one durable subscription ID per (room, participant, event) identity.
+        existing_subs = await self.services.group_chat.list_subscriptions(
+            participant.room_id, participant_id=participant.id
+        )
+        existing_match = next(
+            (sub for sub in existing_subs if sub.event_name == event_name),
+            None,
+        )
+        subscription_id = (
+            existing_match.id
+            if existing_match is not None
+            else uuid5(
+                participant.room_id, f"group-chat-sub:{participant.id}:{event_name}"
+            )
+        )
         await self._verify_webhook_challenge(
             subscription_id=subscription_id,
             callback_url=callback_url,
@@ -927,7 +944,10 @@ class GroupChatMcpHandler:
             event_name=event_name,
         )
 
-        expires_at = datetime.now(UTC) + timedelta(seconds=ttl_seconds)
+        now = datetime.now(UTC)
+        expires_at = now + timedelta(seconds=ttl_seconds)
+        refresh_margin = min(300, max(1, ttl_seconds // 10))
+        refresh_before = expires_at - timedelta(seconds=refresh_margin)
         saved = await self.services.group_chat.create_subscription(
             participant.room_id,
             subscription_id=subscription_id,
@@ -939,10 +959,10 @@ class GroupChatMcpHandler:
             expires_at=expires_at,
         )
         return {
-            "subscriptionId": str(saved.id),
+            "id": str(saved.id),
             "event": saved.event_name,
             "status": saved.status,
-            "expiresAt": saved.expires_at.isoformat(),
+            "refreshBefore": refresh_before.isoformat(),
         }
 
     async def _verify_webhook_challenge(
@@ -1016,19 +1036,23 @@ class GroupChatMcpHandler:
     async def unsubscribe_events(
         self, participant: GroupChatParticipant, params: dict[str, Any]
     ) -> dict[str, Any]:
-        sub_raw = params.get("subscriptionId") or params.get("subscription_id")
+        sub_raw = (
+            params.get("id")
+            or params.get("subscriptionId")
+            or params.get("subscription_id")
+        )
         if not isinstance(sub_raw, str) or not sub_raw.strip():
-            raise ServiceError("subscriptionId is required.", 422, "invalid_arguments")
+            raise ServiceError("id is required.", 422, "invalid_arguments")
         try:
             subscription_id = UUID(sub_raw.strip())
         except ValueError as error:
             raise ServiceError(
-                "subscriptionId must be a valid UUID.", 422, "invalid_arguments"
+                "id must be a valid UUID.", 422, "invalid_arguments"
             ) from error
         await self.services.group_chat.revoke_subscription(
             subscription_id, participant_id=participant.id
         )
         return {
+            "id": str(subscription_id),
             "unsubscribed": True,
-            "subscriptionId": str(subscription_id),
         }

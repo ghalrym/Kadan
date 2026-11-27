@@ -759,3 +759,287 @@ def test_group_chat_run_isolation_full_unread_context_and_replay_idempotency(tmp
             assert one_on_one_deliveries == []
 
     asyncio.run(scenario())
+
+
+def test_group_chat_cursor_advances_only_through_included_page_and_reconciles_overflow(
+    tmp_path,
+):
+    """A directed @mention beyond the 100-row hydration cap must not be skipped."""
+    instruction_file = tmp_path / "AGENT.md"
+    instruction_file.write_text("Test instructions")
+    room_id = UUID("00000000-0000-0000-0000-000000000001")
+    kadan_id = uuid4()
+    dot_id = uuid4()
+    conv_id = uuid4()
+    owner_id = uuid4()
+    now = datetime.now(UTC)
+
+    # 105 messages: seq 1..100 untargeted, seq 105 explicitly tags @kadan.
+    all_messages: list[dict[str, Any]] = []
+    for seq in range(1, 106):
+        all_messages.append(
+            {
+                "id": str(uuid4()),
+                "room_id": str(room_id),
+                "seq": seq,
+                "sender_kind": "user",
+                "participant_id": None,
+                "sender_name": "You",
+                "content": f"Message {seq}"
+                if seq < 105
+                else "Hey @kadan please answer #105",
+                "handoff_to_participant_ids": [str(kadan_id)] if seq == 105 else [],
+                "handoff_suppressed": False,
+                "reply_to_message_id": None,
+                "client_request_id": None,
+                "created_at": now.isoformat(),
+            }
+        )
+
+    state: dict[str, Any] = {
+        "cursor_seq": 0,
+        "event_runs": [],
+    }
+
+    def kadan_participant_json() -> dict[str, Any]:
+        return {
+            "id": str(kadan_id),
+            "room_id": str(room_id),
+            "handle": "kadan",
+            "display_name": "Kadan",
+            "kind": "kadan_agent",
+            "agent_key": "kadan",
+            "description": "",
+            "enabled": True,
+            "revoked_at": None,
+            "last_seen_at": None,
+            "cursor_seq": state["cursor_seq"],
+            "version": 1,
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        method = request.method
+        if path == "/api/agents/kadan" and method == "GET":
+            return httpx.Response(
+                200,
+                json={"key": "kadan", "name": "Kadan", "created_at": now.isoformat()},
+            )
+        if path == "/api/agents/kadan/persona" and method == "GET":
+            return httpx.Response(
+                200, content=b"null", headers={"content-type": "application/json"}
+            )
+        if path == "/api/agents/kadan/resources" and method == "GET":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": str(conv_id),
+                        "agent_key": "kadan",
+                        "kind": "conversation",
+                        "title": "Chat",
+                        "markdown": "",
+                        "messages": [],
+                        "version": 1,
+                        "created_at": now.isoformat(),
+                        "updated_at": now.isoformat(),
+                    }
+                ],
+            )
+        if path == f"/api/agents/kadan/resources/{conv_id}" and method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "id": str(conv_id),
+                    "agent_key": "kadan",
+                    "kind": "conversation",
+                    "title": "Chat",
+                    "markdown": "",
+                    "messages": [],
+                    "version": 1,
+                    "created_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                },
+            )
+        if path == f"/api/agents/kadan/resources/{conv_id}/runs" and method == "GET":
+            return httpx.Response(200, json=state["event_runs"])
+        if (
+            path == f"/api/agents/kadan/resources/{conv_id}/event-runs"
+            and method == "POST"
+        ):
+            body = json.loads(request.content)
+            for existing in state["event_runs"]:
+                if existing["id"] == body["id"]:
+                    return httpx.Response(201, json=existing)
+            run_rec = {
+                "id": body["id"],
+                "agent_key": "kadan",
+                "conversation_id": str(conv_id),
+                "trigger_event": body["event"],
+                "status": "queued",
+                "transcript": [],
+                "references": [],
+                "delivered_message_ids": [],
+                "version": 1,
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+            }
+            state["event_runs"].append(run_rec)
+            return httpx.Response(201, json=run_rec)
+        if path == "/api/mcp-servers" and method == "GET":
+            return httpx.Response(200, json=[])
+        if path in {
+            "/api/group-chat/rooms/default",
+            f"/api/group-chat/rooms/{room_id}",
+        }:
+            return httpx.Response(
+                200,
+                json={
+                    "id": str(room_id),
+                    "title": "Group Chat",
+                    "consecutive_agent_turns": 0,
+                    "max_consecutive_agent_turns": 6,
+                    "version": 1,
+                    "created_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                },
+            )
+        if path == f"/api/group-chat/rooms/{room_id}/participants":
+            if method == "POST":
+                return httpx.Response(201, json=kadan_participant_json())
+            return httpx.Response(
+                200,
+                json=[
+                    kadan_participant_json(),
+                    {
+                        "id": str(dot_id),
+                        "room_id": str(room_id),
+                        "handle": "dot",
+                        "display_name": "Dot",
+                        "kind": "external_agent",
+                        "agent_key": None,
+                        "description": "",
+                        "enabled": True,
+                        "revoked_at": None,
+                        "last_seen_at": None,
+                        "cursor_seq": 0,
+                        "version": 1,
+                        "created_at": now.isoformat(),
+                        "updated_at": now.isoformat(),
+                    },
+                ],
+            )
+        if path == f"/api/group-chat/rooms/{room_id}/participants/{kadan_id}/touch":
+            body = json.loads(request.content)
+            if body.get("cursor_seq") is not None:
+                state["cursor_seq"] = max(state["cursor_seq"], body["cursor_seq"])
+            return httpx.Response(200, json=kadan_participant_json())
+        if path == f"/api/group-chat/rooms/{room_id}/messages" and method == "GET":
+            after_seq = int(request.url.params.get("after_seq", "0"))
+            limit = int(request.url.params.get("limit", "50"))
+            unread = [m for m in all_messages if m["seq"] > after_seq]
+            page = unread[:limit]
+            return httpx.Response(
+                200,
+                json={
+                    "room": {
+                        "id": str(room_id),
+                        "title": "Group Chat",
+                        "consecutive_agent_turns": 0,
+                        "max_consecutive_agent_turns": 6,
+                        "version": 1,
+                        "created_at": now.isoformat(),
+                        "updated_at": now.isoformat(),
+                    },
+                    "messages": page,
+                    "latest_seq": all_messages[-1]["seq"],
+                    "has_more": len(unread) > limit,
+                },
+            )
+        return httpx.Response(404, json={"detail": f"Unhandled {method} {path}"})
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            settings = Settings(
+                tsuchi_url="http://tsuchi.test",
+                hikari_url="http://hikari.test",
+                agent_instruction_file=str(instruction_file),
+            )
+            services = LocalServices(client, settings)
+            runs = AgentRuns(services, owner=owner_id)
+            dispatcher = GroupChatWebhookEvents(services)
+
+            # 1. Reconciler scans past the first 100-row page and wakes Kadan for seq 105.
+            await dispatcher.reconcile_kadan_wakeups()
+            assert len(state["event_runs"]) == 1
+            first_run_rec = state["event_runs"][0]
+            first_run = AgentRun.model_validate(
+                {
+                    **first_run_rec,
+                    "status": "running",
+                    "owner_id": str(owner_id),
+                    "lease_expires_at": (now + timedelta(seconds=60)).isoformat(),
+                }
+            )
+
+            # 2. First wake hydrates only seq 1..100; cursor advances ONLY to 100, NOT room latest_seq 105!
+            ctx1 = await runs.context(first_run)
+            obs1 = next(
+                item
+                for item in ctx1
+                if getattr(item, "name", None) == "group_chat_event"
+            )
+            assert obs1.data["latest_seq"] == 105
+            assert obs1.data["last_included_seq"] == 100
+            assert obs1.data["has_more"] is True
+            assert len(obs1.data["unread_messages"]) == 100
+            await runs._advance_group_chat_cursor(
+                first_run.model_copy(update={"transcript": ctx1})
+            )
+            assert state["cursor_seq"] == 100
+            first_run_rec["status"] = "completed"
+
+            # 3. Subsequent reconciliation sees seq 105 still unread after cursor 100 and queues a new wake run.
+            await dispatcher.reconcile_kadan_wakeups()
+            assert len(state["event_runs"]) == 2
+            second_run_rec = state["event_runs"][1]
+            assert second_run_rec["id"] != first_run_rec["id"]
+            second_run = AgentRun.model_validate(
+                {
+                    **second_run_rec,
+                    "status": "running",
+                    "owner_id": str(owner_id),
+                    "lease_expires_at": (now + timedelta(seconds=60)).isoformat(),
+                }
+            )
+
+            # 4. Second wake receives seq 101..105 including the directed @mention at seq 105, then advances to 105.
+            ctx2 = await runs.context(second_run)
+            obs2 = next(
+                item
+                for item in ctx2
+                if getattr(item, "name", None) == "group_chat_event"
+            )
+            assert obs2.data["last_included_seq"] == 105
+            assert obs2.data["has_more"] is False
+            assert [m["seq"] for m in obs2.data["unread_messages"]] == [
+                101,
+                102,
+                103,
+                104,
+                105,
+            ]
+            assert obs2.data["addressed_by"][0]["seq"] == 105
+            await runs._advance_group_chat_cursor(
+                second_run.model_copy(update={"transcript": ctx2})
+            )
+            assert state["cursor_seq"] == 105
+            second_run_rec["status"] = "completed"
+
+            # 5. No further wake runs once caught up to 105.
+            await dispatcher.reconcile_kadan_wakeups()
+            assert len(state["event_runs"]) == 2
+
+    asyncio.run(scenario())

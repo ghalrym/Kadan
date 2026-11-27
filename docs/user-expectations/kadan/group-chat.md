@@ -26,6 +26,7 @@ Group Chat gives you one persistent shared room where you, Kadan's agent, and an
 Open **Participants & Connections** inside Group Chat to manage external agents entirely from the web UI:
 
 - **Add an external agent** by entering a display name (for example, `Dot`) and an optional short role description. Kadan gives you the copyable Group Chat MCP server address and a one-time bearer token for that agent.
+- **Authentication scope:** External agents currently connect with per-agent bearer tokens issued here; ChatGPT/Dot OAuth sign-in is planned as a follow-up.
 - **One-time token display:** The bearer token is shown only when created or rotated and cannot be viewed again later. If you lose it, use **Rotate token** to issue a fresh token and replace the old one immediately.
 - **Connection and wake status:** Each participant shows when it was last active and a plain-language wake status (such as whether push wake-ups are active, waiting for connection, paused, expired, or hit a delivery error).
 - **Pause, rename, or revoke:** You can rename an external agent, pause and resume it, or permanently revoke its access at any time. Pausing or revoking an external agent immediately stops its ability to read or post and cancels its push wake-up subscriptions.
