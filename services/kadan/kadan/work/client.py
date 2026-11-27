@@ -153,6 +153,7 @@ class WorkClient:
                     supports_resume=avail.supports_resume,
                     supports_approvals=avail.supports_approvals,
                     supports_questions=avail.supports_questions,
+                    supports_images=avail.supports_images,
                 )
             )
         return results
@@ -273,17 +274,21 @@ class WorkClient:
         )
 
         run: WorkRun | None = None
-        if data.prompt and data.prompt.strip():
+        if (data.prompt and data.prompt.strip()) or data.images:
             run_client_id = (
                 f"{data.client_request_id}:initial-run"
                 if data.client_request_id
                 else str(uuid5(created.id, "initial-run"))
             )
+            prompt_text = (
+                data.prompt or ""
+            ).strip() or "Inspect the attached image(s)."
             run = await self.send_message(
                 created.id,
                 WorkRunCreate(
-                    prompt=data.prompt.strip(),
+                    prompt=prompt_text,
                     mode="send",
+                    images=data.images,
                     client_request_id=run_client_id,
                 ),
             )
@@ -302,6 +307,12 @@ class WorkClient:
         return WorkThread.model_validate(raw)
 
     async def delete_thread(self, thread_id: UUID) -> None:
+        with suppress(ServiceError):
+            thread = await self.get_thread(thread_id)
+            adapter = self.registry.get(thread.harness)
+            drop = getattr(adapter, "drop_session_state", None)
+            if callable(drop):
+                drop(thread_id)
         await self.services.json_request(
             "Tsuchi", "DELETE", f"/api/work/threads/{thread_id}"
         )

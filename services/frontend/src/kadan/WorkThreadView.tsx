@@ -7,6 +7,7 @@ import {
   Clock,
   FileCode2,
   Folder,
+  ImagePlus,
   Send,
   Square,
   Terminal,
@@ -140,9 +141,17 @@ function PendingCard({
 function ActivityRow({ item }: { item: WorkActivityItem }) {
   if (item.kind === "user_message") {
     const steered = item.data?.mode === "steer";
+    const imageCount = Number(item.data?.image_count ?? 0);
     return (
       <article className="work-item work-item-user">
-        <div className="work-item-meta">{steered ? "You (update)" : "You"}</div>
+        <div className="work-item-meta">
+          {steered ? "You (update)" : "You"}
+          {imageCount > 0 && (
+            <span className="work-pill">
+              {imageCount} {imageCount === 1 ? "image" : "images"}
+            </span>
+          )}
+        </div>
         <div className="work-item-body">{item.text}</div>
       </article>
     );
@@ -219,6 +228,7 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const [customSnooze, setCustomSnooze] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [attachedImages, setAttachedImages] = useState<{ name: string; dataUrl: string }[]>([]);
   const feedEndRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async (showSpinner = false) => {
@@ -253,14 +263,43 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
     feedEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [detail?.activity.length]);
 
+  function handleSelectImages(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    const allowed = Array.from(files).filter(
+      (f) => f.type === "image/png" || f.type === "image/jpeg",
+    );
+    if (allowed.length < files.length) {
+      setError("Only PNG and JPEG screenshots can be attached.");
+    }
+    for (const file of allowed.slice(0, Math.max(0, 8 - attachedImages.length))) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          setAttachedImages((prev) => [
+            ...prev.slice(0, 7),
+            { name: file.name, dataUrl: reader.result as string },
+          ]);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  }
+
   async function handleSend(mode: "send" | "steer" | "queue") {
-    const text = draft.trim();
+    const text = draft.trim() || (attachedImages.length > 0 ? "Inspect the attached image(s)." : "");
     if (!text) return;
+    // Live steering is text-only; always queue image-bearing follow-ups so attachments are preserved.
+    const effectiveMode = mode === "steer" && attachedImages.length > 0 ? "queue" : mode;
     setBusy(true);
     setError("");
     try {
-      await sendWorkMessage(threadId, { prompt: text, mode });
+      await sendWorkMessage(threadId, {
+        prompt: text,
+        mode: effectiveMode,
+        images: attachedImages.length > 0 ? attachedImages.map((img) => img.dataUrl) : undefined,
+      });
       setDraft("");
+      setAttachedImages([]);
       await load(false);
       onChanged();
     } catch (err) {
@@ -530,6 +569,12 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
         </div>
       )}
 
+      {currentHarness?.auth.login_method === "local" && currentHarness.auth.status !== "ready" && (
+        <div className="work-local-hint" role="status">
+          {currentHarness.auth.message}
+        </div>
+      )}
+
       <div className="work-activity-feed">
         {activity.length === 0 ? (
           <div className="work-empty-feed">
@@ -555,6 +600,23 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
       )}
 
       <footer className="work-composer">
+        {attachedImages.length > 0 && (
+          <div className="work-image-chips">
+            {attachedImages.map((img, idx) => (
+              <span key={`${img.name}-${idx}`} className="work-image-chip">
+                <span>{img.name}</span>
+                <button
+                  type="button"
+                  className="icon"
+                  aria-label={`Remove ${img.name}`}
+                  onClick={() => setAttachedImages((prev) => prev.filter((_, i) => i !== idx))}
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <textarea
           rows={2}
           value={draft}
@@ -567,15 +629,36 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
-              if (draft.trim() && !busy) {
+              if ((draft.trim() || attachedImages.length > 0) && !busy) {
                 void handleSend(
-                  active ? (currentHarness?.supports_steer ? "steer" : "queue") : "send",
+                  active
+                    ? currentHarness?.supports_steer && attachedImages.length === 0
+                      ? "steer"
+                      : "queue"
+                    : "send",
                 );
               }
             }
           }}
         />
         <div className="work-composer-actions">
+          {currentHarness?.supports_images && (
+            <label className="button work-attach-btn">
+              <ImagePlus size={14} />
+              Image
+              <input
+                type="file"
+                accept="image/png,image/jpeg"
+                multiple
+                hidden
+                disabled={busy}
+                onChange={(event) => {
+                  handleSelectImages(event.target.files);
+                  event.target.value = "";
+                }}
+              />
+            </label>
+          )}
           {active ? (
             <>
               <button
@@ -589,7 +672,12 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
               {currentHarness?.supports_steer && (
                 <button
                   className="button"
-                  disabled={busy || !draft.trim()}
+                  disabled={busy || !draft.trim() || attachedImages.length > 0}
+                  title={
+                    attachedImages.length > 0
+                      ? "Follow-ups with images are queued as the next turn"
+                      : undefined
+                  }
                   onClick={() => void handleSend("steer")}
                 >
                   Steer
@@ -597,7 +685,7 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
               )}
               <button
                 className="primary"
-                disabled={busy || !draft.trim()}
+                disabled={busy || (!draft.trim() && attachedImages.length === 0)}
                 onClick={() => void handleSend("queue")}
               >
                 <Send size={14} />
@@ -607,7 +695,7 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
           ) : (
             <button
               className="primary"
-              disabled={busy || !draft.trim()}
+              disabled={busy || (!draft.trim() && attachedImages.length === 0)}
               onClick={() => void handleSend("send")}
             >
               <Send size={14} />

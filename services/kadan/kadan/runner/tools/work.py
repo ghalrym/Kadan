@@ -66,9 +66,9 @@ class WorkThreadLaunchArguments(Arguments):
         description="Clear, self-contained task prompt for the coding harness.",
     )
     harness: str = Field(
-        default="codex",
+        default="inkling",
         pattern=r"^[a-z0-9][a-z0-9_-]{0,47}$",
-        description="Coding harness to use (codex, claude, antigravity, grok).",
+        description="Coding harness to use (inkling, codex, claude, antigravity, grok).",
     )
     model: str | None = Field(
         default=None,

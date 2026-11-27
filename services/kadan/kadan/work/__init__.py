@@ -10,6 +10,7 @@ from .contract import (
     NormalizedEvent,
     SessionConfig,
 )
+from .inkling_adapter import InklingHarnessAdapter, InklingHarnessSession
 from .registry import HarnessRegistry, default_registry
 
 __all__ = [
@@ -20,6 +21,8 @@ __all__ = [
     "HarnessModelInfo",
     "HarnessRegistry",
     "HarnessSession",
+    "InklingHarnessAdapter",
+    "InklingHarnessSession",
     "NormalizedEvent",
     "SessionConfig",
     "default_registry",

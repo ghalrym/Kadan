@@ -135,6 +135,8 @@ class WorkRunner:
                 self._active.pop(thread_id, None)
 
         # 4. Deliver live steering runs to active sessions if supported.
+        # Runs carrying image attachments are never consumed by text-only steer;
+        # they stay queued and run as the next full turn with images intact.
         for run in sorted(runs, key=lambda item: (item.ordinal, item.created_at)):
             active = self._active.get(run.thread_id)
             if (
@@ -142,6 +144,7 @@ class WorkRunner:
                 and run.id != active.run.id
                 and run.status == "queued"
                 and run.mode == "steer"
+                and not run.images
                 and active.session is not None
             ):
                 steered = False
@@ -372,6 +375,9 @@ class WorkRunner:
                 )
 
             # Record user prompt in activity log.
+            user_data: dict[str, Any] = {"mode": run.mode}
+            if run.images:
+                user_data["image_count"] = len(run.images)
             await self._append_activity(
                 thread.id,
                 [
@@ -380,7 +386,7 @@ class WorkRunner:
                         "run_id": str(run.id),
                         "kind": "user_message",
                         "text": run.prompt,
-                        "data": {"mode": run.mode},
+                        "data": user_data,
                     }
                 ],
             )
@@ -388,12 +394,16 @@ class WorkRunner:
             run = await self._update_run(active, status="running", keep_lease=True)
 
             adapter = self.services.work.registry.get(thread.harness)
+            priority = (
+                "background" if thread.origin_agent_key is not None else "interactive"
+            )
             config = SessionConfig(
                 thread_id=thread.id,
                 working_dir=working_dir,
                 model=thread.model,
                 model_options=dict(thread.model_options),
                 harness_session_id=thread.harness_session_id,
+                priority=priority,
             )
             session = await adapter.open_session(config, self.services)
             active.session = session
@@ -432,7 +442,12 @@ class WorkRunner:
                 if items:
                     await self._append_activity(thread.id, items)
 
-            async for event in session.start_turn(run.prompt):
+            if run.images and getattr(session, "supports_images", False):
+                turn_stream = session.start_turn(run.prompt, images=run.images)  # type: ignore[call-arg]
+            else:
+                turn_stream = session.start_turn(run.prompt)
+
+            async for event in turn_stream:
                 if event.kind == "session_started" and event.session_id:
                     if thread.harness_session_id != event.session_id:
                         with suppress(ServiceError):
@@ -497,6 +512,10 @@ class WorkRunner:
                         data["change_type"] = event.change_type
                     if event.is_error:
                         data["is_error"] = True
+                    if event.kind == "status" and event.raw:
+                        for diag_key in ("telemetry", "compaction", "guardrail"):
+                            if diag_key in event.raw:
+                                data[diag_key] = event.raw[diag_key]
                     await self._append_activity(
                         thread.id,
                         [
