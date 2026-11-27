@@ -26,6 +26,7 @@ class ConversationRuns(BaseModel):
     runs: list[AgentRunSummary]
     images: list[ImageJobSummary]
     conversation: Resource
+    agent_name: str | None = None
 
 
 @router.post("/api/agents/{key}/conversations/{conversation_id}/runs", status_code=202)
@@ -44,7 +45,17 @@ async def conversation_runs(
     key: AgentKey, conversation_id: UUID, request: Request
 ) -> ConversationRuns:
     services = request.app.state.services
-    runs, images, conversation = await asyncio.gather(
+
+    async def read_agent_name() -> str | None:
+        if not hasattr(services, "agent"):
+            return None
+        try:
+            agent = await services.agent(key)
+        except ServiceError:
+            return None
+        return agent.name
+
+    runs, images, conversation, agent_name = await asyncio.gather(
         services.json_request(
             "Tsuchi", "GET", f"/api/agents/{key}/resources/{conversation_id}/runs"
         ),
@@ -52,6 +63,7 @@ async def conversation_runs(
             "Tsuchi", "GET", f"/api/agents/{key}/resources/{conversation_id}/image-jobs"
         ),
         services.resource_of_kinds(key, conversation_id, (ResourceKind.CONVERSATION,)),
+        read_agent_name(),
     )
     if not isinstance(runs, list) or not isinstance(images, list):
         raise ServiceError(
@@ -73,6 +85,7 @@ async def conversation_runs(
         ],
         images=[ImageJobSummary.model_validate(image) for image in image_records],
         conversation=conversation,
+        agent_name=agent_name,
     )
 
 

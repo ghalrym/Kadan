@@ -96,6 +96,9 @@ class CompactionBoundary:
         assert key == "alpha" and conversation_id == self.conversation.id
         return self.conversation
 
+    async def agent(self, key):
+        return SimpleNamespace(key=key, name="Alpha")
+
     async def agent_persona(self, key):
         return None
 

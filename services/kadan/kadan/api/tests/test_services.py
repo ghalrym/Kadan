@@ -8,9 +8,16 @@ import httpx
 import pytest
 
 from kadan.api.config import ServiceError, Settings
-from kadan.api.pydantic_models.resources import Message, Resource
+from kadan.api.pydantic_models.resources import Agent, Message, Resource
 from kadan.api.routes.agents.conversations.notes import NoteInput
-from kadan.api.services import LocalServices
+from kadan.api.services import (
+    DEFAULT_AGENT_KEY,
+    DEFAULT_AGENT_NAME,
+    ONBOARDING_GREETING,
+    ONBOARDING_GREETING_MESSAGE_ID,
+    STARTER_PERSONA_MARKDOWN,
+    LocalServices,
+)
 
 CONVERSATION_ID = UUID("10000000-0000-4000-8000-000000000001")
 PERSONA_ID = UUID("10000000-0000-4000-8000-000000000002")
@@ -568,11 +575,25 @@ def test_call_instruction_snapshots_owned_persona(owned_present):
             if owned_present
             else None
         )
+        service.agent = AsyncMock(return_value=Agent(key="test", name="Lumi"))
         service.agent_persona = AsyncMock(return_value=owned)
         instruction = await service.call_instruction("test")
         assert "Have a spoken conversation." in instruction
         assert "You have no tools." in instruction
+        if owned_present:
+            assert (
+                'You are "Lumi", role-playing as the character defined in your persona below. '
+                "Stay naturally in character and speak like a real person, not a robotic assistant."
+                "\nYour saved persona:\nOwned instruction."
+            ) in instruction
+        else:
+            assert (
+                'You are "Lumi". Speak naturally and warmly like a real person, '
+                "not a robotic assistant."
+            ) in instruction
+            assert "Your saved persona:" not in instruction
         assert instruction.count("Owned instruction.") == int(owned_present)
+        service.agent.assert_awaited_once_with("test")
         service.agent_persona.assert_awaited_once_with("test")
         if owned:
             owned.markdown = "Later edit."
@@ -585,6 +606,7 @@ def test_call_instruction_preserves_full_text_at_limit_and_rejects_overflow():
     async def check():
         service = LocalServices(None, Settings(_env_file=None))
         owned = resource("persona", markdown="")
+        service.agent = AsyncMock(return_value=Agent(key="test", name="Lumi"))
         service.agent_persona = AsyncMock(return_value=owned)
         base = await service.call_instruction("test")
         owned.markdown = "x" * (8000 - len(base))
@@ -596,3 +618,251 @@ def test_call_instruction_preserves_full_text_at_limit_and_rejects_overflow():
             await service.call_instruction("test")
 
     asyncio.run(check())
+
+
+def test_list_agents_auto_bootstraps_default_agent_conversation_and_starter_persona():
+    agents = []
+    conversations = []
+    persona = None
+    requests = []
+
+    def tsuchi(request):
+        nonlocal persona
+        requests.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path == "/api/agents":
+            return httpx.Response(200, json=agents)
+        if request.method == "POST" and request.url.path == "/api/agents":
+            body = json.loads(request.content)
+            agent = {
+                "key": body["key"],
+                "name": body["name"],
+                "created_at": NOW.isoformat(),
+                "selected_pet_id": None,
+                "persona_id": None,
+            }
+            agents.append(agent)
+            return httpx.Response(201, json=agent)
+        if (
+            request.method == "GET"
+            and request.url.path == f"/api/agents/{DEFAULT_AGENT_KEY}/resources"
+        ):
+            return httpx.Response(
+                200, json=[item.model_dump(mode="json") for item in conversations]
+            )
+        if (
+            request.method == "POST"
+            and request.url.path == f"/api/agents/{DEFAULT_AGENT_KEY}/resources"
+        ):
+            body = json.loads(request.content)
+            created = resource(
+                "conversation",
+                agent_key=DEFAULT_AGENT_KEY,
+                title=body["title"],
+                messages=[],
+            )
+            conversations.append(created)
+            return httpx.Response(201, json=created.model_dump(mode="json"))
+        if request.method == "POST" and request.url.path.endswith("/messages"):
+            body = json.loads(request.content)
+            message = Message.model_validate(body["message"])
+            current = conversations[0]
+            assert body["expected_version"] == current.version
+            conversations[0] = current.model_copy(
+                update={
+                    "version": current.version + 1,
+                    "messages": [*current.messages, message],
+                }
+            )
+            return httpx.Response(200, json=conversations[0].model_dump(mode="json"))
+        if (
+            request.method == "GET"
+            and request.url.path == f"/api/agents/{DEFAULT_AGENT_KEY}/persona"
+        ):
+            return httpx.Response(
+                200,
+                content=json.dumps(
+                    persona.model_dump(mode="json") if persona is not None else None
+                ),
+            )
+        if (
+            request.method == "PUT"
+            and request.url.path == f"/api/agents/{DEFAULT_AGENT_KEY}/persona"
+        ):
+            body = json.loads(request.content)
+            assert body["expected_version"] is None
+            persona = resource(
+                "persona",
+                agent_key=DEFAULT_AGENT_KEY,
+                title=body["title"],
+                markdown=body["markdown"],
+            )
+            agents[0]["persona_id"] = str(persona.id)
+            return httpx.Response(200, json=persona.model_dump(mode="json"))
+        raise AssertionError(f"Unexpected call: {request.method} {request.url.path}")
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(tsuchi)) as client:
+            service = LocalServices(client, Settings(_env_file=None))
+            first = await service.list_agents()
+            second = await service.list_agents()
+            return first, second
+
+    first, second = asyncio.run(scenario())
+    assert len(first) == 1
+    assert first[0]["key"] == DEFAULT_AGENT_KEY
+    assert first[0]["name"] == DEFAULT_AGENT_NAME
+    assert second == first
+    assert len(conversations) == 1
+    assert len(conversations[0].messages) == 1
+    greeting = conversations[0].messages[0]
+    assert greeting.id == ONBOARDING_GREETING_MESSAGE_ID
+    assert greeting.role == "assistant"
+    assert greeting.content == ONBOARDING_GREETING
+    assert persona is not None
+    assert persona.markdown == STARTER_PERSONA_MARKDOWN
+    assert persona.markdown.count("TODO") >= 5
+    assert "# Onboarding (remove this section once all TODOs above are filled in)" in persona.markdown
+    # Second list_agents call must not re-create or re-seed anything.
+    assert requests.count(("POST", "/api/agents")) == 1
+    assert requests.count(("PUT", f"/api/agents/{DEFAULT_AGENT_KEY}/persona")) == 1
+
+
+def test_list_agents_handles_concurrent_bootstrap_race_without_failing():
+    agent_record = {
+        "key": DEFAULT_AGENT_KEY,
+        "name": DEFAULT_AGENT_NAME,
+        "created_at": NOW.isoformat(),
+        "selected_pet_id": None,
+        "persona_id": str(PERSONA_ID),
+    }
+    created_by_other = False
+    existing_conversation = resource(
+        "conversation",
+        agent_key=DEFAULT_AGENT_KEY,
+        title="New chat",
+        version=2,
+        messages=[
+            Message(
+                id=ONBOARDING_GREETING_MESSAGE_ID,
+                role="assistant",
+                content=ONBOARDING_GREETING,
+            )
+        ],
+    )
+    existing_persona = resource(
+        "persona",
+        agent_key=DEFAULT_AGENT_KEY,
+        title=DEFAULT_AGENT_NAME,
+        markdown=STARTER_PERSONA_MARKDOWN,
+    )
+    writes = []
+
+    def tsuchi(request):
+        nonlocal created_by_other
+        if request.method == "GET" and request.url.path == "/api/agents":
+            return httpx.Response(200, json=[agent_record] if created_by_other else [])
+        if request.method == "POST" and request.url.path == "/api/agents":
+            # Another instance created the default agent right before us.
+            created_by_other = True
+            return httpx.Response(409, json={"detail": "This agent key already exists"})
+        if (
+            request.method == "GET"
+            and request.url.path == f"/api/agents/{DEFAULT_AGENT_KEY}/resources"
+        ):
+            return httpx.Response(
+                200, json=[existing_conversation.model_dump(mode="json")]
+            )
+        if request.method == "POST" and request.url.path.endswith("/messages"):
+            writes.append("message")
+            return httpx.Response(409, json={"detail": "This message ID already exists"})
+        if (
+            request.method == "GET"
+            and request.url.path == f"/api/agents/{DEFAULT_AGENT_KEY}/persona"
+        ):
+            return httpx.Response(200, json=existing_persona.model_dump(mode="json"))
+        if (
+            request.method == "PUT"
+            and request.url.path == f"/api/agents/{DEFAULT_AGENT_KEY}/persona"
+        ):
+            writes.append("persona")
+            return httpx.Response(409, json={"detail": "This agent already has a persona."})
+        raise AssertionError(f"Unexpected call: {request.method} {request.url.path}")
+
+    result = run(tsuchi, lambda service: service.list_agents())
+    assert result == [agent_record]
+    assert writes == []
+
+
+def test_list_agents_does_not_overwrite_or_reseed_existing_agents():
+    existing = [
+        {
+            "key": "ember",
+            "name": "Ember",
+            "created_at": NOW.isoformat(),
+            "selected_pet_id": None,
+            "persona_id": None,
+        }
+    ]
+    requests = []
+
+    def tsuchi(request):
+        requests.append((request.method, request.url.path))
+        assert request.method == "GET" and request.url.path == "/api/agents"
+        return httpx.Response(200, json=existing)
+
+    result = run(tsuchi, lambda service: service.list_agents())
+    assert result == existing
+    assert requests == [("GET", "/api/agents")]
+
+
+def test_list_agents_handles_409_races_on_greeting_and_persona_seed():
+    created = False
+    empty_conversation = resource(
+        "conversation",
+        agent_key=DEFAULT_AGENT_KEY,
+        title="New chat",
+        version=1,
+        messages=[],
+    )
+    agent_record = {
+        "key": DEFAULT_AGENT_KEY,
+        "name": DEFAULT_AGENT_NAME,
+        "created_at": NOW.isoformat(),
+        "selected_pet_id": None,
+        "persona_id": str(PERSONA_ID),
+    }
+
+    def tsuchi(request):
+        nonlocal created
+        if request.method == "GET" and request.url.path == "/api/agents":
+            return httpx.Response(200, json=[agent_record] if created else [])
+        if request.method == "POST" and request.url.path == "/api/agents":
+            created = True
+            return httpx.Response(409, json={"detail": "This agent key already exists"})
+        if (
+            request.method == "GET"
+            and request.url.path == f"/api/agents/{DEFAULT_AGENT_KEY}/resources"
+        ):
+            return httpx.Response(
+                200, json=[empty_conversation.model_dump(mode="json")]
+            )
+        if request.method == "POST" and request.url.path.endswith("/messages"):
+            return httpx.Response(
+                409, json={"detail": "This message ID already exists"}
+            )
+        if (
+            request.method == "GET"
+            and request.url.path == f"/api/agents/{DEFAULT_AGENT_KEY}/persona"
+        ):
+            return httpx.Response(200, content=b"null")
+        if (
+            request.method == "PUT"
+            and request.url.path == f"/api/agents/{DEFAULT_AGENT_KEY}/persona"
+        ):
+            return httpx.Response(
+                409, json={"detail": "This agent already has a persona."}
+            )
+        raise AssertionError(f"Unexpected call: {request.method} {request.url.path}")
+
+    result = run(tsuchi, lambda service: service.list_agents())
+    assert result == [agent_record]

@@ -36,10 +36,27 @@ class UpdatePersonaArguments(Arguments):
         return value.strip()
 
 
+class RenameSelfArguments(Arguments):
+    name: str = Field(
+        min_length=1,
+        max_length=500,
+        description="Your new display name.",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def nonblank_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Name cannot be blank")
+        return value.strip()
+
+
 class PersonaConversation(Protocol):
     async def read_persona(self) -> dict: ...
 
     async def update_persona(self, args: UpdatePersonaArguments) -> dict: ...
+
+    async def rename_self(self, args: RenameSelfArguments) -> dict: ...
 
 
 @conversation_tool
@@ -60,4 +77,12 @@ async def update_persona(
     return await conversation.update_persona(args)
 
 
-TOOLS = [read_persona, update_persona]
+@conversation_tool
+async def rename_self(
+    args: RenameSelfArguments, conversation: PersonaConversation
+) -> dict:
+    """Update your own display name, such as when the user gives you a name."""
+    return await conversation.rename_self(args)
+
+
+TOOLS = [read_persona, update_persona, rename_self]

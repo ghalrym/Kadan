@@ -23,7 +23,7 @@ from kadan.api.pydantic_models.agent_runs import (
     RunResult,
     UnrecoveredRecord,
 )
-from kadan.api.pydantic_models.resources import Message, Resource, ResourceKind
+from kadan.api.pydantic_models.resources import Agent, Message, Resource, ResourceKind
 from kadan.runner.agent_inference import (
     REASONING_TOKENS,
     REPLY_TOKENS,
@@ -76,6 +76,7 @@ class Boundary:
         self.deliveries = []
         self.delivery_attempts = []
         self.drafts = []
+        self.agent_record = Agent(key="test", name="Test Agent")
         self.crash_after_delivery = False
         self.controller = AgentRuns(self)
 
@@ -103,6 +104,19 @@ class Boundary:
     async def resource(self, key, conversation_id):
         assert key == "test" and conversation_id == self.conversation.id
         return self.conversation
+
+    async def agent(self, key):
+        assert key == "test"
+        return self.agent_record
+
+    async def rename_agent(self, key, *, name, expected_name):
+        assert key == "test"
+        if self.agent_record.name == name:
+            return self.agent_record
+        if self.agent_record.name != expected_name:
+            raise ServiceError("Agent name changed since it was loaded.", 409)
+        self.agent_record = self.agent_record.model_copy(update={"name": name})
+        return self.agent_record
 
     async def agent_persona(self, key):
         assert key == "test"
@@ -500,9 +514,10 @@ def test_repaired_instructions_allow_a_new_queued_run(boundary):
     assert boundary.current.owner_id is None
     assert boundary.current.lease_expires_at is None
     assert boundary.current.error is None
-    assert boundary.current.transcript[0].content == "Repaired instructions."
+    assert boundary.current.transcript[0].content.startswith("Repaired instructions.")
+    assert 'You are "Test Agent".' in boundary.current.transcript[0].content
     assert len(boundary.controller.inference.calls) == 1
-    assert boundary.controller.inference.calls[0][0].content == "Repaired instructions."
+    assert boundary.controller.inference.calls[0][0].content == boundary.current.transcript[0].content
     assert boundary.deliveries == []
 
 
@@ -1713,11 +1728,103 @@ def test_owned_persona_applies_without_a_selected_persona(boundary, monkeypatch)
 
     monkeypatch.setattr(boundary, "agent_persona", read)
     first = asyncio.run(boundary.controller.context(boundary.current))
-    assert "Your saved persona:\nUse concise answers." in first[0].content
+    assert (
+        'You are "Test Agent", role-playing as the character defined in your persona below. '
+        "Stay naturally in character and speak like a real person, not a robotic assistant."
+        "\nYour saved persona:\nUse concise answers."
+    ) in first[0].content
     persona.markdown = "Use detailed answers."
     second = asyncio.run(boundary.controller.context(boundary.current))
     assert "Use detailed answers." in second[0].content
     assert "Use concise answers." in first[0].content
+
+
+def test_context_injects_warm_character_framing_without_persona(boundary):
+    boundary.agent_record = Agent(key="test", name="Nova")
+    context = asyncio.run(boundary.controller.context(boundary.current))
+    assert (
+        'You are "Nova". Speak naturally and warmly like a real person, '
+        "not a robotic assistant."
+    ) in context[0].content
+    assert "Your saved persona:" not in context[0].content
+
+
+def test_rename_self_updates_agent_name_and_skips_noop_write(boundary):
+    renames = []
+    original_rename = boundary.rename_agent
+
+    async def track_rename(key, *, name, expected_name):
+        renames.append((key, name, expected_name))
+        return await original_rename(key, name=name, expected_name=expected_name)
+
+    boundary.rename_agent = track_rename
+    boundary.controller.inference = Commands(
+        command("rename_self", name="  Nova  "),
+        command("rename_self", name="Nova"),
+        finish(),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert boundary.agent_record.name == "Nova"
+    assert renames == [("test", "Nova", "Test Agent")]
+    results = [
+        entry.data
+        for entry in boundary.current.transcript
+        if isinstance(entry, RunResult)
+    ]
+    assert results == [
+        {"agent_key": "test", "name": "Nova", "changed": True},
+        {"agent_key": "test", "name": "Nova", "changed": False},
+    ]
+    assert boundary.current.status == "completed"
+
+
+def test_recovered_rename_self_is_not_repeated(boundary):
+    renames = []
+
+    async def unexpected_rename(*args, **kwargs):
+        renames.append((args, kwargs))
+        raise AssertionError("Recovered rename must not be replayed")
+
+    boundary.rename_agent = unexpected_rename
+    pending = command("rename_self", name="Nova")
+    run = boundary.start_owned(
+        transcript=[
+            RunMessage(role="system", content="Saved instructions"),
+            RunCall(command=pending),
+        ]
+    )
+    boundary.controller.inference = Commands(finish())
+    asyncio.run(boundary.controller.advance(run))
+    assert "restarted before this rename" in tool_result(boundary, -2)["error"]
+    assert renames == []
+    assert len(boundary.controller.inference.calls) == 1
+
+
+def test_cancelled_run_cannot_start_rename_self(boundary):
+    from kadan.runner.agent_runs import RunConversation
+    from kadan.runner.tools.persona import RenameSelfArguments
+
+    conversation = RunConversation(boundary.controller, boundary.start_owned())
+    boundary.cancel()
+    with pytest.raises(ServiceError, match="no longer owned"):
+        asyncio.run(conversation.rename_self(RenameSelfArguments(name="Nova")))
+    assert boundary.agent_record.name == "Test Agent"
+
+
+def test_rename_self_conflict_is_returned_as_tool_result(boundary, monkeypatch):
+    async def conflict(key, *, name, expected_name):
+        raise ServiceError("Agent name changed since it was loaded.", 409)
+
+    monkeypatch.setattr(boundary, "rename_agent", conflict)
+    boundary.controller.inference = Commands(
+        command("rename_self", name="Nova"),
+        finish(),
+    )
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert tool_result(boundary, -2) == {
+        "error": "Agent name changed since it was loaded."
+    }
+    assert boundary.current.status == "completed"
 
 
 def test_recovery_does_not_reread_owned_persona(boundary, monkeypatch):

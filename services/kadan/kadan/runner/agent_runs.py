@@ -40,7 +40,7 @@ from ..api.pydantic_models.agent_runs import (
 from ..api.pydantic_models.mcp import McpServerRecord
 from ..api.pydantic_models.resources import Message, Resource, ResourceKind
 from ..api.run_client import RunClient
-from ..api.services import parse_resource
+from ..api.services import character_persona_section, parse_resource
 from .agent_inference import (
     REASONING_TOKENS,
     REPLY_TOKENS,
@@ -79,7 +79,7 @@ from .tools import (
 )
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
 from .tools.mcp import MCP_GATEWAY_TOOLS, McpCallArguments, McpSearchArguments
-from .tools.persona import UpdatePersonaArguments
+from .tools.persona import RenameSelfArguments, UpdatePersonaArguments
 from .tools.workspace import (
     CreateWorkspaceDocumentArguments,
     ListWorkspaceFilesArguments,
@@ -350,6 +350,28 @@ class RunConversation:
             "persona": persona.model_dump(
                 mode="json", include={"id", "title", "markdown", "version"}
             )
+        }
+
+    async def rename_self(self, args: RenameSelfArguments) -> dict:
+        # Stop or loss of the lease must fence a write that has not started yet.
+        await self.runs.owned(self.run)
+        current = await self.runs.services.agent(self.run.agent_key)
+        if current.name == args.name:
+            return {
+                "agent_key": current.key,
+                "name": current.name,
+                "changed": False,
+            }
+        await self.runs.owned(self.run)
+        updated = await self.runs.services.rename_agent(
+            self.run.agent_key,
+            name=args.name,
+            expected_name=current.name,
+        )
+        return {
+            "agent_key": updated.key,
+            "name": updated.name,
+            "changed": True,
         }
 
     async def read_workspace_file(self, args: ReadWorkspaceFileArguments) -> dict:
@@ -831,9 +853,11 @@ class AgentRuns(RunClient):
         conversation = await self.services.resource(run.agent_key, run.conversation_id)
         if conversation.kind != ResourceKind.CONVERSATION or conversation.deleted_at:
             raise ServiceError("The conversation is no longer available.", 409)
+        agent = await self.services.agent(run.agent_key)
         owned_persona = await self.services.agent_persona(run.agent_key)
-        if owned_persona:
-            instructions += "\nYour saved persona:\n" + owned_persona.markdown
+        instructions += "\n\n" + character_persona_section(
+            agent.name, owned_persona.markdown if owned_persona else None
+        )
         base_system = RunMessage(role="system", content=instructions)
         messages = conversation.messages
         # A later queued request may already be saved when this one starts.
@@ -1374,6 +1398,11 @@ class AgentRuns(RunClient):
                     "error": "The runner restarted before this persona save reported "
                     "a result. It may or may not have saved; read_persona before retrying."
                 }
+            elif state.replayed and command.tool == "rename_self":
+                result = {
+                    "error": "The runner restarted before this rename reported "
+                    "a result. It may or may not have saved; check before retrying."
+                }
             else:
                 try:
                     result = await tool.ainvoke(
@@ -1381,6 +1410,8 @@ class AgentRuns(RunClient):
                         config={"configurable": {"conversation": conversation}},
                     )
                 except (ServiceError, ValidationError) as error:
+                    if is_lease_lost(error):
+                        raise
                     result = {"error": str(error)}
 
         elif tool in MEMORY_TOOLS:

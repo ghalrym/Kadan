@@ -6,7 +6,13 @@ import pytest
 from fastapi import Request
 from pydantic import ValidationError
 
-from kadan.api.routes.agents import AgentInput, AgentRename, get_agent, rename_agent
+from kadan.api.routes.agents import (
+    AgentInput,
+    AgentRename,
+    get_agent,
+    list_agents,
+    rename_agent,
+)
 
 
 def test_agent_key_cannot_escape_its_namespace():
@@ -57,3 +63,21 @@ def test_agent_name_routes_proxy_exact_expected_name_and_saved_agent():
         "/api/agents/ember",
         json={"name": "New", "expected_name": " Old "},
     )
+
+
+def test_list_agents_route_delegates_to_services_bootstrap_helper():
+    list_helper = AsyncMock(return_value=[{"key": "kadan", "name": "Kadan Agent"}])
+    request = Request(
+        {
+            "type": "http",
+            "app": SimpleNamespace(
+                state=SimpleNamespace(
+                    services=SimpleNamespace(list_agents=list_helper)
+                )
+            ),
+        }
+    )
+    assert asyncio.run(list_agents(request)) == [
+        {"key": "kadan", "name": "Kadan Agent"}
+    ]
+    list_helper.assert_awaited_once_with()

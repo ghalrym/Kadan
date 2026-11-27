@@ -7,9 +7,10 @@ from kadan.runner.tools.workspace import create_workspace_document
 
 
 def test_every_tool_has_a_unique_name_and_a_description():
-    assert len(ALL_TOOLS) == 16
+    assert len(ALL_TOOLS) == 17
     assert len(TOOLS_BY_NAME) == len(ALL_TOOLS)
     assert len(CONVERSATION_TOOLS) == 9
+    assert "rename_self" in TOOLS_BY_NAME
     assert "read_request_references" not in TOOLS_BY_NAME
     assert all(tool.description for tool in ALL_TOOLS)
 
@@ -67,3 +68,27 @@ def test_persona_tool_rejects_invalid_content_and_scope_override(changes):
                 **changes,
             }
         )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"name": ""},
+        {"name": "   "},
+        {"name": "x" * 501},
+        {"name": "Nova", "agent_key": "other"},
+    ],
+)
+def test_rename_self_tool_rejects_invalid_names_and_scope_override(arguments):
+    from kadan.runner.tools.persona import RenameSelfArguments
+
+    with pytest.raises(ValidationError):
+        RenameSelfArguments.model_validate(arguments)
+
+
+def test_rename_self_tool_trims_valid_name():
+    from kadan.runner.tools.persona import RenameSelfArguments
+
+    parsed = RenameSelfArguments.model_validate({"name": "  Nova  "})
+    assert parsed.name == "Nova"

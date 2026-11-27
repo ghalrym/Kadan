@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from kadan.api.config import ServiceError
 from kadan.api.pydantic_models.agent_runs import AgentRun, ImageJob, RunMessage
 from kadan.api.pydantic_models.conversation_work import AgentRunSummary, ImageJobSummary
-from kadan.api.pydantic_models.resources import Message, Resource
+from kadan.api.pydantic_models.resources import Agent, Message, Resource
 from kadan.api.routes.agents.conversations.runs import (
     RunInput,
     cancel_image,
@@ -87,6 +87,7 @@ def polling_boundary():
         updated_at=now + timedelta(seconds=10),
     )
     services = SimpleNamespace(
+        agent=AsyncMock(return_value=Agent(key="alpha", name="Alpha")),
         resource=AsyncMock(return_value=conversation),
         runs=SimpleNamespace(
             enqueue=AsyncMock(return_value=run), cancel=AsyncMock(return_value=run)
@@ -365,3 +366,15 @@ def test_poll_accepts_valid_empty_collections(polling_boundary):
     assert result.runs == []
     assert result.images == []
     assert result.conversation == polling_boundary.conversation
+    assert result.agent_name == "Alpha"
+
+
+def test_poll_includes_live_agent_name_and_degrades_gracefully_on_agent_error(
+    polling_boundary,
+):
+    polling_boundary.services.agent.return_value = Agent(key="alpha", name="Nova")
+    assert poll(polling_boundary).agent_name == "Nova"
+    polling_boundary.services.agent.side_effect = ServiceError("Tsuchi busy", 503)
+    snapshot = poll(polling_boundary)
+    assert snapshot.agent_name is None
+    assert snapshot.conversation == polling_boundary.conversation

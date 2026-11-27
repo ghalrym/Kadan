@@ -9,6 +9,14 @@ AgentKey = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")]
 Title = Annotated[str, Field(min_length=1, max_length=500)]
 
 
+class Agent(BaseModel):
+    key: AgentKey
+    name: Title
+    created_at: datetime | None = None
+    selected_pet_id: UUID | None = None
+    persona_id: UUID | None = None
+
+
 class ResourceKind(StrEnum):
     PERSONA = "persona"
     MEMORY = "memory"

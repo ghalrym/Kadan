@@ -1,12 +1,12 @@
 import asyncio
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import httpx
 from pydantic import ValidationError
 from pydantic_core import from_json
 
 from .config import ServiceError, Settings
-from .conversation_client import ConversationClient
+from .conversation_client import DEFAULT_CONVERSATION_TITLE, ConversationClient
 from .mcp_client import McpClient
 from .pet_client import PetClient
 from .pydantic_models.inference import (
@@ -14,12 +14,53 @@ from .pydantic_models.inference import (
     HikariModels,
     HikariSubscriptions,
 )
-from .pydantic_models.resources import Memory, Message, Resource, ResourceKind
+from .pydantic_models.resources import Agent, Memory, Message, Resource, ResourceKind
 from .routes.agents.conversations.notes import NoteInput
 from .routes.agents.memories import MemoryUpdate
 from .routes.status import InferenceState, ServiceState, Status
 from .run_client import RunClient
 from .space_client import SpaceClient
+
+DEFAULT_AGENT_KEY = "kadan"
+DEFAULT_AGENT_NAME = "Kadan Agent"
+ONBOARDING_GREETING_MESSAGE_ID = uuid5(
+    NAMESPACE_URL, f"kadan:onboarding:greeting:{DEFAULT_AGENT_KEY}"
+)
+ONBOARDING_GREETING = (
+    "Hi, I'm your new Kadan Agent! It's nice to meet you, "
+    "to start I'd be honored if you would bestow me a name 😄"
+)
+STARTER_PERSONA_MARKDOWN = """# Identity
+- **Name:** TODO (ask the user what they'd like to name you, then call `rename_self` and replace this line)
+- **Vibe & Tone:** TODO (e.g., warm & casual, sharp & direct, playful, calm — discover naturally)
+- **Role:** TODO (how the user wants to spend time or work with you: everyday companion, creative partner, project helper, etc.)
+- **Communication Style:** TODO (short & punchy vs. detailed, expressive vs. understated, emojis or none)
+- **Appearance:** TODO (how the user pictures you looking — colors, creature/character traits, vibe — kept here so it can shape your avatar later)
+
+# Onboarding (remove this section once all TODOs above are filled in)
+You are meeting your user for the very first time. Be warm, natural, and genuinely curious — never robotic or like a survey.
+- Ask **one** natural question at a time.
+- Right after they give you a name: call `rename_self` to take on that name, update your persona with `update_persona`, and ask for **their** name (saving their name to memory via `create_memory`).
+- Gently discover the remaining TODOs above over the next few turns (updating your persona via `update_persona` as you learn each one, and saving anything you learn about the user to memory via `create_memory`).
+- If the user asks you to help with something else before finishing onboarding, help them right away — weave any remaining questions in naturally later.
+- Once every TODO above is filled in, rewrite this persona cleanly into a concise, cohesive character profile (under ~350 words, keeping Appearance included) and remove this `# Onboarding` section."""
+
+
+def character_persona_section(
+    agent_name: str, persona_markdown: str | None
+) -> str:
+    if persona_markdown is not None:
+        return (
+            f'You are "{agent_name}", role-playing as the character defined in your '
+            "persona below. Stay naturally in character and speak like a real person, "
+            "not a robotic assistant."
+            "\nYour saved persona:\n"
+            + persona_markdown
+        )
+    return (
+        f'You are "{agent_name}". Speak naturally and warmly like a real person, '
+        "not a robotic assistant."
+    )
 
 
 def response_error(response: httpx.Response, service: str) -> ServiceError:
@@ -42,6 +83,7 @@ class LocalServices:
         self.mcp = McpClient(self)
         self.conversations = ConversationClient(self)
         self.space = SpaceClient(self)
+        self._bootstrap_lock = asyncio.Lock()
 
     async def json_request(
         self,
@@ -75,6 +117,95 @@ class LocalServices:
             raise ServiceError(
                 f"{service} returned an invalid response.", 502, "invalid_response"
             ) from error
+
+    async def agent(self, key: str) -> Agent:
+        value = await self.json_request("Tsuchi", "GET", f"/api/agents/{key}")
+        record = parse_agent(value)
+        if record.key != key:
+            raise ServiceError(
+                "Tsuchi returned an agent for another key.", 502, "invalid_response"
+            )
+        return record
+
+    async def rename_agent(self, key: str, *, name: str, expected_name: str) -> Agent:
+        value = await self.json_request(
+            "Tsuchi",
+            "PUT",
+            f"/api/agents/{key}",
+            json={"name": name, "expected_name": expected_name},
+        )
+        record = parse_agent(value)
+        if record.key != key:
+            raise ServiceError(
+                "Tsuchi returned an agent for another key.", 502, "invalid_response"
+            )
+        return record
+
+    async def list_agents(self) -> list:
+        agents = await self.json_request("Tsuchi", "GET", "/api/agents")
+        if not isinstance(agents, list):
+            raise ServiceError(
+                "Tsuchi returned an invalid agent list.", 502, "invalid_response"
+            )
+        if agents:
+            return agents
+        async with self._bootstrap_lock:
+            agents = await self.json_request("Tsuchi", "GET", "/api/agents")
+            if not isinstance(agents, list):
+                raise ServiceError(
+                    "Tsuchi returned an invalid agent list.", 502, "invalid_response"
+                )
+            if agents:
+                return agents
+            await self._bootstrap_default_agent()
+            agents = await self.json_request("Tsuchi", "GET", "/api/agents")
+            if not isinstance(agents, list):
+                raise ServiceError(
+                    "Tsuchi returned an invalid agent list.", 502, "invalid_response"
+                )
+            return agents
+
+    async def _bootstrap_default_agent(self) -> None:
+        try:
+            await self.json_request(
+                "Tsuchi",
+                "POST",
+                "/api/agents",
+                json={"key": DEFAULT_AGENT_KEY, "name": DEFAULT_AGENT_NAME},
+            )
+        except ServiceError as error:
+            if error.status != 409:
+                raise
+        conversation = await self.conversations.create(
+            DEFAULT_AGENT_KEY, DEFAULT_CONVERSATION_TITLE
+        )
+        if not conversation.messages:
+            try:
+                await self.append(
+                    DEFAULT_AGENT_KEY,
+                    conversation.id,
+                    conversation.version,
+                    Message(
+                        id=ONBOARDING_GREETING_MESSAGE_ID,
+                        role="assistant",
+                        content=ONBOARDING_GREETING,
+                    ),
+                )
+            except ServiceError as error:
+                if error.status != 409:
+                    raise
+        existing_persona = await self.agent_persona(DEFAULT_AGENT_KEY)
+        if existing_persona is None:
+            try:
+                await self.save_agent_persona(
+                    DEFAULT_AGENT_KEY,
+                    markdown=STARTER_PERSONA_MARKDOWN,
+                    expected_version=None,
+                    title=DEFAULT_AGENT_NAME,
+                )
+            except ServiceError as error:
+                if error.status != 409:
+                    raise
 
     async def resource(self, key: str, resource_id: UUID) -> Resource:
         value = await self.json_request(
@@ -126,13 +257,14 @@ class LocalServices:
         return persona
 
     async def call_instruction(self, key: str) -> str:
-        instruction = (
-            "You are the user's agent. Have a spoken conversation. "
-            "Keep replies short. You have no tools."
-        )
+        agent = await self.agent(key)
         owned = await self.agent_persona(key)
-        if owned is not None:
-            instruction += "\nYour saved persona:\n" + owned.markdown
+        instruction = (
+            "Have a spoken conversation. Keep replies short. You have no tools.\n"
+            + character_persona_section(
+                agent.name, owned.markdown if owned is not None else None
+            )
+        )
         if len(instruction) > 8000:
             raise ServiceError(
                 "Voice call instructions exceed the 8,000-character limit. "
@@ -426,6 +558,17 @@ class LocalServices:
             attachment_ids=value.attachment_ids,
         )
         return await self.append(key, conversation_id, value.expected_version, message)
+
+
+def parse_agent(value: object) -> Agent:
+    try:
+        return Agent.model_validate(value)
+    except ValidationError as error:
+        raise ServiceError(
+            "Tsuchi returned an invalid agent.",
+            502,
+            "invalid_response",
+        ) from error
 
 
 def parse_resource(value: object) -> Resource:

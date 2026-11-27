@@ -13,7 +13,9 @@ An agent conversation separates durable work, model inference and visible messag
 
 Each agent has one ever-persistent conversation thread in Kadan; see [Persistent conversation and compaction](#persistent-conversation-and-compaction) for storage, compaction and routes. Every run belongs to one conversation (`run.conversation_id`), so ownership, queueing and delivery below apply per conversation without change. Agent keys match `[a-z0-9][a-z0-9_-]{0,63}` and are permanent namespace identifiers; creating an agent stores no model state.
 
-Kadan proxies `GET /api/agents/{key}` and `PUT /api/agents/{key}` to Tsuchi for name reconciliation and renaming. The write accepts a normalized, nonblank `name` (at most 500 characters) and required `expected_name`, compared exactly with the current name inside one write transaction. A mismatch returns 409 unless the requested name is already saved, making a repeated successful request harmless. Only the name column changes; namespace keys and associated state remain intact. The browser retains the draft on failure and requires a reload before retrying. Successful saves update the roster name without changing selection or reloading the conversation.
+When `GET /api/agents` finds an empty Tsuchi store (fresh install), Kadan automatically and idempotently bootstraps the default agent (`key="kadan"`, `name="Kadan Agent"`) under a per-service lock: creating the agent (ignoring 409 races), ensuring its single persistent conversation exists, seeding an initial assistant greeting under a deterministic UUID (when the conversation has no messages yet, ignoring 409 races), and seeding its starter onboarding persona when none exists (ignoring 409 races). Existing installations with one or more agents are returned unchanged and never overwritten or re-seeded.
+
+Kadan proxies `GET /api/agents/{key}` and `PUT /api/agents/{key}` to Tsuchi for name reconciliation and renaming. The write accepts a normalized, nonblank `name` (at most 500 characters) and required `expected_name`, compared exactly with the current name inside one write transaction. A mismatch returns 409 unless the requested name is already saved, making a repeated successful request harmless. Only the name column changes; namespace keys and associated state remain intact. The browser retains the draft on failure and requires a reload before retrying. Successful saves update the roster name without changing selection or reloading the conversation. Agents can also update their own display name through the `rename_self` tool.
 
 When preparing context, the runner includes the conversation's `compacted_summary` (when present and anchored to a saved message) in the system prompt, followed by uncompacted user and assistant messages after `compacted_through_message_id` (at most 97 recent messages, subject to the selected model's context budget and bound tool definitions). Older history remains intact in Tsuchi for scrolling, search, export, and conversation-history tools. This separates durable records from the bounded input to one run.
 
@@ -91,7 +93,9 @@ into `AgentRunSummary` and `ImageJobSummary`. Run summaries contain identities,
 trigger message/job IDs, delivery receipts, status, error, an optional ephemeral
 `draft` preview while running, and creation/update times.
 Image summaries contain identities, prompt, status, error, delivery message ID and
-creation/update times. The conversation resource remains part of the snapshot.
+creation/update times. The conversation resource and an optional current
+`agent_name` (fetched gracefully from Tsuchi's agent record so self-renames appear
+immediately in polling clients) remain part of the snapshot.
 
 Conversation inference runs at `interactive` priority so chat replies are
 scheduled ahead of background Hikari requests between turns. While a

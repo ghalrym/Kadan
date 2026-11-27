@@ -57,7 +57,7 @@ class OwnedPersonaInput(BaseModel):
 
 @router.get("/api/agents")
 async def list_agents(request: Request):
-    return await request.app.state.services.json_request("Tsuchi", "GET", "/api/agents")
+    return await request.app.state.services.list_agents()
 
 
 @router.post("/api/agents", status_code=201)
