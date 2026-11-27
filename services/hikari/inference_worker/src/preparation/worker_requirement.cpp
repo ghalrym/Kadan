@@ -29,8 +29,6 @@ std::string default_model(Workload workload, const ModelStore& store) {
         return "lfm3-vl-2b-bf16";
     case Workload::lfm3_audio:
         return "lfm3-audio-2b-bf16";
-    case Workload::lfm3_decision:
-        return "d1-2b-cpu-f32";
     case Workload::formatting:
         return "superwhisper-s1-mini";
     case Workload::speech:
@@ -141,8 +139,6 @@ Json worker_requirement(
         return footprint(model, 8 * gib, 8 * gib, 16 * gib, 16 * gib, 16 * gib);
     case Workload::lfm3_audio:
         return footprint(model, 8 * gib, 8 * gib, 16 * gib, 16 * gib, 16 * gib);
-    case Workload::lfm3_decision:
-        return footprint(model, 15 * gib, 15 * gib, 0, 0, 0);
     case Workload::llm:
         break;
     }

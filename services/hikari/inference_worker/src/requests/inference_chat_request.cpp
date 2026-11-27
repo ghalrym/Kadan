@@ -35,15 +35,15 @@ std::vector<std::uint8_t> decode_chat_png(std::string_view data_url) {
         reinterpret_cast<const std::uint8_t*>(decoded.data()) + decoded.size()
     );
 }
-}  // namespace
-
-void prepare_input(
-    ChatRequest& input,
+void prepare_llm_configuration(
+    const std::optional<std::string>& requested_model,
+    bool context_supplied,
+    std::optional<std::size_t> requested_context,
     InferenceRequest& request,
     ModelStore& store,
     const std::atomic_bool& cancel
 ) {
-    request.model = input.model.value_or(store.selected_llm_id());
+    request.model = requested_model.value_or(store.selected_llm_id());
     preparation_check(
         store.entry(request.model).inference_available,
         "This checkpoint has no supported inference engine.",
@@ -53,14 +53,14 @@ void prepare_input(
     const auto config = read_document(request.configuration.checkpoint / "config.json");
     const auto text = config.value("text_config", config);
     const auto supported = text.at("max_position_embeddings").get<std::size_t>();
-    auto configured = input.context_limit;
+    auto configured = requested_context;
     if (request.model == "lfm3-1.7b-bf16") {
-        if (!input.context_supplied || !configured) {
+        if (!context_supplied || !configured) {
             const auto saved = store.context(request.model);
             configured =
                 saved.is_null() ? std::nullopt : std::optional(saved.get<std::size_t>());
         }
-    } else if (request.operation != Operation::load || !input.context_supplied) {
+    } else if (request.operation != Operation::load || !context_supplied) {
         const auto saved = store.context(request.model);
         configured =
             saved.is_null() ? std::nullopt : std::optional(saved.get<std::size_t>());
@@ -74,6 +74,18 @@ void prepare_input(
     );
     request.context = ContextLimits{configured, effective, supported};
     request.configuration.context_limit = effective;
+}
+}  // namespace
+
+void prepare_input(
+    ChatRequest& input,
+    InferenceRequest& request,
+    ModelStore& store,
+    const std::atomic_bool& cancel
+) {
+    prepare_llm_configuration(
+        input.model, input.context_supplied, input.context_limit, request, store, cancel
+    );
     preparation_check(
         request.operation == Operation::load || !input.messages.empty(),
         "Chat requires messages",
@@ -85,6 +97,19 @@ void prepare_input(
         for (const auto& url : msg.images)
             msg.decoded_images.push_back(decode_chat_png(url));
     }
+}
+
+void prepare_input(
+    DecisionRequest& input,
+    InferenceRequest& request,
+    ModelStore& store,
+    const std::atomic_bool& cancel
+) {
+    // Share the active Inkling 2 Mini checkpoint and context limit so the
+    // resident ChatEngine serves decisions without reloading or evicting chat.
+    prepare_llm_configuration(
+        input.model, false, std::nullopt, request, store, cancel
+    );
 }
 
 Json present_chat(const InferenceRequest& request, Json result) {

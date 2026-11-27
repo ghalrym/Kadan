@@ -41,20 +41,18 @@ test('every capability reads its checkpoint from the model snapshot including ac
     models: [
       checkpoint('inkling-2-mini-q8-0'),
       checkpoint('laya'),
-      checkpoint('d1-2b-cpu-f32'),
       checkpoint('qwen-image-2.1-turbo'),
       checkpoint('qwen-tts-1.7b-custom'),
     ],
   })
   const result = await api.fetchModels(new AbortController().signal)
   assert.deepEqual(result.map(row => row.capability.label),
-    ['Language', 'Decisions', 'Voice calls', 'Image', 'Speech to text', 'Speech formatter', 'Text to speech', 'Video'])
+    ['Language & Decisions', 'Voice calls', 'Image', 'Speech to text', 'Speech formatter', 'Text to speech', 'Video'])
   assert.equal(result[0].model.id, 'inkling-2-mini-q8-0')
-  assert.equal(result[1].model.id, 'd1-2b-cpu-f32')
-  assert.equal(result[3].model.id, 'qwen-image-2.1-turbo')
-  assert.equal(result[6].model.id, 'qwen-tts-1.7b-custom')
-  assert.equal(result[4].model, null)
-  assert.equal(capabilities.length, 8)
+  assert.equal(result[2].model.id, 'qwen-image-2.1-turbo')
+  assert.equal(result[5].model.id, 'qwen-tts-1.7b-custom')
+  assert.equal(result[3].model, null)
+  assert.equal(capabilities.length, 7)
   assert.equal(result.some(row => row.model?.id === 'laya'), false)
   assert.deepEqual(calls.map(call => call.name), ['listModelsV1ModelsGet'])
 })
@@ -74,7 +72,7 @@ test('overall progress weights each checkpoint by size', async () => {
   const { api, rows } = await settingsApi()
   const language = checkpoint('inkling-2-mini-iq4-nl', { status: 'downloading', downloaded_bytes: 150, total_bytes: 300 })
   const active = rows({ 'inkling-2-mini': language, 'h3-fl2va-int8-turbo': null })
-  assert.equal(api.modelsProgress(active), 83)
+  assert.equal(api.modelsProgress(active), 81)
   assert.equal(api.modelsDownloading(active), true)
   assert.equal(api.modelsComplete(active), false)
   assert.equal(api.modelsComplete(rows({})), true)
@@ -118,13 +116,13 @@ test('downloading requires acknowledgement and queues only idle incomplete check
   }
 })
 
-test('the fixed Decisions checkpoint can be explicitly downloaded after acknowledgement', async () => {
+test('the shared Inkling language checkpoint can be explicitly downloaded after acknowledgement', async () => {
   const { api, calls, rows } = await settingsApi()
-  const models = rows({ 'd1-2b-cpu-f32': checkpoint('d1-2b-cpu-f32') })
+  const models = rows({ 'inkling-2-mini': checkpoint('inkling-2-mini-iq4-nl') })
   await assert.rejects(api.downloadModels(models, false, new AbortController().signal), /acknowledge/)
   assert.equal(calls.length, 0)
   await api.downloadModels(models, true, new AbortController().signal)
-  assert.deepEqual(calls.map(call => call.args.path.model_id), ['d1-2b-cpu-f32'])
+  assert.deepEqual(calls.map(call => call.args.path.model_id), ['inkling-2-mini-iq4-nl'])
   assert.equal(calls[0].args.body.license_acknowledged, true)
 })
 

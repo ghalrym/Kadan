@@ -1,5 +1,5 @@
 # Unified 100% C++20/CUDA multi-workload worker image (no Python runtime).
-# Supports lfm3_llm, lfm3_vision, lfm3_audio, lfm3_decision, formatting, llm,
+# Supports lfm3_llm, lfm3_vision, lfm3_audio, formatting, llm,
 # speech, tts, and video via `kadan-worker --workload=<kind>`.
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS build
 ARG DEBIAN_FRONTEND=noninteractive

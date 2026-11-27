@@ -692,7 +692,6 @@
               "transcription",
               "formatting",
               "image",
-              "decision",
               "audio"
             ],
             "title": "Kind",
@@ -1767,8 +1766,13 @@
             "type": "string"
           },
           "decisions": {
-            "const": "d1-2b-cpu-f32",
-            "default": "d1-2b-cpu-f32",
+            "default": "inkling-2-mini-iq4-nl",
+            "enum": [
+              "inkling-2-mini-iq4-nl",
+              "inkling-2-mini-q8-0",
+              "inkling-2-mini-abliterated-iq4-nl",
+              "inkling-2-mini-abliterated-q8-0"
+            ],
             "title": "Decisions",
             "type": "string"
           },
@@ -3864,7 +3868,7 @@
         ]
       },
       "post": {
-        "description": "Queue typed CPU decisions, preserving validation and disconnect cleanup.",
+        "description": "Queue typed single-pass decisions on the language model, preserving validation and disconnect cleanup.",
         "operationId": "evaluateDecisions",
         "requestBody": {
           "content": {

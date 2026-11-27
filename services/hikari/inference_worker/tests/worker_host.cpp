@@ -250,8 +250,8 @@ void each_program_runs_only_its_own_type() {
     assert(lfm3.last(id('c'))["worker"] == "lfm3_llm");
     lfm3.host->stop();
 
-    Harness d1(Workload::lfm3_decision);
-    d1.command(
+    Harness llm(Workload::llm);
+    llm.command(
         {{"id", id('d')},
          {"command", "submit"},
          {"operation", "generate"},
@@ -261,8 +261,8 @@ void each_program_runs_only_its_own_type() {
            {"questions",
             {{{"key", "q1"}, {"type", "Noul"}, {"instructions", "Test?"}}}}}}}
     );
-    assert(d1.last(id('d'))["worker"] == "lfm3_decision");
-    d1.host->stop();
+    assert(llm.last(id('d'))["worker"] == "llm");
+    llm.host->stop();
 }
 
 void sampled_phases_share_context_without_changing_results() {

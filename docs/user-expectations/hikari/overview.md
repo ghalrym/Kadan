@@ -11,7 +11,7 @@ Downloading, loading and successful generation are separate states. Requests can
 | [Subscription language providers](subscriptions.md) | Bring a Claude or Codex subscription and toggle language between local and subscription models. |
 | [Model loading and context](model-lifecycle.md) | Check readiness, manage context limits and explicitly load or unload language models. |
 | [Chat playground](chat-playground.md) | Try streaming text conversations with cancellation and retry controls. |
-| [Decisions](decisions.md) | Evaluate choices, scores and criteria using specialist model judgments. |
+| [Decisions](decisions.md) | Evaluate choices, scores and criteria in a single pass using the language model. |
 | [Image generation](image-generation.md) | Generate artwork from descriptions and inspect progress and results. |
 | [Image editing](image-editing.md) | Edit source images or use reference conditioning with defined preservation limits. |
 | [Video generation](video-generation.md) | Queue clips with audio, cancel jobs and download completed media. |

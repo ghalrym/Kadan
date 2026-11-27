@@ -29,10 +29,9 @@ struct CompiledWorkload {
 std::vector<CompiledWorkload> compiled_workloads() {
     std::vector<CompiledWorkload> out;
 #ifdef KADAN_WORKER_CUDA
-    out.push_back({"llm", "Language & Vision (Inkling 2 Mini)", true});
+    out.push_back({"llm", "Language, Vision & Decisions (Inkling 2 Mini)", true});
 #endif
     out.push_back({"lfm3_audio", "Voice Calls (LFM3 Audio 2B)", true});
-    out.push_back({"lfm3_decision", "Decisions (d1 2B CPU)", false});
     out.push_back({"formatting", "Speech Formatting (S1-mini CPU)", false});
 #ifdef KADAN_WORKER_CUDA
     out.push_back({"speech", "Speech to Text (Whisper)", true});
@@ -124,21 +123,6 @@ std::optional<WorkerProgram> build_program(std::string_view workload) {
                         ch.progress(phase, value);
                     },
                     [&ch](const Json& event) { ch.send(event); }
-                );
-            }
-        };
-    }
-    if (workload == "lfm3_decision") {
-        return WorkerProgram{
-            kadan::Workload::lfm3_decision,
-            false,
-            [](WorkerEnvironment& env) {
-                auto& ch = env.channel;
-                return lfm3_decision_engine(
-                    env.resources,
-                    [&ch](const char* phase, std::size_t value) {
-                        ch.progress(phase, value);
-                    }
                 );
             }
         };

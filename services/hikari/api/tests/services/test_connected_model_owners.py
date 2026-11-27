@@ -16,7 +16,6 @@ CATALOG = (
     ("inkling-2-mini-abliterated-iq4-nl", "llm"),
     ("inkling-2-mini-abliterated-q8-0", "llm"),
     ("lfm3-audio-2b-bf16", "audio"),
-    ("d1-2b-cpu-f32", "decision"),
     ("qwen-tts-1.7b-custom", "speech"),
     ("whisper-medium", "transcription"),
     ("superwhisper-s1-mini", "formatting"),
@@ -54,13 +53,13 @@ def connected_worker(
 
 
 class ConnectedModelOwnersTests(unittest.TestCase):
-    def test_decision_worker_full_catalog_only_advertises_its_decision_model(self):
+    def test_audio_worker_full_catalog_only_advertises_its_audio_model(self):
         hub = WorkerHub()
-        hub.workers = {"lfm3_decision": connected_worker("lfm3_decision")}
+        hub.workers = {"lfm3_audio": connected_worker("lfm3_audio")}
         with patch.dict("os.environ", {}, clear=True):
             hub._refresh_models()
-        self.assertEqual([model.id for model in hub.models.models], ["d1-2b-cpu-f32"])
-        self.assertEqual(len(hub.workers["lfm3_decision"].models.models), len(CATALOG))
+        self.assertEqual([model.id for model in hub.models.models], ["lfm3-audio-2b-bf16"])
+        self.assertEqual(len(hub.workers["lfm3_audio"].models.models), len(CATALOG))
 
     def test_native_workers_advertise_only_their_fixed_owned_models(self):
         hub = WorkerHub()
@@ -90,6 +89,7 @@ class ConnectedModelOwnersTests(unittest.TestCase):
         hub._refresh_models()
         self.assertEqual(hub.models.selected_model_id, "inkling-2-mini-q8-0")
         self.assertEqual(hub.models.defaults.llm, "inkling-2-mini-q8-0")
+        self.assertEqual(hub.models.defaults.decisions, "inkling-2-mini-q8-0")
         self.assertEqual(
             {model.id for model in hub.models.models},
             {"inkling-2-mini-q8-0", "qwen-image-2.1-turbo"},
@@ -110,20 +110,11 @@ class ConnectedModelOwnersTests(unittest.TestCase):
         )
         self.assertEqual(hub.models.defaults.llm, "inkling-2-mini-abliterated-iq4-nl")
         self.assertEqual(
-            {model.id for model in hub.models.models},
-            {"inkling-2-mini-abliterated-iq4-nl", "qwen-image-2.1-turbo"},
+            hub.models.defaults.decisions, "inkling-2-mini-abliterated-iq4-nl"
         )
-
-    def test_experimental_workers_advertise_decision_and_audio_models(self):
-        hub = WorkerHub()
-        hub.workers = {
-            kind: connected_worker(kind) for kind in ("lfm3_decision", "lfm3_audio")
-        }
-        with patch.dict("os.environ", {}, clear=True):
-            hub._refresh_models()
         self.assertEqual(
             {model.id for model in hub.models.models},
-            {"d1-2b-cpu-f32", "lfm3-audio-2b-bf16"},
+            {"inkling-2-mini-abliterated-iq4-nl", "qwen-image-2.1-turbo"},
         )
 
     def test_lfm_only_snapshot_includes_default_audio_without_native_primary(self):
@@ -176,18 +167,18 @@ class ConnectedModelOwnersTests(unittest.TestCase):
 class ConnectedStoreSettingsTests(unittest.IsolatedAsyncioTestCase):
     async def test_disconnected_owner_is_not_replaced_by_another_native_catalog(self):
         hub = WorkerHub()
-        decision, speech = connected_worker("lfm3_decision"), connected_worker("speech")
+        audio, speech = connected_worker("lfm3_audio"), connected_worker("speech")
         computer = SimpleNamespace(
             id="computer", ledger=SimpleNamespace(workers={"speech": speech})
         )
         speech.computer = computer
         speech.controls = {}
-        hub.workers = {"lfm3_decision": decision, "speech": speech}
+        hub.workers = {"lfm3_audio": audio, "speech": speech}
         hub.computers = {computer.id: computer}
         hub._refresh_models()
         self.assertIn("whisper-medium", {model.id for model in hub.models.models})
         await hub._disconnected(speech)
-        self.assertEqual([model.id for model in hub.models.models], ["d1-2b-cpu-f32"])
+        self.assertEqual([model.id for model in hub.models.models], ["lfm3-audio-2b-bf16"])
         self.assertNotIn(computer.id, hub.computers)
 
     async def test_whisper_configuration_targets_all_ready_native_stores_only(self):
@@ -196,7 +187,6 @@ class ConnectedStoreSettingsTests(unittest.IsolatedAsyncioTestCase):
             kind: connected_worker(kind)
             for kind in (
                 *NATIVE_KINDS,
-                "lfm3_decision",
                 "lfm3_audio",
             )
         }
@@ -212,9 +202,7 @@ class ConnectedStoreSettingsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_whisper_configuration_without_native_owner_reports_unavailable(self):
         hub = WorkerHub()
-        hub.workers = {
-            kind: connected_worker(kind) for kind in ("lfm3_decision", "lfm3_audio")
-        }
+        hub.workers = {"lfm3_audio": connected_worker("lfm3_audio")}
         request = InferenceTask(
             operation="configure",
             input={"feature": "whisper_formatting", "enabled": False},
@@ -229,7 +217,7 @@ class ConnectedStoreSettingsTests(unittest.IsolatedAsyncioTestCase):
         primary.models.models[0].context_limit = 8192
         hub.primary = "llm"
         hub.workers = {"llm": primary}
-        for kind in ("lfm3_decision", "lfm3_audio"):
+        for kind in ("lfm3_audio",):
             with self.subTest(kind=kind):
                 worker = connected_worker(kind)
                 await hub._synchronize(worker)

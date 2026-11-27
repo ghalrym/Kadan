@@ -1000,8 +1000,6 @@ Json ModelStore::architecture_context(const std::string& model) const {
         return 128000;
     if (item.id == "lfm3-audio-2b-bf16")
         return 32768;
-    if (item.id == "d1-2b-cpu-f32")
-        return 128000;
     if (item.kind != "llm" || !complete(item))
         return nullptr;
     const auto config =
@@ -1053,8 +1051,6 @@ Json ModelStore::status() const {
                 model["context_limit"] = 128000;
             else if (item.id == "lfm3-audio-2b-bf16")
                 model["context_limit"] = 32768;
-            else if (item.id == "d1-2b-cpu-f32")
-                model["context_limit"] = 65536;
             else
                 model["context_limit"] = Json(nullptr);
             model["architecture_context_limit"] = architecture_context(id);

@@ -44,8 +44,6 @@ const char* worker_name(Workload workload) {
         return "lfm3_vision";
     case Workload::lfm3_audio:
         return "lfm3_audio";
-    case Workload::lfm3_decision:
-        return "lfm3_decision";
     case Workload::tts:
         return "tts";
     case Workload::speech:

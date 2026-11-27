@@ -18,7 +18,7 @@ const localFailure = new DecisionError('Check your inputs', 'Some fields need at
 type Evaluation = { state: string; questions: Question[]; answers: Answer[]; elapsedMs: number }
 
 /**
- * Edit page-local decision state and display answers from the CPU d1 API.
+ * Edit page-local decision state and display answers from the Decisions API.
  * Only the active request may update results; leaving the page aborts that request.
  * Answers render against the snapshot they were evaluated with and are marked
  * outdated, not discarded, when inputs change.
@@ -118,7 +118,7 @@ export default function DecisionsPage() {
     active.current?.abort()
     active.current = null
     setPending(null)
-    setNotice('Evaluation cancelled. The CPU worker may take a moment to finish.')
+    setNotice('Evaluation cancelled. Cleanup may take a moment to finish.')
   }
 
   const elapsed = pending ? Math.max(0, Math.floor((now - pending.startedAt) / 1000)) : 0
@@ -197,8 +197,8 @@ export default function DecisionsPage() {
             )}
           </div>
           <p className="muted decisions-footnote">
-            Uses d1 on CPU, independently of the chat model. Inputs must fit the
-            specialist’s token budget. Questions and answers are not saved.
+            Evaluates choices, scores and likelihoods in a single pass using the language
+            model. Inputs must fit its context budget. Questions and answers are not saved.
           </p>
         </form>
         <Panel className="answers-panel">
@@ -233,7 +233,7 @@ export default function DecisionsPage() {
               <>
                 <p role="status" className="answers-progress">
                   <span className="answers-spinner" aria-hidden="true" />
-                  Evaluating {pending.questions.length} question{pending.questions.length === 1 ? '' : 's'} on CPU… <span className="mono faint">{elapsed}s</span>
+                  Evaluating {pending.questions.length} question{pending.questions.length === 1 ? '' : 's'}… <span className="mono faint">{elapsed}s</span>
                 </p>
                 {pending.questions.map((question, i) => (
                   <div key={i} className="answer-card answer-card--loading" aria-hidden="true">

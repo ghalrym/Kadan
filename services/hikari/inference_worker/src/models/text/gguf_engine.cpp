@@ -426,6 +426,27 @@ void Engine::end_request() {
     m.active = false;
 }
 
+void Engine::abort_request() {
+    auto& m = *impl_;
+    m.execution.idle();
+    m.model->reset();
+    m.prefix = Prefix(m.p.context);
+    m.live_images.clear();
+    m.pending_images.clear();
+    m.static_tokens.clear();
+    m.retained_state.clear();
+    m.tokens = 0;
+    m.boundary = 0;
+    m.static_boundary = 0;
+    m.save_static = false;
+    m.active = false;
+    m.poisoned = false;
+}
+
+void Engine::forget_conversation(std::string_view conversation) {
+    impl_->pool.erase(conversation);
+}
+
 Bytes PrefixSnapshot::bytes() const {
     return sizeof(*this) + prefix.memory_bytes()
            + images.capacity() * sizeof(ImageTag)
@@ -447,8 +468,9 @@ std::unique_ptr<PrefixSnapshot> Engine::take_prefix() {
     saved->state = m.model->take_state();
     saved->prefix = std::move(m.prefix);
     saved->images = std::move(m.live_images);
-    m.prefix = Prefix{};
+    m.prefix = Prefix(m.p.context);
     m.live_images.clear();
+    m.tokens = 0;
     return saved;
 }
 
@@ -462,6 +484,13 @@ bool Engine::restore_prefix(std::unique_ptr<PrefixSnapshot> saved) {
     for (std::size_t i = 0; i < gguf.tensor_count(); ++i)
         if (saved->weights[i] != gguf.identity(gguf.tensor_at(i).name))
             return false;
+    m.active = false;
+    m.poisoned = false;
+    m.boundary = 0;
+    m.static_boundary = 0;
+    m.save_static = false;
+    m.pending_images.clear();
+    m.static_tokens.clear();
     m.model->restore_state(std::move(saved->state));
     m.prefix = std::move(saved->prefix);
     m.live_images = std::move(saved->images);
@@ -615,6 +644,72 @@ serving::Token Engine::prefill(
         if (chosen_last)
             return {*chosen_last, m.model->eos(*chosen_last), m.tokens};
         return m.select(logits);
+    } catch (...) {
+        m.poisoned = true;
+        m.prefix.clear();
+        m.live_images.clear();
+        throw;
+    }
+}
+
+std::vector<float> Engine::prefill_logits(
+    std::span<const unsigned> prompt,
+    const std::function<void(const char*, std::size_t)>& progress
+) {
+    return prefill_logits(prompt, {}, progress);
+}
+
+std::vector<float> Engine::prefill_logits(
+    std::span<const unsigned> prompt,
+    std::span<const ImageSpan> images,
+    const std::function<void(const char*, std::size_t)>& progress
+) {
+    auto& m = *impl_;
+    need(
+        m.active && !m.poisoned && !prompt.empty() && m.tokens <= m.p.context
+            && prompt.size() <= m.p.context - m.tokens,
+        "gguf_text_prefill_state"
+    );
+    try {
+        std::size_t completed_layers = 0;
+        const Progress layer_progress = [&](const char*, std::size_t) {
+            if (progress)
+                progress("prefill_layer", ++completed_layers);
+        };
+        Vec logits;
+        for (std::size_t done = 0; done < prompt.size();) {
+            auto count = std::min(chunk_rows, prompt.size() - done);
+            if (m.static_boundary > m.tokens && m.static_boundary < m.tokens + count)
+                count = m.static_boundary - m.tokens;
+            if (m.boundary > m.tokens && m.boundary < m.tokens + count)
+                count = m.boundary - m.tokens;
+            const bool last = done + count == prompt.size();
+            logits = m.model->forward(
+                prompt.subspan(done, count), m.tokens, last, layer_progress, images
+            );
+            m.weights->advance(count);
+            m.tokens += count;
+            m.prefix.commit(prompt.subspan(done, count));
+            m.live_images = images_within_prefix(m.pending_images, m.tokens);
+            done += count;
+            if (!last && m.static_boundary && m.tokens == m.static_boundary
+                && m.save_static && m.live_images.empty()
+                && m.static_tokens.size() == m.tokens) {
+                m.save_pool_entry("", true, m.static_tokens, {}, true);
+            }
+            if (!last && m.boundary && m.tokens == m.boundary && m.prefix.retaining()) {
+                m.save_pool_entry(
+                    m.prefix.conversation(), false, m.prefix.committed(), m.live_images, true
+                );
+            }
+            if (progress) {
+                progress("prefill_chunk", done);
+                for (std::size_t row = done - count; row < done; ++row)
+                    progress("prefill_token", row + 1);
+            }
+        }
+        need(logits.size() == m.model->vocabulary(), "gguf_text_logits");
+        return logits;
     } catch (...) {
         m.poisoned = true;
         m.prefix.clear();

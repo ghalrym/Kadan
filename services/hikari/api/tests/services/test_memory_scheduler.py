@@ -20,7 +20,7 @@ def ledger(ram=64, vram=(24,)):
                 {"vram_total": 2 * v * GIB, "vram_free": v * GIB} for v in vram
             ],
         },
-        ["llm", "lfm3_decision", "tts", "speech", "formatting", "image", "video"],
+        ["llm", "tts", "speech", "formatting", "image", "video"],
     )
 
 
@@ -43,21 +43,22 @@ def load(machine, name, budget, *, pending=0, busy=False, used=0.0, need=None):
 
 
 class CapacityTests(unittest.TestCase):
-    def test_d1_reserves_ram_only_and_obeys_container_limit(self):
+    def test_host_only_worker_obeys_container_limit(self):
         machine = ledger(ram=64, vram=(24,))
         slot = WorkerSlot(
-            name="trial",
-            kind="lfm3_decision",
+            name="cpu_worker",
+            kind="formatting",
             devices=[],
             budget=[0, 0],
             requirement=requirement(15, 0),
         )
-        machine.workers["trial"] = slot
+        machine.workers["cpu_worker"] = slot
         self.assertEqual(
-            plan_load(machine, "trial"), [Action("load", "trial", [15 * GIB, 0])]
+            plan_load(machine, "cpu_worker"),
+            [Action("load", "cpu_worker", [15 * GIB, 0])],
         )
         slot.host_limit = 14 * GIB
-        self.assertIsNone(plan_load(machine, "trial"))
+        self.assertIsNone(plan_load(machine, "cpu_worker"))
 
     def test_container_cap_limits_initial_grant_and_idle_growth(self):
         machine = ledger(ram=400)
@@ -135,10 +136,10 @@ class CapacityTests(unittest.TestCase):
     def test_host_only_worker_needs_no_device(self):
         machine = ledger(vram=(1,))
         load(machine, "image", [0, 1])
-        machine.workers["lfm3_decision"].requirement = requirement(4, 0)
+        machine.workers["formatting"].requirement = requirement(4, 0)
         self.assertEqual(
-            plan_load(machine, "lfm3_decision"),
-            [Action("load", "lfm3_decision", [4 * GIB, 0])],
+            plan_load(machine, "formatting"),
+            [Action("load", "formatting", [4 * GIB, 0])],
         )
 
     def test_unknown_requirement_waits(self):

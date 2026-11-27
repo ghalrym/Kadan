@@ -609,10 +609,14 @@ public:
     }
 
     void reset() override {
-        for (auto& slot : slots_) {
-            std::fill(slot.attention.keys.begin(), slot.attention.keys.end(), 0.0f);
-            std::fill(slot.attention.values.begin(), slot.attention.values.end(), 0.0f);
-            std::fill(slot.conv.begin(), slot.conv.end(), 0.0f);
+        if (slots_.size() != n_slots) {
+            init_state();
+        } else {
+            for (auto& slot : slots_) {
+                std::fill(slot.attention.keys.begin(), slot.attention.keys.end(), 0.0f);
+                std::fill(slot.attention.values.begin(), slot.attention.values.end(), 0.0f);
+                std::fill(slot.conv.begin(), slot.conv.end(), 0.0f);
+            }
         }
         if (gpu_)
             gpu_->reset();

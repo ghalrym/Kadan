@@ -70,6 +70,4 @@ std::unique_ptr<InferenceEngine>
 std::unique_ptr<InferenceEngine> lfm3_audio_engine(
     std::shared_ptr<Resources>, Progress, std::function<void(const Json&)>
 );
-std::unique_ptr<InferenceEngine>
-    lfm3_decision_engine(std::shared_ptr<Resources>, Progress);
 }  // namespace kadan::serving

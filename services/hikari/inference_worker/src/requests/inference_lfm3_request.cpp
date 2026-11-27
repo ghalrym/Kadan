@@ -73,25 +73,4 @@ void prepare_input(
     request.configuration.context_limit = 32768;
 }
 
-void prepare_input(
-    DecisionRequest& input,
-    InferenceRequest& request,
-    ModelStore& store,
-    const std::atomic_bool& cancel
-) {
-    preparation_check(
-        input.model == "d1-2b-cpu-f32",
-        "The Decisions task must use the fixed d1 checkpoint.",
-        422
-    );
-    request.model = input.model;
-    preparation_check(
-        store.entry(request.model).inference_available,
-        "This checkpoint has no supported inference engine.",
-        422
-    );
-    request.configuration.checkpoint = store.require_local(request.model, cancel);
-    request.configuration.context_limit = 65536;
-}
-
 }  // namespace kadan::serving

@@ -8,42 +8,41 @@ from api.services.worker_hub import WorkerHub, target_worker
 
 
 class ExperimentalRoutingTests(unittest.TestCase):
-    def test_decisions_always_use_fixed_d1_without_a_flag(self):
+    def test_decisions_always_route_to_resident_llm_worker(self):
         task = InferenceTask(
             input={"feature": "decisions", "state": "text", "questions": []}
         )
-        for env in ({}, {"HIKARI_ENABLE_D1_DECISIONS": "false"}):
-            with patch.dict("os.environ", env, clear=True):
-                self.assertEqual(target_worker(task), "lfm3_decision")
-        self.assertEqual(ModelAssignments().decisions, "d1-2b-cpu-f32")
-        self.assertEqual(task.model_dump()["input"]["model_id"], "d1-2b-cpu-f32")
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(target_worker(task), "llm")
+        self.assertEqual(ModelAssignments().decisions, "inkling-2-mini-iq4-nl")
+        self.assertNotIn("model_id", task.model_dump()["input"])
         self.assertEqual(
             InferenceTask.model_validate_json(task.model_dump_json()), task
         )
 
-    def test_d1_download_routes_only_to_its_owner_without_a_flag(self):
+    def test_audio_download_routes_only_to_its_owner_without_a_flag(self):
         hub = WorkerHub()
-        cpu = SimpleNamespace(
-            kind="lfm3_decision",
+        audio = SimpleNamespace(
+            kind="lfm3_audio",
             ready=SimpleNamespace(is_set=lambda: True),
-            computer=SimpleNamespace(id="cpu"),
+            computer=SimpleNamespace(id="audio"),
         )
         native = SimpleNamespace(
             kind="speech",
             ready=SimpleNamespace(is_set=lambda: True),
             computer=SimpleNamespace(id="native"),
         )
-        hub.workers = {"cpu": cpu, "native": native}
+        hub.workers = {"audio": audio, "native": native}
         request = InferenceTask(
             operation="download",
             input={
                 "feature": "models",
-                "model_id": "d1-2b-cpu-f32",
+                "model_id": "lfm3-audio-2b-bf16",
                 "license_acknowledged": True,
             },
         )
         with patch.dict("os.environ", {}, clear=True):
-            self.assertEqual(hub._store_targets(request), [cpu])
+            self.assertEqual(hub._store_targets(request), [audio])
 
     def test_chat_and_load_always_route_to_native_llm_worker(self):
         for operation, payload in (

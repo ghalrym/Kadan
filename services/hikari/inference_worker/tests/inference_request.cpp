@@ -164,9 +164,10 @@ int main() {
          {"trueWhen", "Needs action now"},
          {"falseWhen", "Can wait"}}
     });
-    const auto parsed_d1 = parse_request(decisions);
-    assert(parsed_d1.workload == kadan::Workload::lfm3_decision);
-    assert(std::get<DecisionRequest>(parsed_d1.input).questions.size() == 1);
+    const auto parsed_decision = parse_request(decisions);
+    assert(parsed_decision.workload == kadan::Workload::llm);
+    assert(!std::get<DecisionRequest>(parsed_decision.input).model.has_value());
+    assert(std::get<DecisionRequest>(parsed_decision.input).questions.size() == 1);
 
     auto audio_call = envelope;
     audio_call["input"] = {

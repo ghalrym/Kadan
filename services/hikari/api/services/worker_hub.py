@@ -54,6 +54,7 @@ PROTOCOL = 5
 # Features served by an inference worker; downloads go to the checkpoint owner.
 FEATURE_WORKERS = {
     "llm": "llm",
+    "decisions": "llm",
     "tts": "tts",
     "stt": "speech",
     "stt_formatting": "formatting",
@@ -67,7 +68,6 @@ NATIVE_MODEL_STORES = frozenset(FEATURE_WORKERS.values())
 # A checkpoint's catalog kind and the worker type that downloads and runs it.
 CHECKPOINT_WORKERS = {
     "llm": "llm",
-    "decision": "lfm3_decision",
     "speech": "tts",
     "transcription": "speech",
     "formatting": "formatting",
@@ -77,7 +77,6 @@ CHECKPOINT_WORKERS = {
 }
 
 EXPERIMENTAL_MODELS = {
-    "d1-2b-cpu-f32": ("lfm3_decision", None),
     "lfm3-audio-2b-bf16": ("lfm3_audio", None),
 }
 EXPERIMENTAL_FEATURES = {
@@ -315,6 +314,7 @@ class WorkerHub:
         if llm_worker is not None:
             snapshot.selected_model_id = llm_worker.models.selected_model_id
         snapshot.defaults.llm = snapshot.selected_model_id
+        snapshot.defaults.decisions = snapshot.selected_model_id
         visible = set(snapshot.defaults.model_dump().values())
         snapshot.models = []
         known = set()

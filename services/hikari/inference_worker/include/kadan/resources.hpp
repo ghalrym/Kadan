@@ -24,8 +24,7 @@ enum class Workload {
     tts,
     lfm3_llm,
     lfm3_vision,
-    lfm3_audio,
-    lfm3_decision
+    lfm3_audio
 };
 enum class State {
     loading,

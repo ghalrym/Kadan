@@ -286,7 +286,7 @@ export const getDecisions = <ThrowOnError extends boolean = false>(
 /**
  * Evaluate Decisions
  *
- * Queue typed CPU decisions, preserving validation and disconnect cleanup.
+ * Queue typed single-pass decisions on the language model, preserving validation and disconnect cleanup.
  */
 export const evaluateDecisions = <ThrowOnError extends boolean = false>(
   options: Options<EvaluateDecisionsData, ThrowOnError>,

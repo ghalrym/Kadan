@@ -266,39 +266,39 @@ InferenceRequest parse_request(const Json& envelope) {
             input.model = *m2;
         preparation_check(
             body.contains("state") && body.at("state").is_string(),
-            "d1 requires state to be a valid string.",
+            "Decisions require state to be a valid string.",
             422
         );
         input.state = body.at("state").get<std::string>();
         preparation_check(
             input.state.find_first_not_of(" \t\r\n") != std::string::npos
                 && input.state.size() <= 8000,
-            "d1 state must fit 8000 characters.",
+            "Decision state must fit 8000 characters.",
             422
         );
         preparation_check(
             body.contains("questions") && body.at("questions").is_array()
                 && body.at("questions").size() >= 1 && body.at("questions").size() <= 8,
-            "d1 requires one to eight questions.",
+            "Decisions require one to eight questions.",
             422
         );
         Json serialized_questions = Json::array();
         std::vector<std::string> seen_keys;
         for (const auto& q : body.at("questions")) {
-            preparation_check(q.is_object(), "d1 questions must be mappings.", 422);
-            lfm3::D1Question parsed_q;
+            preparation_check(q.is_object(), "Decision questions must be mappings.", 422);
+            text::DecisionQuestion parsed_q;
             preparation_check(
                 q.contains("key") && q.at("key").is_string()
                     && q.at("key").get<std::string>().find_first_not_of(" \t\r\n")
                            != std::string::npos,
-                "d1 requires question key to be a valid string.",
+                "Decisions require question key to be a valid string.",
                 422
             );
             parsed_q.key = q.at("key").get<std::string>();
             preparation_check(
                 std::find(seen_keys.begin(), seen_keys.end(), parsed_q.key)
                     == seen_keys.end(),
-                "d1 question keys must be unique.",
+                "Decision question keys must be unique.",
                 422
             );
             seen_keys.push_back(parsed_q.key);
@@ -306,7 +306,7 @@ InferenceRequest parse_request(const Json& envelope) {
                 q.contains("instructions") && q.at("instructions").is_string()
                     && q.at("instructions").get<std::string>().find_first_not_of(" \t\r\n")
                            != std::string::npos,
-                "d1 requires instructions to be a valid string.",
+                "Decisions require instructions to be a valid string.",
                 422
             );
             parsed_q.instructions = q.at("instructions").get<std::string>();
@@ -317,34 +317,34 @@ InferenceRequest parse_request(const Json& envelope) {
                 {"type", kind}
             };
             if (kind == "Choice") {
-                parsed_q.kind = lfm3::D1Question::Kind::choice;
+                parsed_q.kind = text::DecisionQuestion::Kind::choice;
                 preparation_check(
                     q.contains("options") && q.at("options").is_array()
                         && !q.at("options").empty(),
-                    "d1 Choice requires options.",
+                    "Choice questions require options.",
                     422
                 );
                 Json wire_opts = Json::array();
                 std::vector<std::string> opt_keys;
                 for (const auto& opt : q.at("options")) {
-                    preparation_check(opt.is_object(), "d1 options must be mappings.", 422);
+                    preparation_check(opt.is_object(), "Choice options must be mappings.", 422);
                     preparation_check(
                         opt.contains("key") && opt.at("key").is_string()
                             && opt.at("key").get<std::string>().find_first_not_of(" \t\r\n")
                                    != std::string::npos,
-                        "d1 requires option key to be a valid string.",
+                        "Choice options require key to be a valid string.",
                         422
                     );
                     const std::string ok = opt.at("key").get<std::string>();
                     preparation_check(
                         std::find(opt_keys.begin(), opt_keys.end(), ok) == opt_keys.end(),
-                        "d1 option keys must be unique.",
+                        "Choice option keys must be unique.",
                         422
                     );
                     opt_keys.push_back(ok);
                     preparation_check(
                         opt.contains("description") && opt.at("description").is_string(),
-                        "d1 requires option description to be a valid string.",
+                        "Choice options require description to be a valid string.",
                         422
                     );
                     const std::string desc = opt.at("description").get<std::string>();
@@ -353,11 +353,11 @@ InferenceRequest parse_request(const Json& envelope) {
                 }
                 wire["options"] = std::move(wire_opts);
             } else if (kind == "Score") {
-                parsed_q.kind = lfm3::D1Question::Kind::score;
+                parsed_q.kind = text::DecisionQuestion::Kind::score;
                 preparation_check(
                     q.contains("levels") && q.at("levels").is_array()
                         && q.at("levels").size() >= 2 && q.at("levels").size() <= 10,
-                    "d1 supports Score rubrics of 2 to 10 levels.",
+                    "Score rubrics require 2 to 10 levels.",
                     422
                 );
                 for (const auto& lv : q.at("levels")) {
@@ -365,14 +365,14 @@ InferenceRequest parse_request(const Json& envelope) {
                         lv.is_string()
                             && lv.get<std::string>().find_first_not_of(" \t\r\n")
                                    != std::string::npos,
-                        "d1 requires Score level to be a valid string.",
+                        "Score levels must be valid strings.",
                         422
                     );
                     parsed_q.levels.push_back(lv.get<std::string>());
                 }
                 wire["levels"] = parsed_q.levels;
             } else if (kind == "Noul") {
-                parsed_q.kind = lfm3::D1Question::Kind::noul;
+                parsed_q.kind = text::DecisionQuestion::Kind::noul;
                 if (q.contains("trueWhen") && q.at("trueWhen").is_string())
                     parsed_q.true_when = q.at("trueWhen").get<std::string>();
                 else if (q.contains("true_when") && q.at("true_when").is_string())
@@ -384,7 +384,7 @@ InferenceRequest parse_request(const Json& envelope) {
                 wire["true_when"] = parsed_q.true_when;
                 wire["false_when"] = parsed_q.false_when;
             } else {
-                throw RequestError("d1 supports Choice, Score and Noul questions only.", 422);
+                throw RequestError("Decisions support Choice, Score and Noul questions only.", 422);
             }
             serialized_questions.push_back(std::move(wire));
             input.questions.push_back(std::move(parsed_q));
@@ -393,11 +393,11 @@ InferenceRequest parse_request(const Json& envelope) {
             Json{{"state", input.state}, {"questions", serialized_questions}}.dump();
         preparation_check(
             payload.size() <= 16000,
-            "The d1 request must fit 16000 characters.",
+            "The decision request must fit 16000 characters.",
             422
         );
         request.input = std::move(input);
-        request.workload = Workload::lfm3_decision;
+        request.workload = Workload::llm;
     } else if (feature == "image") {
         ImageRequest input;
         input.prompt = body.at("prompt");

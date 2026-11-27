@@ -1854,7 +1854,6 @@ class ModelIdleTests(HubTestCase):
     async def test_every_modality_expires_at_the_boundary_and_waits_for_cleanup(self):
         for kind in (
             "llm",
-            "lfm3_decision",
             "tts",
             "speech",
             "formatting",
@@ -2055,7 +2054,7 @@ class SchedulingTests(HubTestCase):
 
         await self.connect("llm", replies={"requirement": needs((1, 6), (2, 30))})
         await self.connect(
-            "lfm3_decision", replies={"requirement": needs((1, 0), (1, 0))}
+            "formatting", replies={"requirement": needs((1, 0), (1, 0))}
         )
         _, picture = await self.connect(
             "image", replies={"requirement": needs((1, 2), (1, 40)), "load": load}

@@ -160,29 +160,6 @@ services:
       api:
         condition: service_healthy
 
-  # Decisions worker: d1 on the CPU.
-  hikari-worker-decision:
-    build:
-      context: ./services/hikari
-      dockerfile: experimental_worker/Dockerfile
-    init: true
-    restart: unless-stopped
-    environment:
-      <<: *lfm3_environment
-      HIKARI_EXPERIMENTAL_BACKEND: d1
-      NVIDIA_VISIBLE_DEVICES: void
-      CUDA_VISIBLE_DEVICES: ""
-    volumes:
-      - model_data:/var/lib/kadan/models
-      - ./services/hikari/experimental_worker:/app/experimental_worker:ro
-    # CPU only; the GPU worker anchor must not supply a device reservation.
-    cpus: 2
-    mem_limit: 16g
-    memswap_limit: 16g
-    depends_on:
-      api:
-        condition: service_healthy
-
   # Speech synthesis worker.
   hikari-worker-tts:
     build:

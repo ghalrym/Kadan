@@ -37,7 +37,7 @@ const MAX_STATE = 8000
 
 /**
  * Mirror the API's structural request rules so obvious mistakes are shown on
- * the right card without a CPU round trip. The server stays authoritative and
+ * the right card without a round trip. The server stays authoritative and
  * additionally enforces total size and tokenizer budgets.
  */
 export function validateDecisionRequest(state: string, questions: Question[]): DecisionIssue[] {
@@ -96,7 +96,7 @@ function validationIssues(detail: ValidationError[], questions: Question[]): Dec
 
 /**
  * Evaluate one request snapshot and return answers in question order.
- * The signal cancels the browser request (the CPU worker may still finish).
+ * The signal cancels the browser request (cleanup may still take a moment).
  * Every failure, including network and malformed output, rejects with a
  * DecisionError; an abort rejects with the platform AbortError.
  */
@@ -127,7 +127,7 @@ export async function requestDecisions(
     if (status === 422)
       throw new DecisionError('Input too long', message ?? 'The state or a question exceeds the decision model’s token budget. Shorten it, then retry.')
     if (status === 503)
-      throw new DecisionError('Decision model unavailable', message ?? 'The CPU decision model could not be loaded. Retry in a moment.', { retryable: true })
+      throw new DecisionError('Decision model unavailable', message ?? 'The language model could not be loaded for decisions. Retry in a moment.', { retryable: true })
     if (status === 409 || status === 429)
       throw new DecisionError('Decision model busy', message ?? 'Another evaluation is running. Wait for it to finish, then retry.', { retryable: true })
     if (status === 502)

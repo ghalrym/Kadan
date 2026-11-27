@@ -1,7 +1,6 @@
 /** Hikari runs one fixed model per capability; the API owns names, sizes and licenses. */
 export const capabilities = [
-  { id: 'inkling-2-mini', kind: 'llm', label: 'Language', short: 'Language', tone: 'llm' },
-  { id: 'd1-2b-cpu-f32', label: 'Decisions', short: 'Decisions', tone: 'decision' },
+  { id: 'inkling-2-mini', kind: 'llm', label: 'Language & Decisions', short: 'Language', tone: 'llm' },
   { id: 'lfm3-audio-2b-bf16', label: 'Voice calls', short: 'Calls', tone: 'tts' },
   { id: 'qwen-image-2.1-turbo', label: 'Image', short: 'Image', tone: 'image' },
   { id: 'whisper-medium', label: 'Speech to text', short: 'STT', tone: 'stt' },

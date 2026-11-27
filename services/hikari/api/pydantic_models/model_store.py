@@ -35,7 +35,6 @@ class CheckpointStatus(BaseModel):
         "transcription",
         "formatting",
         "image",
-        "decision",
         "audio",
     ]
     display_name: str | None
@@ -57,7 +56,7 @@ class ModelAssignments(BaseModel):
     speech: Literal["qwen-tts-1.7b-custom"] = "qwen-tts-1.7b-custom"
     transcription: Literal["whisper-medium"] = "whisper-medium"
     formatting: Literal["superwhisper-s1-mini"] = "superwhisper-s1-mini"
-    decisions: Literal["d1-2b-cpu-f32"] = "d1-2b-cpu-f32"
+    decisions: LlmModel = "inkling-2-mini-iq4-nl"
 
 
 class VideoDefaults(BaseModel):

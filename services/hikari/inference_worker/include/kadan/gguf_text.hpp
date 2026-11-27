@@ -81,6 +81,12 @@ public:
         std::span<const ImageTag> prompt_images
     );
     void end_request() override;
+    // Clears transient active/poisoned request state without wiping the
+    // cross-conversation CheckpointPool (used when aborting a transient run
+    // such as a cancelled decision evaluation).
+    void abort_request();
+    // Removes any CheckpointPool entries belonging to `conversation`.
+    void forget_conversation(std::string_view conversation);
     // Prefill of the next request keeps a host copy of the model state after
     // this many prompt tokens (zero for none). A later request in the same
     // conversation whose prompt extends those tokens resumes from that copy
@@ -110,6 +116,17 @@ public:
         const std::function<void(const char*, std::size_t)>& progress
     );
     serving::Token prefill(
+        std::span<const unsigned>,
+        std::span<const ImageSpan> images,
+        const std::function<void(const char*, std::size_t)>& progress
+    );
+    // Single-forward-pass prefill returning the final token's full vocabulary
+    // logits without autoregressive decoding.
+    std::vector<float> prefill_logits(
+        std::span<const unsigned>,
+        const std::function<void(const char*, std::size_t)>& progress
+    );
+    std::vector<float> prefill_logits(
         std::span<const unsigned>,
         std::span<const ImageSpan> images,
         const std::function<void(const char*, std::size_t)>& progress

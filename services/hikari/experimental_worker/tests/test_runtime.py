@@ -138,18 +138,18 @@ class CpuExecutorTests(unittest.TestCase):
             store.return_value.root = Path("/checkpoint")
             execute_child(
                 connection,
-                "d1",
-                {"id": "d1-2b-cpu-f32"},
+                "audio",
+                {"id": "lfm3-audio-2b-bf16"},
                 {},
                 "/models",
-                {"id": "a", "operation": "decision", "input": {}},
+                {"id": "a", "operation": "generate", "input": {}},
                 None,
                 [16 * GIB, 0],
                 "/scratch",
             )
         self.assertIs(messages[-1]["result"], answers)
         record = json.loads(metric.call_args.args[0].removeprefix("LFM3_METRIC "))
-        self.assertEqual(record["model"], "d1-2b-cpu-f32")
+        self.assertEqual(record["model"], "lfm3-audio-2b-bf16")
         self.assertIn("peak_rss_bytes", record["timing"])
         self.assertNotIn("answers", record)
         self.assertFalse(any("cuda" in name for name in record["timing"]))
@@ -418,171 +418,3 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                 await runtime.serve()
         self.assertEqual(calls, 2)
         pause.assert_awaited_once_with(1)
-
-
-class CpuRuntimeTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directory.cleanup)
-        self.backend = SimpleNamespace(
-            MODEL={"id": "d1-2b-cpu-f32", "revision": "pinned"},
-            REQUIREMENT=(16 * GIB, 0),
-            MAX_EXECUTOR_SECONDS=180,
-        )
-        with (
-            patch.dict(
-                "os.environ",
-                {
-                    "KADAN_MODEL_DIR": self.directory.name,
-                },
-            ),
-            patch("pathlib.Path.read_text", return_value='{"artifacts": []}'),
-            patch(
-                "experimental_worker.runtime.importlib.import_module",
-                return_value=self.backend,
-            ),
-        ):
-            self.runtime = Runtime("d1", {"devices": []})
-        self.runtime.socket = Socket()
-        self.runtime.models = AsyncMock()
-
-    def request(self, **fields):
-        return {
-            "id": "a" * 32,
-            "command": "submit",
-            "operation": "generate",
-            "input": {"feature": "decisions", "model_id": "d1-2b-cpu-f32"},
-            **fields,
-        }
-
-    def test_default_d1_needs_no_flag_and_never_probes_gpu(self):
-        with (
-            patch.dict("os.environ", {"HIKARI_ENABLE_D1_DECISIONS": "false"}),
-            patch(
-                "experimental_worker.runtime.machine", return_value={"devices": []}
-            ) as probe,
-            patch("pathlib.Path.read_text", return_value='{"artifacts": []}'),
-            patch(
-                "experimental_worker.runtime.importlib.import_module",
-                return_value=self.backend,
-            ),
-        ):
-            runtime = Runtime("d1")
-        probe.assert_called_once_with(cpu_only=True)
-        self.assertTrue(runtime.cpu_only)
-        self.assertEqual(runtime.kind, "lfm3_decision")
-
-    async def test_cpu_grant_reports_loaded_without_vram(self):
-        await self.runtime.handle(
-            {"id": "grant", "command": "load", "budget": [16 * GIB]}
-        )
-        self.assertEqual(self.runtime.budget, [16 * GIB, 0])
-        await self.runtime.handle({"id": "status", "command": "status"})
-        self.assertTrue(self.runtime.socket.messages[0]["loaded"])
-        self.assertTrue(self.runtime.socket.messages[-1]["workers"][0]["loaded"])
-        await self.runtime.handle({"id": "requirement", "command": "requirement"})
-        self.assertEqual(self.runtime.socket.messages[-1]["minimum"], [16 * GIB, 0])
-        self.assertEqual(self.runtime.socket.messages[-1]["device_floor"], 0)
-
-    async def test_cpu_grant_cannot_allocate_device_memory(self):
-        await self.runtime.handle(
-            {"id": "bad", "command": "load", "budget": [16 * GIB, GIB]}
-        )
-        self.assertEqual(self.runtime.socket.messages[-1]["state"], "rejected")
-        self.assertEqual(self.runtime.budget, [0, 0])
-
-    async def test_missing_checkpoint_does_not_spawn_cpu_executor(self):
-        with patch("multiprocessing.get_context") as context:
-            await self.runtime.run_job(self.request())
-        context.assert_not_called()
-        self.assertEqual(self.runtime.socket.messages[-1]["status_code"], 409)
-
-    async def test_queued_cancel_does_not_spawn_or_release_unrelated_grant(self):
-        self.runtime.budget = [16 * GIB, 0]
-        await self.runtime.handle({"id": "a" * 32, "command": "cancel"})
-        with patch("multiprocessing.get_context") as context:
-            await self.runtime.run_job(self.request())
-        context.assert_not_called()
-        self.assertEqual(self.runtime.budget, [16 * GIB, 0])
-        self.assertEqual(self.runtime.socket.messages[-1]["state"], "cancelled")
-
-    async def test_missing_ram_grant_waits_and_cancel_never_spawns(self):
-        self.runtime.store.complete = lambda: True
-        self.runtime.socket.on_send = lambda message: (
-            (self.runtime.cancelled.add("a" * 32), self.runtime.granted.set())
-            if message["state"] == "waiting_for_resources"
-            else None
-        )
-        with patch("multiprocessing.get_context") as context:
-            await self.runtime.run_job(self.request())
-        context.assert_not_called()
-        self.assertEqual(
-            [message["state"] for message in self.runtime.socket.messages],
-            ["waiting_for_resources", "cancelled"],
-        )
-
-    async def test_cpu_active_cancel_joins_before_grant_release(self):
-        await RuntimeTests.test_cancellation_joins_executor_before_releasing_grant(self)
-
-    async def test_cpu_repeated_disconnect_cancellation_keeps_grant_until_join(self):
-        await RuntimeTests.test_disconnect_waits_for_cleanup_despite_repeated_cancellation(
-            self
-        )
-
-    async def test_cpu_timeout_and_ram_overrun_stop_and_join_before_release(self):
-        runtime = self.runtime
-        for failure in ("time", "RAM"):
-            with self.subTest(failure=failure):
-                runtime.socket.messages.clear()
-                runtime.budget = list(self.backend.REQUIREMENT)
-                runtime.store.complete = lambda: True
-                process = SimpleNamespace(pid=123, live=False, joined=False)
-                process.start = lambda process=process: setattr(process, "live", True)
-                process.is_alive = lambda process=process: process.live
-                process.terminate = lambda process=process: setattr(
-                    process, "live", False
-                )
-                process.kill = process.terminate
-                process.join = lambda process=process: setattr(process, "joined", True)
-                pipe = SimpleNamespace(poll=lambda: False, close=lambda: None)
-
-                def create_process(process=process, **kwargs):
-                    self.assertIsNone(kwargs["args"][6])
-                    return process
-
-                context = SimpleNamespace(
-                    Pipe=lambda pipe=pipe, **kwargs: (pipe, pipe),
-                    Process=create_process,
-                )
-
-                def observe(message, process=process):
-                    if message["state"] in ("failed", "worker"):
-                        self.assertTrue(process.joined)
-                        self.assertFalse(process.live)
-                        self.assertEqual(runtime.budget, [0, 0])
-
-                runtime.socket.on_send = observe
-                with (
-                    patch("multiprocessing.get_context", return_value=context),
-                    patch(
-                        "experimental_worker.runtime.time",
-                        SimpleNamespace(
-                            monotonic=iter(
-                                [0, 181] if failure == "time" else [0, 1]
-                            ).__next__
-                        ),
-                    ),
-                    patch(
-                        "pathlib.Path.read_text",
-                        return_value=f"VmRSS: {17 * GIB // 1024} kB",
-                    ),
-                ):
-                    await runtime.run_job(self.request())
-                failed = next(
-                    message
-                    for message in runtime.socket.messages
-                    if message["state"] == "failed"
-                )
-                self.assertIn(failure, failed["error"])
-                self.assertEqual(failed["status_code"], 502)
-                self.assertIsNone(runtime.child)

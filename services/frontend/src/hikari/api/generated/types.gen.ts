@@ -366,7 +366,6 @@ export type CheckpointStatus = {
     | 'transcription'
     | 'formatting'
     | 'image'
-    | 'decision'
     | 'audio'
   /**
    * License
@@ -950,7 +949,11 @@ export type ModelAssignments = {
   /**
    * Decisions
    */
-  decisions?: 'd1-2b-cpu-f32'
+  decisions?:
+    | 'inkling-2-mini-iq4-nl'
+    | 'inkling-2-mini-q8-0'
+    | 'inkling-2-mini-abliterated-iq4-nl'
+    | 'inkling-2-mini-abliterated-q8-0'
   /**
    * Formatting
    */

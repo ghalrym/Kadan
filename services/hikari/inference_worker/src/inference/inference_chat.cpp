@@ -7,6 +7,7 @@
 #include "kadan/gguf_text.hpp"
 #include "kadan/inference_engines.hpp"
 #include "kadan/preparation.hpp"
+#include "kadan/text_decision.hpp"
 #include "kadan/text_tokenizer.hpp"
 #include "kadan/utf8_stream.hpp"
 
@@ -115,6 +116,11 @@ public:
         check_cancel(cancel);
         if (request.operation == Operation::load)
             return;
+        if (std::holds_alternative<DecisionRequest>(request.input)) {
+            prepare_decisions(std::get<DecisionRequest>(request.input), available, cancel);
+            return;
+        }
+        prepared_decisions_.clear();
         const auto& input = std::get<ChatRequest>(request.input);
         const auto byte_limit = capacity_ * 1024ULL;
         const auto rendered = chat_prompt(
@@ -277,6 +283,8 @@ public:
     execute(const InferenceRequest& request, const std::atomic_bool& cancel) override {
         if (request.operation == Operation::load)
             return Json::object();
+        if (std::holds_alternative<DecisionRequest>(request.input))
+            return execute_decisions(request, cancel);
         const auto milliseconds = [](auto duration) {
             return std::chrono::duration<double, std::milli>(duration).count();
         };
@@ -519,6 +527,7 @@ public:
 
     void close() override {
         std::vector<std::uint32_t>().swap(prompt_);
+        prepared_decisions_.clear();
         scheduled_images_.clear();
         request_memory_.reset();
         tokenizer_.reset();
@@ -528,6 +537,128 @@ public:
     }
 
 private:
+    static constexpr std::size_t kDecisionTokenLimit = 65536;
+
+    void prepare_decisions(
+        const DecisionRequest& input,
+        const Footprint& available,
+        const std::atomic_bool& cancel
+    ) {
+        preparation_check(
+            !input.state.empty() && input.state.size() <= 8000,
+            "Decision state must fit 8000 characters.",
+            422
+        );
+        preparation_check(
+            !input.questions.empty() && input.questions.size() <= 8,
+            "Decisions require one to eight questions.",
+            422
+        );
+        const Bytes scratch =
+            16 * 1024 * 1024 + input.questions.size() * 256 * 1024;
+        if (available[0] < scratch + 32 * 1024 * 1024)
+            throw AdmissionWait("decision_request_headroom");
+        request_memory_ =
+            std::make_unique<HostAllocation>(resources_, Workload::llm, scratch);
+        prepared_decisions_ = text::prepare_inkling_decisions(
+            input.state,
+            input.questions,
+            *tokenizer_,
+            capacity_,
+            kDecisionTokenLimit,
+            cancel
+        );
+    }
+
+    Json execute_decisions(
+        const InferenceRequest& request, const std::atomic_bool& cancel
+    ) {
+        const auto& input = std::get<DecisionRequest>(request.input);
+        require(
+            prepared_decisions_.size() == input.questions.size(),
+            "decision_unprepared"
+        );
+        check_cancel(cancel);
+
+        model_->set_cancel(cancel);
+        const std::string decision_conv = "__decision__:" + request.id;
+
+        // Strictly preserve the active chat conversation's KV cache across
+        // decision evaluation. Restores unconditionally on success, error, or
+        // cancellation so decisions never evict or corrupt live chat state.
+        struct PrefixGuard {
+            text::Engine* engine = nullptr;
+            std::unique_ptr<text::PrefixSnapshot> saved;
+            std::string transient_conv;
+            std::vector<text::PreparedDecisionQuestion>* prepared = nullptr;
+            std::unique_ptr<HostAllocation>* memory = nullptr;
+
+            ~PrefixGuard() noexcept {
+                try {
+                    if (engine) {
+                        engine->forget_conversation(transient_conv);
+                        if (saved)
+                            (void)engine->restore_prefix(std::move(saved));
+                        else
+                            engine->abort_request();
+                    }
+                } catch (...) {
+                }
+                if (prepared)
+                    prepared->clear();
+                if (memory)
+                    memory->reset();
+            }
+        };
+
+        PrefixGuard guard{
+            model_.get(),
+            model_->take_prefix(),
+            decision_conv,
+            &prepared_decisions_,
+            &request_memory_
+        };
+
+        std::size_t total_tokens = 0;
+        for (const auto& q : prepared_decisions_)
+            total_tokens += q.tokens.size();
+        progress_("evaluating", total_tokens);
+
+        const std::size_t shared_prefix =
+            text::shared_token_prefix_length(prepared_decisions_);
+        const bool reuse_state_prefix = shared_prefix > 0;
+
+        Json answers = Json::array();
+        InferenceTrace tracing(request.trace, "evaluate");
+        for (std::size_t i = 0; i < input.questions.size(); ++i) {
+            check_cancel(cancel);
+            const auto& prepared = prepared_decisions_[i];
+            model_->checkpoint_static_at(0);
+            model_->checkpoint_at(i == 0 ? shared_prefix : 0);
+            std::size_t reused = 0;
+            try {
+                reused = model_->begin_request(
+                    prepared.tokens, decision_conv, reuse_state_prefix
+                );
+            } catch (const std::exception& error) {
+                const std::string reason = error.what();
+                if (reason == "exhausted" || reason == "model_physical_headroom")
+                    throw AdmissionWait(reason);
+                throw;
+            }
+            const auto suffix =
+                std::span<const unsigned>(prepared.tokens).subspan(reused);
+            const auto logits = model_->prefill_logits(suffix, progress_);
+            model_->end_request();
+            answers.push_back(
+                text::score_decision_logits(
+                    input.questions[i], logits, prepared.readout_groups
+                )
+            );
+        }
+        return answers;
+    }
+
     struct ScheduledImage {
         std::size_t offset = 0;
         std::size_t tokens = 0;
@@ -545,6 +676,7 @@ private:
     std::unique_ptr<text::Tokenizer> tokenizer_;
     std::unique_ptr<HostAllocation> request_memory_;
     std::vector<std::uint32_t> prompt_;
+    std::vector<text::PreparedDecisionQuestion> prepared_decisions_;
     std::vector<ScheduledImage> scheduled_images_;
     std::size_t capacity_ = 65536, max_output_ = 65536;
     std::optional<std::size_t> reasoning_tokens_;

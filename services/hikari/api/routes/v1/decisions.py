@@ -96,7 +96,7 @@ def get_decisions() -> DecisionPlaygroundResponse:
 async def evaluate_decisions(
     body: DecisionRequest, request: Request
 ) -> DecisionResponse:
-    """Queue typed CPU decisions, preserving validation and disconnect cleanup."""
+    """Queue typed single-pass decisions on the language model, preserving validation and disconnect cleanup."""
     try:
         return DecisionResponse(
             answers=await infer(request, inference.submit(body, feature="decisions"))

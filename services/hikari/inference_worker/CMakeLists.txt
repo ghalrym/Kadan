@@ -127,11 +127,13 @@ target_link_libraries(kadan_layer_math PUBLIC kadan_resources)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_layer_math PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
-# Retained native GGUF text + vision model (Inkling 2 Mini).
+# Retained native GGUF text + vision model (Inkling 2 Mini) and single-pass decisions.
 add_library(kadan_gguf_text src/models/text/gguf_engine.cpp src/models/text/gguf_weights.cpp
   src/models/text/gguf_placement.cpp src/models/text/cpu_matvec.cpp
-  src/models/text/inkling2_loop.cpp src/models/text/inkling2_vision.cpp)
+  src/models/text/inkling2_loop.cpp src/models/text/inkling2_vision.cpp
+  src/models/text/text_decision.cpp)
 target_link_libraries(kadan_gguf_text PUBLIC kadan_gguf_checkpoint kadan_metadata kadan_resources
+  kadan_text_tokenizer
   PRIVATE ggml-base ggml-cpu PNG::PNG)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_gguf_text PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
@@ -264,13 +266,12 @@ add_library(kadan_transcription_formatting src/inference/inference_transcription
 target_link_libraries(kadan_transcription_formatting PUBLIC kadan_s1_mini kadan_text_tokenizer kadan_preparation)
 target_compile_options(kadan_transcription_formatting PRIVATE ${KADAN_STRICT_CXX_FLAGS})
 
-# Pure C++20/CUDA LFM3 + d1 inference engines (text, vision, audio, decisions).
+# Pure C++20/CUDA LFM3 inference engines (text, vision, audio).
 add_library(kadan_lfm3
   src/models/lfm3/lfm3_model.cpp
   src/models/lfm3/lfm3_prompt.cpp
   src/models/lfm3/lfm3_vision.cpp
-  src/models/lfm3/lfm3_audio.cpp
-  src/models/lfm3/lfm3_d1.cpp)
+  src/models/lfm3/lfm3_audio.cpp)
 target_link_libraries(kadan_lfm3 PUBLIC kadan_checkpoint kadan_resources kadan_text_tokenizer
   PRIVATE PNG::PNG)
 find_library(KADAN_LFM3_BLAS_LIBRARY openblas)
@@ -287,8 +288,7 @@ target_compile_options(kadan_lfm3 PRIVATE ${KADAN_STRICT_CXX_FLAGS})
 add_library(kadan_lfm3_engines
   src/inference/inference_lfm3_text.cpp
   src/inference/inference_lfm3_vision.cpp
-  src/inference/inference_lfm3_audio.cpp
-  src/inference/inference_d1.cpp)
+  src/inference/inference_lfm3_audio.cpp)
 target_link_libraries(kadan_lfm3_engines PUBLIC kadan_lfm3 kadan_preparation kadan_text_tokenizer)
 if(KADAN_ENABLE_CUDA)
   target_compile_definitions(kadan_lfm3_engines PRIVATE KADAN_WORKER_CUDA=1)
@@ -626,6 +626,10 @@ if(BUILD_TESTING AND TARGET kadan_text_tokenizer)
   add_executable(text-tokenizer-tests tests/text_tokenizer.cpp)
   target_link_libraries(text-tokenizer-tests PRIVATE kadan_text_tokenizer nlohmann_json::nlohmann_json ICU::uc)
   add_test(NAME text-tokenizer COMMAND text-tokenizer-tests)
+  add_executable(text-decision-tests tests/text_decision.cpp)
+  target_link_libraries(text-decision-tests PRIVATE kadan_gguf_text kadan_text_tokenizer)
+  target_compile_options(text-decision-tests PRIVATE ${KADAN_STRICT_CXX_FLAGS})
+  add_test(NAME text-decision COMMAND text-decision-tests)
 endif()
 
 if(BUILD_TESTING AND TARGET kadan_lfm3)

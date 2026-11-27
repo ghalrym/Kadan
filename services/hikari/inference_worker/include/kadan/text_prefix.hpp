@@ -165,6 +165,19 @@ public:
         used_bytes_ = 0;
     }
 
+    void erase(std::string_view conversation) {
+        if (conversation.empty())
+            return;
+        for (auto it = entries_.begin(); it != entries_.end();) {
+            if (!it->is_static && it->conversation == conversation) {
+                used_bytes_ -= it->bytes;
+                it = entries_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
     std::size_t budget_bytes() const {
         return budget_bytes_;
     }

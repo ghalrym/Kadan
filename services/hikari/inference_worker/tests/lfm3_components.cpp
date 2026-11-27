@@ -1,6 +1,6 @@
-// Pure unit tests for LFM3 + d1 C++ components: math, config parsing, prompt
-// rendering, vision resize, audio feature extraction, WAV encoding, d1 formatting,
-// and calibration. No checkpoint files, no network, no inference runs.
+// Pure unit tests for LFM3 C++ components: math, config parsing, prompt
+// rendering, vision resize, audio feature extraction, and WAV encoding.
+// No checkpoint files, no network, no inference runs.
 #include "kadan/lfm3.hpp"
 
 #include <cassert>
@@ -199,42 +199,6 @@ void test_vision_resize_and_audio_features() {
     assert(!wav_b64.empty() && wav_b64.size() % 4 == 0);
 }
 
-void test_d1_helpers() {
-    const Json cal_doc = {
-        {"default", 1.337398453966105},
-        {"temperatures", {{"score:3", 1.5}, {"choice:small", 1.2}}}
-    };
-    const auto cal = D1Calibration::parse(cal_doc);
-    D1Question q_score;
-    q_score.kind = D1Question::Kind::score;
-    q_score.levels = {"low", "mid", "high"};
-    assert(std::fabs(cal.temperature_for(q_score) - 1.5) < 1e-6);
-
-    D1Question q_noul;
-    q_noul.kind = D1Question::Kind::noul;
-    assert(std::fabs(cal.temperature_for(q_noul) - 1.337398453966105) < 1e-6);
-
-    const std::vector<std::string> specials = {"<|im_start|>", "<|im_end|>"};
-    const std::string escaped = d1_escape_specials("a <|im_start|> b", specials);
-    assert(escaped.find("<|im_start|>") == std::string::npos);
-
-    const auto codes = d1_option_codes({"alpha", "beta", "gamma"}, 2);
-    assert(codes.size() == 3);
-    assert(codes[0] != codes[1] && codes[1] != codes[2]);
-
-    const std::string prefix = d1_prefix_text("Context text.", specials);
-    assert(prefix.find("Context text.") != std::string::npos);
-
-    D1Question q_choice;
-    q_choice.key = "pick";
-    q_choice.kind = D1Question::Kind::choice;
-    q_choice.instructions = "Pick one.";
-    q_choice.options = {{"a", "Option A"}, {"b", "Option B"}};
-    const std::string suffix = d1_suffix_text(q_choice, specials, 2);
-    assert(suffix.find("Pick one.") != std::string::npos);
-    assert(suffix.find("Option A") != std::string::npos);
-}
-
 }  // namespace
 
 int main() {
@@ -244,7 +208,6 @@ int main() {
     test_sampling_and_reasoning_budget();
     test_prompts_and_output_parsing();
     test_vision_resize_and_audio_features();
-    test_d1_helpers();
-    std::cout << "LFM3 and d1 C++ component units passed\n";
+    std::cout << "LFM3 C++ component units passed\n";
     return 0;
 }

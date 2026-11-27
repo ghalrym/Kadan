@@ -14,6 +14,7 @@
 #include "kadan/inference_trace.hpp"
 #include "kadan/lfm3.hpp"
 #include "kadan/resources.hpp"
+#include "kadan/text_decision.hpp"
 
 namespace kadan::serving {
 using Json = nlohmann::json;
@@ -94,9 +95,9 @@ struct AudioCallRequest {
 };
 
 struct DecisionRequest {
-    std::string model = "d1-2b-cpu-f32";
+    std::optional<std::string> model;
     std::string state;
-    std::vector<lfm3::D1Question> questions;
+    std::vector<text::DecisionQuestion> questions;
 };
 
 struct ImageRequest {

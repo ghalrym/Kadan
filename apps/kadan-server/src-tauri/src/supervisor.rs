@@ -401,7 +401,6 @@ impl ServerSupervisor {
                 vec![
                     "llm".into(),
                     "lfm3_audio".into(),
-                    "lfm3_decision".into(),
                     "formatting".into(),
                     "speech".into(),
                     "tts".into(),
@@ -409,7 +408,7 @@ impl ServerSupervisor {
                     "video".into(),
                 ]
             } else {
-                vec!["lfm3_decision".into(), "formatting".into()]
+                vec!["formatting".into()]
             }
         } else {
             workloads

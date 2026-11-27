@@ -1,77 +1,67 @@
 # Decisions worker
 
-Hikari routes Decisions exclusively to the Python `lfm3_decision` worker with the
-fixed `d1-2b-cpu-f32` checkpoint. The public request has no model selector or
-feature flag. The FIFO task serializes this fixed model identity for the worker;
-no Laya executor, catalog entry or fallback remains. Kadan's language loop still
-uses the separate language capability. See [Decisions](../../user-expectations/hikari/decisions.md).
+Hikari routes Decisions (`POST /v1/decisions`) directly to the native `llm`
+worker (`ChatEngine` / `kadan::text::Engine`) running the active resident
+Inkling 2 Mini checkpoint (`inkling-2-mini-*`). The public request has no model
+selector or feature flag; `DecisionTask` targets `FEATURE_WORKERS["decisions"] = "llm"`
+without requiring a separate checkpoint download or separate worker process. The
+earlier `d1-2b-cpu-f32` checkpoint and `lfm3_decision` worker are retired. See
+[Decisions](../../user-expectations/hikari/decisions.md).
 
-The existing `hikari-worker-decision` Compose service runs the Python worker with
-`HIKARI_EXPERIMENTAL_BACKEND=d1`, two CPU cores, 16 GiB RAM and no swap or GPU
-reservation. It deliberately does not inherit the GPU worker anchor. The shared
-`model_data` volume and old native build volume identity are retained; changing
-workers does not remove downloaded files or historical database records. The
-verified d1 store keeps its existing `experimental/<model>/<revision>` path.
-Acquisition still requires an explicit license-acknowledged Settings download;
-evaluation never acquires artifacts. Native stores retain ownership of the
-standalone transcription-formatting preference.
+## Single-forward-pass logit softmax
 
-Existing installations must rebuild the API, frontend and Decisions worker
-together; an old native worker cannot serve the new fixed route. No database or
-model-file migration is performed. Previously verified d1 downloads are reused
-at the same path; otherwise Settings requires an acknowledged download before
-evaluation. Retired Laya files stay inert on disk.
+Decisions execute with zero autoregressive token generation:
 
-The pinned checkpoint is `LiquidAI/d1-2B` at revision
-`10e7671d44e4b37700020b1eed3f594c5f2af0b4`, under the
-[LFM Open License v1.0](https://huggingface.co/LiquidAI/d1-2B/blob/10e7671d44e4b37700020b1eed3f594c5f2af0b4/LICENSE).
-The verified catalog includes its executable Python modules, loaded only from
-local files by Transformers with `trust_remote_code=True`. The disposable child
-uses CPU F32, two Torch threads and no external hub kernels. Importing the adapter
-or transport loads no inference library. Transformers progress bars are disabled
-before loading because their process-shared locks can otherwise leave named
-semaphores behind after executor termination.
+1. Each question in a `DecisionRequest` (1 to 8 questions sharing `state`) is
+   rendered with Inkling 2 Mini's native chat template using thinking effort
+   `0` and ending directly at `<|message_model|><|content_text|>` (no thinking
+   block). User-supplied `state`, instructions, options and rubric levels are
+   passed as literal tokenizer ranges so control tokens cannot be injected.
+2. `kadan::text::Engine::prefill_logits` runs the bounded prefill pass and
+   returns the final token's full vocabulary logit vector without altering
+   normal decode behavior or Strata MoE placement rules.
+3. For requests with multiple questions sharing `state`, `ChatEngine` computes
+   the exact shared leading token prefix across questions and checkpoints it via
+   `checkpoint_at(shared_prefix)` on the first question, reusing the prefilled
+   `state` KV/recurrent prefix for the remaining questions in the same request.
+4. `score_decision_logits` computes log-softmax over the vocabulary, selects the
+   highest log-probability among each candidate group's single-token variants
+   (`yes`/`Yes`/`YES` and leading-space forms for `Noul`, resolved single-token
+   option codes `A`, `B`, ... with optional leading space for `Choice`, and
+   digits `0..K-1` with optional leading space for `Score`), applies softmax
+   across groups, and formats the typed `DecisionAnswer` JSON in request order.
+   `Score` computes the expected zero-based ordinal mean `sum(i * p_i)`.
 
-The typed adapter maps Choice, Score and Noul, validates returned identities,
-types and probabilities, then publishes answers in request order. Score rubrics
-require 2–10 levels in both the public schema and the worker adapter. Unsupported
-sizes fail explicitly rather than being compressed, reinterpreted as numerical
-Estimate tasks or redirected to another model. `score_readout="mean"` preserves
-the fractional expected zero-based ordinal index; the upstream default median
-would change that contract. Removing the public trial selector and rejecting
-formerly supported wider Laya rubrics are intentional API compatibility changes.
+## Active chat KV-cache preservation
 
-Before forward execution, the pinned engine encodes its actual text sequences.
-The adapter sums state, questions, options/rubrics and template/special tokens
-across every sequence and rejects totals above 65,536 without truncation. This
-ceiling is not measured capacity; the architectural context is 128,000 tokens.
-The existing 8,000 state-character, eight-question and 16,000 serialized-character
-limits remain in force.
+Decisions share the resident `ChatEngine` with interactive chat, so preparing
+`DecisionRequest` uses the exact same active model ID and saved context limit
+configuration as `ChatRequest` to avoid unloading or reloading the engine.
 
-The scheduler grants a fixed minimum and preferred 15 GiB host RAM and zero
-VRAM before spawning. The worker reports the smaller of physical free RAM and
-its container ceiling, with 1 GiB headroom. This grant covers the measured
-short-input F32 initialization peak; it neither estimates 64K memory needs nor
-grows with input size. Extra host RAM does not enlarge it. Runtime RSS polling
-terminates overruns, but is not a hard OS allocation limit; operator container
-and host limits remain necessary. The 180-second deadline includes model loading,
-not time waiting for admission. Cancellation, disconnect, memory overrun and
-deadline failure terminate and join the process before a terminal result or grant
-release. Repeated cancellation cannot skip cleanup; late results are fenced out.
+Before running any decision prefill, `ChatEngine::execute_decisions` snapshots
+the active chat conversation's live prefix via `model_->take_prefix()` and holds
+it in an RAII guard. On scope exit — whether evaluation succeeds, fails, or is
+cancelled — the guard erases the transient decision prefix checkpoint from
+`CheckpointPool` and unconditionally restores the active chat prefix via
+`model_->restore_prefix(...)` (or aborts transient state cleanly if no chat
+prefix was active). Decisions therefore never evict or corrupt the live chat
+conversation's KV cache.
 
-Automated validation uses model-free unit fakes only. Earlier authorized isolated
-manual runs used the same pinned model and existing dependencies, two CPU cores,
-16 GiB RAM, no swap, GPU or network access. Eight questions across all three types
-at 334 encoded tokens completed in 154.23 seconds including loading, with sampled
-peak executor RSS of 12,322,725,888 bytes. In a later seven-job long-lived Runtime,
-repeated early cancellations settled in 0.096–0.142 seconds and an evaluation
-cancellation in 0.114 seconds. Exactly 1,024 tokens entered evaluation but timed
-out in 180.12 seconds without an answer. Subsequent invalid Score requests failed
-before loading, confirming queue recovery. Every job confirmed executor exit,
-scratch cleanup and grant release; no named semaphores, resource-tracker warnings
-or OOM events remained after the progress-bar fix.
+## Validation and limits
 
-These are bounded CPU lifecycle measurements, not HTTP/production-hub acceptance,
-a quality comparison, a performance gain over another model or a GPU prediction.
-No 64K inference, memory-fit or completion benchmark was run. This default switch
-was validated without inference, acquisition, deployment or service changes.
+Both the FastAPI schema (`DecisionRequest`) and native request parser enforce:
+
+- `state`: non-blank, at most 8,000 characters
+- `questions`: 1 to 8 questions with unique non-blank keys and non-blank
+  instructions
+- `Choice`: at least one option with unique non-blank keys
+- `Score`: 2 to 10 non-blank rubric levels
+- Total serialized request size: at most 16,000 characters
+- Encoded tokens: each question must fit the active language model's context
+  limit and the combined total across questions must not exceed 65,536 tokens,
+  failing without truncation.
+
+Cancellation and client disconnect stop prefill cleanly via `cancel`, restore
+the chat prefix snapshot, and release request-local scratch reservations before
+returning a terminal event. Automated validation uses pure model-free unit tests
+only.

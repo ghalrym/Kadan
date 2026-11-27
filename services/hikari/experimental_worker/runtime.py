@@ -21,7 +21,6 @@ GIB = 1024**3
 log = logging.getLogger(__name__)
 BACKENDS = {
     "audio": ("lfm3_audio", None),
-    "d1": ("lfm3_decision", None),
 }
 
 
@@ -161,7 +160,7 @@ class Runtime:
         if flag is not None and not enabled(flag):
             raise ValueError(f"Experimental worker requires {flag}=true")
         self.backend_name = backend_name
-        self.cpu_only = backend_name == "d1"
+        self.cpu_only = False
         self.backend = importlib.import_module("experimental_worker." + backend_name)
         self.manifest = json.loads(
             (Path(__file__).parent / f"catalog_{backend_name}.json").read_text()
