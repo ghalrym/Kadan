@@ -1,6 +1,6 @@
 # Work threads and coding assistants
 
-Kadan includes a built-in **Work** workspace so you can run, supervise, and organize coding threads directly inside Kadan without setting up an external tool. Tsuchi stores projects, threads, transcripts, and pending requests durably; Kadan drives each coding assistant directly in the chosen project folder.
+Kadan includes a built-in **Work** workspace so you can run, supervise, and organize coding threads directly inside Kadan without setting up an external tool. Work runs coding assistants and browses project folders **on the computer where you open the Kadan desktop app**, while Tsuchi on your Kadan Server stores projects, threads, transcripts, and pending requests durably (and Hikari on your Kadan Server powers Inkling 2 Mini inference). Keeping Kadan Desktop open allows local coding threads—including threads started by your chat agent—to execute on your computer.
 
 ## Sidebar buckets
 

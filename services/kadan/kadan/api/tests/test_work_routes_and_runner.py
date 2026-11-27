@@ -315,24 +315,26 @@ async def test_kadan_work_http_routes_end_to_end_with_mock_tsuchi(tmp_path):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=kadan_app), base_url="http://kadan"
         ) as api:
-            harnesses = (await api.get("/work/harnesses")).json()
+            harnesses = (await api.get("/api/work/harnesses")).json()
             assert [h["id"] for h in harnesses] == ["codex"]
             assert harnesses[0]["auth"]["status"] == "ready"
 
             browsed = (
-                await api.get("/work/filesystem/browse", params={"path": str(tmp_path)})
+                await api.get(
+                    "/api/work/filesystem/browse", params={"path": str(tmp_path)}
+                )
             ).json()
             assert any(e["name"] == "demo-project" for e in browsed["entries"])
 
             proj = await api.post(
-                "/work/projects",
+                "/api/work/projects",
                 json={"title": "Demo", "root_path": str(project_dir)},
             )
             assert proj.status_code == 201
             proj_id = proj.json()["id"]
 
             thr = await api.post(
-                "/work/threads",
+                "/api/work/threads",
                 json={
                     "project_id": proj_id,
                     "title": "Add docs",
@@ -344,20 +346,22 @@ async def test_kadan_work_http_routes_end_to_end_with_mock_tsuchi(tmp_path):
             thr_id = thr.json()["id"]
             assert thr.json()["bucket"] == "working"
 
-            detail = (await api.get(f"/work/threads/{thr_id}")).json()
+            detail = (await api.get(f"/api/work/threads/{thr_id}")).json()
             assert detail["project"]["id"] == proj_id
             assert len(detail["runs"]) == 1
 
-            interrupted = (await api.post(f"/work/threads/{thr_id}/interrupt")).json()
+            interrupted = (
+                await api.post(f"/api/work/threads/{thr_id}/interrupt")
+            ).json()
             assert interrupted["bucket"] == "default"
 
             settled = (
                 await api.post(
-                    f"/work/threads/{thr_id}/organize",
+                    f"/api/work/threads/{thr_id}/organize",
                     json={"action": "settle"},
                 )
             ).json()
             assert settled["bucket"] == "settled"
 
-            deleted = await api.delete(f"/work/threads/{thr_id}")
+            deleted = await api.delete(f"/api/work/threads/{thr_id}")
             assert deleted.status_code == 204

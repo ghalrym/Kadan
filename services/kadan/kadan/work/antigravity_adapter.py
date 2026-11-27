@@ -39,23 +39,31 @@ ANTIGRAVITY_MODELS: list[HarnessModelInfo] = [
 ]
 
 
-def find_antigravity_binary() -> str | None:
+def find_antigravity_command() -> list[str] | None:
     override = os.environ.get("ANTIGRAVITY_ACP_BIN", "").strip()
     if override and Path(override).is_file():
-        return override
+        return [override]
     on_path = shutil.which("antigravity-acp")
     if on_path:
-        return on_path
+        return [on_path]
     # Discover managed binary installed alongside T3 Code or ~/.antigravity.
     t3_root = Path.home() / ".t3" / "userdata" / "providers" / "antigravity"
     if t3_root.is_dir():
         for candidate in sorted(t3_root.glob("*/antigravity-acp/bin/antigravity-acp")):
             if candidate.is_file():
-                return str(candidate)
+                return [str(candidate)]
     local_bin = Path.home() / ".antigravity" / "bin" / "antigravity-acp"
     if local_bin.is_file():
-        return str(local_bin)
+        return [str(local_bin)]
+    agy = shutil.which("agy")
+    if agy:
+        return [agy, "acp"]
     return None
+
+
+def find_antigravity_binary() -> str | None:
+    cmd = find_antigravity_command()
+    return cmd[0] if cmd else None
 
 
 def _has_local_antigravity_auth() -> bool:
@@ -100,13 +108,14 @@ class AntigravityHarnessAdapter(HarnessAdapter):
         return None, None
 
     async def check_availability(self, services: LocalServices) -> HarnessAvailability:
-        binary = find_antigravity_binary()
+        command = find_antigravity_command()
+        binary = command[0] if command else None
         cred, label = await self._stored_credential(services)
         if not binary:
             auth = HarnessAuthStatus(
                 status="unavailable",
                 login_method="api_key",
-                message="Google Antigravity is not installed on this server yet.",
+                message="Google Antigravity is not installed on this computer yet.",
             )
         elif cred:
             auth = HarnessAuthStatus(
@@ -120,7 +129,7 @@ class AntigravityHarnessAdapter(HarnessAdapter):
                 status="ready",
                 login_method="browser",
                 account_label="Local Antigravity sign-in",
-                message="Connected using this server's Antigravity sign-in.",
+                message="Connected using this computer's Antigravity sign-in.",
             )
         else:
             auth = HarnessAuthStatus(
@@ -196,9 +205,9 @@ class AntigravityHarnessAdapter(HarnessAdapter):
     async def open_session(
         self, config: SessionConfig, services: LocalServices
     ) -> HarnessSession:
-        binary = find_antigravity_binary() or "antigravity-acp"
-        if self._process_factory is None and not find_antigravity_binary():
-            raise HarnessError("Google Antigravity is not installed on this server.")
+        command = find_antigravity_command()
+        if self._process_factory is None and not command:
+            raise HarnessError("Google Antigravity is not installed on this computer.")
         cred, _ = await self._stored_credential(services)
         env_extra: dict[str, str] = {}
         if cred:
@@ -206,7 +215,7 @@ class AntigravityHarnessAdapter(HarnessAdapter):
             env_extra["GOOGLE_API_KEY"] = cred
         return AcpHarnessSession(
             config,
-            command=[binary],
+            command=command or ["antigravity-acp"],
             display_name=self.display_name,
             env_extra=env_extra,
             process_factory=self._process_factory,

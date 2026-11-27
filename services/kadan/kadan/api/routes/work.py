@@ -27,7 +27,7 @@ from ..pydantic_models.work import (
     WorkThreadPatch,
 )
 
-router = APIRouter(prefix="/work", tags=["work"])
+router = APIRouter(prefix="/api/work", tags=["work"])
 
 
 # ── Filesystem picker ────────────────────────────────────────────────────────

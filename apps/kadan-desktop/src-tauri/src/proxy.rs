@@ -1,5 +1,6 @@
 use crate::config::{normalize_host, save_config, DesktopConfig};
 use crate::updater;
+use crate::work_sidecar::WorkSidecar;
 use axum::body::Body;
 use axum::extract::ws::{Message as AxumMsg, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Request, State};
@@ -22,6 +23,7 @@ pub struct ProxyState {
     pub web_root: PathBuf,
     pub client: reqwest::Client,
     pub app_handle: Option<tauri::AppHandle>,
+    pub work_sidecar: WorkSidecar,
 }
 
 #[derive(Deserialize)]
@@ -42,6 +44,7 @@ pub async fn start_loopback_proxy(
     config: DesktopConfig,
     web_root: PathBuf,
     app_handle: Option<tauri::AppHandle>,
+    work_sidecar: WorkSidecar,
 ) -> Result<(SocketAddr, Arc<RwLock<DesktopConfig>>), String> {
     let shared_config = Arc::new(RwLock::new(config));
     let client = reqwest::Client::builder()
@@ -54,6 +57,7 @@ pub async fn start_loopback_proxy(
         web_root,
         client,
         app_handle,
+        work_sidecar,
     };
 
     let app = Router::new()
@@ -61,6 +65,8 @@ pub async fn start_loopback_proxy(
         .route("/__kadan_desktop__/test", post(test_connection))
         .route("/__kadan_desktop__/updates", get(check_desktop_updates))
         .route("/__kadan_desktop__/updates/install", post(install_desktop_update))
+        .route("/kadan/api/work/{*path}", any(proxy_local_work))
+        .route("/kadan/api/work", any(proxy_local_work))
         .route("/kadan/api/{*path}", any(proxy_api))
         .route("/kadan/api", any(proxy_api))
         .route("/tsuchi/api/{*path}", any(proxy_api))
@@ -101,6 +107,10 @@ async fn put_config(
     match save_config(incoming) {
         Ok(saved) => {
             *state.config.write().unwrap() = saved.clone();
+            state
+                .work_sidecar
+                .update_upstream(&state.client, &saved.active_host)
+                .await;
             Json(saved).into_response()
         }
         Err(detail) => (
@@ -232,6 +242,79 @@ async fn install_desktop_update(State(state): State<ProxyState>) -> Response {
         Err(detail) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(serde_json::json!({ "detail": detail })),
+        )
+            .into_response(),
+    }
+}
+
+async fn proxy_local_work(State(state): State<ProxyState>, req: Request) -> Response {
+    let active_host = state.config.read().unwrap().active_host.clone();
+    let work_base = match state
+        .work_sidecar
+        .ensure_running(&state.client, &active_host)
+        .await
+    {
+        Ok(base) => base,
+        Err(detail) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "detail": detail,
+                    "code": "local_work_unavailable"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let path_and_query = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or(req.uri().path());
+    let local_path = path_and_query
+        .strip_prefix("/kadan")
+        .unwrap_or(path_and_query);
+    let upstream = build_upstream_url(&work_base, local_path, false);
+
+    let method = req.method().clone();
+    let headers = req.headers().clone();
+    let mut builder = state.client.request(method, &upstream);
+    for (name, value) in &headers {
+        if is_hop_by_hop(name) || name == axum::http::header::HOST {
+            continue;
+        }
+        builder = builder.header(name, value);
+    }
+    let body_stream = req.into_body().into_data_stream();
+    builder = builder.body(reqwest::Body::wrap_stream(body_stream));
+
+    match builder.send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let resp_headers = resp.headers().clone();
+            let stream = resp.bytes_stream();
+            let mut out = Response::builder().status(status);
+            for (name, value) in &resp_headers {
+                if is_hop_by_hop(name) {
+                    continue;
+                }
+                if let (Ok(n), Ok(v)) = (
+                    HeaderName::from_bytes(name.as_str().as_bytes()),
+                    HeaderValue::from_bytes(value.as_bytes()),
+                ) {
+                    out = out.header(n, v);
+                }
+            }
+            out.body(Body::from_stream(stream))
+                .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
+        }
+        Err(_) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({
+                "detail": "Local Work runtime stopped responding. Try refreshing.",
+                "code": "local_work_unreachable"
+            })),
         )
             .into_response(),
     }
@@ -476,12 +559,39 @@ mod tests {
         )
         .unwrap();
 
+        let work_app = Router::new().route(
+            "/api/work/harnesses",
+            get(|| async { Json(serde_json::json!([{"id": "local-codex"}])) }),
+        );
+        let work_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let work_addr = work_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(work_listener, work_app).await;
+        });
+
         let cfg = DesktopConfig {
             active_host: format!("http://{upstream_addr}"),
             saved_servers: vec![],
         };
-        let (proxy_addr, _) = start_loopback_proxy(cfg, tmp.clone(), None).await.unwrap();
+        let (proxy_addr, _) = start_loopback_proxy(
+            cfg,
+            tmp.clone(),
+            None,
+            WorkSidecar::fixed_url(format!("http://{work_addr}")),
+        )
+        .await
+        .unwrap();
         let client = reqwest::Client::new();
+
+        let harnesses: serde_json::Value = client
+            .get(format!("http://{proxy_addr}/kadan/api/work/harnesses"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(harnesses[0]["id"], "local-codex");
 
         let html = client
             .get(format!("http://{proxy_addr}/"))

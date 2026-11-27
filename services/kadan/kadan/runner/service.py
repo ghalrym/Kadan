@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -142,7 +143,11 @@ async def serve(client, settings, runner_settings: RunnerSettings, stop: asyncio
     services.pets.start()
     services.t3.start()
     services.group_chat_events.start()
-    services.work_runner.start()
+    run_server_work_runner = os.environ.get(
+        "KADAN_SERVER_WORK_RUNNER", ""
+    ).strip().lower() in {"1", "true", "yes"}
+    if run_server_work_runner:
+        services.work_runner.start()
     services.compactor.start()
     services.memory_queue.start()
     try:
@@ -150,7 +155,8 @@ async def serve(client, settings, runner_settings: RunnerSettings, stop: asyncio
     finally:
         await services.memory_queue.close()
         await services.compactor.close()
-        await services.work_runner.close()
+        if run_server_work_runner:
+            await services.work_runner.close()
         await services.images.close()
         await services.pets.close()
         await services.group_chat_events.close()
