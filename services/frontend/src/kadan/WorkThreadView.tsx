@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AlarmClock,
   AlertCircle,
   Archive,
   ArchiveRestore,
+  ArrowUp,
+  Brain,
   Check,
-  Clock,
+  ChevronRight,
   FileCode2,
   Folder,
   FolderPlus,
-  ImagePlus,
-  Send,
+  Paperclip,
   Square,
   Terminal,
   Trash2,
@@ -18,6 +20,8 @@ import {
 import ConfirmDialog from "./ConfirmDialog";
 import FolderPickerDialog from "./FolderPickerDialog";
 import Markdown from "./Markdown";
+import ModelPicker from "./ModelPicker";
+import ProjectPicker from "./ProjectPicker";
 import { isDesktopApp, pickDesktopFolder } from "./desktop";
 import {
   createWorkProject,
@@ -27,7 +31,6 @@ import {
   encodeModelSelection,
   formatSnoozeLabel,
   getWorkThreadDetail,
-  harnessAuthLabel,
   interruptWorkThread,
   isThreadActive,
   listWorkHarnesses,
@@ -47,8 +50,7 @@ import {
 
 const LAST_PROJECT_KEY = "kadan:work:lastProjectId";
 const LAST_MODEL_KEY = "kadan:work:lastModel";
-const ADD_FOLDER_VALUE = "__add_folder__";
-const MANAGE_ASSISTANTS_VALUE = "__manage_assistants__";
+const LAST_OPTIONS_KEY = "kadan:work:lastModelOptions";
 
 interface Props {
   threadId: string | null;
@@ -73,6 +75,15 @@ function writeStorage(key: string, value: string): void {
     }
   } catch {
     // Ignore storage errors.
+  }
+}
+
+function readOptions(): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(readStorage(LAST_OPTIONS_KEY) || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
   }
 }
 
@@ -101,67 +112,6 @@ function pickInitialModel(harnesses: WorkHarness[]): string {
   return encodeModelSelection(
     preferred.id,
     preferred.default_model ?? preferred.models[0]?.id ?? null,
-  );
-}
-
-function ModelPicker({
-  harnesses,
-  value,
-  disabled,
-  onChange,
-  onOpenSettings,
-}: {
-  harnesses: WorkHarness[];
-  value: string;
-  disabled: boolean;
-  onChange: (harnessId: string, modelId: string | null) => void;
-  onOpenSettings?: () => void;
-}) {
-  if (harnesses.length === 0) return null;
-  return (
-    <select
-      className="work-composer-select"
-      aria-label="Model"
-      value={value}
-      disabled={disabled}
-      onChange={(event) => {
-        const next = event.target.value;
-        if (next === MANAGE_ASSISTANTS_VALUE) {
-          onOpenSettings?.();
-          return;
-        }
-        const decoded = decodeModelSelection(next);
-        onChange(decoded.harness, decoded.model);
-      }}
-    >
-      {harnesses.map((h) => {
-        const ready = h.auth.status === "ready";
-        const groupLabel = ready
-          ? h.display_name
-          : `${h.display_name} (${harnessAuthLabel(h.auth, h.installed)})`;
-        const models =
-          h.models.length > 0
-            ? h.models
-            : [{ id: h.default_model ?? "", label: h.display_name, description: "", options: {} }];
-        return (
-          <optgroup key={h.id} label={groupLabel}>
-            {models.map((m) => {
-              const optionValue = encodeModelSelection(h.id, m.id || null);
-              return (
-                <option
-                  key={optionValue}
-                  value={optionValue}
-                  disabled={!ready && optionValue !== value}
-                >
-                  {m.label}
-                </option>
-              );
-            })}
-          </optgroup>
-        );
-      })}
-      {onOpenSettings && <option value={MANAGE_ASSISTANTS_VALUE}>Manage assistants…</option>}
-    </select>
   );
 }
 
@@ -264,15 +214,17 @@ function ActivityRow({ item }: { item: WorkActivityItem }) {
     const imageCount = Number(item.data?.image_count ?? 0);
     return (
       <article className="work-item work-item-user">
-        <div className="work-item-meta">
-          {steered ? "You (update)" : "You"}
-          {imageCount > 0 && (
-            <span className="work-pill">
-              {imageCount} {imageCount === 1 ? "image" : "images"}
-            </span>
-          )}
-        </div>
-        <div className="work-item-body">{item.text}</div>
+        <div className="work-user-bubble">{item.text}</div>
+        {(steered || imageCount > 0) && (
+          <div className="work-item-meta">
+            {steered && <span>Sent as a live update</span>}
+            {imageCount > 0 && (
+              <span className="work-pill">
+                {imageCount} {imageCount === 1 ? "image" : "images"}
+              </span>
+            )}
+          </div>
+        )}
       </article>
     );
   }
@@ -285,8 +237,12 @@ function ActivityRow({ item }: { item: WorkActivityItem }) {
   }
   if (item.kind === "reasoning") {
     return (
-      <details className="work-item work-item-reasoning">
-        <summary>Thinking progress</summary>
+      <details className="work-item work-item-step work-item-reasoning">
+        <summary>
+          <Brain size={13} aria-hidden="true" />
+          <span className="work-step-label">Thinking</span>
+          <ChevronRight size={13} className="work-step-chevron" aria-hidden="true" />
+        </summary>
         <p>{item.text}</p>
       </details>
     );
@@ -295,11 +251,14 @@ function ActivityRow({ item }: { item: WorkActivityItem }) {
     const toolName = String(item.data?.tool_name ?? "Action");
     const isError = Boolean(item.data?.is_error);
     return (
-      <details className={`work-item work-item-tool ${isError ? "is-error" : ""}`}>
+      <details className={`work-item work-item-step work-item-tool ${isError ? "is-error" : ""}`}>
         <summary>
-          <Terminal size={13} />
-          <span>{item.kind === "tool_call" ? `Running ${toolName}` : `Finished ${toolName}`}</span>
+          <Terminal size={13} aria-hidden="true" />
+          <span className="work-step-label">
+            {item.kind === "tool_call" ? "Running" : "Finished"} <code>{toolName}</code>
+          </span>
           {isError && <span className="work-pill error">Failed</span>}
+          {item.text && <ChevronRight size={13} className="work-step-chevron" aria-hidden="true" />}
         </summary>
         {item.text && <pre className="work-code-block">{item.text}</pre>}
       </details>
@@ -309,10 +268,10 @@ function ActivityRow({ item }: { item: WorkActivityItem }) {
     const filePath = String(item.data?.file_path ?? "File updated");
     const changeType = String(item.data?.change_type ?? "modified");
     return (
-      <div className="work-item work-item-file">
-        <FileCode2 size={14} />
+      <div className="work-item work-item-step work-item-file">
+        <FileCode2 size={13} aria-hidden="true" />
         <span className="work-file-path">{filePath}</span>
-        <span className="work-pill">{changeType}</span>
+        <span className={`work-pill change-${changeType}`}>{changeType}</span>
       </div>
     );
   }
@@ -360,6 +319,7 @@ export default function WorkThreadView({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [attachedImages, setAttachedImages] = useState<{ name: string; dataUrl: string }[]>([]);
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
+  const [selectedOptions, setSelectedOptions] = useState<Record<string, unknown>>(() => readOptions());
   const feedEndRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(
@@ -496,6 +456,7 @@ export default function WorkThreadView({
           project_id: selectedProjectId,
           harness: harnessId,
           model: modelId,
+          model_options: selectedOptions,
           prompt: text,
           images:
             harnessInfo?.supports_images && attachedImages.length > 0
@@ -587,11 +548,17 @@ export default function WorkThreadView({
     }
   }
 
-  async function handleHarnessOrModelChange(nextHarness: string, nextModel: string | null) {
+  async function handleHarnessOrModelChange(
+    nextHarness: string,
+    nextModel: string | null,
+    nextOptions: Record<string, unknown>,
+  ) {
     if (isNew) {
       const encoded = encodeModelSelection(nextHarness, nextModel);
       setSelectedModelKey(encoded);
+      setSelectedOptions(nextOptions);
       writeStorage(LAST_MODEL_KEY, encoded);
+      writeStorage(LAST_OPTIONS_KEY, JSON.stringify(nextOptions));
       return;
     }
     if (!detail || !threadId) return;
@@ -601,9 +568,11 @@ export default function WorkThreadView({
       await updateWorkThread(threadId, {
         harness: nextHarness,
         model: nextModel,
+        model_options: nextOptions,
         expected_version: detail.thread.version,
       });
       writeStorage(LAST_MODEL_KEY, encodeModelSelection(nextHarness, nextModel));
+      writeStorage(LAST_OPTIONS_KEY, JSON.stringify(nextOptions));
       await load(false);
       onChanged();
     } catch (err) {
@@ -654,63 +623,298 @@ export default function WorkThreadView({
   const activity = detail?.activity ?? [];
   const pending = thread ? pendingRequestsFor(thread) : [];
 
-  const activeModelValue = thread
-    ? encodeModelSelection(
-        thread.harness,
-        thread.model ?? harnesses.find((h) => h.id === thread.harness)?.default_model ?? null,
-      )
-    : selectedModelKey;
-  const activeHarnessId = thread
-    ? thread.harness
-    : decodeModelSelection(selectedModelKey).harness;
+  const decodedSelection = decodeModelSelection(selectedModelKey);
+  const activeHarnessId = thread ? thread.harness : decodedSelection.harness;
   const currentHarness = harnesses.find((h) => h.id === activeHarnessId) ?? null;
+  const activeModelId = thread
+    ? (thread.model ?? currentHarness?.default_model ?? null)
+    : decodedSelection.model;
+  const activeOptions = thread ? (thread.model_options ?? {}) : selectedOptions;
+  const canSend = !busy && (draft.trim().length > 0 || attachedImages.length > 0);
+  const followUpMode =
+    currentHarness?.supports_steer && attachedImages.length === 0 ? "steer" : "queue";
+
+  const composer = (
+    <div className={`work-composer-dock ${isNew ? "is-new" : ""}`}>
+      {pending.length > 0 && (
+        <div className="work-pending-stack">
+          {pending.map((req) => (
+            <PendingCard key={req.id} request={req} busy={busy} onRespond={handleRespond} />
+          ))}
+        </div>
+      )}
+
+      <div className={`work-composer ${active ? "is-running" : ""}`}>
+        {attachedImages.length > 0 && (
+          <div className="work-image-chips">
+            {attachedImages.map((img, idx) => (
+              <span key={`${img.name}-${idx}`} className="work-image-chip">
+                <img src={img.dataUrl} alt="" />
+                <span className="work-image-chip-name">{img.name}</span>
+                <button
+                  type="button"
+                  className="icon"
+                  aria-label={`Remove ${img.name}`}
+                  onClick={() => setAttachedImages((prev) => prev.filter((_, i) => i !== idx))}
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <textarea
+          rows={isNew ? 3 : 2}
+          autoFocus={isNew}
+          value={draft}
+          aria-label="Message"
+          onChange={(event) => setDraft(event.target.value)}
+          placeholder={
+            active
+              ? "Add a follow-up or update while this runs…"
+              : isNew
+                ? "Describe a task, ask a question, or paste an error…"
+                : "Ask for follow-up changes…"
+          }
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              if ((draft.trim() || attachedImages.length > 0) && !busy) {
+                void handleSend(active ? followUpMode : "send");
+              }
+            }
+          }}
+        />
+        <div className="work-composer-bar">
+          <div className="work-composer-left">
+            {currentHarness?.supports_images && (
+              <label className="work-icon-btn" title="Attach screenshots" aria-label="Attach screenshots">
+                <Paperclip size={17} />
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg"
+                  multiple
+                  hidden
+                  disabled={busy}
+                  onChange={(event) => {
+                    handleSelectImages(event.target.files);
+                    event.target.value = "";
+                  }}
+                />
+              </label>
+            )}
+          </div>
+          <div className="work-composer-right">
+            <ModelPicker
+              harnesses={harnesses}
+              harnessId={activeHarnessId}
+              modelId={activeModelId}
+              options={activeOptions}
+              disabled={busy || active}
+              onChange={(h, m, o) => void handleHarnessOrModelChange(h, m, o)}
+              onOpenSettings={onOpenSettings}
+            />
+            {active ? (
+              <>
+                {currentHarness?.supports_steer && (
+                  <button
+                    type="button"
+                    className="work-text-btn"
+                    disabled={busy || !draft.trim() || attachedImages.length > 0}
+                    title={
+                      attachedImages.length > 0
+                        ? "Follow-ups with images are queued as the next turn"
+                        : "Send this as a live update to the running turn"
+                    }
+                    onClick={() => void handleSend("steer")}
+                  >
+                    Steer
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="work-text-btn"
+                  disabled={!canSend}
+                  title="Run this after the current turn finishes"
+                  onClick={() => void handleSend("queue")}
+                >
+                  Queue
+                </button>
+                <button
+                  type="button"
+                  className="work-send is-stop"
+                  disabled={busy}
+                  title="Stop"
+                  onClick={() => void handleInterrupt()}
+                >
+                  <Square size={12} fill="currentColor" aria-hidden="true" />
+                  <span className="sr-only">Stop</span>
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="work-send"
+                disabled={!canSend}
+                title="Send"
+                onClick={() => void handleSend("send")}
+              >
+                <ArrowUp size={17} aria-hidden="true" />
+                <span className="sr-only">Send</span>
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="work-composer-meta">
+        {isNew ? (
+          <ProjectPicker
+            projects={projects}
+            value={selectedProjectId}
+            disabled={busy}
+            onChange={(id) => {
+              setSelectedProjectId(id);
+              writeStorage(LAST_PROJECT_KEY, id);
+            }}
+            onAddFolder={() => void handleChooseFolder()}
+            onManage={onOpenSettings}
+          />
+        ) : (
+          project && (
+            <span className="work-meta-item" title={project.root_path}>
+              <Folder size={14} />
+              {project.title}
+            </span>
+          )
+        )}
+        <span className="work-meta-spacer" />
+        {currentHarness?.auth.login_method === "local" && currentHarness.auth.status !== "ready" ? (
+          <span className="work-meta-item is-warn" role="status">
+            {currentHarness.auth.message}
+          </span>
+        ) : (
+          currentHarness && (
+            <span className="work-meta-item">
+              {currentHarness.auth.login_method === "local" ? "Runs on Kadan Server" : "Runs on this computer"}
+            </span>
+          )
+        )}
+      </div>
+    </div>
+  );
+
+  const dialogs = (
+    <>
+      {folderDialogOpen && (
+        <FolderPickerDialog
+          onSelect={(path) => {
+            setFolderDialogOpen(false);
+            void addFolderPath(path);
+          }}
+          onClose={() => setFolderDialogOpen(false)}
+        />
+      )}
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete this work thread?"
+          message="This deletes the thread transcript. Your project folder is untouched."
+          confirm="Delete thread"
+          onConfirm={handleDelete}
+          onClose={() => setConfirmDelete(false)}
+        />
+      )}
+    </>
+  );
+
+  if (isNew) {
+    return (
+      <div className="work-thread-view is-new">
+        {error && (
+          <div className="banner" role="alert">
+            {error}
+          </div>
+        )}
+        <div className="work-new-stage">
+          <h1 className="work-new-title">
+            {project ? (
+              <>
+                What should we build in <span className="work-new-project">{project.title}</span>?
+              </>
+            ) : (
+              "What should we build?"
+            )}
+          </h1>
+          {!project && !loading ? (
+            <button
+              type="button"
+              className="work-new-sub work-new-add"
+              disabled={busy}
+              onClick={() => void handleChooseFolder()}
+            >
+              <FolderPlus size={15} />
+              Choose a project folder to get started
+            </button>
+          ) : (
+            <p className="work-new-sub">Describe the task and Kadan will start a coding thread.</p>
+          )}
+          {composer}
+        </div>
+        {dialogs}
+      </div>
+    );
+  }
 
   return (
     <div className="work-thread-view">
       {thread && (
         <header className="work-thread-header">
-          <div className="work-thread-title-group">
-            <div className="work-thread-title-row">
-              <h2>{thread.title}</h2>
-              <span className={`work-status-badge status-${thread.run_status}`}>
-                {workStatusLabel(thread.run_status)}
+          <div className="work-thread-heading">
+            <h2 title={thread.title}>{thread.title}</h2>
+            {project && (
+              <span className="work-header-project" title={project.root_path}>
+                {project.title}
               </span>
-            </div>
+            )}
+            <span className={`work-status-badge status-${thread.run_status}`}>
+              {isThreadActive(thread.run_status) && <span className="work-status-pulse" aria-hidden="true" />}
+              {workStatusLabel(thread.run_status)}
+            </span>
             {thread.bucket === "snoozed" && thread.snoozed_until && (
-              <div className="work-thread-meta">
-                <span className="work-meta-chip">
-                  <Clock size={13} />
-                  Snoozed ({formatSnoozeLabel(thread.snoozed_until)})
-                </span>
-              </div>
+              <span className="work-status-badge">
+                <AlarmClock size={12} />
+                Snoozed · {formatSnoozeLabel(thread.snoozed_until)}
+              </span>
             )}
           </div>
 
           <div className="work-thread-controls">
             <div className="work-snooze-wrap">
               <button
-                className="button"
+                className="icon work-header-btn"
                 disabled={busy}
+                aria-label={thread.bucket === "snoozed" ? "Resnooze thread" : "Snooze thread"}
+                aria-expanded={snoozeOpen}
+                title={thread.bucket === "snoozed" ? "Resnooze" : "Snooze"}
                 onClick={() => setSnoozeOpen((open) => !open)}
-                title="Snooze this thread"
               >
-                <Clock size={14} />
-                {thread.bucket === "snoozed" ? "Resnooze" : "Snooze"}
+                <AlarmClock size={16} />
               </button>
               {snoozeOpen && (
                 <div className="menu work-snooze-menu" role="menu">
+                  <p className="menu-label">Snooze until…</p>
                   <button onClick={() => void handleOrganize("snooze", { snooze_minutes: 30 })}>
-                    For 30 minutes
+                    30 minutes
                   </button>
                   <button onClick={() => void handleOrganize("snooze", { snooze_minutes: 120 })}>
-                    For 2 hours
+                    2 hours
                   </button>
                   <button
                     onClick={() =>
                       void handleOrganize("snooze", { snoozed_until: tomorrowMorningIso() })
                     }
                   >
-                    Until tomorrow morning
+                    Tomorrow morning
                   </button>
                   <div className="work-snooze-custom">
                     <input
@@ -729,11 +933,14 @@ export default function WorkThreadView({
                         }
                       }}
                     >
-                      Set time
+                      Set
                     </button>
                   </div>
                   {thread.bucket === "snoozed" && (
-                    <button onClick={() => void handleOrganize("default")}>Wake now</button>
+                    <>
+                      <hr />
+                      <button onClick={() => void handleOrganize("default")}>Wake now</button>
+                    </>
                   )}
                 </div>
               )}
@@ -741,8 +948,9 @@ export default function WorkThreadView({
 
             {thread.bucket === "settled" ? (
               <button
-                className="button"
+                className="work-header-pill"
                 disabled={busy}
+                title="Move back to your active threads"
                 onClick={() => void handleOrganize("unsettle")}
               >
                 <ArchiveRestore size={14} />
@@ -750,23 +958,24 @@ export default function WorkThreadView({
               </button>
             ) : (
               <button
-                className="button"
+                className="icon work-header-btn"
                 disabled={busy}
+                aria-label="Settle thread"
+                title="Settle"
                 onClick={() => void handleOrganize("settle")}
               >
-                <Archive size={14} />
-                Settle
+                <Archive size={16} />
               </button>
             )}
 
             <button
-              className="icon"
+              className="icon work-header-btn is-danger"
               aria-label="Delete work thread"
               title="Delete thread"
               disabled={busy}
               onClick={() => setConfirmDelete(true)}
             >
-              <Trash2 size={15} />
+              <Trash2 size={16} />
             </button>
           </div>
         </header>
@@ -778,233 +987,29 @@ export default function WorkThreadView({
         </div>
       )}
 
-      {currentHarness?.auth.login_method === "local" && currentHarness.auth.status !== "ready" && (
-        <div className="work-local-hint" role="status">
-          {currentHarness.auth.message}
-        </div>
-      )}
-
       <div className="work-activity-feed">
-        {isNew ? (
-          <div className="work-new-empty">
-            <h2>{project ? project.title : "New thread"}</h2>
-            {!project && !loading && (
-              <button
-                type="button"
-                className="button"
-                disabled={busy}
-                onClick={() => void handleChooseFolder()}
-              >
-                <FolderPlus size={15} />
-                Choose a project folder
-              </button>
-            )}
-          </div>
-        ) : activity.length === 0 ? (
-          <div className="work-empty-feed">
-            <p className="quiet">Send a message below to get started.</p>
-          </div>
-        ) : (
-          activity.map((item) => <ActivityRow key={item.id} item={item} />)
-        )}
-        <div ref={feedEndRef} />
+        <div className="work-activity-inner">
+          {activity.length === 0 ? (
+            <p className="work-empty-feed">Send a message below to get started.</p>
+          ) : (
+            activity.map((item) => <ActivityRow key={item.id} item={item} />)
+          )}
+          {active && thread?.run_status !== "waiting" && (
+            <div className="work-working-row" role="status">
+              <span className="work-working-dots" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+              </span>
+              {workStatusLabel(thread?.run_status ?? "running")}…
+            </div>
+          )}
+          <div ref={feedEndRef} />
+        </div>
       </div>
 
-      {pending.length > 0 && (
-        <div className="work-pending-stack">
-          {pending.map((req) => (
-            <PendingCard key={req.id} request={req} busy={busy} onRespond={handleRespond} />
-          ))}
-        </div>
-      )}
-
-      <footer className="work-composer">
-        {attachedImages.length > 0 && (
-          <div className="work-image-chips">
-            {attachedImages.map((img, idx) => (
-              <span key={`${img.name}-${idx}`} className="work-image-chip">
-                <span>{img.name}</span>
-                <button
-                  type="button"
-                  className="icon"
-                  aria-label={`Remove ${img.name}`}
-                  onClick={() => setAttachedImages((prev) => prev.filter((_, i) => i !== idx))}
-                >
-                  <X size={12} />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
-        <textarea
-          rows={isNew ? 3 : 2}
-          autoFocus={isNew}
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder={
-            active
-              ? "Add a follow-up or update while this runs…"
-              : isNew
-                ? "What would you like to work on?"
-                : "Follow up…"
-          }
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              if ((draft.trim() || attachedImages.length > 0) && !busy) {
-                void handleSend(
-                  active
-                    ? currentHarness?.supports_steer && attachedImages.length === 0
-                      ? "steer"
-                      : "queue"
-                    : "send",
-                );
-              }
-            }
-          }}
-        />
-        <div className="work-composer-bar">
-          <div className="work-composer-pickers">
-            {isNew ? (
-              projects.length === 0 ? (
-                <button
-                  type="button"
-                  className="button work-composer-pill"
-                  disabled={busy}
-                  onClick={() => void handleChooseFolder()}
-                >
-                  <FolderPlus size={13} />
-                  Add folder
-                </button>
-              ) : (
-                <label className="work-composer-project">
-                  <Folder size={13} aria-hidden="true" />
-                  <select
-                    className="work-composer-select"
-                    aria-label="Project"
-                    value={selectedProjectId}
-                    disabled={busy}
-                    onChange={(event) => {
-                      const val = event.target.value;
-                      if (val === ADD_FOLDER_VALUE) {
-                        void handleChooseFolder();
-                        return;
-                      }
-                      setSelectedProjectId(val);
-                      writeStorage(LAST_PROJECT_KEY, val);
-                    }}
-                  >
-                    {projects.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.title}
-                      </option>
-                    ))}
-                    <option value={ADD_FOLDER_VALUE}>+ Add folder…</option>
-                  </select>
-                </label>
-              )
-            ) : (
-              project && (
-                <span className="work-meta-chip" title={project.root_path}>
-                  <Folder size={13} />
-                  {project.title}
-                </span>
-              )
-            )}
-
-            <ModelPicker
-              harnesses={harnesses}
-              value={activeModelValue}
-              disabled={busy || active}
-              onChange={(h, m) => void handleHarnessOrModelChange(h, m)}
-              onOpenSettings={onOpenSettings}
-            />
-          </div>
-
-          <div className="work-composer-actions">
-            {currentHarness?.supports_images && (
-              <label className="button work-attach-btn">
-                <ImagePlus size={14} />
-                Image
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg"
-                  multiple
-                  hidden
-                  disabled={busy}
-                  onChange={(event) => {
-                    handleSelectImages(event.target.files);
-                    event.target.value = "";
-                  }}
-                />
-              </label>
-            )}
-            {active ? (
-              <>
-                <button
-                  className="button"
-                  disabled={busy}
-                  onClick={() => void handleInterrupt()}
-                >
-                  <Square size={14} />
-                  Stop
-                </button>
-                {currentHarness?.supports_steer && (
-                  <button
-                    className="button"
-                    disabled={busy || !draft.trim() || attachedImages.length > 0}
-                    title={
-                      attachedImages.length > 0
-                        ? "Follow-ups with images are queued as the next turn"
-                        : undefined
-                    }
-                    onClick={() => void handleSend("steer")}
-                  >
-                    Steer
-                  </button>
-                )}
-                <button
-                  className="primary"
-                  disabled={busy || (!draft.trim() && attachedImages.length === 0)}
-                  onClick={() => void handleSend("queue")}
-                >
-                  <Send size={14} />
-                  Queue
-                </button>
-              </>
-            ) : (
-              <button
-                className="primary"
-                disabled={busy || (!draft.trim() && attachedImages.length === 0)}
-                onClick={() => void handleSend("send")}
-              >
-                <Send size={14} />
-                Send
-              </button>
-            )}
-          </div>
-        </div>
-      </footer>
-
-      {folderDialogOpen && (
-        <FolderPickerDialog
-          onSelect={(path) => {
-            setFolderDialogOpen(false);
-            void addFolderPath(path);
-          }}
-          onClose={() => setFolderDialogOpen(false)}
-        />
-      )}
-
-      {confirmDelete && (
-        <ConfirmDialog
-          title="Delete this work thread?"
-          message="This deletes the thread transcript. Your project folder is untouched."
-          confirm="Delete thread"
-          onConfirm={handleDelete}
-          onClose={() => setConfirmDelete(false)}
-        />
-      )}
+      {composer}
+      {dialogs}
     </div>
   );
 }

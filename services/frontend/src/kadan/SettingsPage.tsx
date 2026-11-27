@@ -9,6 +9,7 @@ import {
   Trash2,
 } from "lucide-react";
 import FolderPickerDialog from "./FolderPickerDialog";
+import ProviderIcon from "./ProviderIcon";
 import { pickDesktopFolder } from "./desktop";
 import type { Status } from "./types";
 import {
@@ -250,6 +251,7 @@ export default function SettingsPage({
                 <li key={harness.id} className="settings-list-item">
                   <div className="settings-row">
                     <div className="settings-row-main">
+                      <ProviderIcon harness={harness.id} size={18} />
                       <strong>{harness.display_name}</strong>
                       <span
                         className={`work-pill ${isReady ? "ok" : harness.installed ? "warn" : ""}`}

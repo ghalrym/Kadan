@@ -1,26 +1,36 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
+  AlarmClockOff,
+  Archive,
   ArchiveRestore,
   ChevronDown,
-  ChevronRight,
-  Clock,
   LayoutGrid,
+  Loader2,
   MessageSquare,
-  Plus,
   Puzzle,
   RefreshCw,
   Search,
   Settings,
+  SquarePen,
   Users,
   X,
 } from "lucide-react";
 import Pet from "./Pet";
 import { useAgentPet } from "./PetContext";
+import ProviderIcon from "./ProviderIcon";
 import type { Agent, Status } from "./types";
 import {
-  formatSnoozeLabel,
   groupThreadsByBucket,
+  isThreadActive,
+  listWorkProjects,
+  matchesThreadQuery,
   pendingRequestsFor,
+  projectHue,
+  projectInitials,
+  relativeTime,
+  snoozeRemaining,
+  workStatusLabel,
+  type WorkProject,
   type WorkThread,
 } from "./work";
 
@@ -33,6 +43,38 @@ export type Page =
   | { name: "settings" }
   | { name: "work-new" }
   | { name: "work-thread"; threadId: string };
+
+type Shelf = "working" | "snoozed" | "settled";
+type Shelves = Record<Shelf, boolean>;
+
+const SHELVES_KEY = "kadan:work:shelves";
+const SETTLED_PAGE = 25;
+const DEFAULT_SHELVES: Shelves = { working: true, snoozed: false, settled: false };
+
+function readShelves(): Shelves {
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(SHELVES_KEY) : null;
+    return raw ? { ...DEFAULT_SHELVES, ...JSON.parse(raw) } : DEFAULT_SHELVES;
+  } catch {
+    return DEFAULT_SHELVES;
+  }
+}
+
+function writeShelves(shelves: Shelves): void {
+  try {
+    localStorage.setItem(SHELVES_KEY, JSON.stringify(shelves));
+  } catch {
+    // Shelf state is a convenience; ignore storage errors.
+  }
+}
+
+function byUpdatedDesc(a: WorkThread, b: WorkThread): number {
+  return (b.updated_at ?? "").localeCompare(a.updated_at ?? "");
+}
+
+function bySnoozeAsc(a: WorkThread, b: WorkThread): number {
+  return (a.snoozed_until ?? "").localeCompare(b.snoozed_until ?? "");
+}
 
 interface Props {
   agent: Agent | null;
@@ -49,6 +91,7 @@ interface Props {
   workThreads?: WorkThread[];
   onOpenWorkThread?: (threadId: string) => void;
   onNewWorkThread?: () => void;
+  onSettleWorkThread?: (threadId: string) => void;
   onUnsettleWorkThread?: (threadId: string) => void;
   onWakeWorkThread?: (threadId: string) => void;
 }
@@ -57,11 +100,47 @@ export default function Sidebar(props: Props) {
   const { agent, page, status, loading, disabled } = props;
   const sheet = useAgentPet(agent?.key ?? "");
   const key = agent?.key ?? "";
-  const [settledOpen, setSettledOpen] = useState(false);
-  const [settledQuery, setSettledQuery] = useState("");
+  const [query, setQuery] = useState("");
+  const [shelves, setShelves] = useState<Shelves>(() => readShelves());
+  const [settledLimit, setSettledLimit] = useState(SETTLED_PAGE);
+  const [projects, setProjects] = useState<WorkProject[]>([]);
   const workThreads = props.workThreads ?? [];
-  const buckets = groupThreadsByBucket(workThreads, settledQuery);
-  const settledTotal = workThreads.filter((t) => t.bucket === "settled").length;
+
+  // Project names and badges are shown on each thread row; reload when a thread
+  // points at a project we have not seen yet.
+  const unknownProject = workThreads.some((t) => !projects.some((p) => p.id === t.project_id));
+  useEffect(() => {
+    if (!key || !unknownProject) return;
+    let cancelled = false;
+    void listWorkProjects()
+      .then((list) => {
+        if (!cancelled) setProjects(list);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [key, unknownProject, workThreads.length]);
+
+  const projectById = new Map(projects.map((p) => [p.id, p]));
+  const searching = query.trim().length > 0;
+  const visible = workThreads.filter((t) =>
+    matchesThreadQuery(t, query, projectById.get(t.project_id)?.title ?? ""),
+  );
+  const buckets = groupThreadsByBucket(visible);
+  buckets.default.sort(byUpdatedDesc);
+  buckets.working.sort(byUpdatedDesc);
+  buckets.snoozed.sort(bySnoozeAsc);
+  buckets.settled.sort(byUpdatedDesc);
+  const isOpen = (shelf: Shelf) => shelves[shelf] || (searching && buckets[shelf].length > 0);
+
+  function toggleShelf(shelf: Shelf) {
+    setShelves((prev) => {
+      const next = { ...prev, [shelf]: !prev[shelf] };
+      writeShelves(next);
+      return next;
+    });
+  }
 
   const serverDot = !status
     ? ""
@@ -89,9 +168,84 @@ export default function Sidebar(props: Props) {
 
   const selectedWorkId = page.name === "work-thread" ? page.threadId : null;
 
-  function renderThreadRow(thread: WorkThread, extra?: React.ReactNode) {
+  function renderStatus(thread: WorkThread) {
+    if (pendingRequestsFor(thread).length > 0) {
+      return (
+        <span className="work-row-status is-warn">
+          <span className="work-row-dot" aria-hidden="true" />
+          Needs input
+        </span>
+      );
+    }
+    if (isThreadActive(thread.run_status)) {
+      return (
+        <span className="work-row-status is-active">
+          <Loader2 size={11} className="spin" aria-hidden="true" />
+          {workStatusLabel(thread.run_status)}
+        </span>
+      );
+    }
+    if (thread.bucket === "snoozed") {
+      const left = snoozeRemaining(thread.snoozed_until);
+      return <span className="work-row-status">{left ? `Snoozed, ${left} left` : "Waking soon"}</span>;
+    }
+    if (thread.run_status === "failed") {
+      return <span className="work-row-status is-error">Failed</span>;
+    }
+    return <span className="work-row-status">{workStatusLabel(thread.run_status)}</span>;
+  }
+
+  function renderThreadRow(thread: WorkThread) {
     const selected = selectedWorkId === thread.id;
-    const pendingCount = pendingRequestsFor(thread).length;
+    const project = projectById.get(thread.project_id);
+    const projectTitle = project?.title ?? "Project";
+    let action: React.ReactNode = null;
+    if (thread.bucket === "snoozed") {
+      action = (
+        <button
+          type="button"
+          className="work-row-action"
+          aria-label={`Wake ${thread.title}`}
+          title="Wake now"
+          onClick={(e) => {
+            e.stopPropagation();
+            props.onWakeWorkThread?.(thread.id);
+          }}
+        >
+          <AlarmClockOff size={13} />
+        </button>
+      );
+    } else if (thread.bucket === "settled") {
+      action = (
+        <button
+          type="button"
+          className="work-row-action"
+          aria-label={`Unsettle ${thread.title}`}
+          title="Un-settle"
+          onClick={(e) => {
+            e.stopPropagation();
+            props.onUnsettleWorkThread?.(thread.id);
+          }}
+        >
+          <ArchiveRestore size={13} />
+        </button>
+      );
+    } else if (props.onSettleWorkThread && thread.bucket === "default") {
+      action = (
+        <button
+          type="button"
+          className="work-row-action"
+          aria-label={`Settle ${thread.title}`}
+          title="Settle"
+          onClick={(e) => {
+            e.stopPropagation();
+            props.onSettleWorkThread?.(thread.id);
+          }}
+        >
+          <Archive size={13} />
+        </button>
+      );
+    }
     return (
       <div key={thread.id} className={`chat-row work-thread-row ${selected ? "selected" : ""}`}>
         <button
@@ -99,20 +253,59 @@ export default function Sidebar(props: Props) {
           aria-current={selected ? "page" : undefined}
           onClick={() => props.onOpenWorkThread?.(thread.id)}
         >
-          <span className="work-row-main">
+          <span className="work-row-top">
             <span
-              className={`work-row-dot status-${thread.run_status}`}
+              className="work-project-badge"
+              style={{ "--project-h": projectHue(thread.project_id) } as React.CSSProperties}
               aria-hidden="true"
-            />
-            <span className="chat-row-title">{thread.title}</span>
+            >
+              {projectInitials(projectTitle)}
+            </span>
+            <span className="work-row-project">{projectTitle}</span>
+            <time className="work-row-time" dateTime={thread.updated_at}>
+              {relativeTime(thread.updated_at)}
+            </time>
           </span>
-          {pendingCount > 0 ? (
-            <span className="work-row-badge warn">Needs input</span>
-          ) : thread.bucket === "snoozed" && thread.snoozed_until ? (
-            <span className="work-row-time">{formatSnoozeLabel(thread.snoozed_until)}</span>
-          ) : null}
+          <span className="work-row-title">{thread.title}</span>
+          <span className="work-row-meta">
+            {renderStatus(thread)}
+            <ProviderIcon harness={thread.harness} size={14} className="work-row-provider" />
+          </span>
         </button>
-        {extra}
+        {action}
+      </div>
+    );
+  }
+
+  function renderShelf(shelf: Shelf, label: string, threads: WorkThread[]) {
+    const open = isOpen(shelf);
+    const shown = shelf === "settled" ? threads.slice(0, settledLimit) : threads;
+    return (
+      <div className="work-shelf" data-bucket={shelf}>
+        <button
+          type="button"
+          className="work-shelf-toggle"
+          aria-expanded={open}
+          onClick={() => toggleShelf(shelf)}
+        >
+          <span className="work-shelf-label">{label}</span>
+          <span className="work-shelf-count">{threads.length}</span>
+          <ChevronDown size={13} className="work-shelf-chevron" aria-hidden="true" />
+        </button>
+        {open && (
+          <div className="work-shelf-list">
+            {shown.map((thread) => renderThreadRow(thread))}
+            {shelf === "settled" && threads.length > shown.length && (
+              <button
+                type="button"
+                className="work-show-more"
+                onClick={() => setSettledLimit((n) => n + SETTLED_PAGE)}
+              >
+                Show more
+              </button>
+            )}
+          </div>
+        )}
       </div>
     );
   }
@@ -120,10 +313,25 @@ export default function Sidebar(props: Props) {
   return (
     <>
       <header className="panel-head">
-        <span className="brand">
-          <span className="logo" aria-hidden="true"><i /><i /><i /><i /></span>
-          Kadan
-        </span>
+        <label className="sidebar-search">
+          <Search size={15} aria-hidden="true" />
+          <input
+            type="search"
+            aria-label="Search threads"
+            placeholder="Search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </label>
+        <button
+          className={`icon sidebar-head-btn ${page.name === "work-new" ? "selected" : ""}`}
+          aria-label="New work thread"
+          title="New thread"
+          disabled={!key}
+          onClick={() => props.onNewWorkThread?.()}
+        >
+          <SquarePen size={17} />
+        </button>
         <button className="icon mobile-only" aria-label="Close navigation" ref={props.closeRef} onClick={props.onClose}>
           <X size={18} />
         </button>
@@ -131,144 +339,40 @@ export default function Sidebar(props: Props) {
       <nav className="panel-nav" aria-label="Views">
         <button className={page.name === "chat" ? "selected" : ""} disabled={!key}
           aria-current={page.name === "chat" ? "page" : undefined} onClick={() => props.onPage("chat")}>
-          <MessageSquare size={16} />
+          <MessageSquare size={15} />
           Chat
         </button>
         <button className={page.name === "group-chat" ? "selected" : ""} disabled={!key}
           aria-current={page.name === "group-chat" ? "page" : undefined} onClick={() => props.onPage("group-chat")}>
-          <Users size={16} />
+          <Users size={15} />
           Group Chat
         </button>
         <button className={page.name === "space" ? "selected" : ""} disabled={!key}
           aria-current={page.name === "space" ? "page" : undefined} onClick={() => props.onPage("space")}>
-          <LayoutGrid size={16} />
+          <LayoutGrid size={15} />
           Space
         </button>
         <button className={page.name === "plugins" ? "selected" : ""} disabled={!key}
           aria-current={page.name === "plugins" ? "page" : undefined} onClick={() => props.onPage("plugins")}>
-          <Puzzle size={16} />
+          <Puzzle size={15} />
           Plugins
         </button>
       </nav>
 
-      <section className="panel-scroll work-sidebar" aria-label="Work">
-        <div className="panel-section-head work-sidebar-head">
-          <span className="panel-label">WORK</span>
-          <div className="work-sidebar-actions">
-            <button
-              className={`icon work-mini-btn ${page.name === "work-new" ? "selected" : ""}`}
-              aria-label="New work thread"
-              title="New work thread"
-              disabled={!key}
-              onClick={() => props.onNewWorkThread?.()}
-            >
-              <Plus size={14} />
-            </button>
-          </div>
-        </div>
-
-        <div className="panel-section work-bucket" data-bucket="default">
-          <div className="work-bucket-head">
-            <span className="work-bucket-label">Default</span>
-            {buckets.default.length > 0 && (
-              <span className="work-bucket-count">{buckets.default.length}</span>
-            )}
-          </div>
+      <section className="panel-scroll work-sidebar" aria-label="Work threads">
+        <div className="work-active" data-bucket="default">
           {buckets.default.length === 0 ? (
-            <p className="panel-hint work-empty-hint">No threads waiting</p>
+            <p className="panel-hint work-empty-hint">
+              {searching ? "No threads found" : "No active threads"}
+            </p>
           ) : (
             buckets.default.map((thread) => renderThreadRow(thread))
           )}
         </div>
-
-        <div className="panel-section work-bucket" data-bucket="working">
-          <div className="work-bucket-head">
-            <span className="work-bucket-label">Working</span>
-            {buckets.working.length > 0 && (
-              <span className="work-bucket-count">{buckets.working.length}</span>
-            )}
-          </div>
-          {buckets.working.length === 0 ? (
-            <p className="panel-hint work-empty-hint">Nothing running</p>
-          ) : (
-            buckets.working.map((thread) => renderThreadRow(thread))
-          )}
-        </div>
-
-        <div className="panel-section work-bucket" data-bucket="snoozed">
-          <div className="work-bucket-head">
-            <span className="work-bucket-label">Snoozed</span>
-            {buckets.snoozed.length > 0 && (
-              <span className="work-bucket-count">{buckets.snoozed.length}</span>
-            )}
-          </div>
-          {buckets.snoozed.length > 0 &&
-            buckets.snoozed.map((thread) =>
-              renderThreadRow(
-                thread,
-                <button
-                  className="chat-row-more"
-                  aria-label={`Wake ${thread.title}`}
-                  title="Wake now"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    props.onWakeWorkThread?.(thread.id);
-                  }}
-                >
-                  <Clock size={12} />
-                </button>,
-              ),
-            )}
-        </div>
-
-        <div className="panel-section work-bucket" data-bucket="settled">
-          <button
-            className="work-bucket-toggle"
-            aria-expanded={settledOpen}
-            onClick={() => setSettledOpen((open) => !open)}
-          >
-            {settledOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-            <span className="work-bucket-label">Settled</span>
-            {settledTotal > 0 && <span className="work-bucket-count">{settledTotal}</span>}
-          </button>
-          {settledOpen && (
-            <>
-              {settledTotal > 0 && (
-                <div className="work-settled-search">
-                  <Search size={12} />
-                  <input
-                    type="search"
-                    aria-label="Search settled threads"
-                    placeholder="Filter settled…"
-                    value={settledQuery}
-                    onChange={(e) => setSettledQuery(e.target.value)}
-                  />
-                </div>
-              )}
-              {buckets.settled.length === 0 ? (
-                <p className="panel-hint work-empty-hint">
-                  {settledTotal > 0 ? "No matches" : "No settled threads"}
-                </p>
-              ) : (
-                buckets.settled.map((thread) =>
-                  renderThreadRow(
-                    thread,
-                    <button
-                      className="chat-row-more"
-                      aria-label={`Unsettle ${thread.title}`}
-                      title="Move back to Default"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        props.onUnsettleWorkThread?.(thread.id);
-                      }}
-                    >
-                      <ArchiveRestore size={12} />
-                    </button>,
-                  ),
-                )
-              )}
-            </>
-          )}
+        <div className="work-shelves">
+          {buckets.working.length > 0 && renderShelf("working", "Working", buckets.working)}
+          {buckets.snoozed.length > 0 && renderShelf("snoozed", "Snoozed", buckets.snoozed)}
+          {renderShelf("settled", "Settled", buckets.settled)}
         </div>
       </section>
 

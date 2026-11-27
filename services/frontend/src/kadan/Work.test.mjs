@@ -124,6 +124,8 @@ test("WorkThreadView renders streamed activity, inline approval card, and active
     "./ConfirmDialog": { default: "ConfirmDialog" },
     "./FolderPickerDialog": { default: "FolderPickerDialog" },
     "./Markdown": { default: ({ children }) => ({ type: "md", props: { children } }) },
+    "./ModelPicker": { default: function ModelPicker() { return null; } },
+    "./ProjectPicker": { default: function ProjectPicker() { return null; } },
     "./desktop": { isDesktopApp: () => false, pickDesktopFolder: async () => ({ path: null, cancelled: false, supported: false }) },
     "./work": work,
   }).default;
@@ -201,6 +203,8 @@ test("WorkThreadView opens directly to chat with project and model pickers when 
     "./ConfirmDialog": { default: "ConfirmDialog" },
     "./FolderPickerDialog": { default: "FolderPickerDialog" },
     "./Markdown": { default: ({ children }) => ({ type: "md", props: { children } }) },
+    "./ModelPicker": { default: function ModelPicker() { return null; } },
+    "./ProjectPicker": { default: function ProjectPicker() { return null; } },
     "./desktop": { isDesktopApp: () => false, pickDesktopFolder: async () => ({ path: null, cancelled: false, supported: false }) },
     "./work": {
       ...work,
@@ -221,8 +225,13 @@ test("WorkThreadView opens directly to chat with project and model pickers when 
   const nodes = elements(tree);
   const fullText = textOf(tree);
 
-  assert.ok(fullText.includes("Aidoru"));
+  assert.ok(fullText.includes("What should we build in Aidoru?"));
   assert.ok(!fullText.includes("Task title"));
+  const projectPicker = nodes.find(n => typeof n.type === "function" && n.type.name === "ProjectPicker");
+  assert.equal(projectPicker.props.value, "proj-1");
+  const modelPicker = nodes.find(n => typeof n.type === "function" && n.type.name === "ModelPicker");
+  assert.equal(modelPicker.props.harnessId, "inkling");
+  assert.equal(modelPicker.props.modelId, "inkling-2-mini-abliterated-iq4-nl");
   const textarea = nodes.find(n => n.type === "textarea");
   assert.ok(textarea);
   textarea.props.onKeyDown({ key: "Enter", shiftKey: false, preventDefault() {} });
@@ -284,6 +293,7 @@ test("SettingsPage renders compact Coding assistants list without external sign-
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
     "lucide-react": new Proxy({}, { get: (_, name) => String(name) }),
     "./FolderPickerDialog": { default: "FolderPickerDialog" },
+    "./ProviderIcon": { default: "ProviderIcon" },
     "./desktop": { pickDesktopFolder: async () => ({ path: null, cancelled: false, supported: false }) },
     "./work": work,
   }).default;
@@ -376,6 +386,8 @@ test("WorkThreadView enables screenshot attachment control and queues image foll
     "./ConfirmDialog": { default: "ConfirmDialog" },
     "./FolderPickerDialog": { default: "FolderPickerDialog" },
     "./Markdown": { default: ({ children }) => ({ type: "md", props: { children } }) },
+    "./ModelPicker": { default: function ModelPicker() { return null; } },
+    "./ProjectPicker": { default: function ProjectPicker() { return null; } },
     "./desktop": { isDesktopApp: () => false, pickDesktopFolder: async () => ({ path: null, cancelled: false, supported: false }) },
     "./work": {
       ...work,
@@ -391,7 +403,7 @@ test("WorkThreadView enables screenshot attachment control and queues image foll
   const nodes = elements(tree);
   const fullText = textOf(tree);
 
-  assert.ok(fullText.includes("Image"));
+  assert.ok(nodes.some(n => n.props?.["aria-label"] === "Attach screenshots"));
   const steerBtn = nodes.find(n => n.type === "button" && textOf(n).trim() === "Steer");
   assert.ok(steerBtn);
   assert.equal(steerBtn.props.disabled, true);
@@ -409,4 +421,150 @@ test("WorkThreadView enables screenshot attachment control and queues image foll
   assert.equal(sentCalls[0].id, "thr-ink-active");
   assert.equal(sentCalls[0].body.mode, "queue");
   assert.deepEqual(sentCalls[0].body.images, [sampleDataUrl]);
+});
+
+test("sidebar helpers format snooze time, timestamps, badges and search matches", () => {
+  const now = Date.parse("2026-11-27T12:00:00Z");
+  assert.equal(work.snoozeRemaining(new Date(now + 45 * 60000).toISOString(), now), "45m");
+  assert.equal(work.snoozeRemaining(new Date(now + 130 * 60000).toISOString(), now), "2h");
+  assert.equal(work.snoozeRemaining(new Date(now + 3 * 86400000).toISOString(), now), "3d");
+  assert.equal(work.snoozeRemaining(new Date(now - 1000).toISOString(), now), null);
+  assert.equal(work.relativeTime(new Date(now - 20000).toISOString(), now), "now");
+  assert.equal(work.relativeTime(new Date(now - 3 * 60000).toISOString(), now), "3m");
+  assert.equal(work.relativeTime(new Date(now - 5 * 3600000).toISOString(), now), "5h");
+  assert.equal(work.relativeTime(new Date(now - 2 * 86400000).toISOString(), now), "2d");
+  assert.equal(work.projectInitials("ghalrym/Kadan"), "GK");
+  assert.equal(work.projectInitials("Aidoru"), "AI");
+  const thread = { title: "Fix login", harness: "codex" };
+  assert.equal(work.matchesThreadQuery(thread, "LOGIN"), true);
+  assert.equal(work.matchesThreadQuery(thread, "codex"), true);
+  assert.equal(work.matchesThreadQuery(thread, "kadan", "ghalrym/Kadan"), true);
+  assert.equal(work.matchesThreadQuery(thread, "deploy", "Aidoru"), false);
+});
+
+function loadModelPicker(states) {
+  const jsx = (type, props) => ({ type, props });
+  let idx = 0;
+  return loadTs("./ModelPicker.tsx", {
+    react: {
+      useCallback: fn => fn,
+      useLayoutEffect() {},
+      useMemo: fn => fn(),
+      useRef: current => ({ current }),
+      useState: initial => {
+        const i = idx++;
+        const val = i < states.length ? states[i] : (typeof initial === "function" ? initial() : initial);
+        return [val, () => {}];
+      },
+    },
+    "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
+    "lucide-react": new Proxy({}, { get: (_, name) => String(name) }),
+    "./ProviderIcon": { default: "ProviderIcon" },
+    "./popover": { usePopover: () => "up" },
+    "./work": work,
+  });
+}
+
+const pickerHarnesses = [
+  {
+    id: "inkling",
+    display_name: "Inkling",
+    installed: true,
+    default_model: "inkling-2-mini-iq4-nl",
+    models: [{ id: "inkling-2-mini-iq4-nl", label: "Inkling 2 Mini", options: { reasoning_effort: ["low", "medium", "high"] } }],
+    auth: { status: "ready", login_method: "local", message: "" },
+  },
+  {
+    id: "codex",
+    display_name: "Codex",
+    installed: true,
+    default_model: "gpt-5.3-codex",
+    models: [
+      { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", options: { effort: ["low", "medium", "high", "xhigh"] } },
+      { id: "o3", label: "o3", options: {} },
+    ],
+    auth: { status: "ready", login_method: "device_code", message: "" },
+  },
+  {
+    id: "grok",
+    display_name: "Grok",
+    installed: true,
+    default_model: "grok-4",
+    models: [{ id: "grok-4", label: "Grok 4", options: {} }],
+    auth: { status: "sign_in_required", login_method: "api_key", message: "Paste your xAI access key." },
+  },
+];
+
+test("ModelPicker shows the provider rail, models, reasoning levels and keeps effort on selection", () => {
+  // State order: open, rail, query, highlight, favorites, indicatorTop
+  const ModelPicker = loadModelPicker([true, "codex", "", 0, new Set(), 40]).default;
+  const changes = [];
+  const tree = ModelPicker({
+    harnesses: pickerHarnesses,
+    harnessId: "codex",
+    modelId: "gpt-5.3-codex",
+    options: { effort: "high" },
+    onChange: (...args) => changes.push(args),
+    onOpenSettings() {},
+  });
+  const nodes = elements(tree);
+  const text = textOf(tree);
+
+  const trigger = nodes.find(n => n.props?.className?.startsWith?.("model-picker-trigger"));
+  assert.ok(textOf(trigger).includes("GPT-5.3 Codex"));
+  assert.ok(textOf(trigger).includes("High"));
+
+  const railLabels = nodes.filter(n => n.props?.className?.startsWith?.("model-picker-rail-btn")).map(n => n.props["aria-label"]);
+  assert.deepEqual(railLabels, ["Favorites", "Inkling", "Codex", "Grok · Sign in"]);
+
+  const items = nodes.filter(n => n.props?.role === "option");
+  assert.deepEqual(items.map(n => textOf(n).replace(/Ctrl\+\d/, "")), ["GPT-5.3 Codex", "o3"]);
+  assert.ok(text.includes("Ctrl+1"));
+
+  assert.ok(text.includes("Reasoning"));
+  const levels = nodes.filter(n => n.props?.className === "model-picker-effort-item");
+  assert.deepEqual(levels.map(n => textOf(n)), ["Low", "MediumDefault", "High", "Extra High"]);
+  assert.equal(levels[2].props["aria-pressed"], true);
+
+  // Picking a level selects the highlighted model with that effort.
+  levels[3].props.onClick();
+  assert.equal(JSON.stringify(changes.at(-1)), JSON.stringify(["codex", "gpt-5.3-codex", { effort: "xhigh" }]));
+
+  // Picking a model without reasoning options clears effort.
+  items[1].props.onClick();
+  assert.equal(JSON.stringify(changes.at(-1)), JSON.stringify(["codex", "o3", {}]));
+});
+
+test("ModelPicker explains unavailable assistants and blocks choosing their models", () => {
+  const ModelPicker = loadModelPicker([true, "grok", "", 0, new Set(), null]).default;
+  const changes = [];
+  const tree = ModelPicker({
+    harnesses: pickerHarnesses,
+    harnessId: "codex",
+    modelId: "gpt-5.3-codex",
+    options: {},
+    onChange: (...args) => changes.push(args),
+    onOpenSettings() {},
+  });
+  const nodes = elements(tree);
+  assert.ok(textOf(tree).includes("Grok isn't ready yet."));
+  assert.ok(textOf(tree).includes("Paste your xAI access key."));
+  const item = nodes.find(n => n.props?.role === "option");
+  assert.equal(item.props["aria-disabled"], true);
+  item.props.onClick();
+  assert.equal(changes.length, 0);
+});
+
+test("ModelPicker search spans every assistant", () => {
+  const ModelPicker = loadModelPicker([true, "codex", "grok", 0, new Set(), null]).default;
+  const tree = ModelPicker({
+    harnesses: pickerHarnesses,
+    harnessId: "codex",
+    modelId: "gpt-5.3-codex",
+    options: {},
+    onChange() {},
+  });
+  const items = elements(tree).filter(n => n.props?.role === "option");
+  assert.equal(items.length, 1);
+  assert.ok(textOf(items[0]).includes("Grok 4"));
 });

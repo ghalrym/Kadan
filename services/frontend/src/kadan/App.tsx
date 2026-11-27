@@ -429,6 +429,11 @@ export default function App() {
             }
             show({ name: "work-new" });
           }}
+          onSettleWorkThread={(threadId) => {
+            void organizeWorkThread(threadId, { action: "settle" })
+              .then(() => refreshWorkThreads())
+              .catch(() => {});
+          }}
           onUnsettleWorkThread={(threadId) => {
             void organizeWorkThread(threadId, { action: "unsettle" })
               .then(() => refreshWorkThreads())

@@ -42,6 +42,7 @@ function renderSidebar(overrides = {}, stateOverrides = []) {
     "lucide-react": new Proxy({}, { get: (_, name) => String(name) }),
     "./Pet": { default: "Pet" },
     "./PetContext": { useAgentPet: () => null },
+    "./ProviderIcon": { default: "ProviderIcon" },
     "./work": workExports,
   };
   const exports = {};
@@ -102,54 +103,72 @@ test("sidebar shows single Chat navigation without multi-chat controls or Tsuchi
   assert.ok(rowNodes.some(node => node.type === "small" && node.props.children === "127.0.0.1:9000"));
 });
 
-test("sidebar Work section groups threads into Default, Working, Snoozed, and collapsible searchable Settled buckets", () => {
+const workThreads = [
+  {
+    id: "t-default",
+    project_id: "p1",
+    title: "Fix auth",
+    harness: "claude",
+    bucket: "default",
+    run_status: "waiting",
+    snoozed_until: null,
+    updated_at: new Date().toISOString(),
+    pending_requests: [{ id: "p1", status: "pending" }],
+  },
+  {
+    id: "t-working",
+    project_id: "p1",
+    title: "Refactor API",
+    harness: "inkling",
+    bucket: "working",
+    run_status: "running",
+    snoozed_until: null,
+    updated_at: new Date().toISOString(),
+    pending_requests: [],
+  },
+  {
+    id: "t-snoozed",
+    project_id: "p2",
+    title: "Upgrade deps",
+    harness: "codex",
+    bucket: "snoozed",
+    run_status: "completed",
+    snoozed_until: new Date(Date.now() + 2 * 3600_000).toISOString(),
+    updated_at: new Date().toISOString(),
+    pending_requests: [],
+  },
+  {
+    id: "t-settled",
+    project_id: "p2",
+    title: "Ship v1 docs",
+    harness: "codex",
+    bucket: "settled",
+    run_status: "completed",
+    snoozed_until: null,
+    updated_at: new Date().toISOString(),
+    pending_requests: [],
+  },
+];
+const workProjects = [
+  { id: "p1", title: "Kadan", root_path: "/repo/kadan" },
+  { id: "p2", title: "ghalrym/Docs", root_path: "/repo/docs" },
+];
+
+test("sidebar Work list shows active threads with T3-style Working, Snoozed and Settled shelves", () => {
   const opened = [];
   const unsettled = [];
   const woken = [];
-  const threads = [
-    {
-      id: "t-default",
-      title: "Fix auth",
-      bucket: "default",
-      run_status: "waiting",
-      snoozed_until: null,
-      pending_requests: [{ id: "p1", status: "pending" }],
-    },
-    {
-      id: "t-working",
-      title: "Refactor API",
-      bucket: "working",
-      run_status: "running",
-      snoozed_until: null,
-      pending_requests: [],
-    },
-    {
-      id: "t-snoozed",
-      title: "Upgrade deps",
-      bucket: "snoozed",
-      run_status: "completed",
-      snoozed_until: new Date(Date.now() + 3600_000).toISOString(),
-      pending_requests: [],
-    },
-    {
-      id: "t-settled",
-      title: "Ship v1 docs",
-      bucket: "settled",
-      run_status: "completed",
-      snoozed_until: null,
-      pending_requests: [],
-    },
-  ];
-
-  // Expand Settled bucket via stateOverrides [settledOpen=true, settledQuery=""]
+  const settled = [];
+  // State order: query, shelves, settledLimit, projects
   const tree = renderSidebar(
     {
-      workThreads: threads,
+      workThreads,
       onOpenWorkThread: id => opened.push(id),
+      onSettleWorkThread: id => settled.push(id),
       onUnsettleWorkThread: id => unsettled.push(id),
       onWakeWorkThread: id => woken.push(id),
     },
-    [true, ""],
+    ["", { working: true, snoozed: true, settled: true }, 25, workProjects],
   );
   const nodes = elements(tree);
   const buckets = nodes.filter(node => node.props?.["data-bucket"]);
@@ -161,10 +180,20 @@ test("sidebar Work section groups threads into Default, Working, Snoozed, and co
   const defaultText = textOf(buckets[0]);
   assert.ok(defaultText.includes("Fix auth"));
   assert.ok(defaultText.includes("Needs input"));
+  assert.ok(defaultText.includes("Kadan"));
+  assert.ok(defaultText.includes("KA"));
+
+  const shelfToggles = nodes.filter(n => n.props?.className === "work-shelf-toggle");
+  assert.deepEqual(shelfToggles.map(n => textOf(n)), ["Working1", "Snoozed1", "Settled1"]);
 
   assert.ok(textOf(buckets[1]).includes("Refactor API"));
   assert.ok(textOf(buckets[2]).includes("Upgrade deps"));
+  assert.ok(textOf(buckets[2]).includes("Snoozed, 2h left"));
   assert.ok(textOf(buckets[3]).includes("Ship v1 docs"));
+
+  const settleBtn = elements(buckets[0]).find(n => n.props?.["aria-label"] === "Settle Fix auth");
+  settleBtn.props.onClick({ stopPropagation() {} });
+  assert.deepEqual(settled, ["t-default"]);
 
   const wakeBtn = elements(buckets[2]).find(n => n.props?.["aria-label"] === "Wake Upgrade deps");
   wakeBtn.props.onClick({ stopPropagation() {} });
@@ -177,4 +206,25 @@ test("sidebar Work section groups threads into Default, Working, Snoozed, and co
   const openWorking = elements(buckets[1]).find(n => n.props?.className === "chat-row-open");
   openWorking.props.onClick();
   assert.deepEqual(opened, ["t-working"]);
+});
+
+test("sidebar collapses Snoozed and Settled by default, hides empty shelves, and searches every bucket", () => {
+  const collapsed = renderSidebar(
+    { workThreads: workThreads.filter(t => t.bucket !== "working") },
+    ["", { working: true, snoozed: false, settled: false }, 25, workProjects],
+  );
+  const shelves = elements(collapsed).filter(n => n.props?.className === "work-shelf");
+  assert.deepEqual(shelves.map(s => s.props["data-bucket"]), ["snoozed", "settled"]);
+  assert.ok(!textOf(collapsed).includes("Upgrade deps"));
+  assert.ok(!textOf(collapsed).includes("Ship v1 docs"));
+
+  const searched = renderSidebar(
+    { workThreads },
+    ["docs", { working: true, snoozed: false, settled: false }, 25, workProjects],
+  );
+  const text = textOf(searched);
+  assert.ok(text.includes("Ship v1 docs"));
+  assert.ok(text.includes("Upgrade deps"), "project title matches reveal collapsed shelves");
+  assert.ok(!text.includes("Fix auth"));
+  assert.ok(text.includes("No threads found"));
 });

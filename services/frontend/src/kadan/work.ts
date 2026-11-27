@@ -238,6 +238,58 @@ export function formatSnoozeLabel(iso: string | null): string {
   return target.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+/** Remaining snooze time such as "45m", "2h" or "3d"; null once it is due. */
+export function snoozeRemaining(iso: string | null, now = Date.now()): string | null {
+  if (!iso) return null;
+  const target = new Date(iso).getTime();
+  if (Number.isNaN(target)) return null;
+  const mins = Math.ceil((target - now) / 60000);
+  if (mins <= 0) return null;
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  return `${Math.round(hrs / 24)}d`;
+}
+
+/** Compact sidebar timestamp: "now", "5m", "3h", "2d", "4w", then a date. */
+export function relativeTime(iso: string | null | undefined, now = Date.now()): string {
+  if (!iso) return "";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const mins = Math.floor((now - then) / 60000);
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d`;
+  if (days < 35) return `${Math.floor(days / 7)}w`;
+  return new Date(then).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/** Two-letter project badge, e.g. "Kadan" → "KA", "my-app" → "MA". */
+export function projectInitials(title: string): string {
+  const words = title.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+  return (words[0] ?? title).slice(0, 2).toUpperCase() || "?";
+}
+
+export function projectHue(id: string): number {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  return hash % 360;
+}
+
+export function matchesThreadQuery(thread: WorkThread, query: string, projectTitle = ""): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return (
+    thread.title.toLowerCase().includes(needle) ||
+    thread.harness.toLowerCase().includes(needle) ||
+    projectTitle.toLowerCase().includes(needle)
+  );
+}
+
 export function parseWorkHash(hash: string): string | null {
   const match = /^#work\/([0-9a-fA-F-]{8,64})$/.exec(hash.trim());
   return match ? match[1] : null;
@@ -278,6 +330,7 @@ export const createWorkThread = (body: {
   title?: string | null;
   harness: string;
   model?: string | null;
+  model_options?: Record<string, unknown>;
   prompt?: string | null;
   images?: string[];
 }) => api<WorkThread>("/work/threads", body, "POST");
@@ -285,7 +338,13 @@ export const getWorkThreadDetail = (id: string) =>
   api<WorkThreadDetail>(`/work/threads/${encodeURIComponent(id)}`);
 export const updateWorkThread = (
   id: string,
-  body: { title?: string; harness?: string; model?: string | null; expected_version: number },
+  body: {
+    title?: string;
+    harness?: string;
+    model?: string | null;
+    model_options?: Record<string, unknown>;
+    expected_version: number;
+  },
 ) => api<WorkThread>(`/work/threads/${encodeURIComponent(id)}`, body, "PUT");
 export const deleteWorkThread = (id: string) =>
   api<void>(`/work/threads/${encodeURIComponent(id)}`, undefined, "DELETE");

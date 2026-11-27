@@ -6,11 +6,12 @@ Kadan's layout follows coding-assistant apps such as T3 Code and Codex: a sideba
 
 From top to bottom, the sidebar offers:
 
+- **Search** and **New thread** at the top. Search filters [Work](work.md) threads; New thread starts a Work thread.
 - **Chat** opens the agent's single ever-persistent conversation thread.
 - **Group Chat** opens the shared [Group Chat](group-chat.md) room for you, Kadan's agent and connected external agents.
 - **Space** opens the [Space](space.md) library of pages, slides and files.
 - **Plugins** opens the [Plugins](plugins.md) page.
-- **Work** lists native [Work](work.md) coding threads grouped into **Default**, **Working**, **Snoozed**, and collapsible searchable **Settled** buckets, with quick actions to start a new thread or manage projects and coding assistants.
+- **Work** lists native [Work](work.md) coding threads the way T3 Code does: active threads first, then collapsible **Working**, **Snoozed**, and **Settled** shelves with counts at the bottom of the list.
 - The agent's name and pet open the **Agent page**.
 - Directly below the agent link, **Server settings** (in the standalone Kadan app) shows the connected server address and connection status and lets you switch servers, alongside a refresh button that reloads server status, the agent and its chats. Tsuchi and Hikari management live in **Kadan Server**, not inside the Kadan client app.
 
