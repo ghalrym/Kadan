@@ -37,11 +37,11 @@ function textOf(node) {
 
 test("groupThreadsByBucket filters settled threads by search query and preserves all four buckets", () => {
   const threads = [
-    { id: "1", title: "Alpha", branch: "feat/a", bucket: "default" },
-    { id: "2", title: "Beta", branch: "feat/b", bucket: "working" },
-    { id: "3", title: "Gamma", branch: "feat/g", bucket: "snoozed" },
-    { id: "4", title: "Delta migration", branch: "fix/db", bucket: "settled" },
-    { id: "5", title: "Epsilon UI", branch: "ui/polish", bucket: "settled" },
+    { id: "1", title: "Alpha", harness: "codex", bucket: "default" },
+    { id: "2", title: "Beta", harness: "claude", bucket: "working" },
+    { id: "3", title: "Gamma", harness: "grok", bucket: "snoozed" },
+    { id: "4", title: "Delta migration", harness: "codex", bucket: "settled" },
+    { id: "5", title: "Epsilon UI", harness: "antigravity", bucket: "settled" },
   ];
   const grouped = work.groupThreadsByBucket(threads, "delta");
   assert.deepEqual(Array.from(grouped.default, t => t.id), ["1"]);
@@ -65,8 +65,6 @@ test("WorkThreadView renders streamed activity, inline approval card, and active
       title: "Fix API timeout",
       harness: "codex",
       model: "gpt-5.3-codex",
-      workspace_mode: "worktree",
-      branch: "kadan/work-12345678",
       run_status: "waiting",
       bucket: "default",
       snoozed_until: null,
@@ -75,7 +73,7 @@ test("WorkThreadView renders streamed activity, inline approval card, and active
           id: "req-1",
           kind: "approval",
           title: "Allow pytest?",
-          prompt: "Run pytest in the isolated branch?",
+          prompt: "Run pytest in the project folder?",
           options: [],
           tool_name: "bash",
           arguments: { command: "pytest" },
@@ -87,7 +85,7 @@ test("WorkThreadView renders streamed activity, inline approval card, and active
       ],
       version: 2,
     },
-    project: { id: "proj-1", title: "Kadan", root_path: "/repo", default_branch: "master", version: 1 },
+    project: { id: "proj-1", title: "Kadan", root_path: "/repo", version: 1 },
     runs: [],
     activity: [
       { id: "a1", kind: "user_message", text: "Fix timeout", data: {} },
@@ -134,7 +132,6 @@ test("WorkThreadView renders streamed activity, inline approval card, and active
 
   assert.ok(fullText.includes("Fix API timeout"));
   assert.ok(fullText.includes("Kadan"));
-  assert.ok(fullText.includes("kadan/work-12345678"));
   assert.ok(fullText.includes("Stop"));
   assert.ok(fullText.includes("Steer"));
   assert.ok(fullText.includes("Queue"));

@@ -6,8 +6,7 @@ import {
   Check,
   Clock,
   FileCode2,
-  FolderGit2,
-  GitBranch,
+  Folder,
   Send,
   Square,
   Terminal,
@@ -388,16 +387,10 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
           <div className="work-thread-meta">
             {project && (
               <span className="work-meta-chip">
-                <FolderGit2 size={13} />
+                <Folder size={13} />
                 {project.title}
               </span>
             )}
-            <span className="work-meta-chip">
-              <GitBranch size={13} />
-              {thread.workspace_mode === "worktree"
-                ? thread.branch || "Isolated branch"
-                : "Project folder"}
-            </span>
             {thread.bucket === "snoozed" && thread.snoozed_until && (
               <span className="work-meta-chip">
                 <Clock size={13} />
@@ -627,11 +620,7 @@ export default function WorkThreadView({ threadId, onChanged, onDeleted }: Props
       {confirmDelete && (
         <ConfirmDialog
           title="Delete this work thread?"
-          message={
-            thread.workspace_mode === "worktree"
-              ? "This deletes the thread transcript and removes its isolated branch copy."
-              : "This deletes the thread transcript. Your project folder is untouched."
-          }
+          message="This deletes the thread transcript. Your project folder is untouched."
           confirm="Delete thread"
           onConfirm={handleDelete}
           onClose={() => setConfirmDelete(false)}

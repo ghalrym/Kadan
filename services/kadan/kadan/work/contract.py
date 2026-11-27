@@ -137,7 +137,7 @@ class NormalizedEvent:
 
 
 class HarnessSession(ABC):
-    """A live coding session bound to a project root or isolated Git worktree."""
+    """A live coding session bound to a local project folder."""
 
     @property
     @abstractmethod

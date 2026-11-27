@@ -1038,7 +1038,6 @@ WorkRunStatus = Literal[
     "interrupted",
     "cancelled",
 ]
-WorkWorkspaceMode = Literal["root", "worktree"]
 WorkHarnessId = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,47}$")]
 WorkActivityKind = Literal[
     "user_message",
@@ -1064,10 +1063,8 @@ def _require_aware(value: datetime | None, label: str) -> datetime | None:
 class WorkProjectInput(Model):
     title: Title
     root_path: str = Field(min_length=1, max_length=4000)
-    default_branch: str = Field(default="main", min_length=1, max_length=256)
-    setup_script: str | None = Field(default=None, max_length=16000)
 
-    @field_validator("title", "root_path", "default_branch")
+    @field_validator("title", "root_path")
     @classmethod
     def nonblank_project_field(cls, value: str) -> str:
         stripped = value.strip()
@@ -1126,10 +1123,6 @@ class WorkThreadInput(Model):
     harness: WorkHarnessId
     model: str | None = Field(default=None, max_length=256)
     model_options: dict[str, JsonValue] = Field(default_factory=dict)
-    workspace_mode: WorkWorkspaceMode = "root"
-    worktree_path: str | None = Field(default=None, max_length=4000)
-    branch: str | None = Field(default=None, max_length=256)
-    base_ref: str | None = Field(default=None, max_length=256)
     run_status: WorkRunStatus = "idle"
     bucket: WorkBucket = "default"
     snoozed_until: datetime | None = None
@@ -1168,10 +1161,6 @@ class WorkThreadUpdate(Model):
     harness: WorkHarnessId | None = None
     model: str | None = Field(default=None, max_length=256)
     model_options: dict[str, JsonValue] | None = None
-    workspace_mode: WorkWorkspaceMode | None = None
-    worktree_path: str | None = Field(default=None, max_length=4000)
-    branch: str | None = Field(default=None, max_length=256)
-    base_ref: str | None = Field(default=None, max_length=256)
     run_status: WorkRunStatus | None = None
     bucket: WorkBucket | None = None
     snoozed_until: datetime | None = None
@@ -1222,10 +1211,6 @@ class WorkThread(Model):
     harness: WorkHarnessId
     model: str | None = None
     model_options: dict[str, JsonValue] = Field(default_factory=dict)
-    workspace_mode: WorkWorkspaceMode = "root"
-    worktree_path: str | None = None
-    branch: str | None = None
-    base_ref: str | None = None
     run_status: WorkRunStatus = "idle"
     bucket: WorkBucket = "default"
     snoozed_until: datetime | None = None

@@ -1,4 +1,4 @@
-"""Native T3-style coding Work harness contract, adapters, worktree helper, and runtime."""
+"""Native T3-style coding Work harness contract, adapters, folder browser, and runtime."""
 
 from .contract import (
     HarnessAdapter,

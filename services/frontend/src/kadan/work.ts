@@ -11,14 +11,11 @@ export type WorkRunStatus =
   | "failed"
   | "interrupted"
   | "cancelled";
-export type WorkWorkspaceMode = "root" | "worktree";
 
 export interface WorkProject {
   id: string;
   title: string;
   root_path: string;
-  default_branch: string;
-  setup_script: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -46,10 +43,6 @@ export interface WorkThread {
   harness: string;
   model: string | null;
   model_options: Record<string, unknown>;
-  workspace_mode: WorkWorkspaceMode;
-  worktree_path: string | null;
-  branch: string | null;
-  base_ref: string | null;
   run_status: WorkRunStatus;
   bucket: WorkBucket;
   snoozed_until: string | null;
@@ -139,9 +132,7 @@ export interface WorkHarness {
 export interface FilesystemBrowseResponse {
   current_path: string;
   parent_path: string | null;
-  is_git_repo: boolean;
-  default_branch: string | null;
-  entries: { name: string; path: string; is_git_repo: boolean }[];
+  entries: { name: string; path: string }[];
 }
 
 export interface WorkBuckets {
@@ -156,7 +147,7 @@ export function groupThreadsByBucket(threads: WorkThread[], settledQuery = ""): 
   const needle = settledQuery.trim().toLowerCase();
   for (const thread of threads) {
     if (thread.bucket === "settled") {
-      if (!needle || thread.title.toLowerCase().includes(needle) || (thread.branch ?? "").toLowerCase().includes(needle)) {
+      if (!needle || thread.title.toLowerCase().includes(needle) || thread.harness.toLowerCase().includes(needle)) {
         buckets.settled.push(thread);
       }
     } else if (thread.bucket === "working") {
@@ -232,14 +223,11 @@ export function parseWorkHash(hash: string): string | null {
 export const listWorkProjects = () => api<WorkProject[]>("/work/projects");
 export const createWorkProject = (body: {
   title?: string | null;
-  root_path?: string | null;
-  clone_url?: string | null;
-  default_branch?: string | null;
-  setup_script?: string | null;
+  root_path: string;
 }) => api<WorkProject>("/work/projects", body, "POST");
 export const updateWorkProject = (
   id: string,
-  body: { title?: string; default_branch?: string; setup_script?: string | null; expected_version: number },
+  body: { title?: string; expected_version: number },
 ) => api<WorkProject>(`/work/projects/${encodeURIComponent(id)}`, body, "PUT");
 export const deleteWorkProject = (id: string, force = false) =>
   api<void>(`/work/projects/${encodeURIComponent(id)}${force ? "?force=true" : ""}`, undefined, "DELETE");
@@ -267,9 +255,6 @@ export const createWorkThread = (body: {
   title: string;
   harness: string;
   model?: string | null;
-  workspace_mode: WorkWorkspaceMode;
-  branch?: string | null;
-  base_ref?: string | null;
   prompt?: string | null;
 }) => api<WorkThread>("/work/threads", body, "POST");
 export const getWorkThreadDetail = (id: string) =>

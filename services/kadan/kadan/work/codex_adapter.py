@@ -2,7 +2,7 @@
 
 Drives `@openai/codex` in full coding-harness mode (workspace tools, shell, file edits,
 approvals, user questions, live turn steering, interrupt, and thread resume) bound to the
-thread's project root or isolated Git worktree.
+thread's local project folder.
 """
 
 from __future__ import annotations

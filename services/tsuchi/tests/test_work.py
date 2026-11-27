@@ -23,14 +23,12 @@ def test_work_project_crud_and_delete_guard(client):
         json={
             "title": "Kadan",
             "root_path": "/srv/projects/kadan",
-            "default_branch": "master",
-            "setup_script": "npm ci",
         },
     )
     assert created.status_code == 201
     project = created.json()
     assert project["version"] == 1
-    assert project["default_branch"] == "master"
+    assert project["root_path"] == "/srv/projects/kadan"
 
     # Duplicate root_path is rejected.
     dup = client.post(
@@ -45,8 +43,6 @@ def test_work_project_crud_and_delete_guard(client):
         json={
             "title": "Kadan Repo",
             "root_path": "/srv/projects/kadan",
-            "default_branch": "main",
-            "setup_script": None,
             "expected_version": 1,
         },
     )
@@ -99,10 +95,6 @@ def test_work_thread_idempotency_buckets_and_snooze_wakeup(client):
         "title": "Add sidebar",
         "harness": "claude",
         "model": "claude-sonnet-4-6",
-        "workspace_mode": "worktree",
-        "worktree_path": "/tmp/worktrees/sidebar",
-        "branch": "kadan/sidebar",
-        "base_ref": "main",
         "origin_agent_key": "kadan",
         "origin_conversation_id": str(uuid4()),
         "origin_run_id": str(uuid4()),

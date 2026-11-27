@@ -2,9 +2,10 @@
 
 Responsibilities:
 1. Wake expired snoozed threads back to `default` (clearing `snoozed_until`).
-2. Claim durable `WorkRun`s from Tsuchi, execute them via the configured `HarnessAdapter`,
-   stream normalized activity into Tsuchi, handle live steering / cancellation / pending
-   user questions & approvals.
+2. Claim durable `WorkRun`s from Tsuchi, execute them directly in `project.root_path`
+   via the configured `HarnessAdapter`, stream normalized activity into Tsuchi, renew
+   leases with a background heartbeat during long silent turns, and handle live steering,
+   cancellation, and pending user questions & approvals.
 3. Emit idempotent Tsuchi `event-run` wakeups (`kind="work"`) directly into originating
    Kadan chat conversations when an agent-launched Work thread pauses for input or enters
    a terminal state (event-driven, with zero chat polling).
@@ -31,7 +32,6 @@ from .client import work_thread_markdown_link, work_thread_url
 from .contract import (
     HarnessError,
     HarnessSession,
-    NormalizedEvent,
     SessionConfig,
 )
 
@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 RECONCILE_SECONDS = 1.0
 LEASE_SECONDS = 90
+LEASE_HEARTBEAT_SECONDS = 30.0
 PENDING_POLL_SECONDS = 0.5
 DELTA_FLUSH_CHARS = 240
 MAX_WAKEUP_SUMMARY_CHARS = 8000
@@ -53,6 +54,7 @@ class _ActiveExecution:
         self.thread_id = thread_id
         self.session: HarnessSession | None = None
         self.task: asyncio.Task[None] | None = None
+        self.run_lock = asyncio.Lock()
         self.cancelled = False
 
 
@@ -210,7 +212,7 @@ class WorkRunner:
 
     async def _update_run(
         self,
-        run: WorkRun,
+        active: _ActiveExecution,
         *,
         status: str,
         keep_lease: bool,
@@ -218,27 +220,49 @@ class WorkRunner:
         final_message: str | None = None,
         wakeup_delivered: bool | None = None,
     ) -> WorkRun:
-        now = datetime.now(UTC)
-        payload: dict[str, Any] = {
-            "status": status,
-            "owner_id": str(self.owner_id) if keep_lease else None,
-            "lease_expires_at": (
-                (now + timedelta(seconds=LEASE_SECONDS)).isoformat()
-                if keep_lease
-                else None
-            ),
-            "error": error,
-            "final_message": final_message,
-            "expected_version": run.version,
-        }
-        if wakeup_delivered is not None:
-            payload["wakeup_delivered"] = wakeup_delivered
-        updated = WorkRun.model_validate(
-            await self.services.json_request(
-                "Tsuchi", "PUT", f"/api/work/runs/{run.id}", json=payload
+        async with active.run_lock:
+            now = datetime.now(UTC)
+            payload: dict[str, Any] = {
+                "status": status,
+                "owner_id": str(self.owner_id) if keep_lease else None,
+                "lease_expires_at": (
+                    (now + timedelta(seconds=LEASE_SECONDS)).isoformat()
+                    if keep_lease
+                    else None
+                ),
+                "error": error,
+                "final_message": final_message,
+                "expected_version": active.run.version,
+            }
+            if wakeup_delivered is not None:
+                payload["wakeup_delivered"] = wakeup_delivered
+            updated = WorkRun.model_validate(
+                await self.services.json_request(
+                    "Tsuchi",
+                    "PUT",
+                    f"/api/work/runs/{active.run.id}",
+                    json=payload,
+                )
             )
-        )
-        return updated
+            active.run = updated
+            return updated
+
+    async def _lease_heartbeat(self, active: _ActiveExecution) -> None:
+        """Renew active run lease periodically even while a harness is silent."""
+        try:
+            while not active.cancelled:
+                await asyncio.sleep(LEASE_HEARTBEAT_SECONDS)
+                if active.cancelled:
+                    return
+                current_status = active.run.status
+                if current_status not in {"preparing", "running", "waiting"}:
+                    return
+                with suppress(ServiceError):
+                    await self._update_run(
+                        active, status=current_status, keep_lease=True
+                    )
+        except asyncio.CancelledError:
+            return
 
     async def _append_activity(
         self, thread_id: UUID, items: list[dict[str, Any]]
@@ -315,10 +339,6 @@ class WorkRunner:
                 )
                 if latest_run.status in {"cancelled", "interrupted", "failed"}:
                     return None
-                # Renew lease while waiting for human/agent answer.
-                active.run = await self._update_run(
-                    latest_run, status="waiting", keep_lease=True
-                )
                 thread = await self.services.work.get_thread(active.thread_id)
                 for req in thread.pending_requests:
                     if req.id == request_id:
@@ -338,39 +358,18 @@ class WorkRunner:
         final_status = "failed"
         final_text = ""
         error_msg: str | None = None
+        heartbeat = asyncio.create_task(self._lease_heartbeat(active))
         try:
             thread = await self.services.work.get_thread(run.thread_id)
             project: WorkProject = await self.services.work.get_project(
                 thread.project_id
             )
 
-            # Resolve workspace directory (creating isolated worktree if needed).
-            if thread.workspace_mode == "worktree":
-                if not thread.worktree_path or not Path(thread.worktree_path).is_dir():
-                    wt = await self.services.work.worktrees.create_worktree(
-                        Path(project.root_path),
-                        thread.id,
-                        base_ref=thread.base_ref or project.default_branch,
-                        branch=thread.branch,
-                        setup_script=project.setup_script,
-                    )
-                    thread = WorkThread.model_validate(
-                        await self.services.json_request(
-                            "Tsuchi",
-                            "PUT",
-                            f"/api/work/threads/{thread.id}",
-                            json={
-                                "worktree_path": str(wt.path),
-                                "branch": wt.branch,
-                                "base_ref": wt.base_ref,
-                                "expected_version": thread.version,
-                            },
-                        )
-                    )
-                working_dir = thread.worktree_path
-                assert working_dir is not None
-            else:
-                working_dir = project.root_path
+            working_dir = project.root_path
+            if not Path(working_dir).is_dir():
+                raise HarnessError(
+                    "The project folder could not be found on this server."
+                )
 
             # Record user prompt in activity log.
             await self._append_activity(
@@ -386,8 +385,7 @@ class WorkRunner:
                 ],
             )
 
-            run = await self._update_run(run, status="running", keep_lease=True)
-            active.run = run
+            run = await self._update_run(active, status="running", keep_lease=True)
 
             adapter = self.services.work.registry.get(thread.harness)
             config = SessionConfig(
@@ -403,7 +401,6 @@ class WorkRunner:
             seq = 0
             text_buf: list[str] = []
             reasoning_buf: list[str] = []
-            last_lease_renew = datetime.now(UTC)
 
             async def flush_buffers() -> None:
                 nonlocal seq
@@ -436,15 +433,6 @@ class WorkRunner:
                     await self._append_activity(thread.id, items)
 
             async for event in session.start_turn(run.prompt):
-                now = datetime.now(UTC)
-                if (now - last_lease_renew).total_seconds() >= 25:
-                    with suppress(ServiceError):
-                        run = await self._update_run(
-                            run, status="running", keep_lease=True
-                        )
-                        active.run = run
-                        last_lease_renew = now
-
                 if event.kind == "session_started" and event.session_id:
                     if thread.harness_session_id != event.session_id:
                         with suppress(ServiceError):
@@ -527,6 +515,20 @@ class WorkRunner:
                     pending_kind = (
                         "question" if event.kind == "pending_question" else "approval"
                     )
+                    # Emit idempotent chat wakeup before flipping thread to `waiting`
+                    # so observers that see `waiting` also observe the queued wakeup.
+                    await self._emit_chat_wakeup(
+                        thread,
+                        event_id=uuid5(run.id, f"work-pending-{req_id}"),
+                        payload={
+                            "event_type": f"pending_{pending_kind}",
+                            "request_id": req_id,
+                            "title": event.title,
+                            "prompt": event.text,
+                            "tool_name": event.tool_name,
+                            "options": event.options,
+                        },
+                    )
                     thread = WorkThread.model_validate(
                         await self.services.json_request(
                             "Tsuchi",
@@ -561,20 +563,8 @@ class WorkRunner:
                             }
                         ],
                     )
-                    run = await self._update_run(run, status="waiting", keep_lease=True)
-                    active.run = run
-
-                    await self._emit_chat_wakeup(
-                        thread,
-                        event_id=uuid5(run.id, f"work-pending-{req_id}"),
-                        payload={
-                            "event_type": f"pending_{pending_kind}",
-                            "request_id": req_id,
-                            "title": event.title,
-                            "prompt": event.text,
-                            "tool_name": event.tool_name,
-                            "options": event.options,
-                        },
+                    run = await self._update_run(
+                        active, status="waiting", keep_lease=True
                     )
 
                     answer = await self._wait_for_pending_response(active, req_id)
@@ -584,9 +574,8 @@ class WorkRunner:
                         break
                     await session.respond_pending(req_id, answer)
                     run = await self._update_run(
-                        active.run, status="running", keep_lease=True
+                        active, status="running", keep_lease=True
                     )
-                    active.run = run
                 elif event.kind == "turn_completed":
                     await flush_buffers()
                     if event.text and not final_text:
@@ -625,33 +614,19 @@ class WorkRunner:
             final_status = "failed"
             error_msg = str(exc) or "Unexpected harness error."
         finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+
             if session is not None:
                 with suppress(Exception):
                     await session.close()
                 active.session = None
 
-            # Persist terminal run state in Tsuchi (unless already terminal).
-            with suppress(ServiceError):
-                latest_run = WorkRun.model_validate(
-                    await self.services.json_request(
-                        "Tsuchi", "GET", f"/api/work/runs/{run.id}"
-                    )
-                )
-                if latest_run.status in {"queued", "preparing", "running", "waiting"}:
-                    run = await self._update_run(
-                        latest_run,
-                        status=final_status,
-                        keep_lease=False,
-                        error=error_msg,
-                        final_message=final_text[:MAX_WAKEUP_SUMMARY_CHARS] or None,
-                    )
-                else:
-                    run = latest_run
-                    final_status = latest_run.status
-
-            # Event-driven chat wakeup on terminal state (idempotent).
-            if thread is not None and not run.wakeup_delivered:
-                delivered = await self._emit_chat_wakeup(
+            # Emit terminal chat wakeup before persisting terminal run status so
+            # observers that see `completed`/`failed` also observe the queued wakeup.
+            wakeup_delivered = False
+            if thread is not None and not active.run.wakeup_delivered:
+                wakeup_delivered = await self._emit_chat_wakeup(
                     thread,
                     event_id=uuid5(run.id, "work-done"),
                     payload={
@@ -661,18 +636,32 @@ class WorkRunner:
                         "error": error_msg,
                     },
                 )
-                if delivered:
-                    with suppress(ServiceError):
-                        latest_run = WorkRun.model_validate(
-                            await self.services.json_request(
-                                "Tsuchi", "GET", f"/api/work/runs/{run.id}"
-                            )
+
+            with suppress(ServiceError):
+                async with active.run_lock:
+                    latest_run = WorkRun.model_validate(
+                        await self.services.json_request(
+                            "Tsuchi", "GET", f"/api/work/runs/{run.id}"
                         )
-                        await self._update_run(
-                            latest_run,
-                            status=latest_run.status,
-                            keep_lease=False,
-                            error=latest_run.error,
-                            final_message=latest_run.final_message,
-                            wakeup_delivered=True,
-                        )
+                    )
+                    active.run = latest_run
+                if latest_run.status in {"queued", "preparing", "running", "waiting"}:
+                    await self._update_run(
+                        active,
+                        status=final_status,
+                        keep_lease=False,
+                        error=error_msg,
+                        final_message=final_text[:MAX_WAKEUP_SUMMARY_CHARS] or None,
+                        wakeup_delivered=(
+                            True if wakeup_delivered else latest_run.wakeup_delivered
+                        ),
+                    )
+                elif wakeup_delivered and not latest_run.wakeup_delivered:
+                    await self._update_run(
+                        active,
+                        status=latest_run.status,
+                        keep_lease=False,
+                        error=latest_run.error,
+                        final_message=latest_run.final_message,
+                        wakeup_delivered=True,
+                    )

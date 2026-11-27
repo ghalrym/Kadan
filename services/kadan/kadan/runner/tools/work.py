@@ -19,7 +19,6 @@ from ...api.pydantic_models.work import (
     WorkRunCreate,
     WorkThreadCreate,
     WorkThreadOrganizeRequest,
-    WorkWorkspaceMode,
 )
 from ...work.client import work_thread_markdown_link, work_thread_url
 from .base import Arguments, NoArguments, conversation_tool
@@ -37,7 +36,7 @@ class WorkThreadListArguments(Arguments):
     query: str = Field(
         default="",
         max_length=200,
-        description="Optional text filter matching thread title or branch.",
+        description="Optional text filter matching thread title or harness.",
     )
     limit: int = Field(default=30, ge=1, le=100)
 
@@ -75,20 +74,6 @@ class WorkThreadLaunchArguments(Arguments):
         default=None,
         max_length=256,
         description="Optional model ID supported by the chosen harness.",
-    )
-    workspace_mode: WorkWorkspaceMode = Field(
-        default="worktree",
-        description="Use 'worktree' for an isolated branch copy or 'root' for the project folder.",
-    )
-    base_ref: str | None = Field(
-        default=None,
-        max_length=256,
-        description="Optional Git base branch or ref when using worktree mode.",
-    )
-    branch: str | None = Field(
-        default=None,
-        max_length=256,
-        description="Optional Git branch name when using worktree mode.",
     )
 
 
@@ -148,7 +133,7 @@ def _work_client(conversation):
 
 @conversation_tool
 async def work_project_list(args: NoArguments, conversation) -> dict:
-    """List registered native Work projects and available coding harnesses."""
+    """List registered native Work project folders and available coding harnesses."""
     work = _work_client(conversation)
     if work is None:
         return {"error": "Native Work is not available in this environment."}
@@ -162,7 +147,6 @@ async def work_project_list(args: NoArguments, conversation) -> dict:
             {
                 "id": str(p.id),
                 "title": p.title,
-                "default_branch": p.default_branch,
             }
             for p in projects
         ],
@@ -204,7 +188,6 @@ async def work_thread_list(args: WorkThreadListArguments, conversation) -> dict:
                 "model": t.model,
                 "bucket": t.bucket,
                 "run_status": t.run_status,
-                "branch": t.branch,
                 "pending_count": sum(
                     1 for p in t.pending_requests if p.status == "pending"
                 ),
@@ -236,8 +219,6 @@ async def work_thread_read(args: WorkThreadReadArguments, conversation) -> dict:
             "project": detail.project.title if detail.project else None,
             "harness": thread.harness,
             "model": thread.model,
-            "workspace_mode": thread.workspace_mode,
-            "branch": thread.branch,
             "bucket": thread.bucket,
             "run_status": thread.run_status,
             "snoozed_until": (
@@ -274,7 +255,7 @@ async def work_thread_read(args: WorkThreadReadArguments, conversation) -> dict:
 
 @conversation_tool
 async def work_thread_launch(args: WorkThreadLaunchArguments, conversation) -> dict:
-    """Launch a new native Work coding thread and start its first turn.
+    """Launch a new native Work coding thread in a project folder and start its first turn.
 
     Replay-safe via deterministic action_id. Kadan automatically wakes this chat
     conversation when the thread pauses for a question/approval or finishes.
@@ -289,9 +270,6 @@ async def work_thread_launch(args: WorkThreadLaunchArguments, conversation) -> d
                 title=args.title,
                 harness=args.harness,
                 model=args.model,
-                workspace_mode=args.workspace_mode,
-                base_ref=args.base_ref,
-                branch=args.branch,
                 prompt=args.prompt,
                 client_request_id=f"work-launch:{conversation.action_id}",
             ),
@@ -307,7 +285,6 @@ async def work_thread_launch(args: WorkThreadLaunchArguments, conversation) -> d
         "title": thread.title,
         "harness": thread.harness,
         "model": thread.model,
-        "branch": thread.branch,
         "url": work_thread_url(thread.id),
         "link": work_thread_markdown_link(thread.id, thread.title),
         "note": (

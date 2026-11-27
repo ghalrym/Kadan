@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -23,6 +23,7 @@ from tsuchi.config import Settings as TsuchiSettings  # noqa: E402
 from tsuchi.main import create_app as create_tsuchi_app  # noqa: E402
 
 from kadan.api.config import Settings as KadanSettings  # noqa: E402
+from kadan.api.pydantic_models.work import WorkProjectCreate  # noqa: E402
 from kadan.api.server import create_app as create_kadan_app  # noqa: E402
 from kadan.api.services import LocalServices  # noqa: E402
 from kadan.runner.tools import work as work_tools  # noqa: E402
@@ -38,7 +39,6 @@ from kadan.work.contract import (  # noqa: E402
 )
 from kadan.work.registry import HarnessRegistry  # noqa: E402
 from kadan.work.runner import WorkRunner  # noqa: E402
-from kadan.work.worktree import WorktreeManager  # noqa: E402
 
 
 class ScriptedHarnessSession(HarnessSession):
@@ -141,11 +141,7 @@ async def test_work_runner_pending_approval_and_event_driven_chat_wakeups(tmp_pa
         httpx.AsyncClient(transport=transport, base_url="http://tsuchi") as client,
     ):
         services = LocalServices(client, KadanSettings(tsuchi_url="http://tsuchi"))
-        services.work = WorkClient(
-            services,
-            registry=registry,
-            worktrees=WorktreeManager(base_dir=tmp_path / "work"),
-        )
+        services.work = WorkClient(services, registry=registry)
 
         # Create an agent, conversation, and origin run so wakeups target a real conversation.
         await services.json_request(
@@ -172,36 +168,28 @@ async def test_work_runner_pending_approval_and_event_driven_chat_wakeups(tmp_pa
             },
         )
 
-        # Register project via WorkClient.
-        from kadan.api.pydantic_models.work import WorkProjectCreate
-
+        # Register project folder via WorkClient.
         project = await services.work.create_project(
             WorkProjectCreate(title="Repo", root_path=str(project_dir))
         )
 
-        # Invoke native agent tool `work_thread_launch` twice with the same action_id (replay safety!).
+        # Invoke native agent tool `work_thread_launch` twice with the same action_id (replay safety).
         action_id = uuid4()
         conv_ctx = SimpleNamespace(
             runs=SimpleNamespace(services=services),
             run=SimpleNamespace(
                 agent_key="kadan",
-                conversation_id=uuid4() if False else convo["id"],
-                id=origin_run["id"],
+                conversation_id=UUID(convo["id"]),
+                id=UUID(origin_run["id"]),
             ),
             action_id=action_id,
         )
-        # Ensure UUID types on run context.
-        from uuid import UUID
-
-        conv_ctx.run.conversation_id = UUID(convo["id"])
-        conv_ctx.run.id = UUID(origin_run["id"])
 
         launch_args = work_tools.WorkThreadLaunchArguments(
             project_id=project.id,
             title="Fix bug",
             prompt="Investigate and fix",
             harness="codex",
-            workspace_mode="root",
         )
         first = await work_tools.work_thread_launch.ainvoke(
             launch_args.model_dump(),
@@ -220,27 +208,29 @@ async def test_work_runner_pending_approval_and_event_driven_chat_wakeups(tmp_pa
         runner = WorkRunner(services)
         await runner.reconcile_once()
 
-        # Wait until the pending approval appears on the thread.
-        for _ in range(40):
+        # Wait until the pending approval and its chat wakeup are both persisted.
+        work_events: list[dict] = []
+        for _ in range(80):
             detail = await services.work.get_thread_detail(UUID(first["thread_id"]))
-            if detail.thread.run_status == "waiting":
+            agent_runs = await services.json_request(
+                "Tsuchi",
+                "GET",
+                f"/api/agents/kadan/resources/{convo['id']}/runs",
+            )
+            work_events = [
+                json.loads(r["trigger_event"]["content"])
+                for r in agent_runs
+                if r.get("trigger_event") and r["trigger_event"]["kind"] == "work"
+            ]
+            if detail.thread.run_status == "waiting" and any(
+                ev["event_type"] == "pending_approval" for ev in work_events
+            ):
                 break
             await asyncio.sleep(0.05)
+
         assert detail.thread.run_status == "waiting"
         assert detail.thread.bucket == "default"
         assert len(detail.thread.pending_requests) == 1
-
-        # Verify event-driven wakeup was queued in originating conversation.
-        agent_runs = await services.json_request(
-            "Tsuchi",
-            "GET",
-            f"/api/agents/kadan/resources/{convo['id']}/runs",
-        )
-        work_events = [
-            json.loads(r["trigger_event"]["content"])
-            for r in agent_runs
-            if r.get("trigger_event") and r["trigger_event"]["kind"] == "work"
-        ]
         assert any(ev["event_type"] == "pending_approval" for ev in work_events)
 
         # Respond via native agent tool `work_pending_request`.
@@ -256,26 +246,27 @@ async def test_work_runner_pending_approval_and_event_driven_chat_wakeups(tmp_pa
         assert "error" not in resp
 
         # Wait for the run to complete and deliver the terminal chat wakeup.
-        for _ in range(40):
+        settled: list[dict] = []
+        for _ in range(80):
             detail = await services.work.get_thread_detail(UUID(first["thread_id"]))
-            if detail.thread.run_status == "completed":
+            agent_runs = await services.json_request(
+                "Tsuchi",
+                "GET",
+                f"/api/agents/kadan/resources/{convo['id']}/runs",
+            )
+            work_events = [
+                json.loads(r["trigger_event"]["content"])
+                for r in agent_runs
+                if r.get("trigger_event") and r["trigger_event"]["kind"] == "work"
+            ]
+            settled = [ev for ev in work_events if ev["event_type"] == "thread_settled"]
+            if detail.thread.run_status == "completed" and settled:
                 break
             await asyncio.sleep(0.05)
+
         assert detail.thread.run_status == "completed"
         assert detail.thread.harness_session_id == "scripted-sess-1"
         assert adapter.sessions[0].received_response == {"decision": "approve"}
-
-        agent_runs = await services.json_request(
-            "Tsuchi",
-            "GET",
-            f"/api/agents/kadan/resources/{convo['id']}/runs",
-        )
-        work_events = [
-            json.loads(r["trigger_event"]["content"])
-            for r in agent_runs
-            if r.get("trigger_event") and r["trigger_event"]["kind"] == "work"
-        ]
-        settled = [ev for ev in work_events if ev["event_type"] == "thread_settled"]
         assert len(settled) == 1
         assert settled[0]["status"] == "completed"
         assert f"#work/{first['thread_id']}" in settled[0]["thread_link"]
@@ -318,7 +309,6 @@ async def test_kadan_work_http_routes_end_to_end_with_mock_tsuchi(tmp_path):
         services.work = WorkClient(
             services,
             registry=HarnessRegistry([ScriptedHarnessAdapter()]),
-            worktrees=WorktreeManager(base_dir=tmp_path / "work"),
         )
         kadan_app.state.services = services
 
@@ -347,7 +337,6 @@ async def test_kadan_work_http_routes_end_to_end_with_mock_tsuchi(tmp_path):
                     "project_id": proj_id,
                     "title": "Add docs",
                     "harness": "codex",
-                    "workspace_mode": "root",
                     "prompt": "Write docs",
                 },
             )

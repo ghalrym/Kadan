@@ -1,10 +1,9 @@
-"""High-level Work service client bridging Kadan API/tools, Tsuchi storage, worktrees, and harnesses."""
+"""High-level Work service client bridging Kadan API/tools, Tsuchi storage, folder browser, and harnesses."""
 
 from __future__ import annotations
 
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid5
 
@@ -29,8 +28,8 @@ from ..api.pydantic_models.work import (
     WorkThreadPatch,
 )
 from .contract import HarnessAuthStatus, HarnessError
+from .filesystem import browse_directory, inspect_directory
 from .registry import HarnessRegistry, default_registry
-from .worktree import WorktreeManager
 
 if TYPE_CHECKING:
     from ..api.services import LocalServices
@@ -59,25 +58,23 @@ def _public_auth(auth: HarnessAuthStatus) -> WorkHarnessAuthPublic:
 
 
 class WorkClient:
-    """Manages native Work projects, threads, runs, harnesses, and worktrees."""
+    """Manages native Work projects, threads, runs, and coding harnesses."""
 
     def __init__(
         self,
         services: LocalServices,
         *,
         registry: HarnessRegistry | None = None,
-        worktrees: WorktreeManager | None = None,
     ):
         self.services = services
         self.registry = registry or default_registry()
-        self.worktrees = worktrees or WorktreeManager()
 
     # ── Filesystem picker ────────────────────────────────────────────────────
 
     async def browse_filesystem(
         self, path: str | None = None
     ) -> FilesystemBrowseResponse:
-        raw = await self.worktrees.browse_directory(path)
+        raw = await browse_directory(path)
         return FilesystemBrowseResponse.model_validate(raw)
 
     # ── Projects ─────────────────────────────────────────────────────────────
@@ -93,33 +90,9 @@ class WorkClient:
         return WorkProject.model_validate(raw)
 
     async def create_project(self, data: WorkProjectCreate) -> WorkProject:
-        has_root = bool(data.root_path and data.root_path.strip())
-        has_clone = bool(data.clone_url and data.clone_url.strip())
-        if has_root == has_clone:
-            raise ServiceError(
-                "Choose either a local project folder or a repository URL to clone.",
-                422,
-                "invalid_project_source",
-            )
-        if has_clone:
-            assert data.clone_url is not None
-            (
-                dest,
-                detected_branch,
-                detected_title,
-            ) = await self.worktrees.clone_repository(data.clone_url, title=data.title)
-            root_path = str(dest)
-            title = (data.title or "").strip() or detected_title
-            default_branch = (data.default_branch or "").strip() or detected_branch
-        else:
-            assert data.root_path is not None
-            info = await self.worktrees.inspect_directory(data.root_path)
-            root_path = str(info["path"])
-            title = (data.title or "").strip() or str(info["name"])
-            default_branch = (data.default_branch or "").strip() or str(
-                info["default_branch"] or "main"
-            )
-
+        info = await inspect_directory(data.root_path)
+        root_path = info["path"]
+        title = (data.title or "").strip() or info["name"]
         raw = await self.services.json_request(
             "Tsuchi",
             "POST",
@@ -127,8 +100,6 @@ class WorkClient:
             json={
                 "title": title,
                 "root_path": root_path,
-                "default_branch": default_branch,
-                "setup_script": data.setup_script,
             },
         )
         return WorkProject.model_validate(raw)
@@ -140,16 +111,6 @@ class WorkClient:
         payload = {
             "title": patch.title if patch.title is not None else current.title,
             "root_path": current.root_path,
-            "default_branch": (
-                patch.default_branch
-                if patch.default_branch is not None
-                else current.default_branch
-            ),
-            "setup_script": (
-                patch.setup_script
-                if "setup_script" in patch.model_fields_set
-                else current.setup_script
-            ),
             "expected_version": patch.expected_version,
         }
         raw = await self.services.json_request(
@@ -158,17 +119,6 @@ class WorkClient:
         return WorkProject.model_validate(raw)
 
     async def delete_project(self, project_id: UUID, *, force: bool = False) -> None:
-        if force:
-            threads = await self.list_threads(project_id=project_id, limit=500)
-            project = await self.get_project(project_id)
-            for thread in threads:
-                if thread.workspace_mode == "worktree" and thread.worktree_path:
-                    with suppress(Exception):
-                        await self.worktrees.remove_worktree(
-                            Path(project.root_path),
-                            Path(thread.worktree_path),
-                            delete_branch=thread.branch,
-                        )
         await self.services.json_request(
             "Tsuchi",
             "DELETE",
@@ -296,7 +246,6 @@ class WorkClient:
         origin_conversation_id: UUID | None = None,
         origin_run_id: UUID | None = None,
     ) -> tuple[WorkThread, WorkRun | None]:
-        # Validate harness exists in registry and project exists in Tsuchi.
         adapter = self.registry.get(data.harness)
         project = await self.get_project(data.project_id)
         resolved_model = data.model
@@ -311,9 +260,6 @@ class WorkClient:
             "harness": data.harness,
             "model": resolved_model,
             "model_options": data.model_options,
-            "workspace_mode": data.workspace_mode,
-            "branch": data.branch,
-            "base_ref": data.base_ref or project.default_branch,
             "origin_agent_key": origin_agent_key,
             "origin_conversation_id": (
                 str(origin_conversation_id) if origin_conversation_id else None
@@ -325,29 +271,6 @@ class WorkClient:
                 "Tsuchi", "POST", "/api/work/threads", json=thread_payload
             )
         )
-
-        # Prepare worktree eagerly if requested and not yet created.
-        if created.workspace_mode == "worktree" and not created.worktree_path:
-            wt = await self.worktrees.create_worktree(
-                Path(project.root_path),
-                created.id,
-                base_ref=created.base_ref or project.default_branch,
-                branch=created.branch,
-                setup_script=project.setup_script,
-            )
-            created = WorkThread.model_validate(
-                await self.services.json_request(
-                    "Tsuchi",
-                    "PUT",
-                    f"/api/work/threads/{created.id}",
-                    json={
-                        "worktree_path": str(wt.path),
-                        "branch": wt.branch,
-                        "base_ref": wt.base_ref,
-                        "expected_version": created.version,
-                    },
-                )
-            )
 
         run: WorkRun | None = None
         if data.prompt and data.prompt.strip():
@@ -379,15 +302,6 @@ class WorkClient:
         return WorkThread.model_validate(raw)
 
     async def delete_thread(self, thread_id: UUID) -> None:
-        thread = await self.get_thread(thread_id)
-        if thread.workspace_mode == "worktree" and thread.worktree_path:
-            with suppress(ServiceError, Exception):
-                project = await self.get_project(thread.project_id)
-                await self.worktrees.remove_worktree(
-                    Path(project.root_path),
-                    Path(thread.worktree_path),
-                    delete_branch=thread.branch,
-                )
         await self.services.json_request(
             "Tsuchi", "DELETE", f"/api/work/threads/{thread_id}"
         )

@@ -2958,8 +2958,7 @@ class Repository:
                     t
                     for t in threads
                     if all(
-                        tok
-                        in f"{t.title} {t.branch or ''} {t.harness} {t.model or ''}".casefold()
+                        tok in f"{t.title} {t.harness} {t.model or ''}".casefold()
                         for tok in tokens
                     )
                 )

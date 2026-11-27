@@ -1,7 +1,7 @@
 """Claude Code coding harness adapter (`claude -p --input-format stream-json --output-format stream-json`).
 
 Runs `@anthropic-ai/claude-code` in full coding-harness mode bound to the thread's
-project root or isolated Git worktree, supporting live streamed text/tool progress,
+local project folder, supporting live streamed text/tool progress,
 interactive approvals & questions via `control_request` / `control_response`, interrupt,
 and `--resume` session continuity.
 """

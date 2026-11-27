@@ -4,9 +4,9 @@ See [Work threads and coding assistants](../../user-expectations/kadan/work.md) 
 
 ## Responsibilities and boundaries
 
-- **Tsuchi (`services/tsuchi/`):** Owns durable storage for `work_projects`, `work_threads`, `work_runs`, `work_activity`, and `work_harnesses`, plus optimistic locking (`version`), `client_request_id` idempotency, snooze wakeup queries (`POST /api/work/threads/wake-snoozed`), and `RunEvent(kind="work")` chat wakeup runs.
-- **Kadan API (`services/kadan/kadan/api/routes/work.py`, `services/kadan/kadan/work/client.py`):** Exposes `/work/*` HTTP endpoints, interactive server folder browsing (`/work/filesystem/browse`), repository cloning, Git worktree lifecycle (`WorktreeManager`), and harness availability/sign-in endpoints.
-- **Kadan Runner (`services/kadan/kadan/work/runner.py`):** Runs `WorkRunner` alongside `AgentRunner` and `T3ThreadEvents`. It reconciles expired snoozes, claims queued/lease-expired `WorkRun`s, executes turns through the selected `HarnessAdapter`, persists normalized activity and pending requests, and emits idempotent Tsuchi `event-runs` (`kind="work"`) into originating chat conversations without polling.
+- **Tsuchi (`services/tsuchi/`):** Owns durable storage for `work_projects` (`id`, `title`, `root_path`, `version`, timestamps), `work_threads` (buckets, run status, snooze expiry, origin conversation metadata, `harness_session_id`, pending requests, optimistic locking `version`), `work_runs`, `work_activity`, and `work_harnesses`, plus `client_request_id` idempotency, snooze wakeup queries (`POST /api/work/threads/wake-snoozed`), atomic run-to-thread status/bucket sync, and `RunEvent(kind="work")` chat wakeup runs.
+- **Kadan API (`services/kadan/kadan/api/routes/work.py`, `services/kadan/kadan/work/client.py`, `services/kadan/kadan/work/filesystem.py`):** Exposes `/work/*` HTTP endpoints, interactive local folder browsing (`/work/filesystem/browse`), local folder validation, and harness availability/sign-in endpoints. Kadan runs no Git or worktree subprocesses; every thread executes directly in `project.root_path`.
+- **Kadan Runner (`services/kadan/kadan/work/runner.py`):** Runs `WorkRunner` alongside `AgentRunner` and `T3ThreadEvents`. It reconciles expired snoozes, claims queued/lease-expired `WorkRun`s, maintains a lock-protected background lease heartbeat during active/silent turns, executes turns in `project.root_path` through the selected `HarnessAdapter`, persists normalized activity and pending requests, and emits idempotent Tsuchi `event-runs` (`kind="work"`) into originating chat conversations without polling.
 - **Frontend (`services/frontend/src/kadan/`):** Renders the 4-bucket Work section in `Sidebar.tsx`, the live thread workspace in `WorkThreadView.tsx`, and the New Thread / Projects / Harnesses setup UI in `WorkSetup.tsx`, plus in-app `#work/<thread_id>` link navigation from chat Markdown.
 
 ## Extensible harness adapter contract
@@ -16,7 +16,7 @@ See [Work threads and coding assistants](../../user-expectations/kadan/work.md) 
 - `HarnessAdapter`:
   - `check_availability(services) -> HarnessAvailability`: Reports binary installation, UI auth state, model catalog, and capabilities (`supports_steer`, `supports_resume`, `supports_approvals`, `supports_questions`).
   - `start_sign_in(services, payload)`, `sign_in_status(services)`, `submit_sign_in(services, payload)`, `sign_out(services)`: UI-driven auth lifecycle backed by Tsuchi `/api/work/harnesses/{harness}` (raw credentials are never returned by public Kadan routes).
-  - `open_session(config: SessionConfig, services) -> HarnessSession`: Opens or resumes a live session bound to `config.working_dir` (project root or isolated Git worktree).
+  - `open_session(config: SessionConfig, services) -> HarnessSession`: Opens or resumes a live session bound directly to `config.working_dir` (`project.root_path`).
 - `HarnessSession`:
   - `session_id`: Durable provider session/thread ID persisted on `WorkThread.harness_session_id` for resume across turns and restarts.
   - `start_turn(prompt) -> AsyncIterator[NormalizedEvent]`: Streams uniform events (`session_started`, `text_delta`, `reasoning_delta`, `assistant_message`, `tool_call`, `tool_result`, `file_change`, `pending_question`, `pending_approval`, `status`, `error`, `turn_completed`).
@@ -35,5 +35,5 @@ See [Work threads and coding assistants](../../user-expectations/kadan/work.md) 
 ## Replay safety and event-driven chat wakeups
 
 - Native agent tools in `services/kadan/kadan/runner/tools/work.py` (`work_project_list`, `work_thread_list`, `work_thread_read`, `work_thread_launch`, `work_thread_send`, `work_thread_interrupt`, `work_pending_request`, `work_thread_organize`) pass deterministic `client_request_id` values derived from `conversation.action_id` so runner restarts replay safely without duplicating threads or turns.
-- When an agent-launched thread pauses on a pending request or reaches a terminal run state, `WorkRunner` emits an idempotent `POST /api/agents/{key}/resources/{conversation_id}/event-runs` with `kind="work"` (`uuid5(run.id, ...)`). `AgentRuns.context()` injects it as `work_thread_event`.
+- When an agent-launched thread pauses on a pending request or reaches a terminal run state, `WorkRunner` emits an idempotent `POST /api/agents/{key}/resources/{conversation_id}/event-runs` with `kind="work"` (`uuid5(run.id, ...)`) before transitioning the run/thread state so observers see both atomically. `AgentRuns.context()` injects it as `work_thread_event`.
 - The external `t3_code` MCP preset (`mcp_presets.py`) and `T3ThreadEvents` watcher (`t3_events.py`) remain intact under **Plugins** so both integrations coexist cleanly.

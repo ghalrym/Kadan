@@ -3,8 +3,6 @@ import {
   ArrowUpRight,
   ChevronUp,
   Folder,
-  FolderGit2,
-  GitBranch,
   KeyRound,
   Plus,
   RefreshCw,
@@ -25,7 +23,6 @@ import {
   type FilesystemBrowseResponse,
   type WorkHarness,
   type WorkProject,
-  type WorkWorkspaceMode,
 } from "./work";
 
 interface Props {
@@ -47,19 +44,13 @@ export default function WorkSetup({ initialTab = "new", onThreadCreated, onChang
   const [projectId, setProjectId] = useState("");
   const [harnessId, setHarnessId] = useState("codex");
   const [modelId, setModelId] = useState("");
-  const [workspaceMode, setWorkspaceMode] = useState<WorkWorkspaceMode>("worktree");
-  const [branch, setBranch] = useState("");
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
 
-  // Add project form state.
-  const [projectSource, setProjectSource] = useState<"folder" | "clone">("folder");
+  // Add project folder form state.
   const [folderBrowser, setFolderBrowser] = useState<FilesystemBrowseResponse | null>(null);
   const [selectedFolder, setSelectedFolder] = useState("");
-  const [cloneUrl, setCloneUrl] = useState("");
   const [projectTitle, setProjectTitle] = useState("");
-  const [defaultBranch, setDefaultBranch] = useState("");
-  const [setupScript, setSetupScript] = useState("");
 
   // Harness sign-in code / key inputs keyed by harness ID.
   const [signInInputs, setSignInInputs] = useState<Record<string, string>>({});
@@ -100,17 +91,16 @@ export default function WorkSetup({ initialTab = "new", onThreadCreated, onChang
       const res = await browseWorkFilesystem(path);
       setFolderBrowser(res);
       setSelectedFolder(res.current_path);
-      if (res.default_branch) setDefaultBranch(res.default_branch);
     } catch (err) {
       setError((err as Error).message);
     }
   }, []);
 
   useEffect(() => {
-    if (tab === "projects" && projectSource === "folder" && !folderBrowser) {
+    if (tab === "projects" && !folderBrowser) {
       void loadFolder();
     }
-  }, [tab, projectSource, folderBrowser, loadFolder]);
+  }, [tab, folderBrowser, loadFolder]);
 
   // Poll any harness currently waiting on browser device sign-in.
   useEffect(() => {
@@ -148,8 +138,6 @@ export default function WorkSetup({ initialTab = "new", onThreadCreated, onChang
         title: title.trim(),
         harness: harnessId,
         model: modelId || selectedHarness?.default_model || null,
-        workspace_mode: workspaceMode,
-        branch: branch.trim() || null,
         prompt: prompt.trim() || null,
       });
       onChanged();
@@ -163,28 +151,16 @@ export default function WorkSetup({ initialTab = "new", onThreadCreated, onChang
 
   async function handleAddProject(event: React.FormEvent) {
     event.preventDefault();
+    if (!selectedFolder) return;
     setBusy(true);
     setError("");
     setNotice("");
     try {
-      const created = await createWorkProject(
-        projectSource === "folder"
-          ? {
-              root_path: selectedFolder,
-              title: projectTitle.trim() || null,
-              default_branch: defaultBranch.trim() || null,
-              setup_script: setupScript.trim() || null,
-            }
-          : {
-              clone_url: cloneUrl.trim(),
-              title: projectTitle.trim() || null,
-              default_branch: defaultBranch.trim() || null,
-              setup_script: setupScript.trim() || null,
-            },
-      );
+      const created = await createWorkProject({
+        root_path: selectedFolder,
+        title: projectTitle.trim() || null,
+      });
       setProjectTitle("");
-      setCloneUrl("");
-      setSetupScript("");
       setProjectId(created.id);
       setNotice(`Added project "${created.title}".`);
       await refresh();
@@ -276,7 +252,7 @@ export default function WorkSetup({ initialTab = "new", onThreadCreated, onChang
         <div>
           <h2>Work</h2>
           <p className="quiet">
-            Start coding threads, manage your projects, and connect your coding assistants.
+            Start coding threads, choose project folders, and connect your coding assistants.
           </p>
         </div>
         <button className="icon" aria-label="Refresh Work setup" onClick={() => void refresh()} disabled={loading}>
@@ -326,20 +302,20 @@ export default function WorkSetup({ initialTab = "new", onThreadCreated, onChang
         <section className="work-card">
           {projects.length === 0 ? (
             <div className="work-empty-card">
-              <h3>Add a project first</h3>
+              <h3>Add a project folder first</h3>
               <p className="quiet">
-                Choose a folder on this computer or clone a repository to start your first coding thread.
+                Choose a folder on this computer to start your first coding thread.
               </p>
               <button className="primary" onClick={() => setTab("projects")}>
                 <Plus size={15} />
-                Add a project
+                Add a project folder
               </button>
             </div>
           ) : (
             <form className="work-form" onSubmit={handleStartThread}>
               <div className="work-form-row">
                 <label>
-                  Project
+                  Project folder
                   <select value={projectId} onChange={(e) => setProjectId(e.target.value)} required>
                     {projects.map((p) => (
                       <option key={p.id} value={p.id}>
@@ -384,30 +360,6 @@ export default function WorkSetup({ initialTab = "new", onThreadCreated, onChang
                 )}
               </div>
 
-              <div className="work-form-row">
-                <label>
-                  Workspace
-                  <select
-                    value={workspaceMode}
-                    onChange={(e) => setWorkspaceMode(e.target.value as WorkWorkspaceMode)}
-                  >
-                    <option value="worktree">Isolated branch copy (recommended)</option>
-                    <option value="root">Project folder directly</option>
-                  </select>
-                </label>
-                {workspaceMode === "worktree" && (
-                  <label>
-                    Branch name (optional)
-                    <input
-                      type="text"
-                      value={branch}
-                      onChange={(e) => setBranch(e.target.value)}
-                      placeholder="Leave blank to create automatically"
-                    />
-                  </label>
-                )}
-              </div>
-
               <label>
                 Task title
                 <input
@@ -442,120 +394,60 @@ export default function WorkSetup({ initialTab = "new", onThreadCreated, onChang
       {tab === "projects" && (
         <div className="work-stack">
           <section className="work-card">
-            <h3>Add a project</h3>
-            <div className="work-segmented">
-              <button
-                type="button"
-                className={projectSource === "folder" ? "selected" : ""}
-                onClick={() => setProjectSource("folder")}
-              >
-                <Folder size={14} />
-                Choose local folder
-              </button>
-              <button
-                type="button"
-                className={projectSource === "clone" ? "selected" : ""}
-                onClick={() => setProjectSource("clone")}
-              >
-                <GitBranch size={14} />
-                Clone from link
-              </button>
-            </div>
-
+            <h3>Add a project folder</h3>
             <form className="work-form" onSubmit={handleAddProject}>
-              {projectSource === "folder" ? (
-                <div className="work-folder-picker">
-                  <div className="work-folder-bar">
-                    <span className="work-folder-current">
-                      {folderBrowser?.current_path || "Loading folders…"}
-                    </span>
-                    {folderBrowser?.parent_path && (
-                      <button
-                        type="button"
-                        className="button"
-                        onClick={() => void loadFolder(folderBrowser.parent_path ?? undefined)}
-                      >
-                        <ChevronUp size={14} />
-                        Up
-                      </button>
-                    )}
-                  </div>
-                  <div className="work-folder-list" role="listbox" aria-label="Folders">
-                    {(folderBrowser?.entries ?? []).map((entry) => (
-                      <button
-                        key={entry.path}
-                        type="button"
-                        className={`work-folder-entry ${selectedFolder === entry.path ? "selected" : ""}`}
-                        onClick={() => {
-                          setSelectedFolder(entry.path);
-                          if (!projectTitle) setProjectTitle(entry.name);
-                        }}
-                        onDoubleClick={() => void loadFolder(entry.path)}
-                      >
-                        {entry.is_git_repo ? <FolderGit2 size={15} /> : <Folder size={15} />}
-                        <span>{entry.name}</span>
-                        {entry.is_git_repo && <span className="work-pill">Git</span>}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="field-hint">
-                    Click a folder to select it, or double-click to open it. Selected: {selectedFolder || "None"}
-                  </p>
+              <div className="work-folder-picker">
+                <div className="work-folder-bar">
+                  <span className="work-folder-current">
+                    {folderBrowser?.current_path || "Loading folders…"}
+                  </span>
+                  {folderBrowser?.parent_path && (
+                    <button
+                      type="button"
+                      className="button"
+                      onClick={() => void loadFolder(folderBrowser.parent_path ?? undefined)}
+                    >
+                      <ChevronUp size={14} />
+                      Up
+                    </button>
+                  )}
                 </div>
-              ) : (
-                <label>
-                  Repository link
-                  <input
-                    type="text"
-                    value={cloneUrl}
-                    onChange={(e) => setCloneUrl(e.target.value)}
-                    placeholder="https://github.com/owner/repo.git"
-                    required
-                  />
-                </label>
-              )}
-
-              <div className="work-form-row">
-                <label>
-                  Project name (optional)
-                  <input
-                    type="text"
-                    value={projectTitle}
-                    onChange={(e) => setProjectTitle(e.target.value)}
-                    placeholder="Auto-detected from folder or repository"
-                  />
-                </label>
-                <label>
-                  Default branch (optional)
-                  <input
-                    type="text"
-                    value={defaultBranch}
-                    onChange={(e) => setDefaultBranch(e.target.value)}
-                    placeholder="main"
-                  />
-                </label>
+                <div className="work-folder-list" role="listbox" aria-label="Folders">
+                  {(folderBrowser?.entries ?? []).map((entry) => (
+                    <button
+                      key={entry.path}
+                      type="button"
+                      className={`work-folder-entry ${selectedFolder === entry.path ? "selected" : ""}`}
+                      onClick={() => {
+                        setSelectedFolder(entry.path);
+                        if (!projectTitle) setProjectTitle(entry.name);
+                      }}
+                      onDoubleClick={() => void loadFolder(entry.path)}
+                    >
+                      <Folder size={15} />
+                      <span>{entry.name}</span>
+                    </button>
+                  ))}
+                </div>
+                <p className="field-hint">
+                  Click a folder to select it, or double-click to open it. Selected: {selectedFolder || "None"}
+                </p>
               </div>
 
               <label>
-                Optional setup steps for new isolated branches
-                <textarea
-                  rows={2}
-                  value={setupScript}
-                  onChange={(e) => setSetupScript(e.target.value)}
-                  placeholder="Optional commands to prepare dependencies in a new branch copy"
+                Project name (optional)
+                <input
+                  type="text"
+                  value={projectTitle}
+                  onChange={(e) => setProjectTitle(e.target.value)}
+                  placeholder="Uses the folder name if left blank"
                 />
               </label>
 
               <div className="work-form-actions">
-                <button
-                  type="submit"
-                  className="primary"
-                  disabled={
-                    busy || (projectSource === "folder" ? !selectedFolder : !cloneUrl.trim())
-                  }
-                >
+                <button type="submit" className="primary" disabled={busy || !selectedFolder}>
                   <Plus size={15} />
-                  {projectSource === "clone" ? "Clone and add project" : "Add project"}
+                  Add project
                 </button>
               </div>
             </form>
@@ -569,10 +461,7 @@ export default function WorkSetup({ initialTab = "new", onThreadCreated, onChang
                   <li key={project.id} className="work-project-row">
                     <div>
                       <strong>{project.title}</strong>
-                      <div className="field-hint">
-                        Default branch: {project.default_branch}
-                        {project.setup_script ? " · Has branch setup steps" : ""}
-                      </div>
+                      <div className="field-hint">{project.root_path}</div>
                     </div>
                     <button
                       className="icon"

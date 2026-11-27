@@ -22,7 +22,6 @@ WorkRunStatus = Literal[
     "interrupted",
     "cancelled",
 ]
-WorkWorkspaceMode = Literal["root", "worktree"]
 WorkHarnessId = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,47}$")]
 WorkActivityKind = Literal[
     "user_message",
@@ -45,8 +44,6 @@ class WorkProject(BaseModel):
     id: UUID
     title: str
     root_path: str
-    default_branch: str = "main"
-    setup_script: str | None = None
     version: int
     created_at: datetime
     updated_at: datetime
@@ -54,16 +51,19 @@ class WorkProject(BaseModel):
 
 class WorkProjectCreate(WorkModel):
     title: str | None = Field(default=None, max_length=500)
-    root_path: str | None = Field(default=None, max_length=4000)
-    clone_url: str | None = Field(default=None, max_length=2000)
-    default_branch: str | None = Field(default=None, max_length=256)
-    setup_script: str | None = Field(default=None, max_length=16000)
+    root_path: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("root_path")
+    @classmethod
+    def nonblank_root_path(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Choose a local project folder")
+        return stripped
 
 
 class WorkProjectPatch(WorkModel):
     title: str | None = Field(default=None, min_length=1, max_length=500)
-    default_branch: str | None = Field(default=None, min_length=1, max_length=256)
-    setup_script: str | None = Field(default=None, max_length=16000)
     expected_version: int = Field(ge=1)
 
 
@@ -89,10 +89,6 @@ class WorkThread(BaseModel):
     harness: str
     model: str | None = None
     model_options: dict[str, JsonValue] = Field(default_factory=dict)
-    workspace_mode: WorkWorkspaceMode = "root"
-    worktree_path: str | None = None
-    branch: str | None = None
-    base_ref: str | None = None
     run_status: WorkRunStatus = "idle"
     bucket: WorkBucket = "default"
     snoozed_until: datetime | None = None
@@ -149,9 +145,6 @@ class WorkThreadCreate(WorkModel):
     harness: WorkHarnessId = "codex"
     model: str | None = Field(default=None, max_length=256)
     model_options: dict[str, JsonValue] = Field(default_factory=dict)
-    workspace_mode: WorkWorkspaceMode = "root"
-    branch: str | None = Field(default=None, max_length=256)
-    base_ref: str | None = Field(default=None, max_length=256)
     prompt: str | None = Field(default=None, max_length=200000)
     client_request_id: str | None = Field(default=None, max_length=256)
 
@@ -239,12 +232,9 @@ class WorkHarnessSignInSubmit(WorkModel):
 class FilesystemEntry(BaseModel):
     name: str
     path: str
-    is_git_repo: bool = False
 
 
 class FilesystemBrowseResponse(BaseModel):
     current_path: str
     parent_path: str | None = None
-    is_git_repo: bool = False
-    default_branch: str | None = None
     entries: list[FilesystemEntry] = Field(default_factory=list)
