@@ -1,5 +1,6 @@
 #include <string_view>
 
+#include "kadan/inkling_variant.hpp"
 #include "kadan/preparation.hpp"
 
 namespace kadan::serving {
@@ -35,15 +36,34 @@ std::vector<std::uint8_t> decode_chat_png(std::string_view data_url) {
         reinterpret_cast<const std::uint8_t*>(decoded.data()) + decoded.size()
     );
 }
+
 void prepare_llm_configuration(
     const std::optional<std::string>& requested_model,
+    const std::optional<std::string>& requested_variant,
     bool context_supplied,
     std::optional<std::size_t> requested_context,
     InferenceRequest& request,
     ModelStore& store,
     const std::atomic_bool& cancel
 ) {
-    request.model = requested_model.value_or(store.selected_llm_id());
+    std::string model_id = requested_model.value_or(store.selected_llm_id());
+    if (requested_variant) {
+        const auto variant = parse_inkling_variant(*requested_variant);
+        preparation_check(
+            variant.has_value(), "Weight variant must be 'base' or 'abliterated'.", 422
+        );
+        if (requested_model) {
+            const auto model_var = inkling_model_variant(*requested_model);
+            preparation_check(
+                model_var.has_value() && *model_var == *variant,
+                "Requested model does not match requested weight_variant.",
+                422
+            );
+        } else {
+            model_id = resolve_inkling_variant_model(model_id, *variant);
+        }
+    }
+    request.model = std::move(model_id);
     preparation_check(
         store.entry(request.model).inference_available,
         "This checkpoint has no supported inference engine.",
@@ -84,7 +104,13 @@ void prepare_input(
     const std::atomic_bool& cancel
 ) {
     prepare_llm_configuration(
-        input.model, input.context_supplied, input.context_limit, request, store, cancel
+        input.model,
+        input.weight_variant,
+        input.context_supplied,
+        input.context_limit,
+        request,
+        store,
+        cancel
     );
     preparation_check(
         request.operation == Operation::load || !input.messages.empty(),
@@ -108,7 +134,7 @@ void prepare_input(
     // Share the active Inkling 2 Mini checkpoint and context limit so the
     // resident ChatEngine serves decisions without reloading or evicting chat.
     prepare_llm_configuration(
-        input.model, false, std::nullopt, request, store, cancel
+        input.model, input.weight_variant, false, std::nullopt, request, store, cancel
     );
 }
 

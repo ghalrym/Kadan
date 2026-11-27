@@ -17,6 +17,7 @@ from .image_jobs import ImageJobs
 from .memory_queue import MemoryQueue
 from .pet_jobs import PetJobs
 from .t3_events import T3ThreadEvents
+from ..work.runner import WorkRunner
 
 logger = logging.getLogger(__name__)
 POLL_SECONDS = 0.5
@@ -30,6 +31,7 @@ class RunnerServices(LocalServices):
         self.pets = PetJobs(self)
         self.t3 = T3ThreadEvents(self)
         self.group_chat_events = GroupChatWebhookEvents(self)
+        self.work_runner = WorkRunner(self)
         self.compactor = IdleCompactor(self)
         self.memory_queue = MemoryQueue(self)
 
@@ -140,6 +142,7 @@ async def serve(client, settings, runner_settings: RunnerSettings, stop: asyncio
     services.pets.start()
     services.t3.start()
     services.group_chat_events.start()
+    services.work_runner.start()
     services.compactor.start()
     services.memory_queue.start()
     try:
@@ -147,6 +150,7 @@ async def serve(client, settings, runner_settings: RunnerSettings, stop: asyncio
     finally:
         await services.memory_queue.close()
         await services.compactor.close()
+        await services.work_runner.close()
         await services.images.close()
         await services.pets.close()
         await services.group_chat_events.close()

@@ -4,7 +4,7 @@ Hikari runs Inkling 2 Mini (`inkling-2-mini-iq4-nl` by default, or `inkling-2-mi
 
 Status reads do not load the model. They distinguish an idle, unloaded worker from active or resident language work and report unavailable workers, incomplete downloads and unconfirmed cleanup as errors. A completed download establishes file readiness, not successful inference or physical fit.
 
-When language work is loading, Hikari reports loading. Once loaded and generating or resident, it reports ready, allowing Kadan to show the agent's active response. After explicit unload or idle/memory-pressure eviction completes cleanup, it returns to unloaded.
+When language work is loading, Hikari reports loading. Once loaded and generating or resident, it reports ready, allowing Kadan to show the agent's active response. Switching between standard and abliterated variants of the same precision keeps the language worker ready without unloading. After explicit unload or idle/memory-pressure eviction completes cleanup, it returns to unloaded.
 
 The configured context limit includes the complete prompt (including any encoded screenshot tokens) and reply. Generation can use the remaining context until completion or cancellation. Requests leaving no reply space or exceeding available memory fail without truncating history or substituting another model.
 

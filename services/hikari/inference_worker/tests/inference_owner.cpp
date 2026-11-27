@@ -1822,7 +1822,123 @@ void interactive_priority_with_fairness_and_admission_guard() {
     owner.shutdown();
 }
 
+void hot_swap_reuses_resident_engine_without_reloading() {
+    struct HotSwapEngine final : InferenceEngine {
+        std::vector<std::string>& events;
+        std::string active_model;
+        std::shared_ptr<Resources> ledger;
+        Handle handle = 0;
+
+        HotSwapEngine(std::vector<std::string>& log, std::shared_ptr<Resources> r)
+            : events(log), ledger(std::move(r)) {
+        }
+
+        void load(
+            const InferenceRequest& req, const Footprint& free, const std::atomic_bool&
+        ) override {
+            active_model = req.model;
+            events.push_back("load:" + active_model);
+            Footprint res(free.size());
+            res[0] = 10;
+            handle = ledger->reserve(req.workload, res);
+        }
+
+        bool try_hot_swap(
+            const InferenceRequest& req, const Footprint&, const std::atomic_bool&
+        ) override {
+            const bool compat =
+                (active_model == "inkling-2-mini-abliterated-iq4-nl"
+                 && req.model == "inkling-2-mini-iq4-nl")
+                || (active_model == "inkling-2-mini-iq4-nl"
+                    && req.model == "inkling-2-mini-abliterated-iq4-nl");
+            if (!compat) {
+                events.push_back("swap_reject:" + req.model);
+                return false;
+            }
+            active_model = req.model;
+            events.push_back("hot_swap:" + active_model);
+            return true;
+        }
+
+        void prepare(
+            const InferenceRequest&, const Footprint&, const std::atomic_bool&
+        ) override {
+        }
+
+        Json execute(const InferenceRequest&, const std::atomic_bool&) override {
+            events.push_back("exec:" + active_model);
+            return active_model;
+        }
+
+        void close() override {
+            if (handle) {
+                ledger->released(handle);
+                handle = 0;
+            }
+            events.push_back("close:" + active_model);
+        }
+    };
+
+    std::vector<std::string> events;
+    InferenceOwner owner(
+        {100, 100},
+        [&](Workload, std::shared_ptr<Resources> r) {
+            return std::make_unique<HotSwapEngine>(events, std::move(r));
+        },
+        [] { return Footprint{100, 100}; },
+        [](const std::string&, JobState, const Json&) {}
+    );
+    auto make_req = [](const std::string& id, const std::string& model) {
+        auto r = request(id, Workload::llm);
+        r.operation = Operation::completion;
+        r.model = model;
+        r.configuration.checkpoint = "/models/" + model;
+        r.configuration.context_limit = 65536;
+        return r;
+    };
+
+    // 1. Initial load on abliterated variant
+    owner.submit(make_req("r1", "inkling-2-mini-abliterated-iq4-nl"));
+    assert(owner.advance());
+    assert(owner.status().model == "inkling-2-mini-abliterated-iq4-nl");
+
+    // 2. Switch to base variant: hot-swaps in place without close or load!
+    owner.submit(make_req("r2", "inkling-2-mini-iq4-nl"));
+    assert(owner.advance());
+    assert(owner.status().model == "inkling-2-mini-iq4-nl");
+
+    // 3. Switch back to abliterated: hot-swaps in place again!
+    owner.submit(make_req("r3", "inkling-2-mini-abliterated-iq4-nl"));
+    assert(owner.advance());
+    assert(owner.status().model == "inkling-2-mini-abliterated-iq4-nl");
+
+    // 4. Precision family change (Q8_0): hot-swap declines, falls back cleanly to
+    // reload.
+    owner.submit(make_req("r4", "inkling-2-mini-q8-0"));
+    assert(owner.advance());
+    assert(owner.status().model == "inkling-2-mini-q8-0");
+
+    owner.shutdown();
+    assert(
+        events
+        == std::vector<std::string>({
+            "load:inkling-2-mini-abliterated-iq4-nl",
+            "exec:inkling-2-mini-abliterated-iq4-nl",
+            "hot_swap:inkling-2-mini-iq4-nl",
+            "exec:inkling-2-mini-iq4-nl",
+            "hot_swap:inkling-2-mini-abliterated-iq4-nl",
+            "exec:inkling-2-mini-abliterated-iq4-nl",
+            "swap_reject:inkling-2-mini-q8-0",
+            "close:inkling-2-mini-abliterated-iq4-nl",
+            "load:inkling-2-mini-q8-0",
+            "exec:inkling-2-mini-q8-0",
+            "close:inkling-2-mini-q8-0",
+        })
+    );
+}
+
 int main() {
+    hot_swap_reuses_resident_engine_without_reloading();
     interactive_priority_with_fairness_and_admission_guard();
     resized_budget_drops_snapshot_it_cannot_cover();
     ram_cache_lifecycle();

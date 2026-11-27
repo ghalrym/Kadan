@@ -1135,6 +1135,7 @@ class AgentRuns(RunClient):
                         "computer": "computer_task_event",
                         "codex": "codex_thread_event",
                         "t3": "t3_thread_event",
+                        "work": "work_thread_event",
                     }[run.trigger_event.kind],
                     data=detail if isinstance(detail, dict) else {"detail": detail},
                 )

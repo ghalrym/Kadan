@@ -8,6 +8,8 @@ Open **Plugins** in the sidebar. The page lists **Installed** plugins with their
 
 ## Connecting T3 Code
 
+Kadan also includes built-in [Work](work.md) threads directly in the sidebar. Connecting an external T3 Code server here remains optional for users who already run T3 Code and want to use it alongside or instead of native Work.
+
 Choose **T3 Code** under **Available**:
 
 1. Paste your T3 Code address and choose **Connect T3 Code**.

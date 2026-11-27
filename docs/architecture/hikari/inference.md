@@ -63,7 +63,7 @@ Request cleanup releases transient scratch while keeping prefix allocations char
 
 The inference owner can detach one completed prefix before model eviction or budget changes. That RAM snapshot survives destruction of the engine and contains no weights, open checkpoint files or device allocations. Attention keys/values already have complete host copies, and KV device mirrors can be rebuilt from the host copy on restoration.
 
-Restoration requires the same model ID, workload, checkpoint path, context, tokenizer file identity and every GGUF tensor's immutable shard identity. The exact committed token/conversation match still decides whether any prefix is reused. An incompatible request replaces the one retained entry. There is no cross-worker affinity or disk-cache layer.
+Restoration requires the same model ID, weight variant, workload, checkpoint path, context, tokenizer file identity and every GGUF tensor's immutable shard identity. The exact committed token/conversation/variant match still decides whether any prefix is reused. An incompatible request replaces the one retained entry. There is no cross-worker affinity or disk-cache layer.
 
 Detached bytes remain charged as a host-only worker budget after confirmed offload. A second scheduler offload can reclaim that RAM before admitting another job, with the same busy/queued-work rules. Physical RAM pressure can also discard optional state; cache admission failure must not prevent model eviction or make a job wait indefinitely. Engine cleanup still independently proves that its device/model allocations are gone.
 

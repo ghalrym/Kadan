@@ -1074,6 +1074,22 @@
               }
             ],
             "title": "Tools"
+          },
+          "weight_variant": {
+            "anyOf": [
+              {
+                "enum": [
+                  "base",
+                  "abliterated"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional local Inkling 2 Mini weight variant ('base' or 'abliterated') hot-swapped in place without reloading the language worker; omitted uses the configured default.",
+            "title": "Weight Variant"
           }
         },
         "required": [
@@ -1259,6 +1275,22 @@
             "minLength": 1,
             "title": "State",
             "type": "string"
+          },
+          "weight_variant": {
+            "anyOf": [
+              {
+                "enum": [
+                  "base",
+                  "abliterated"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional local Inkling 2 Mini weight variant ('base' or 'abliterated') hot-swapped in place without reloading the language worker.",
+            "title": "Weight Variant"
           }
         },
         "required": [
@@ -2342,6 +2374,17 @@
             ],
             "title": "Type",
             "type": "string"
+          },
+          "weight_swap_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight Swap Ms"
           }
         },
         "required": [

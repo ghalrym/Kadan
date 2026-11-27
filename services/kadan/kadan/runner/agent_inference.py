@@ -38,6 +38,27 @@ MAX_EVENT_CHARACTERS = 300000
 INFERENCE_TIMEOUT = httpx.Timeout(None, connect=3)
 logger = logging.getLogger(__name__)
 
+WeightVariant = Literal["base", "abliterated"]
+TaskClass = Literal["persona_chat", "harness"]
+TASK_CLASS_WEIGHT_VARIANTS: dict[TaskClass, WeightVariant] = {
+    "persona_chat": "abliterated",
+    "harness": "base",
+}
+
+
+def resolve_task_weight_variant(
+    *,
+    task_class: TaskClass | None = None,
+    weight_variant: WeightVariant | None = None,
+) -> WeightVariant | None:
+    """Resolve an optional task class and explicit weight variant into one Hikari variant."""
+    mapped = TASK_CLASS_WEIGHT_VARIANTS[task_class] if task_class is not None else None
+    if weight_variant is not None and mapped is not None and weight_variant != mapped:
+        raise ValueError(
+            f"task_class={task_class!r} conflicts with weight_variant={weight_variant!r}"
+        )
+    return weight_variant if weight_variant is not None else mapped
+
 
 def unique_fields(pairs: list[tuple[str, object]]) -> dict:
     value = {}
@@ -104,6 +125,7 @@ class HikariChatModel(BaseChatModel):
     client: httpx.AsyncClient = Field(exclude=True)
     hikari_url: str
     model_id: str | None = None
+    weight_variant: WeightVariant | None = None
     conversation_key: str | None = None
     reuse_prefix: bool = True
     priority: Literal["interactive", "background"] = "interactive"
@@ -223,6 +245,8 @@ class HikariChatModel(BaseChatModel):
             payload["reuse_prefix"] = False
         if self.model_id is not None:
             payload["model"] = self.model_id
+        if self.weight_variant is not None:
+            payload["weight_variant"] = self.weight_variant
         try:
             async with self.client.stream(
                 "POST",
@@ -336,12 +360,18 @@ class AgentInference:
         tools: Sequence[BaseTool],
         *,
         priority: Literal["interactive", "background"] = "interactive",
+        weight_variant: WeightVariant | None = None,
+        task_class: TaskClass | None = None,
         on_text_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> RunCall:
+        resolved_variant = resolve_task_weight_variant(
+            task_class=task_class, weight_variant=weight_variant
+        )
         model = HikariChatModel(
             client=self.client,
             hikari_url=self.hikari_url,
             model_id=model_id,
+            weight_variant=resolved_variant,
             conversation_key=conversation_key,
             priority=priority,
             on_text_delta=on_text_delta,
@@ -389,11 +419,17 @@ class AgentInference:
         max_tokens: int | None = None,
         reasoning_tokens: int | None = None,
         reasoning_effort: Literal["low", "medium", "high"] | None = None,
+        weight_variant: WeightVariant | None = None,
+        task_class: TaskClass | None = None,
     ) -> str:
+        resolved_variant = resolve_task_weight_variant(
+            task_class=task_class, weight_variant=weight_variant
+        )
         model = HikariChatModel(
             client=self.client,
             hikari_url=self.hikari_url,
             model_id=model_id,
+            weight_variant=resolved_variant,
             conversation_key=conversation_key,
             reuse_prefix=reuse_prefix,
             priority=priority,
@@ -417,21 +453,35 @@ class AgentInference:
         *,
         use_local_decisions: bool = True,
         model_id: str | None = None,
+        weight_variant: WeightVariant | None = None,
+        task_class: TaskClass | None = None,
     ) -> dict[str, float]:
         """Evaluate Noul (yes/no probability) questions via Hikari Decisions or JSON fallback."""
         cleaned_state = state.strip()
         if not cleaned_state or not questions:
             return {}
+        resolved_variant = resolve_task_weight_variant(
+            task_class=task_class, weight_variant=weight_variant
+        )
         if use_local_decisions:
             payload_questions = [dict(q) for q in questions]
             # Hikari /v1/decisions enforces state <= 8000 chars and total JSON <= 16000 chars.
             trimmed_state = cleaned_state[:7500]
-            body = {"state": trimmed_state, "questions": payload_questions}
+            body: dict[str, Any] = {
+                "state": trimmed_state,
+                "questions": payload_questions,
+            }
+            if resolved_variant is not None:
+                body["weight_variant"] = resolved_variant
             serialized_len = len(json.dumps(body, ensure_ascii=False))
             if serialized_len > 15800:
                 overflow = serialized_len - 15800
-                trimmed_state = trimmed_state[: max(100, len(trimmed_state) - overflow - 64)].rstrip()
+                trimmed_state = trimmed_state[
+                    : max(100, len(trimmed_state) - overflow - 64)
+                ].rstrip()
                 body = {"state": trimmed_state, "questions": payload_questions}
+                if resolved_variant is not None:
+                    body["weight_variant"] = resolved_variant
             try:
                 response = await self.client.post(
                     self.hikari_url + "/v1/decisions",
@@ -503,6 +553,7 @@ class AgentInference:
             max_tokens=512,
             reasoning_tokens=128,
             reasoning_effort="low",
+            weight_variant=resolved_variant,
         )
         return _parse_decision_json(raw, expected_keys)
 

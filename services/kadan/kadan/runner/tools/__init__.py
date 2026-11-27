@@ -2,13 +2,23 @@
 
 from langchain_core.tools import StructuredTool
 
-from . import conversation, group_chat, history, memory, persona, updates, workspace
+from . import (
+    conversation,
+    group_chat,
+    history,
+    memory,
+    persona,
+    updates,
+    work,
+    workspace,
+)
 
 CONVERSATION_TOOLS: list[StructuredTool] = [
     *conversation.TOOLS,
     *workspace.TOOLS,
     *history.TOOLS,
     *updates.TOOLS,
+    *work.TOOLS,
 ]
 GROUP_CHAT_TOOLS: list[StructuredTool] = group_chat.TOOLS
 GROUP_CHAT_TOOLS_BY_NAME = {tool.name: tool for tool in GROUP_CHAT_TOOLS}

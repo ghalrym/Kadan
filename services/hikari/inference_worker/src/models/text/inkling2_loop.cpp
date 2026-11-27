@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "gguf_model.hpp"
+#include "kadan/inkling_variant.hpp"
 
 namespace kadan::text {
 namespace {
@@ -523,9 +524,13 @@ struct LoopLayer {
 class Inkling2LoopModel final : public Model {
 public:
     Inkling2LoopModel(
-        const GgufWeights& weights, DenseCompute& compute, std::size_t context
+        const GgufWeights& weights,
+        DenseCompute& compute,
+        std::size_t context,
+        std::uint32_t initial_variant_id = 0
     )
-        : weights_(weights), compute_(compute), context_(context) {
+        : weights_(weights), compute_(compute), context_(context),
+          active_variant_id_(initial_variant_id) {
         tok_norm_ = weights_.read("token_embd_norm.weight");
         out_norm_ = weights_.read("output_norm.weight");
         out_res_query_ = weights_.read("output_res_query.weight");
@@ -689,23 +694,109 @@ public:
         gpu_needs_upload_ = true;
     }
 
-    void save_gpu_boundary(unsigned slot_idx, std::size_t tokens) override {
-        if (!gpu_ || gpu_needs_upload_ || gpu_valid_tokens_ != tokens || !tokens)
+    void save_gpu_boundary(
+        unsigned slot_idx, std::size_t tokens, std::uint32_t variant_id
+    ) override {
+        if (!gpu_ || gpu_needs_upload_ || gpu_valid_tokens_ != tokens || !tokens
+            || variant_id != active_variant_id_)
             return;
-        gpu_->save_boundary(slot_idx, tokens, weights_.cancel());
+        gpu_->save_boundary(slot_idx, tokens, variant_id, weights_.cancel());
     }
 
     bool try_rewind_gpu_boundary(
-        unsigned slot_idx, std::size_t boundary_tokens
+        unsigned slot_idx, std::size_t boundary_tokens, std::uint32_t variant_id
     ) override {
         if (!gpu_ || gpu_needs_upload_ || !boundary_tokens
-            || gpu_valid_tokens_ < boundary_tokens)
+            || gpu_valid_tokens_ < boundary_tokens || variant_id != active_variant_id_)
             return false;
-        if (!gpu_->restore_boundary(slot_idx, boundary_tokens, weights_.cancel()))
+        if (!gpu_->restore_boundary(
+                slot_idx, boundary_tokens, variant_id, weights_.cancel()
+            ))
             return false;
         gpu_valid_tokens_ = boundary_tokens;
         host_state_stale_ = true;
         gpu_needs_upload_ = false;
+        return true;
+    }
+
+    bool has_gpu_executor() const override {
+        return bool(gpu_);
+    }
+
+    bool switch_variant(
+        std::uint32_t target_variant_id,
+        const checkpoint::GgufCheckpoint& target_gguf,
+        const std::atomic_bool& cancel
+    ) override {
+        if (gpu_) {
+            std::vector<InklingVariantTensor> tensors;
+            tensors.reserve(
+                (n_phys - kInklingVariantAttnOutputStart)
+                + (n_phys - kInklingVariantFfnDownStart) * n_experts
+            );
+            auto make_desc = [&](const std::string& name,
+                                 std::size_t in,
+                                 std::size_t out,
+                                 std::size_t expert,
+                                 std::size_t experts) -> InklingMatrixDesc {
+                const auto& tensor = target_gguf.tensor(name);
+                const Bytes bytes = tensor.bytes / experts;
+                const std::size_t row_bytes = bytes / out;
+                auto source = [&target_gguf, name, expert, &cancel](
+                                  std::size_t first, std::span<std::byte> to
+                              ) {
+                    target_gguf.read_packed_rows(name, expert, first, to, cancel);
+                };
+                return InklingMatrixDesc{
+                    target_gguf.identity(name, expert),
+                    tensor.type == 0 ? std::nullopt : gguf::encoding(tensor.type),
+                    in,
+                    out,
+                    row_bytes,
+                    std::move(source)
+                };
+            };
+            for (std::size_t i = kInklingVariantAttnOutputStart; i < n_phys; ++i) {
+                tensors.push_back(
+                    InklingVariantTensor{
+                        i,
+                        InklingVariantTensor::Role::attn_output,
+                        0,
+                        make_desc(layers_[i].wo, n_embd_q, n_embd, 0, 1)
+                    }
+                );
+            }
+            for (std::size_t i = kInklingVariantFfnDownStart; i < n_phys; ++i) {
+                for (std::size_t e = 0; e < n_experts; ++e) {
+                    tensors.push_back(
+                        InklingVariantTensor{
+                            i,
+                            InklingVariantTensor::Role::ffn_down_expert,
+                            e,
+                            make_desc(
+                                layers_[i].wffn_down, n_ff_exp, n_embd, e, n_experts
+                            )
+                        }
+                    );
+                }
+            }
+            if (!gpu_->swap_variant(target_variant_id, tensors, cancel))
+                return false;
+            for (auto& slot : slots_) {
+                std::fill(slot.attention.keys.begin(), slot.attention.keys.end(), 0.0f);
+                std::fill(
+                    slot.attention.values.begin(), slot.attention.values.end(), 0.0f
+                );
+                std::fill(slot.conv.begin(), slot.conv.end(), 0.0f);
+            }
+            gpu_valid_tokens_ = 0;
+            host_state_stale_ = false;
+            gpu_needs_upload_ = false;
+            active_variant_id_ = target_variant_id;
+            return true;
+        }
+        reset();
+        active_variant_id_ = target_variant_id;
         return true;
     }
 
@@ -1702,12 +1793,14 @@ private:
             }
         }
         desc.total_matrix_bytes = total_bytes;
+        desc.initial_variant_id = active_variant_id_;
         return compute_.create_inkling_gpu(std::move(desc), weights_.cancel());
     }
 
     const GgufWeights& weights_;
     DenseCompute& compute_;
     std::size_t context_ = 0;
+    std::uint32_t active_variant_id_ = 0;
 
     Vec tok_norm_, out_norm_, out_res_query_;
     std::vector<PhysLayer> layers_;
@@ -1824,8 +1917,14 @@ std::size_t inkling2_loop_device_state_bytes(std::size_t context) {
     return total;
 }
 
-std::unique_ptr<Model>
-inkling2_loop_model(const GgufWeights& weights, DenseCompute& compute, std::size_t context) {
-    return std::make_unique<Inkling2LoopModel>(weights, compute, context);
+std::unique_ptr<Model> inkling2_loop_model(
+    const GgufWeights& weights,
+    DenseCompute& compute,
+    std::size_t context,
+    std::uint32_t initial_variant_id
+) {
+    return std::make_unique<Inkling2LoopModel>(
+        weights, compute, context, initial_variant_id
+    );
 }
 }  // namespace kadan::text

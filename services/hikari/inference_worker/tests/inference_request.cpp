@@ -5,6 +5,8 @@
 #include <iostream>
 
 #include "kadan/chat_prompt.hpp"
+#include "kadan/inkling_gpu.hpp"
+#include "kadan/inkling_variant.hpp"
 
 using namespace kadan::serving;
 
@@ -214,6 +216,119 @@ int main() {
     };
     const auto parsed_sel = parse_request(llm_sel);
     assert(std::get<LlmSelectionRequest>(parsed_sel.input).model == "inkling-2-mini-abliterated-q8-0");
+
+    // Weight variant parsing for llm and decisions + Inkling variant/tier helpers.
+    {
+        auto vchat = chat;
+        vchat["input"]["weight_variant"] = "base";
+        assert(
+            std::get<ChatRequest>(parse_request(vchat).input).weight_variant == "base"
+        );
+        vchat["input"]["weight_variant"] = "abliterated";
+        assert(
+            std::get<ChatRequest>(parse_request(vchat).input).weight_variant
+            == "abliterated"
+        );
+        vchat["input"]["weight_variant"] = "uncensored";
+        bool bad_chat_variant = false;
+        try {
+            (void)parse_request(vchat);
+        } catch (const RequestError& error) {
+            bad_chat_variant = error.status == 422;
+        }
+        assert(bad_chat_variant);
+
+        auto vdec = decisions;
+        vdec["input"]["weight_variant"] = "base";
+        assert(
+            std::get<DecisionRequest>(parse_request(vdec).input).weight_variant
+            == "base"
+        );
+        vdec["input"]["weight_variant"] = "invalid";
+        bool bad_dec_variant = false;
+        try {
+            (void)parse_request(vdec);
+        } catch (const RequestError& error) {
+            bad_dec_variant = error.status == 422;
+        }
+        assert(bad_dec_variant);
+
+        using kadan::InklingSwapTier;
+        using kadan::InklingVariant;
+        assert(
+            kadan::resolve_inkling_variant_model(
+                "inkling-2-mini-abliterated-iq4-nl", InklingVariant::base
+            )
+            == "inkling-2-mini-iq4-nl"
+        );
+        assert(
+            kadan::resolve_inkling_variant_model(
+                "inkling-2-mini-iq4-nl", InklingVariant::abliterated
+            )
+            == "inkling-2-mini-abliterated-iq4-nl"
+        );
+        assert(
+            kadan::resolve_inkling_variant_model(
+                "inkling-2-mini-abliterated-q8-0", InklingVariant::base
+            )
+            == "inkling-2-mini-q8-0"
+        );
+        assert(
+            kadan::resolve_inkling_variant_model(
+                "inkling-2-mini-q8-0", InklingVariant::abliterated
+            )
+            == "inkling-2-mini-abliterated-q8-0"
+        );
+        assert(
+            kadan::inkling_hot_swap_compatible(
+                "inkling-2-mini-iq4-nl", "inkling-2-mini-abliterated-iq4-nl"
+            )
+        );
+        assert(
+            kadan::inkling_hot_swap_compatible(
+                "inkling-2-mini-q8-0", "inkling-2-mini-abliterated-q8-0"
+            )
+        );
+        assert(!kadan::inkling_hot_swap_compatible(
+            "inkling-2-mini-iq4-nl", "inkling-2-mini-q8-0"
+        ));
+        assert(!kadan::inkling_hot_swap_compatible(
+            "inkling-2-mini-iq4-nl", "inkling-2-mini-iq4-nl"
+        ));
+
+        // Exact 34 differing tensors: blk.8..23.attn_output.weight (16) and
+        // blk.6..23.ffn_down_exps.weight (18).
+        std::size_t attn_count = 0, down_count = 0;
+        for (std::size_t i = 0; i < 24; ++i) {
+            const std::string ao = "blk." + std::to_string(i) + ".attn_output.weight";
+            const std::string fd = "blk." + std::to_string(i) + ".ffn_down_exps.weight";
+            const std::string gu =
+                "blk." + std::to_string(i) + ".ffn_gate_up_exps.weight";
+            assert(kadan::is_inkling_variant_tensor(ao) == (i >= 8));
+            assert(kadan::is_inkling_variant_tensor(fd) == (i >= 6));
+            assert(!kadan::is_inkling_variant_tensor(gu));
+            attn_count += kadan::is_inkling_variant_tensor(ao);
+            down_count += kadan::is_inkling_variant_tensor(fd);
+        }
+        assert(attn_count == 16 && down_count == 18);
+        assert(!kadan::is_inkling_variant_tensor("token_embd.weight"));
+        assert(!kadan::is_inkling_variant_tensor("output.weight"));
+        assert(!kadan::is_inkling_variant_tensor("blk.24.attn_output.weight"));
+
+        constexpr std::size_t delta = 4550ULL << 20;  // ~4.24 GiB
+        assert(
+            kadan::select_inkling_swap_tier(delta, 10ULL << 30, 32ULL << 30)
+            == InklingSwapTier::gpu_dual_buffer
+        );
+        assert(
+            kadan::select_inkling_swap_tier(delta, 2ULL << 30, 16ULL << 30)
+            == InklingSwapTier::pinned_host_ram
+        );
+        assert(
+            kadan::select_inkling_swap_tier(delta, 1ULL << 30, 4ULL << 30)
+            == InklingSwapTier::stream_repack
+        );
+    }
 
     std::cout << "Inference request parser units passed\n";
 }

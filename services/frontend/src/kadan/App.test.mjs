@@ -75,6 +75,13 @@ async function app(petResponses = [], agentResponses = [[agent]]) {
     "./ConfirmDialog": { default: "ConfirmDialog" },
     "./AgentPage": { default: "AgentPage" },
     "./ServerSettings": { default: "ServerSettings" },
+    "./WorkSetup": { default: "WorkSetup" },
+    "./WorkThreadView": { default: "WorkThreadView" },
+    "./work": {
+      listWorkThreads: async () => [],
+      organizeWorkThread: async () => null,
+      parseWorkHash: () => null,
+    },
     "./desktop": {
       isDesktopApp: () => false,
       getDesktopServerConfig: async () => ({ active_host: "http://127.0.0.1:8000", saved_servers: [] }),

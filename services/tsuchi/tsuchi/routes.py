@@ -69,6 +69,24 @@ from .models import (
     T3ThreadWatchInput,
     T3ThreadWatchUpdate,
     VersionInput,
+    WorkActivityInput,
+    WorkActivityItem,
+    WorkBucket,
+    WorkHarnessConfig,
+    WorkHarnessConfigInput,
+    WorkHarnessId,
+    WorkPendingRequest,
+    WorkPendingRequestResponse,
+    WorkProject,
+    WorkProjectInput,
+    WorkProjectUpdate,
+    WorkRun,
+    WorkRunInput,
+    WorkRunUpdate,
+    WorkThread,
+    WorkThreadInput,
+    WorkThreadOrganize,
+    WorkThreadUpdate,
     resource_input_adapter,
 )
 from .repository import Repository
@@ -881,5 +899,142 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
         delivery_id: UUID, value: GroupChatWebhookDeliveryUpdate
     ):
         return repository.update_group_chat_webhook_delivery(delivery_id, value)
+
+    # ── Native Work storage routes ───────────────────────────────────────────
+
+    @router.get("/work/projects", response_model=list[WorkProject])
+    def list_work_projects():
+        return repository.list_work_projects()
+
+    @router.post("/work/projects", response_model=WorkProject, status_code=201)
+    def create_work_project(value: WorkProjectInput):
+        return repository.create_work_project(value)
+
+    @router.get("/work/projects/{project_id}", response_model=WorkProject)
+    def get_work_project(project_id: UUID):
+        return repository.get_work_project(project_id)
+
+    @router.put("/work/projects/{project_id}", response_model=WorkProject)
+    def update_work_project(project_id: UUID, value: WorkProjectUpdate):
+        return repository.update_work_project(project_id, value)
+
+    @router.delete("/work/projects/{project_id}", status_code=204)
+    def delete_work_project(project_id: UUID, force: bool = False):
+        repository.delete_work_project(project_id, force=force)
+
+    @router.get("/work/threads", response_model=list[WorkThread])
+    def list_work_threads(
+        bucket: WorkBucket | None = None,
+        project_id: UUID | None = None,
+        q: str = "",
+        limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    ):
+        return repository.list_work_threads(
+            bucket=bucket, project_id=project_id, query=q, limit=limit
+        )
+
+    @router.post("/work/threads", response_model=WorkThread, status_code=201)
+    def create_work_thread(value: WorkThreadInput):
+        return repository.create_work_thread(value)
+
+    @router.post("/work/threads/wake-snoozed", response_model=list[WorkThread])
+    def wake_snoozed_work_threads():
+        return repository.wake_snoozed_work_threads()
+
+    @router.get("/work/threads/{thread_id}", response_model=WorkThread)
+    def get_work_thread(thread_id: UUID):
+        return repository.get_work_thread(thread_id)
+
+    @router.put("/work/threads/{thread_id}", response_model=WorkThread)
+    def update_work_thread(thread_id: UUID, value: WorkThreadUpdate):
+        return repository.update_work_thread(thread_id, value)
+
+    @router.post("/work/threads/{thread_id}/organize", response_model=WorkThread)
+    def organize_work_thread(thread_id: UUID, value: WorkThreadOrganize):
+        return repository.organize_work_thread(thread_id, value)
+
+    @router.delete("/work/threads/{thread_id}", status_code=204)
+    def delete_work_thread(thread_id: UUID):
+        repository.delete_work_thread(thread_id)
+
+    @router.post(
+        "/work/threads/{thread_id}/pending-requests", response_model=WorkThread
+    )
+    def upsert_work_pending_request(thread_id: UUID, value: WorkPendingRequest):
+        return repository.upsert_work_pending_request(thread_id, value)
+
+    @router.post(
+        "/work/threads/{thread_id}/pending-requests/{request_id}/respond",
+        response_model=WorkThread,
+    )
+    def respond_work_pending_request(
+        thread_id: UUID, request_id: str, value: WorkPendingRequestResponse
+    ):
+        return repository.respond_work_pending_request(thread_id, request_id, value)
+
+    @router.get("/work/runs", response_model=list[WorkRun])
+    def list_work_runs(
+        thread_id: UUID | None = None,
+        active_only: bool = False,
+    ):
+        return repository.list_work_runs(thread_id=thread_id, active_only=active_only)
+
+    @router.get("/work/threads/{thread_id}/runs", response_model=list[WorkRun])
+    def list_thread_work_runs(thread_id: UUID):
+        return repository.list_work_runs(thread_id=thread_id)
+
+    @router.post(
+        "/work/threads/{thread_id}/runs", response_model=WorkRun, status_code=201
+    )
+    def create_work_run(thread_id: UUID, value: WorkRunInput):
+        return repository.create_work_run(thread_id, value)
+
+    @router.get("/work/runs/{run_id}", response_model=WorkRun)
+    def get_work_run(run_id: UUID):
+        return repository.get_work_run(run_id)
+
+    @router.put("/work/runs/{run_id}", response_model=WorkRun)
+    def update_work_run(run_id: UUID, value: WorkRunUpdate):
+        return repository.update_work_run(run_id, value)
+
+    @router.post("/work/runs/{run_id}/cancel", response_model=WorkRun)
+    def cancel_work_run(run_id: UUID):
+        return repository.cancel_work_run(run_id)
+
+    @router.get(
+        "/work/threads/{thread_id}/activity", response_model=list[WorkActivityItem]
+    )
+    def list_work_activity(
+        thread_id: UUID,
+        after_position: int = -1,
+        limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    ):
+        return repository.list_work_activity(
+            thread_id, after_position=after_position, limit=limit
+        )
+
+    @router.post(
+        "/work/threads/{thread_id}/activity",
+        response_model=list[WorkActivityItem],
+        status_code=201,
+    )
+    def append_work_activity(thread_id: UUID, items: list[WorkActivityInput]):
+        return repository.append_work_activity(thread_id, items)
+
+    @router.get("/work/harnesses", response_model=list[WorkHarnessConfig])
+    def list_work_harnesses():
+        return repository.list_work_harnesses()
+
+    @router.get("/work/harnesses/{harness}", response_model=WorkHarnessConfig | None)
+    def get_work_harness(harness: WorkHarnessId):
+        return repository.get_work_harness(harness)
+
+    @router.put("/work/harnesses/{harness}", response_model=WorkHarnessConfig)
+    def put_work_harness(harness: WorkHarnessId, value: WorkHarnessConfigInput):
+        return repository.put_work_harness(harness, value)
+
+    @router.delete("/work/harnesses/{harness}", status_code=204)
+    def delete_work_harness(harness: WorkHarnessId):
+        repository.delete_work_harness(harness)
 
     return router

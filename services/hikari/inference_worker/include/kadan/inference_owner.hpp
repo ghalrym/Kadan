@@ -86,6 +86,14 @@ public:
     virtual Json execute(const InferenceRequest&, const std::atomic_bool&) = 0;
     virtual void close() = 0;
 
+    // Attempt an in-place variant swap when model/checkpoint changes on the same
+    // workload without tearing down shared weights or resident GPU state.
+    // Returns false to fall back to the standard cleanup + reload path.
+    virtual bool
+    try_hot_swap(const InferenceRequest&, const Footprint&, const std::atomic_bool&) {
+        return false;
+    }
+
     virtual std::unique_ptr<InferenceCache> take_cache() {
         return {};
     }
@@ -379,32 +387,53 @@ public:
                 || resident_workload_ != request.workload
                 || resident_configuration_ != request.configuration
                 || request.operation == Operation::load) {
-                cleanup(true);  // Preserve completed state before freeing the model.
-                if (cache_
-                    && (cache_->model != request.model
-                        || cache_->configuration != request.configuration
-                        || cache_->workload != request.workload))
-                    clear_detached();
-                auto free = bounded_probe();
-                resources_->reset_capacity(free);
-                engine_ = factory_(request.workload, resources_);
-                if (!engine_)
-                    throw std::runtime_error("unsupported_workload");
-                publish_(request.id, JobState::loading, "");
-                {
-                    InferenceTrace tracing(request.trace, "load");
-                    engine_->load(request, free, job->cancel);
+                bool swapped = false;
+                if (engine_ && resident_workload_ == request.workload
+                    && resident_model_ != request.model
+                    && request.operation != Operation::load) {
+                    auto free = bounded_probe();
+                    resources_->refresh_available(free);
+                    InferenceTrace tracing(request.trace, "hot_swap");
+                    swapped = engine_->try_hot_swap(request, free, job->cancel);
+                    if (swapped) {
+                        resident_model_ = request.model;
+                        resident_configuration_ = request.configuration;
+                        {
+                            std::lock_guard guard(mutex_);
+                            model_ = resident_model_;
+                        }
+                    }
                 }
-                if (cache_) {
-                    engine_->restore_cache(std::move(cache_->state));
-                    clear_detached();
-                }
-                resident_model_ = request.model;
-                resident_workload_ = request.workload;
-                resident_configuration_ = request.configuration;
-                {
-                    std::lock_guard guard(mutex_);
-                    model_ = resident_model_;
+                if (!swapped) {
+                    cleanup(
+                        true
+                    );  // Preserve completed state before freeing the model.
+                    if (cache_
+                        && (cache_->model != request.model
+                            || cache_->configuration != request.configuration
+                            || cache_->workload != request.workload))
+                        clear_detached();
+                    auto free = bounded_probe();
+                    resources_->reset_capacity(free);
+                    engine_ = factory_(request.workload, resources_);
+                    if (!engine_)
+                        throw std::runtime_error("unsupported_workload");
+                    publish_(request.id, JobState::loading, "");
+                    {
+                        InferenceTrace tracing(request.trace, "load");
+                        engine_->load(request, free, job->cancel);
+                    }
+                    if (cache_) {
+                        engine_->restore_cache(std::move(cache_->state));
+                        clear_detached();
+                    }
+                    resident_model_ = request.model;
+                    resident_workload_ = request.workload;
+                    resident_configuration_ = request.configuration;
+                    {
+                        std::lock_guard guard(mutex_);
+                        model_ = resident_model_;
+                    }
                 }
             }
             if (job->cancel.load()) {

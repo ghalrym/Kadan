@@ -19,6 +19,7 @@ from .routes import (
     status,
     transcriptions,
     updates,
+    work,
 )
 from .routes.agents import (
     assets,
@@ -69,6 +70,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         mcp.router,
         group_chat.router,
         group_chat_mcp.router,
+        work.router,
         transcriptions.router,
         calls.router,
         agents.router,

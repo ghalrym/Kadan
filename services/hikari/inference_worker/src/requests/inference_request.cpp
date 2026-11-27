@@ -1,5 +1,6 @@
 #include "kadan/inference_request.hpp"
 
+#include "kadan/inkling_variant.hpp"
 #include "kadan/preparation.hpp"
 
 namespace kadan::serving {
@@ -51,6 +52,14 @@ InferenceRequest parse_request(const Json& envelope) {
         input.model = optional<std::string>(body, "model_id");
         if (!input.model)
             input.model = optional<std::string>(body, "model");
+        input.weight_variant = optional<std::string>(body, "weight_variant");
+        if (input.weight_variant) {
+            preparation_check(
+                parse_inkling_variant(*input.weight_variant).has_value(),
+                "Weight variant must be 'base' or 'abliterated'.",
+                422
+            );
+        }
         input.conversation_id = optional<std::string>(body, "conversation_id");
         input.reuse_prefix = body.value("reuse_prefix", true);
         input.stream = body.value("stream", false);
@@ -264,6 +273,14 @@ InferenceRequest parse_request(const Json& envelope) {
             input.model = *m;
         else if (const auto m2 = optional<std::string>(body, "model"))
             input.model = *m2;
+        input.weight_variant = optional<std::string>(body, "weight_variant");
+        if (input.weight_variant) {
+            preparation_check(
+                parse_inkling_variant(*input.weight_variant).has_value(),
+                "Weight variant must be 'base' or 'abliterated'.",
+                422
+            );
+        }
         preparation_check(
             body.contains("state") && body.at("state").is_string(),
             "Decisions require state to be a valid string.",
