@@ -9,9 +9,9 @@ Kadan sends the enabled tool schemas to Hikari separately from authored messages
 
 | Available capabilities | Tools | Reserved characters |
 | --- | ---: | ---: |
-| Chat | 16 | 9,907 |
+| Chat | 19 | 11,308 |
 
-Selecting a saved reference adds one tool and 365 characters to a chat request. Connected MCP integrations add their pinned tools and the two-tool gateway on top. The shipped agent instructions occupy 2,967 characters before any persona or selected-reference notice. These counts were measured from the tool registry and the instruction files without inference. A changed file, schema or dependency can change them.
+Selecting a saved reference adds one tool and 365 characters to a chat request. Connected MCP integrations add their pinned tools and the two-tool gateway on top. The shipped agent instructions occupy 3,834 characters before any persona or selected-reference notice. These counts were measured from the tool registry and the instruction files without inference. A changed file, schema or dependency can change them.
 
 The runner estimates three characters per token and reserves its generation budgets plus template overhead. Conversation history is limited to the most recent 97 authored messages through the triggering turn. The actual number of prompt tokens and the time spent preparing them depend on the model, history, tool results and prefix reuse.
 

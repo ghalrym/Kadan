@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
@@ -80,6 +81,7 @@ from .tools import (
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
 from .tools.mcp import MCP_GATEWAY_TOOLS, McpCallArguments, McpSearchArguments
 from .tools.persona import RenameSelfArguments, UpdatePersonaArguments
+from .tools.updates import InstallAppUpdateArguments
 from .tools.workspace import (
     CreateWorkspaceDocumentArguments,
     ListWorkspaceFilesArguments,
@@ -199,6 +201,80 @@ class RunConversation:
         self.end_run = False
         self.finished = False
         self.replayed = replayed
+        self.post_save_action: Callable[[], Awaitable[None]] | None = None
+
+    async def check_app_update(self) -> dict:
+        updates = getattr(self.runs.services, "updates", None)
+        if updates is None:
+            return {
+                "tool": "check_app_update",
+                "error": "Update checks are not available in this environment.",
+            }
+        try:
+            result = await updates.check()
+        except ServiceError as error:
+            return {"tool": "check_app_update", "error": str(error)}
+        return {"tool": "check_app_update", **result.model_dump(mode="json")}
+
+    async def install_app_update(self, args: InstallAppUpdateArguments) -> dict:
+        if self.replayed:
+            return {
+                "tool": "install_app_update",
+                "updated": False,
+                "replayed": True,
+                "error": (
+                    "Kadan restarted before this update finished reporting back. "
+                    "Call check_app_update to see the currently installed version "
+                    "before trying again."
+                ),
+            }
+        updates = getattr(self.runs.services, "updates", None)
+        if updates is None:
+            return {
+                "tool": "install_app_update",
+                "updated": False,
+                "error": "Automatic updates are not available in this environment.",
+            }
+        try:
+            staged = await updates.stage(target_version=args.target_version)
+        except ServiceError as error:
+            return {
+                "tool": "install_app_update",
+                "updated": False,
+                "error": str(error),
+            }
+
+        message = Message(
+            id=self.action_id, role="assistant", content=args.announcement
+        )
+        async with self.runs.lock:
+            await self.runs.services.json_request(
+                "Tsuchi",
+                "POST",
+                self.runs.path(self.run.agent_key, self.run.id) + "/messages",
+                json={
+                    "worker_id": str(self.runs.owner),
+                    "message": message.model_dump(mode="json"),
+                    "image_job_id": None,
+                },
+            )
+        self.end_run = True
+
+        async def _apply_after_save() -> None:
+            await updates.apply(
+                target_version=staged.target_version, include_desktop=True
+            )
+
+        self.post_save_action = _apply_after_save
+        return {
+            "tool": "install_app_update",
+            "updated": True,
+            "target_version": staged.target_version,
+            "server_restarting": staged.server_staged,
+            "desktop_update_requested": staged.desktop_update_available,
+            "delivered": True,
+            "message": staged.message,
+        }
 
     async def search_mcp_tools(self, args: McpSearchArguments) -> dict:
         servers = await self.runs.active_mcp_servers()
@@ -1431,6 +1507,15 @@ class AgentRuns(RunClient):
             run = await self.save_result(
                 run, command.tool, result, conversation.end_run
             )
+        if conversation.post_save_action is not None:
+            try:
+                await conversation.post_save_action()
+            except Exception:
+                logger.exception(
+                    "Post-save action failed for run=%s tool=%s",
+                    run.id,
+                    command.tool,
+                )
         return {"run": run, "command": None, "replayed": False}
 
     async def use_memory(

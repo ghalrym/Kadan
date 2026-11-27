@@ -3,14 +3,17 @@ from pydantic import ValidationError
 
 from kadan.runner.tools import ALL_TOOLS, CONVERSATION_TOOLS, TOOLS_BY_NAME
 from kadan.runner.tools.conversation import send_message
+from kadan.runner.tools.updates import install_app_update
 from kadan.runner.tools.workspace import create_workspace_document
 
 
 def test_every_tool_has_a_unique_name_and_a_description():
-    assert len(ALL_TOOLS) == 17
+    assert len(ALL_TOOLS) == 19
     assert len(TOOLS_BY_NAME) == len(ALL_TOOLS)
-    assert len(CONVERSATION_TOOLS) == 9
+    assert len(CONVERSATION_TOOLS) == 11
     assert "rename_self" in TOOLS_BY_NAME
+    assert "check_app_update" in TOOLS_BY_NAME
+    assert "install_app_update" in TOOLS_BY_NAME
     assert "read_request_references" not in TOOLS_BY_NAME
     assert all(tool.description for tool in ALL_TOOLS)
 
@@ -38,6 +41,9 @@ def test_no_computer_tools_are_bound():
         (create_workspace_document, {"title": "Notes", "agent_key": "other"}),
         (create_workspace_document, {"title": "Notes", "kind": "memory"}),
         (create_workspace_document, {"title": "Notes", "id": "chosen-id"}),
+        (install_app_update, {}),
+        (install_app_update, {"announcement": "   "}),
+        (install_app_update, {"announcement": "Updating", "unknown": True}),
     ],
 )
 def test_invalid_arguments_are_rejected_by_the_tool_schema(tool, arguments):

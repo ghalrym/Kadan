@@ -50,6 +50,57 @@ export async function saveDesktopServerConfig(
   return (await response.json()) as DesktopServerConfig;
 }
 
+export interface DesktopUpdateCheck {
+  current_version: string;
+  latest_version: string | null;
+  update_available: boolean;
+  release_tag: string | null;
+  release_url: string | null;
+  can_self_update: boolean;
+  install_kind: string;
+  reason: string | null;
+}
+
+export interface DesktopInstallResult {
+  ok: boolean;
+  target_version: string | null;
+  restarting: boolean;
+  message: string;
+}
+
+export interface PendingDesktopUpdate {
+  request_id: string;
+  target_version: string;
+  requested_at: number;
+}
+
+export interface ServerUpdateStatus {
+  state: string;
+  current_version: string;
+  staged_version: string | null;
+  message: string | null;
+  pending_desktop_update: PendingDesktopUpdate | null;
+}
+
+export async function getDesktopUpdateStatus(): Promise<DesktopUpdateCheck> {
+  const response = await fetch("/__kadan_desktop__/updates", { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error("Could not check Kadan Desktop updates.");
+  }
+  return (await response.json()) as DesktopUpdateCheck;
+}
+
+export async function installDesktopUpdate(): Promise<DesktopInstallResult> {
+  const response = await fetch("/__kadan_desktop__/updates/install", {
+    method: "POST",
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail || "Could not install Kadan Desktop update.");
+  }
+  return (await response.json()) as DesktopInstallResult;
+}
+
 export async function testDesktopServerConnection(
   host: string,
 ): Promise<ServerTestResult> {

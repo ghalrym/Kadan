@@ -34,4 +34,13 @@ class Status(BaseModel):
 
 @router.get("/api/status")
 async def status(request: Request) -> Status:
+    desktop_ver = request.headers.get("x-kadan-desktop-version")
+    if desktop_ver:
+        can_update = (
+            request.headers.get("x-kadan-desktop-can-update", "").strip().lower()
+            == "true"
+        )
+        await request.app.state.services.updates.record_desktop_heartbeat(
+            desktop_ver, can_update
+        )
     return await request.app.state.services.status()

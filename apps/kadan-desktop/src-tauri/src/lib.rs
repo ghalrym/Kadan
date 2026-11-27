@@ -1,5 +1,6 @@
 mod config;
 mod proxy;
+mod updater;
 
 use std::path::PathBuf;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
@@ -27,7 +28,7 @@ pub fn run() {
             let web_root = resolve_web_root(&handle);
 
             let (addr, _shared) = tauri::async_runtime::block_on(async move {
-                proxy::start_loopback_proxy(cfg, web_root).await
+                proxy::start_loopback_proxy(cfg, web_root, Some(handle)).await
             })
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 

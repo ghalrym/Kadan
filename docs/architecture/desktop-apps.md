@@ -33,4 +33,12 @@ Because all inference engines (including Inkling 2 Mini, LFM3 Audio, and d1) are
 - Relays `/kadan/*`, `/tsuchi/*`, and `/hikari/*` (REST, SSE streams, uploads/downloads, and WebSockets such as voice calls) to the active configured `Kadan Server` host URL.
 - **Why loopback proxying matters:** Serving the UI from `http://127.0.0.1` keeps WebView in a secure context even when connecting to a LAN `Kadan Server` over plain `http://192.168.x.x:8000`, ensuring `getUserMedia` (microphone) and `AudioWorklet` continue working for voice input and voice calls without CORS or mixed-content errors.
 
+## Self-Updating & Agent Update Tools
+
+`.github/workflows/release-apps.yml` stamps the computed release version into both apps' `tauri.conf.json` and `Cargo.toml`, archives macOS `.app.tar.gz` bundles alongside `.dmg`, and publishes a `release-manifest.json` with SHA-256 checksums for every release artifact.
+
+- **Kadan Server (`src/updater.rs`, `src/control.rs`):** Runs a per-launch Bearer-authenticated loopback control server (`127.0.0.1:<ephemeral>`) passed to `api` and `runner` via `KADAN_SERVER_CONTROL_URL`, `KADAN_SERVER_CONTROL_TOKEN`, and `KADAN_APP_VERSION`. It checks GitHub Releases, downloads and SHA-256-verifies staged installers into `<data_dir>/updates/staging/`, gracefully stops supervised children before replacing and relaunching (Linux AppImage atomic swap, Windows NSIS silent `/S` + relaunch script, macOS `.app.tar.gz` swap), and tracks connected Kadan Desktop clients.
+- **Kadan Desktop (`src/updater.rs`, `src/proxy.rs`):** Attaches `X-Kadan-Desktop-Version` and `X-Kadan-Desktop-Can-Update` headers to proxied API requests and exposes `/__kadan_desktop__/updates` and `/__kadan_desktop__/updates/install`. When Kadan Server records a pending desktop update, the frontend in Kadan Desktop acknowledges it and triggers the local desktop self-updater.
+- **Two-phase agent update flow (`services/kadan/kadan/runner/tools/updates.py`):** `check_app_update` inspects server and connected desktop update availability. `install_app_update` stages and verifies the download first, delivers the agent's restart announcement to Tsuchi, durably completes the run (`end_run=True`), and triggers `/updates/apply` strictly after the run save completes—preventing restart replay loops or mid-inference kills. On replay after a crash, `install_app_update` refuses to re-run and directs the agent to call `check_app_update`.
+
 See [Install and use](../user-expectations/install-and-use.md) for the user-facing expectations.

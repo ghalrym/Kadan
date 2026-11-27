@@ -5,6 +5,7 @@ import {
   Copy,
   Cpu,
   Database,
+  Download,
   ExternalLink,
   FolderOpen,
   Play,
@@ -16,10 +17,13 @@ import {
   Square,
 } from "lucide-react";
 import {
+  checkUpdates,
   getConfig,
   getHardware,
   getLogs,
   getStatus,
+  getUpdateStatus,
+  installUpdate,
   openExternalUrl,
   pickFolder,
   restartService,
@@ -32,6 +36,8 @@ import type {
   LogEntry,
   ServerConfig,
   ServerStatusSnapshot,
+  UpdateCheckResult,
+  UpdateStatus,
 } from "./types";
 
 type Tab = "overview" | "hikari" | "tsuchi" | "logs";
@@ -52,6 +58,9 @@ export default function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheckResult | null>(null);
+  const [updating, setUpdating] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -69,15 +78,17 @@ export default function App() {
   useEffect(() => {
     void (async () => {
       try {
-        const [cfg, st, hw] = await Promise.all([
+        const [cfg, st, hw, upd] = await Promise.all([
           getConfig(),
           getStatus(),
           getHardware(),
+          getUpdateStatus(),
         ]);
         setConfig(cfg);
         setDraft(cfg);
         setStatus(st);
         setHardware(hw);
+        setUpdateStatus(upd);
       } catch (err) {
         setError(String(err));
       }
@@ -148,6 +159,40 @@ export default function App() {
       setError(String(err));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleCheckUpdates() {
+    setUpdating(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await checkUpdates();
+      setUpdateCheck(result);
+      setUpdateStatus(await getUpdateStatus());
+      if (result.update_available && result.latest_version) {
+        setNotice(`Version ${result.latest_version} is available.`);
+      } else {
+        setNotice(`Kadan Server is up to date (${result.current_version}).`);
+      }
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setUpdating(false);
+    }
+  }
+
+  async function handleInstallUpdate() {
+    setUpdating(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await installUpdate();
+      setNotice(result.message);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setUpdating(false);
     }
   }
 
@@ -394,6 +439,31 @@ export default function App() {
                   <div className="hw-row">
                     <span>Data folder</span>
                     <code className="truncate">{config?.data_dir}</code>
+                  </div>
+                  <div className="hw-row">
+                    <span>Version</span>
+                    <div className="row-actions">
+                      <strong>{updateStatus?.current_version ?? "0.1.0"}</strong>
+                      {updateCheck?.update_available && updateCheck.can_self_update ? (
+                        <button
+                          className="btn primary small"
+                          disabled={updating || busy}
+                          onClick={() => void handleInstallUpdate()}
+                        >
+                          <Download size={13} />
+                          Update to {updateCheck.latest_version}
+                        </button>
+                      ) : (
+                        <button
+                          className="btn small"
+                          disabled={updating || busy}
+                          onClick={() => void handleCheckUpdates()}
+                        >
+                          <RefreshCw size={13} />
+                          Check for updates
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               ) : (

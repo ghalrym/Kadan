@@ -2,12 +2,13 @@
 
 from langchain_core.tools import StructuredTool
 
-from . import conversation, history, memory, persona, workspace
+from . import conversation, history, memory, persona, updates, workspace
 
 CONVERSATION_TOOLS: list[StructuredTool] = [
     *conversation.TOOLS,
     *workspace.TOOLS,
     *history.TOOLS,
+    *updates.TOOLS,
 ]
 MEMORY_TOOLS: list[StructuredTool] = memory.TOOLS
 PERSONA_TOOLS: list[StructuredTool] = persona.TOOLS

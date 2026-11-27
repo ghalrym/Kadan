@@ -1,17 +1,22 @@
 mod config;
+mod control;
 mod hardware;
 mod supervisor;
 mod tray;
+mod updater;
 
 use config::{load_config, save_config, ServerConfig};
 use hardware::{collect_hardware, HardwareSummary};
+use std::path::PathBuf;
 use std::sync::Arc;
 use supervisor::{LogEntry, ServerStatusSnapshot, ServerSupervisor, ServiceId};
 use tauri::{Manager, State, WindowEvent};
 use tauri_plugin_autostart::ManagerExt;
+use updater::{AppUpdater, ApplyResult, UpdateCheckResult, UpdateStatus};
 
 struct AppState {
     supervisor: Arc<ServerSupervisor>,
+    updater: Arc<AppUpdater>,
 }
 
 #[tauri::command]
@@ -32,6 +37,7 @@ async fn update_config(
     } else {
         app.autolaunch().disable()
     };
+    state.updater.set_data_dir(PathBuf::from(&config.data_dir));
     state.supervisor.update_config(config.clone());
     if restart {
         state.supervisor.start_all().await?;
@@ -76,6 +82,30 @@ async fn restart_service(
     Ok(state.supervisor.snapshot())
 }
 
+#[tauri::command]
+async fn check_updates(state: State<'_, AppState>) -> Result<UpdateCheckResult, String> {
+    state.updater.check_for_update().await
+}
+
+#[tauri::command]
+fn get_update_status(state: State<'_, AppState>) -> UpdateStatus {
+    state.updater.status()
+}
+
+#[tauri::command]
+async fn install_update(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ApplyResult, String> {
+    let staged = state.updater.stage_update(None).await?;
+    state.updater.apply_update(
+        state.supervisor.clone(),
+        Some(app),
+        Some(staged.target_version),
+        true,
+    )
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -87,9 +117,21 @@ pub fn run() {
         .setup(|app| {
             let cfg = load_config();
             let auto_start = cfg.auto_start_server;
+            let data_dir = PathBuf::from(&cfg.data_dir);
             let resource_dir = app.path().resource_dir().ok();
-            let supervisor = Arc::new(ServerSupervisor::new(cfg, resource_dir));
-            tray::setup_tray(app.handle(), supervisor.clone())?;
+            let updater = Arc::new(AppUpdater::new(data_dir));
+            let supervisor = Arc::new(ServerSupervisor::new(cfg, resource_dir, None));
+            let handle = app.handle().clone();
+
+            let control_endpoint = tauri::async_runtime::block_on(control::start_control_server(
+                updater.clone(),
+                supervisor.clone(),
+                Some(handle.clone()),
+            ))
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            supervisor.set_control_endpoint(control_endpoint);
+
+            tray::setup_tray(&handle, supervisor.clone())?;
 
             if auto_start {
                 let sup = supervisor.clone();
@@ -98,7 +140,10 @@ pub fn run() {
                 });
             }
 
-            app.manage(AppState { supervisor });
+            app.manage(AppState {
+                supervisor,
+                updater,
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -115,7 +160,10 @@ pub fn run() {
             get_logs,
             start_server,
             stop_server,
-            restart_service
+            restart_service,
+            check_updates,
+            get_update_status,
+            install_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kadan Server");

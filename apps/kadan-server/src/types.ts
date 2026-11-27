@@ -47,3 +47,41 @@ export interface LogEntry {
   service: string;
   line: string;
 }
+
+export interface DesktopClientInfo {
+  connected: boolean;
+  current_version: string | null;
+  update_available: boolean;
+  can_self_update: boolean;
+}
+
+export interface UpdateCheckResult {
+  current_version: string;
+  latest_version: string | null;
+  update_available: boolean;
+  release_tag: string | null;
+  release_url: string | null;
+  release_notes: string | null;
+  published_at: string | null;
+  can_self_update: boolean;
+  install_kind: string;
+  reason: string | null;
+  staged_version: string | null;
+  desktop: DesktopClientInfo;
+}
+
+export interface UpdateStatus {
+  state: string;
+  current_version: string;
+  staged_version: string | null;
+  message: string | null;
+  desktop: DesktopClientInfo;
+}
+
+export interface ApplyUpdateResult {
+  ok: boolean;
+  target_version: string;
+  server_restarting: boolean;
+  desktop_update_requested: boolean;
+  message: string;
+}

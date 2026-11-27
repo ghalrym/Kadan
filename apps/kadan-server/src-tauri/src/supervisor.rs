@@ -1,4 +1,5 @@
 use crate::config::ServerConfig;
+use crate::control::ControlEndpoint;
 use crate::hardware::collect_hardware;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -197,6 +198,7 @@ pub fn discover_runtime_paths(resource_dir: Option<&Path>) -> RuntimePaths {
 struct ManagedState {
     running: bool,
     config: ServerConfig,
+    control: Option<ControlEndpoint>,
     statuses: HashMap<ServiceId, ServiceStatus>,
     logs: VecDeque<LogEntry>,
     children: HashMap<ServiceId, Vec<Child>>,
@@ -209,7 +211,11 @@ pub struct ServerSupervisor {
 }
 
 impl ServerSupervisor {
-    pub fn new(config: ServerConfig, resource_dir: Option<PathBuf>) -> Self {
+    pub fn new(
+        config: ServerConfig,
+        resource_dir: Option<PathBuf>,
+        control: Option<ControlEndpoint>,
+    ) -> Self {
         let paths = discover_runtime_paths(resource_dir.as_deref());
         let mut statuses = HashMap::new();
         for id in ServiceId::all() {
@@ -233,12 +239,17 @@ impl ServerSupervisor {
             state: Arc::new(Mutex::new(ManagedState {
                 running: false,
                 config,
+                control,
                 statuses,
                 logs: VecDeque::with_capacity(MAX_LOG_LINES),
                 children: HashMap::new(),
             })),
             client,
         }
+    }
+
+    pub fn set_control_endpoint(&self, control: ControlEndpoint) {
+        self.state.lock().unwrap().control = Some(control);
     }
 
     pub fn update_config(&self, config: ServerConfig) {
@@ -483,7 +494,10 @@ impl ServerSupervisor {
     }
 
     async fn start_service(&self, id: ServiceId) -> Result<(), String> {
-        let cfg = self.state.lock().unwrap().config.clone();
+        let (cfg, control) = {
+            let guard = self.state.lock().unwrap();
+            (guard.config.clone(), guard.control.clone())
+        };
         if id == ServiceId::Worker {
             return self.start_workers(&cfg).await;
         }
@@ -537,6 +551,7 @@ impl ServerSupervisor {
                     .env("HIKARI_VIDEO_DIR", data_dir.join("videos"))
                     .env("KADAN_TSUCHI_URL", format!("{local_base}/tsuchi"))
                     .env("KADAN_HIKARI_URL", format!("{local_base}/hikari"))
+                    .env("KADAN_APP_VERSION", env!("CARGO_PKG_VERSION"))
                     .args([
                         "-m",
                         "uvicorn",
@@ -546,6 +561,10 @@ impl ServerSupervisor {
                         "--port",
                         &cfg.server_port.to_string(),
                     ]);
+                if let Some(ref ctrl) = control {
+                    c.env("KADAN_SERVER_CONTROL_URL", &ctrl.url)
+                        .env("KADAN_SERVER_CONTROL_TOKEN", &ctrl.token);
+                }
                 if let Some(web) = &self.paths.frontend_dir {
                     c.env("KADAN_FRONTEND_DIR", web);
                 }
@@ -570,8 +589,13 @@ impl ServerSupervisor {
                     )
                     .env("KADAN_TSUCHI_URL", format!("{local_base}/tsuchi"))
                     .env("KADAN_HIKARI_URL", format!("{local_base}/hikari"))
+                    .env("KADAN_APP_VERSION", env!("CARGO_PKG_VERSION"))
                     .env("KADAN_RUNNER_ID", "runner-1")
                     .args(["-m", "kadan.runner"]);
+                if let Some(ref ctrl) = control {
+                    c.env("KADAN_SERVER_CONTROL_URL", &ctrl.url)
+                        .env("KADAN_SERVER_CONTROL_TOKEN", &ctrl.token);
+                }
                 c
             }
         };

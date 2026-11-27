@@ -1,6 +1,6 @@
 # Agent actions
 
-During text conversations, Kadan agents can send messages, generate images, create Space documents, find stored files, search older chat history and manage their memories and persona. Hikari supplies the agent's decisions with the active language model; Kadan carries out the actions. Voice calls do not provide these tools.
+During text conversations, Kadan agents can send messages, generate images, create Space documents, find stored files, search older chat history, manage their memories and persona, and check for or install Kadan app updates when asked. Hikari supplies the agent's decisions with the active language model; Kadan carries out the actions. Voice calls do not provide these tools.
 
 Agents have no computer of their own. They cannot browse websites, run commands or code, or change files outside Space. For coding work, the agent can delegate threads to a connected [T3 Code plugin](plugins.md) and call tools from other connected plugins.
 

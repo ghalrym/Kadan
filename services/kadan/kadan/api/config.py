@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     tsuchi_url: str = "http://127.0.0.1:8620"
     hikari_url: str = "http://127.0.0.1:8000"
     agent_instruction_file: str = str(Path(__file__).resolve().parents[2] / "AGENT.md")
+    app_version: str = "0.1.0"
+    server_control_url: str | None = None
+    server_control_token: str | None = None
+    update_repo: str = "ghalrym/Kadan"
+    update_api_url: str | None = None
 
     @field_validator("tsuchi_url", "hikari_url")
     @classmethod
@@ -24,6 +29,16 @@ class Settings(BaseSettings):
         if parsed.port == 0:
             raise ValueError("A service port must be between 1 and 65535")
         return value.rstrip("/")
+
+    @field_validator("server_control_url", "update_api_url")
+    @classmethod
+    def optional_http_url(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        parsed = urlsplit(value.strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("Use an HTTP or HTTPS URL")
+        return value.strip().rstrip("/")
 
 
 class ServiceError(Exception):

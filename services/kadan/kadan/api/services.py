@@ -20,6 +20,7 @@ from .routes.agents.memories import MemoryUpdate
 from .routes.status import InferenceState, ServiceState, Status
 from .run_client import RunClient
 from .space_client import SpaceClient
+from .update_client import UpdateClient
 
 DEFAULT_AGENT_KEY = "kadan"
 DEFAULT_AGENT_NAME = "Kadan Agent"
@@ -83,6 +84,7 @@ class LocalServices:
         self.mcp = McpClient(self)
         self.conversations = ConversationClient(self)
         self.space = SpaceClient(self)
+        self.updates = UpdateClient(self)
         self._bootstrap_lock = asyncio.Lock()
 
     async def json_request(

@@ -2,7 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { Egg, Menu } from "lucide-react";
 import { agentPath, api } from "./api";
-import { getDesktopServerConfig, isDesktopApp } from "./desktop";
+import {
+  getDesktopServerConfig,
+  installDesktopUpdate,
+  isDesktopApp,
+  type ServerUpdateStatus,
+} from "./desktop";
 import { latestConversation } from "./agentRuns";
 import { pickConversation } from "./conversations";
 import type { Agent, ConversationSummary, PetJob, Resource, Status } from "./types";
@@ -61,6 +66,8 @@ export default function App() {
   const [resourceOwner, setResourceOwner] = useState("");
   const [serverSettingsOpen, setServerSettingsOpen] = useState(false);
   const [desktopHost, setDesktopHost] = useState("");
+  const [updateNotice, setUpdateNotice] = useState("");
+  const handledDesktopUpdateId = useRef<string | null>(null);
   const desktopMode = isDesktopApp();
   const currentAgentKey = useRef(key);
   const agentKey = currentAgentKey;
@@ -124,6 +131,42 @@ export default function App() {
     void getDesktopServerConfig()
       .then((cfg) => setDesktopHost(cfg.active_host))
       .catch(() => {});
+  }, [desktopMode]);
+
+  useEffect(() => {
+    if (!desktopMode) return;
+    let active = true;
+    const pollDesktopUpdates = async () => {
+      try {
+        const updateStatus = await api<ServerUpdateStatus>("/updates/status");
+        if (!active) return;
+        const pending = updateStatus?.pending_desktop_update;
+        if (pending && pending.request_id !== handledDesktopUpdateId.current) {
+          handledDesktopUpdateId.current = pending.request_id;
+          setUpdateNotice(`Updating Kadan to ${pending.target_version}…`);
+          await api("/updates/desktop/ack", { request_id: pending.request_id }, "POST").catch(() => {});
+          try {
+            const installed = await installDesktopUpdate();
+            if (active && !installed.restarting) {
+              setUpdateNotice("");
+            }
+          } catch (err) {
+            if (active) {
+              setUpdateNotice("");
+              setError((err as Error).message);
+            }
+          }
+        }
+      } catch {
+        // Server may be restarting during an update; ignore transient poll errors.
+      }
+    };
+    void pollDesktopUpdates();
+    const timer = setInterval(() => void pollDesktopUpdates(), 10000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
   }, [desktopMode]);
 
   useEffect(() => {
@@ -339,6 +382,11 @@ export default function App() {
         >
           <Menu size={20} />
         </button>
+        {updateNotice && (
+          <div className="banner" role="status">
+            {updateNotice}
+          </div>
+        )}
         {error && (
           <div className="banner" role="alert">
             {error}

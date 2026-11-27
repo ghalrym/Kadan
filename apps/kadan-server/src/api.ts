@@ -2,10 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { open as openShell } from "@tauri-apps/plugin-shell";
 import type {
+  ApplyUpdateResult,
   HardwareSummary,
   LogEntry,
   ServerConfig,
   ServerStatusSnapshot,
+  UpdateCheckResult,
+  UpdateStatus,
 } from "./types";
 
 export const getConfig = () => invoke<ServerConfig>("get_config");
@@ -38,3 +41,9 @@ export async function pickFolder(defaultPath?: string): Promise<string | null> {
 }
 
 export const openExternalUrl = (url: string) => openShell(url);
+
+export const checkUpdates = () => invoke<UpdateCheckResult>("check_updates");
+
+export const getUpdateStatus = () => invoke<UpdateStatus>("get_update_status");
+
+export const installUpdate = () => invoke<ApplyUpdateResult>("install_update");

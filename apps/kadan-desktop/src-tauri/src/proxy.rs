@@ -1,4 +1,5 @@
 use crate::config::{normalize_host, save_config, DesktopConfig};
+use crate::updater;
 use axum::body::Body;
 use axum::extract::ws::{Message as AxumMsg, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Request, State};
@@ -20,6 +21,7 @@ pub struct ProxyState {
     pub config: Arc<RwLock<DesktopConfig>>,
     pub web_root: PathBuf,
     pub client: reqwest::Client,
+    pub app_handle: Option<tauri::AppHandle>,
 }
 
 #[derive(Deserialize)]
@@ -39,6 +41,7 @@ struct TestResponse {
 pub async fn start_loopback_proxy(
     config: DesktopConfig,
     web_root: PathBuf,
+    app_handle: Option<tauri::AppHandle>,
 ) -> Result<(SocketAddr, Arc<RwLock<DesktopConfig>>), String> {
     let shared_config = Arc::new(RwLock::new(config));
     let client = reqwest::Client::builder()
@@ -50,11 +53,14 @@ pub async fn start_loopback_proxy(
         config: shared_config.clone(),
         web_root,
         client,
+        app_handle,
     };
 
     let app = Router::new()
         .route("/__kadan_desktop__/config", get(get_config).put(put_config))
         .route("/__kadan_desktop__/test", post(test_connection))
+        .route("/__kadan_desktop__/updates", get(check_desktop_updates))
+        .route("/__kadan_desktop__/updates/install", post(install_desktop_update))
         .route("/kadan/api/{*path}", any(proxy_api))
         .route("/kadan/api", any(proxy_api))
         .route("/tsuchi/api/{*path}", any(proxy_api))
@@ -209,6 +215,28 @@ fn build_upstream_url(base: &str, path_and_query: &str, ws: bool) -> String {
     format!("{base_url}{path_and_query}")
 }
 
+async fn check_desktop_updates() -> Response {
+    match updater::check_for_update().await {
+        Ok(res) => Json(res).into_response(),
+        Err(detail) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "detail": detail })),
+        )
+            .into_response(),
+    }
+}
+
+async fn install_desktop_update(State(state): State<ProxyState>) -> Response {
+    match updater::download_and_install(state.app_handle.clone()).await {
+        Ok(res) => Json(res).into_response(),
+        Err(detail) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({ "detail": detail })),
+        )
+            .into_response(),
+    }
+}
+
 async fn proxy_api(State(state): State<ProxyState>, req: Request) -> Response {
     let active_host = state.config.read().unwrap().active_host.clone();
     let path_and_query = req
@@ -240,6 +268,12 @@ async fn proxy_api(State(state): State<ProxyState>, req: Request) -> Response {
         }
         builder = builder.header(name, value);
     }
+    builder = builder
+        .header("X-Kadan-Desktop-Version", updater::current_version())
+        .header(
+            "X-Kadan-Desktop-Can-Update",
+            if updater::can_self_update_locally() { "true" } else { "false" },
+        );
 
     let body_stream = req.into_body().into_data_stream();
     builder = builder.body(reqwest::Body::wrap_stream(body_stream));
@@ -446,7 +480,7 @@ mod tests {
             active_host: format!("http://{upstream_addr}"),
             saved_servers: vec![],
         };
-        let (proxy_addr, _) = start_loopback_proxy(cfg, tmp.clone()).await.unwrap();
+        let (proxy_addr, _) = start_loopback_proxy(cfg, tmp.clone(), None).await.unwrap();
         let client = reqwest::Client::new();
 
         let html = client

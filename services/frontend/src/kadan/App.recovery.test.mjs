@@ -38,7 +38,7 @@ const mocks = {
   "react-dom": moduleUrl("export const flushSync = callback => callback();"),
   "lucide-react": moduleUrl("export const Egg='', Menu='';"),
   "./api": moduleUrl("export const agentPath = () => ''; export const api = () => { throw Error('Unexpected request'); }; export const allResources = api;"),
-  "./desktop": moduleUrl("export const isDesktopApp = () => false; export const getDesktopServerConfig = async () => ({ active_host: '', saved_servers: [] });"),
+  "./desktop": moduleUrl("export const isDesktopApp = () => false; export const getDesktopServerConfig = async () => ({ active_host: '', saved_servers: [] }); export const installDesktopUpdate = async () => ({ ok: true, target_version: null, restarting: false, message: '' });"),
   "./Pet": moduleUrl("export default 'Pet'; export const agentPet = () => null; export const useMood = () => [];"),
   "./pet": moduleUrl("export const agentHue = () => 0;"),
   "./PetContext": moduleUrl("export const PetContext = { Provider: 'Provider' }; export const useAgentPet = () => null;"),
