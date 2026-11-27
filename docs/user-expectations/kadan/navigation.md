@@ -9,6 +9,7 @@ From top to bottom, the sidebar offers:
 - **Chat** opens the agent's single ever-persistent conversation thread.
 - **Space** opens the [Space](space.md) library of pages, slides and files.
 - **Plugins** opens the [Plugins](plugins.md) page.
+- **Work** lists native [Work](work.md) coding threads grouped into **Default**, **Working**, **Snoozed**, and collapsible searchable **Settled** buckets, with quick actions to start a new thread or manage projects and coding assistants.
 - The agent's name and pet open the **Agent page**.
 - Directly below the agent link, **Server settings** (in the standalone Kadan app) shows the connected server address and connection status and lets you switch servers, alongside a refresh button that reloads server status, the agent and its chats. Tsuchi and Hikari management live in **Kadan Server**, not inside the Kadan client app.
 

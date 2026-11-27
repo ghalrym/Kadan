@@ -22,15 +22,14 @@ from .routes.status import InferenceState, ServiceState, Status
 from .run_client import RunClient
 from .space_client import SpaceClient
 from .update_client import UpdateClient
+from ..work.client import WorkClient
 
 DEFAULT_AGENT_KEY = "kadan"
 DEFAULT_AGENT_NAME = "Kadan Agent"
 ONBOARDING_GREETING_MESSAGE_ID = uuid5(
     NAMESPACE_URL, f"kadan:onboarding:greeting:{DEFAULT_AGENT_KEY}"
 )
-ONBOARDING_GREETING = (
-    "Hey! I'm your new Kadan agent. What would you like to call me?"
-)
+ONBOARDING_GREETING = "Hey! I'm your new Kadan agent. What would you like to call me?"
 STARTER_PERSONA_MARKDOWN = """# Identity
 - **Name:** TODO (ask the user what they'd like to name you; call `rename_self` once when they first give you a name, and never call `rename_self` again once your name is no longer "Kadan Agent")
 - **User's Name:** TODO (check Core Memories first; if not already known, ask for their name naturally; no need to call `create_memory` inline, background memory extraction saves it automatically when chat pauses)
@@ -49,9 +48,7 @@ You are meeting your user for the first time. Keep it relaxed, natural, and dire
 - If the user asks you to help with something else before finishing onboarding, help them right away and weave any remaining questions in naturally later."""
 
 
-def character_persona_section(
-    agent_name: str, persona_markdown: str | None
-) -> str:
+def character_persona_section(agent_name: str, persona_markdown: str | None) -> str:
     style = (
         "Talk like a real person in everyday conversation, not a robotic or overly eager assistant. "
         "Skip canned pleasantries, repetitive openers, and en-dashes or em-dashes."
@@ -59,8 +56,7 @@ def character_persona_section(
     if persona_markdown is not None:
         return (
             f'You are "{agent_name}". {style} Stay true to your persona below.'
-            "\nYour saved persona:\n"
-            + persona_markdown
+            "\nYour saved persona:\n" + persona_markdown
         )
     return f'You are "{agent_name}". {style}'
 
@@ -86,6 +82,7 @@ class LocalServices:
         self.conversations = ConversationClient(self)
         self.space = SpaceClient(self)
         self.updates = UpdateClient(self)
+        self.work = WorkClient(self)
         self._bootstrap_lock = asyncio.Lock()
 
     async def json_request(

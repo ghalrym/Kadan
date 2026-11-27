@@ -54,6 +54,24 @@ from .models import (
     T3ThreadWatch,
     T3ThreadWatchInput,
     T3ThreadWatchUpdate,
+    WorkActivityInput,
+    WorkActivityItem,
+    WorkBucket,
+    WorkHarnessConfig,
+    WorkHarnessConfigInput,
+    WorkPendingRequest,
+    WorkPendingRequestResponse,
+    WorkProject,
+    WorkProjectInput,
+    WorkProjectUpdate,
+    WorkRun,
+    WorkRunInput,
+    WorkRunStatus,
+    WorkRunUpdate,
+    WorkThread,
+    WorkThreadInput,
+    WorkThreadOrganize,
+    WorkThreadUpdate,
     pet_step_order,
     resource_adapter,
     resource_input_adapter,
@@ -201,6 +219,50 @@ class Repository:
                     data TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS t3_thread_watches_status ON t3_thread_watches(status, updated_at);
+                CREATE TABLE IF NOT EXISTS work_projects (
+                    id TEXT PRIMARY KEY,
+                    root_path TEXT NOT NULL UNIQUE,
+                    updated_at TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS work_threads (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES work_projects(id),
+                    client_request_id TEXT UNIQUE,
+                    bucket TEXT NOT NULL,
+                    run_status TEXT NOT NULL,
+                    snoozed_until TEXT,
+                    updated_at TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS work_threads_bucket ON work_threads(bucket, updated_at);
+                CREATE INDEX IF NOT EXISTS work_threads_snooze ON work_threads(bucket, snoozed_until);
+                CREATE INDEX IF NOT EXISTS work_threads_project ON work_threads(project_id, updated_at);
+                CREATE TABLE IF NOT EXISTS work_runs (
+                    id TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL REFERENCES work_threads(id) ON DELETE CASCADE,
+                    client_request_id TEXT UNIQUE,
+                    ordinal INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS work_runs_thread ON work_runs(thread_id, ordinal);
+                CREATE INDEX IF NOT EXISTS work_runs_status ON work_runs(status, updated_at);
+                CREATE TABLE IF NOT EXISTS work_activity (
+                    id TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL REFERENCES work_threads(id) ON DELETE CASCADE,
+                    position INTEGER NOT NULL,
+                    run_id TEXT,
+                    created_at TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS work_activity_thread ON work_activity(thread_id, position);
+                CREATE TABLE IF NOT EXISTS work_harnesses (
+                    harness TEXT PRIMARY KEY,
+                    updated_at TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
             """)
             # Serialize the additive migration for existing storage volumes.
             db.execute("BEGIN IMMEDIATE")
@@ -1797,10 +1859,7 @@ class Repository:
             self._agent(db, key)
             self._validate_links(db, key, value, resource.id)
             self._save_resource(db, resource)
-            if (
-                resource.kind == ResourceKind.MEMORY
-                and not preserve_memory_snapshot
-            ):
+            if resource.kind == ResourceKind.MEMORY and not preserve_memory_snapshot:
                 self._clear_conversation_memory_snapshots(db, key)
             self._activity(
                 db, key, "created", "resource", str(resource.id), resource.title
@@ -1881,10 +1940,7 @@ class Repository:
             updated = self._update_resource(
                 db, key, current, value, expected_version, "updated"
             )
-            if (
-                updated.kind == ResourceKind.MEMORY
-                and not preserve_memory_snapshot
-            ):
+            if updated.kind == ResourceKind.MEMORY and not preserve_memory_snapshot:
                 self._clear_conversation_memory_snapshots(db, key)
             return updated
 
@@ -1968,10 +2024,7 @@ class Repository:
                 }
             )
             self._save_resource(db, updated)
-            if (
-                updated.kind == ResourceKind.MEMORY
-                and not preserve_memory_snapshot
-            ):
+            if updated.kind == ResourceKind.MEMORY and not preserve_memory_snapshot:
                 self._clear_conversation_memory_snapshots(db, key)
             self._activity(
                 db, key, "trashed", "resource", str(resource_id), current.title
@@ -2000,10 +2053,7 @@ class Repository:
                 }
             )
             self._save_resource(db, updated)
-            if (
-                updated.kind == ResourceKind.MEMORY
-                and not preserve_memory_snapshot
-            ):
+            if updated.kind == ResourceKind.MEMORY and not preserve_memory_snapshot:
                 self._clear_conversation_memory_snapshots(db, key)
             self._activity(
                 db, key, "restored", "resource", str(resource_id), current.title
@@ -2050,10 +2100,7 @@ class Repository:
             updated = self._update_resource(
                 db, key, current, value, expected_version, "version_restored"
             )
-            if (
-                updated.kind == ResourceKind.MEMORY
-                and not preserve_memory_snapshot
-            ):
+            if updated.kind == ResourceKind.MEMORY and not preserve_memory_snapshot:
                 self._clear_conversation_memory_snapshots(db, key)
             return updated
 
@@ -2088,11 +2135,14 @@ class Repository:
             if current.kind != ResourceKind.CONVERSATION:
                 raise StorageError("Only conversations can be compacted", 409)
             self._check_version(current, value.expected_version)
-            if value.require_idle and db.execute(
-                "SELECT 1 FROM agent_runs WHERE agent_key = ? AND conversation_id = ? "
-                "AND status IN ('queued', 'running') LIMIT 1",
-                (key, str(resource_id)),
-            ).fetchone():
+            if (
+                value.require_idle
+                and db.execute(
+                    "SELECT 1 FROM agent_runs WHERE agent_key = ? AND conversation_id = ? "
+                    "AND status IN ('queued', 'running') LIMIT 1",
+                    (key, str(resource_id)),
+                ).fetchone()
+            ):
                 raise StorageError(
                     "Conversation has active work and cannot be idle-compacted", 409
                 )
@@ -2129,7 +2179,9 @@ class Repository:
                 )
             updated = current.model_copy(update=updates)
             self._save_resource(db, updated)
-            self._activity(db, key, "compacted", "resource", str(resource_id), updated.title)
+            self._activity(
+                db, key, "compacted", "resource", str(resource_id), updated.title
+            )
             return updated
 
     def update_conversation_memory_state(
@@ -2143,16 +2195,17 @@ class Repository:
             current = self._resource(db, key, resource_id)
             self._active(current)
             if current.kind != ResourceKind.CONVERSATION:
-                raise StorageError(
-                    "Memory state applies only to conversations", 409
-                )
+                raise StorageError("Memory state applies only to conversations", 409)
             if value.expected_version is not None:
                 self._check_version(current, value.expected_version)
-            if value.require_idle and db.execute(
-                "SELECT 1 FROM agent_runs WHERE agent_key = ? AND conversation_id = ? "
-                "AND status IN ('queued', 'running') LIMIT 1",
-                (key, str(resource_id)),
-            ).fetchone():
+            if (
+                value.require_idle
+                and db.execute(
+                    "SELECT 1 FROM agent_runs WHERE agent_key = ? AND conversation_id = ? "
+                    "AND status IN ('queued', 'running') LIMIT 1",
+                    (key, str(resource_id)),
+                ).fetchone()
+            ):
                 raise StorageError(
                     "Conversation has active work and cannot update memory state",
                     409,
@@ -2164,8 +2217,7 @@ class Repository:
                 and value.memory_extracted_through_message_id is not None
             ):
                 message_indices = {
-                    message.id: index
-                    for index, message in enumerate(current.messages)
+                    message.id: index for index, message in enumerate(current.messages)
                 }
                 target_index = message_indices.get(
                     value.memory_extracted_through_message_id
@@ -2535,9 +2587,7 @@ class Repository:
         with self.connect() as db:
             return [
                 McpServer.model_validate_json(row[0])
-                for row in db.execute(
-                    "SELECT data FROM mcp_servers ORDER BY slug"
-                )
+                for row in db.execute("SELECT data FROM mcp_servers ORDER BY slug")
             ]
 
     def get_mcp_server(self, server_id: UUID) -> McpServer:
@@ -2567,7 +2617,12 @@ class Repository:
             )
             db.execute(
                 "INSERT INTO mcp_servers (id, slug, updated_at, data) VALUES (?, ?, ?, ?)",
-                (str(server.id), server.slug, now.isoformat(), server.model_dump_json()),
+                (
+                    str(server.id),
+                    server.slug,
+                    now.isoformat(),
+                    server.model_dump_json(),
+                ),
             )
             return server
 
@@ -2581,10 +2636,13 @@ class Repository:
             current = McpServer.model_validate_json(row[0])
             if current.version != value.expected_version:
                 raise StorageError("MCP server changed; reload before saving", 409)
-            if value.slug != current.slug and db.execute(
-                "SELECT 1 FROM mcp_servers WHERE slug = ? AND id != ?",
-                (value.slug, str(server_id)),
-            ).fetchone():
+            if (
+                value.slug != current.slug
+                and db.execute(
+                    "SELECT 1 FROM mcp_servers WHERE slug = ? AND id != ?",
+                    (value.slug, str(server_id)),
+                ).fetchone()
+            ):
                 raise StorageError(
                     f"An integration with identifier '{value.slug}' already exists", 409
                 )
@@ -2702,7 +2760,9 @@ class Repository:
             updated = current.model_copy(
                 update={
                     "status": value.status,
-                    "run_id": value.run_id if value.run_id is not None else current.run_id,
+                    "run_id": value.run_id
+                    if value.run_id is not None
+                    else current.run_id,
                     "thread_link": value.thread_link
                     if value.thread_link is not None
                     else current.thread_link,
@@ -2724,3 +2784,759 @@ class Repository:
                 ),
             )
             return updated
+
+    # ── Native Work projects, threads, runs, activity & harness configs ────────
+
+    def list_work_projects(self) -> list[WorkProject]:
+        with self.connect() as db:
+            return [
+                WorkProject.model_validate_json(row[0])
+                for row in db.execute(
+                    "SELECT data FROM work_projects ORDER BY updated_at DESC, id"
+                )
+            ]
+
+    def get_work_project(self, project_id: UUID) -> WorkProject:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT data FROM work_projects WHERE id = ?", (str(project_id),)
+            ).fetchone()
+            if not row:
+                raise StorageError("Work project not found", 404)
+            return WorkProject.model_validate_json(row[0])
+
+    def create_work_project(self, value: WorkProjectInput) -> WorkProject:
+        with self.connect(write=True) as db:
+            if db.execute(
+                "SELECT 1 FROM work_projects WHERE root_path = ?", (value.root_path,)
+            ).fetchone():
+                raise StorageError(
+                    "A project for this folder is already registered", 409
+                )
+            now = utc_now()
+            project = WorkProject(
+                id=uuid4(),
+                version=1,
+                created_at=now,
+                updated_at=now,
+                **value.model_dump(),
+            )
+            db.execute(
+                "INSERT INTO work_projects (id, root_path, updated_at, data) VALUES (?, ?, ?, ?)",
+                (
+                    str(project.id),
+                    project.root_path,
+                    now.isoformat(),
+                    project.model_dump_json(),
+                ),
+            )
+            return project
+
+    def update_work_project(
+        self, project_id: UUID, value: WorkProjectUpdate
+    ) -> WorkProject:
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT data FROM work_projects WHERE id = ?", (str(project_id),)
+            ).fetchone()
+            if not row:
+                raise StorageError("Work project not found", 404)
+            current = WorkProject.model_validate_json(row[0])
+            if current.version != value.expected_version:
+                raise StorageError("Work project changed; reload before saving", 409)
+            if (
+                value.root_path != current.root_path
+                and db.execute(
+                    "SELECT 1 FROM work_projects WHERE root_path = ? AND id != ?",
+                    (value.root_path, str(project_id)),
+                ).fetchone()
+            ):
+                raise StorageError(
+                    "A project for this folder is already registered", 409
+                )
+            now = utc_now()
+            updated = WorkProject(
+                id=current.id,
+                version=current.version + 1,
+                created_at=current.created_at,
+                updated_at=now,
+                **value.model_dump(exclude={"expected_version"}),
+            )
+            db.execute(
+                "UPDATE work_projects SET root_path = ?, updated_at = ?, data = ? WHERE id = ?",
+                (
+                    updated.root_path,
+                    now.isoformat(),
+                    updated.model_dump_json(),
+                    str(project_id),
+                ),
+            )
+            return updated
+
+    def delete_work_project(self, project_id: UUID, *, force: bool = False) -> None:
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT 1 FROM work_projects WHERE id = ?", (str(project_id),)
+            ).fetchone()
+            if not row:
+                raise StorageError("Work project not found", 404)
+            thread_count = db.execute(
+                "SELECT count(*) FROM work_threads WHERE project_id = ?",
+                (str(project_id),),
+            ).fetchone()[0]
+            if thread_count > 0 and not force:
+                raise StorageError(
+                    "Delete or move this project's Work threads before removing the project",
+                    409,
+                )
+            if force:
+                db.execute(
+                    "DELETE FROM work_threads WHERE project_id = ?", (str(project_id),)
+                )
+            db.execute("DELETE FROM work_projects WHERE id = ?", (str(project_id),))
+
+    @staticmethod
+    def _save_work_thread(db: sqlite3.Connection, thread: WorkThread) -> None:
+        db.execute(
+            """INSERT INTO work_threads (
+                id, project_id, client_request_id, bucket, run_status, snoozed_until, updated_at, data
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                project_id=excluded.project_id,
+                bucket=excluded.bucket,
+                run_status=excluded.run_status,
+                snoozed_until=excluded.snoozed_until,
+                updated_at=excluded.updated_at,
+                data=excluded.data""",
+            (
+                str(thread.id),
+                str(thread.project_id),
+                thread.client_request_id,
+                thread.bucket,
+                thread.run_status,
+                thread.snoozed_until.isoformat() if thread.snoozed_until else None,
+                thread.updated_at.isoformat(),
+                thread.model_dump_json(),
+            ),
+        )
+
+    @staticmethod
+    def _work_thread(db: sqlite3.Connection, thread_id: UUID) -> WorkThread:
+        row = db.execute(
+            "SELECT data FROM work_threads WHERE id = ?", (str(thread_id),)
+        ).fetchone()
+        if not row:
+            raise StorageError("Work thread not found", 404)
+        return WorkThread.model_validate_json(row[0])
+
+    def list_work_threads(
+        self,
+        *,
+        bucket: WorkBucket | None = None,
+        project_id: UUID | None = None,
+        query: str = "",
+        limit: int = 200,
+    ) -> list[WorkThread]:
+        with self.connect() as db:
+            clauses: list[str] = []
+            params: list[object] = []
+            if bucket is not None:
+                clauses.append("bucket = ?")
+                params.append(bucket)
+            if project_id is not None:
+                clauses.append("project_id = ?")
+                params.append(str(project_id))
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            rows = db.execute(
+                f"SELECT data FROM work_threads {where} ORDER BY updated_at DESC, id",
+                params,
+            )
+            threads = (WorkThread.model_validate_json(row[0]) for row in rows)
+            tokens = query.casefold().split()
+            if tokens:
+                threads = (
+                    t
+                    for t in threads
+                    if all(
+                        tok in f"{t.title} {t.harness} {t.model or ''}".casefold()
+                        for tok in tokens
+                    )
+                )
+            return list(islice(threads, 0, limit))
+
+    def get_work_thread(self, thread_id: UUID) -> WorkThread:
+        with self.connect() as db:
+            return self._work_thread(db, thread_id)
+
+    def create_work_thread(self, value: WorkThreadInput) -> WorkThread:
+        with self.connect(write=True) as db:
+            if value.client_request_id:
+                existing_row = db.execute(
+                    "SELECT data FROM work_threads WHERE client_request_id = ?",
+                    (value.client_request_id,),
+                ).fetchone()
+                if existing_row:
+                    return WorkThread.model_validate_json(existing_row[0])
+            if not db.execute(
+                "SELECT 1 FROM work_projects WHERE id = ?", (str(value.project_id),)
+            ).fetchone():
+                raise StorageError("Work project not found", 404)
+            now = utc_now()
+            thread_id = value.id or uuid4()
+            existing_by_id = db.execute(
+                "SELECT data FROM work_threads WHERE id = ?", (str(thread_id),)
+            ).fetchone()
+            if existing_by_id:
+                existing = WorkThread.model_validate_json(existing_by_id[0])
+                if (
+                    value.client_request_id
+                    and existing.client_request_id == value.client_request_id
+                ):
+                    return existing
+                raise StorageError("Work thread ID already exists", 409)
+            thread = WorkThread(
+                **value.model_dump(exclude={"id"}),
+                id=thread_id,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            self._save_work_thread(db, thread)
+            return thread
+
+    def update_work_thread(
+        self, thread_id: UUID, value: WorkThreadUpdate
+    ) -> WorkThread:
+        with self.connect(write=True) as db:
+            current = self._work_thread(db, thread_id)
+            if current.version != value.expected_version:
+                raise StorageError("Work thread changed; reload before saving", 409)
+            changes = value.model_dump(exclude={"expected_version"}, exclude_unset=True)
+            next_bucket = changes.get("bucket", current.bucket)
+            next_snoozed = (
+                changes["snoozed_until"]
+                if "snoozed_until" in changes
+                else current.snoozed_until
+            )
+            if next_bucket != "snoozed":
+                changes["snoozed_until"] = None
+            elif next_snoozed is None:
+                raise StorageError("Snoozed threads require snoozed_until", 422)
+            now = utc_now()
+            updated = current.model_copy(
+                update={
+                    **changes,
+                    "version": current.version + 1,
+                    "updated_at": now,
+                }
+            )
+            self._save_work_thread(db, updated)
+            return updated
+
+    def organize_work_thread(
+        self, thread_id: UUID, value: WorkThreadOrganize
+    ) -> WorkThread:
+        with self.connect(write=True) as db:
+            current = self._work_thread(db, thread_id)
+            if (
+                value.expected_version is not None
+                and current.version != value.expected_version
+            ):
+                raise StorageError("Work thread changed; reload before saving", 409)
+            now = utc_now()
+            updated = current.model_copy(
+                update={
+                    "bucket": value.bucket,
+                    "snoozed_until": value.snoozed_until
+                    if value.bucket == "snoozed"
+                    else None,
+                    "version": current.version + 1,
+                    "updated_at": now,
+                }
+            )
+            self._save_work_thread(db, updated)
+            return updated
+
+    def wake_snoozed_work_threads(self) -> list[WorkThread]:
+        with self.connect(write=True) as db:
+            now = utc_now()
+            rows = db.execute(
+                "SELECT data FROM work_threads WHERE bucket = 'snoozed' AND snoozed_until IS NOT NULL ORDER BY snoozed_until"
+            ).fetchall()
+            woken: list[WorkThread] = []
+            for row in rows:
+                thread = WorkThread.model_validate_json(row[0])
+                if thread.snoozed_until is not None and thread.snoozed_until <= now:
+                    next_bucket: WorkBucket = (
+                        "working"
+                        if thread.run_status in {"preparing", "queued", "running"}
+                        else "default"
+                    )
+                    updated = thread.model_copy(
+                        update={
+                            "bucket": next_bucket,
+                            "snoozed_until": None,
+                            "version": thread.version + 1,
+                            "updated_at": now,
+                        }
+                    )
+                    self._save_work_thread(db, updated)
+                    woken.append(updated)
+            return woken
+
+    def delete_work_thread(self, thread_id: UUID) -> None:
+        with self.connect(write=True) as db:
+            cursor = db.execute(
+                "DELETE FROM work_threads WHERE id = ?", (str(thread_id),)
+            )
+            if cursor.rowcount == 0:
+                raise StorageError("Work thread not found", 404)
+
+    def upsert_work_pending_request(
+        self, thread_id: UUID, pending: WorkPendingRequest
+    ) -> WorkThread:
+        with self.connect(write=True) as db:
+            current = self._work_thread(db, thread_id)
+            requests = list(current.pending_requests)
+            for idx, item in enumerate(requests):
+                if item.id == pending.id:
+                    requests[idx] = pending
+                    break
+            else:
+                requests.append(pending)
+            now = utc_now()
+            next_bucket: WorkBucket = (
+                "default" if pending.status == "pending" else current.bucket
+            )
+            updated = current.model_copy(
+                update={
+                    "pending_requests": requests,
+                    "run_status": "waiting"
+                    if pending.status == "pending"
+                    else current.run_status,
+                    "bucket": next_bucket,
+                    "snoozed_until": None
+                    if next_bucket != "snoozed"
+                    else current.snoozed_until,
+                    "version": current.version + 1,
+                    "updated_at": now,
+                }
+            )
+            self._save_work_thread(db, updated)
+            return updated
+
+    def respond_work_pending_request(
+        self,
+        thread_id: UUID,
+        request_id: str,
+        value: WorkPendingRequestResponse,
+    ) -> WorkThread:
+        with self.connect(write=True) as db:
+            current = self._work_thread(db, thread_id)
+            if (
+                value.expected_version is not None
+                and current.version != value.expected_version
+            ):
+                raise StorageError("Work thread changed; reload before saving", 409)
+            now = utc_now()
+            found = False
+            requests: list[WorkPendingRequest] = []
+            for item in current.pending_requests:
+                if item.id == request_id:
+                    found = True
+                    if item.status == "answered":
+                        return current
+                    if item.status == "cancelled":
+                        raise StorageError(
+                            "This request is no longer waiting for an answer", 409
+                        )
+                    requests.append(
+                        item.model_copy(
+                            update={
+                                "status": "answered",
+                                "response": value.response,
+                                "resolved_at": now,
+                            }
+                        )
+                    )
+                else:
+                    requests.append(item)
+            if not found:
+                raise StorageError("Pending request not found", 404)
+            still_pending = any(item.status == "pending" for item in requests)
+            next_status: WorkRunStatus = (
+                "waiting"
+                if still_pending
+                else (
+                    "running" if current.run_status == "waiting" else current.run_status
+                )
+            )
+            next_bucket: WorkBucket = (
+                "working" if next_status == "running" else current.bucket
+            )
+            updated = current.model_copy(
+                update={
+                    "pending_requests": requests,
+                    "run_status": next_status,
+                    "bucket": next_bucket,
+                    "snoozed_until": None
+                    if next_bucket != "snoozed"
+                    else current.snoozed_until,
+                    "version": current.version + 1,
+                    "updated_at": now,
+                }
+            )
+            self._save_work_thread(db, updated)
+            return updated
+
+    @staticmethod
+    def _save_work_run(db: sqlite3.Connection, run: WorkRun) -> None:
+        db.execute(
+            """INSERT INTO work_runs (
+                id, thread_id, client_request_id, ordinal, status, updated_at, data
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                status=excluded.status,
+                updated_at=excluded.updated_at,
+                data=excluded.data""",
+            (
+                str(run.id),
+                str(run.thread_id),
+                run.client_request_id,
+                run.ordinal,
+                run.status,
+                run.updated_at.isoformat(),
+                run.model_dump_json(),
+            ),
+        )
+
+    def list_work_runs(
+        self,
+        *,
+        thread_id: UUID | None = None,
+        active_only: bool = False,
+    ) -> list[WorkRun]:
+        with self.connect() as db:
+            if thread_id is not None:
+                rows = db.execute(
+                    "SELECT data FROM work_runs WHERE thread_id = ? ORDER BY ordinal ASC",
+                    (str(thread_id),),
+                )
+            elif active_only:
+                rows = db.execute(
+                    "SELECT data FROM work_runs WHERE status IN ('queued', 'preparing', 'running', 'waiting') "
+                    "ORDER BY updated_at ASC, ordinal ASC"
+                )
+            else:
+                rows = db.execute("SELECT data FROM work_runs ORDER BY updated_at DESC")
+            return [WorkRun.model_validate_json(row[0]) for row in rows]
+
+    def get_work_run(self, run_id: UUID) -> WorkRun:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT data FROM work_runs WHERE id = ?", (str(run_id),)
+            ).fetchone()
+            if not row:
+                raise StorageError("Work run not found", 404)
+            return WorkRun.model_validate_json(row[0])
+
+    def create_work_run(self, thread_id: UUID, value: WorkRunInput) -> WorkRun:
+        with self.connect(write=True) as db:
+            thread = self._work_thread(db, thread_id)
+            if value.client_request_id:
+                existing_row = db.execute(
+                    "SELECT data FROM work_runs WHERE client_request_id = ?",
+                    (value.client_request_id,),
+                ).fetchone()
+                if existing_row:
+                    existing = WorkRun.model_validate_json(existing_row[0])
+                    if existing.thread_id != thread_id:
+                        raise StorageError(
+                            "This request ID belongs to another Work thread", 409
+                        )
+                    return existing
+            max_ord = db.execute(
+                "SELECT COALESCE(MAX(ordinal), 0) FROM work_runs WHERE thread_id = ?",
+                (str(thread_id),),
+            ).fetchone()[0]
+            now = utc_now()
+            run = WorkRun(
+                id=value.id or uuid4(),
+                thread_id=thread_id,
+                ordinal=int(max_ord) + 1,
+                client_request_id=value.client_request_id,
+                mode=value.mode,
+                prompt=value.prompt,
+                status="queued",
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            self._save_work_run(db, run)
+            # Sending a new turn moves a thread into Working unless it is already active.
+            next_status = (
+                thread.run_status
+                if thread.run_status in {"preparing", "running", "waiting"}
+                else "queued"
+            )
+            updated_thread = thread.model_copy(
+                update={
+                    "run_status": next_status,
+                    "bucket": "working",
+                    "snoozed_until": None,
+                    "error": None,
+                    "version": thread.version + 1,
+                    "updated_at": now,
+                }
+            )
+            self._save_work_thread(db, updated_thread)
+            return run
+
+    def update_work_run(self, run_id: UUID, value: WorkRunUpdate) -> WorkRun:
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT data FROM work_runs WHERE id = ?", (str(run_id),)
+            ).fetchone()
+            if not row:
+                raise StorageError("Work run not found", 404)
+            current = WorkRun.model_validate_json(row[0])
+            if current.version != value.expected_version:
+                raise StorageError("Work run changed; reload before saving", 409)
+            now = utc_now()
+            updates: dict[str, object] = {
+                "status": value.status,
+                "owner_id": value.owner_id,
+                "lease_expires_at": value.lease_expires_at,
+                "version": current.version + 1,
+                "updated_at": now,
+            }
+            if "error" in value.model_fields_set:
+                updates["error"] = value.error
+            if "final_message" in value.model_fields_set:
+                updates["final_message"] = value.final_message
+            if value.wakeup_delivered is not None:
+                updates["wakeup_delivered"] = value.wakeup_delivered
+            updated = current.model_copy(update=updates)
+            self._save_work_run(db, updated)
+            if current.status != updated.status:
+                thread = self._work_thread(db, updated.thread_id)
+                if updated.status in {
+                    "completed",
+                    "failed",
+                    "interrupted",
+                    "cancelled",
+                }:
+                    has_other_active = db.execute(
+                        "SELECT 1 FROM work_runs WHERE thread_id = ? AND id != ? "
+                        "AND status IN ('queued', 'preparing', 'running', 'waiting') LIMIT 1",
+                        (str(updated.thread_id), str(run_id)),
+                    ).fetchone()
+                    if not has_other_active:
+                        next_bucket: WorkBucket = (
+                            "default" if thread.bucket == "working" else thread.bucket
+                        )
+                        updated_thread = thread.model_copy(
+                            update={
+                                "run_status": updated.status,
+                                "bucket": next_bucket,
+                                "snoozed_until": (
+                                    None
+                                    if next_bucket != "snoozed"
+                                    else thread.snoozed_until
+                                ),
+                                "error": updated.error,
+                                "version": thread.version + 1,
+                                "updated_at": now,
+                            }
+                        )
+                        self._save_work_thread(db, updated_thread)
+                elif updated.status in {"preparing", "running"}:
+                    next_bucket = (
+                        "working" if thread.bucket == "default" else thread.bucket
+                    )
+                    updated_thread = thread.model_copy(
+                        update={
+                            "run_status": updated.status,
+                            "bucket": next_bucket,
+                            "snoozed_until": (
+                                None
+                                if next_bucket != "snoozed"
+                                else thread.snoozed_until
+                            ),
+                            "error": None,
+                            "version": thread.version + 1,
+                            "updated_at": now,
+                        }
+                    )
+                    self._save_work_thread(db, updated_thread)
+            return updated
+
+    def cancel_work_run(self, run_id: UUID) -> WorkRun:
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT data FROM work_runs WHERE id = ?", (str(run_id),)
+            ).fetchone()
+            if not row:
+                raise StorageError("Work run not found", 404)
+            current = WorkRun.model_validate_json(row[0])
+            if current.status in {"completed", "failed", "interrupted", "cancelled"}:
+                return current
+            now = utc_now()
+            updated = current.model_copy(
+                update={
+                    "status": "cancelled",
+                    "owner_id": None,
+                    "lease_expires_at": None,
+                    "version": current.version + 1,
+                    "updated_at": now,
+                }
+            )
+            self._save_work_run(db, updated)
+            thread = self._work_thread(db, current.thread_id)
+            cancelled_pending = [
+                req.model_copy(update={"status": "cancelled", "resolved_at": now})
+                if req.status == "pending"
+                else req
+                for req in thread.pending_requests
+            ]
+            has_other_active = db.execute(
+                "SELECT 1 FROM work_runs WHERE thread_id = ? AND id != ? "
+                "AND status IN ('queued', 'preparing', 'running', 'waiting') LIMIT 1",
+                (str(current.thread_id), str(run_id)),
+            ).fetchone()
+            next_bucket: WorkBucket = (
+                "working"
+                if has_other_active
+                else ("default" if thread.bucket == "working" else thread.bucket)
+            )
+            updated_thread = thread.model_copy(
+                update={
+                    "run_status": thread.run_status
+                    if has_other_active
+                    else "cancelled",
+                    "bucket": next_bucket,
+                    "snoozed_until": None
+                    if next_bucket != "snoozed"
+                    else thread.snoozed_until,
+                    "pending_requests": cancelled_pending,
+                    "version": thread.version + 1,
+                    "updated_at": now,
+                }
+            )
+            self._save_work_thread(db, updated_thread)
+            return updated
+
+    def append_work_activity(
+        self, thread_id: UUID, items: list[WorkActivityInput]
+    ) -> list[WorkActivityItem]:
+        with self.connect(write=True) as db:
+            self._work_thread(db, thread_id)
+            saved: list[WorkActivityItem] = []
+            max_pos_row = db.execute(
+                "SELECT COALESCE(MAX(position), -1) FROM work_activity WHERE thread_id = ?",
+                (str(thread_id),),
+            ).fetchone()
+            next_pos = int(max_pos_row[0]) + 1
+            for item in items:
+                existing = db.execute(
+                    "SELECT data FROM work_activity WHERE id = ?", (item.id,)
+                ).fetchone()
+                if existing:
+                    record = WorkActivityItem.model_validate_json(existing[0])
+                    if record.thread_id != thread_id:
+                        raise StorageError(
+                            "Activity item ID belongs to another Work thread", 409
+                        )
+                    saved.append(record)
+                    continue
+                record = WorkActivityItem(
+                    **item.model_dump(),
+                    thread_id=thread_id,
+                    position=next_pos,
+                )
+                next_pos += 1
+                db.execute(
+                    "INSERT INTO work_activity (id, thread_id, position, run_id, created_at, data) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        record.id,
+                        str(thread_id),
+                        record.position,
+                        str(record.run_id) if record.run_id else None,
+                        record.created_at.isoformat(),
+                        record.model_dump_json(),
+                    ),
+                )
+                saved.append(record)
+            return saved
+
+    def list_work_activity(
+        self,
+        thread_id: UUID,
+        *,
+        after_position: int = -1,
+        limit: int = 200,
+    ) -> list[WorkActivityItem]:
+        with self.connect() as db:
+            self._work_thread(db, thread_id)
+            rows = db.execute(
+                "SELECT data FROM work_activity WHERE thread_id = ? AND position > ? "
+                "ORDER BY position ASC LIMIT ?",
+                (str(thread_id), after_position, limit),
+            )
+            return [WorkActivityItem.model_validate_json(row[0]) for row in rows]
+
+    def list_work_harnesses(self) -> list[WorkHarnessConfig]:
+        with self.connect() as db:
+            return [
+                WorkHarnessConfig.model_validate_json(row[0])
+                for row in db.execute(
+                    "SELECT data FROM work_harnesses ORDER BY harness"
+                )
+            ]
+
+    def get_work_harness(self, harness: str) -> WorkHarnessConfig | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT data FROM work_harnesses WHERE harness = ?", (harness,)
+            ).fetchone()
+            return WorkHarnessConfig.model_validate_json(row[0]) if row else None
+
+    def put_work_harness(
+        self, harness: str, value: WorkHarnessConfigInput
+    ) -> WorkHarnessConfig:
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT data FROM work_harnesses WHERE harness = ?", (harness,)
+            ).fetchone()
+            now = utc_now()
+            if row:
+                current = WorkHarnessConfig.model_validate_json(row[0])
+                updated = WorkHarnessConfig(
+                    harness=harness,
+                    version=current.version + 1,
+                    created_at=current.created_at,
+                    updated_at=now,
+                    **value.model_dump(),
+                )
+                db.execute(
+                    "UPDATE work_harnesses SET updated_at = ?, data = ? WHERE harness = ?",
+                    (now.isoformat(), updated.model_dump_json(), harness),
+                )
+                return updated
+            created = WorkHarnessConfig(
+                harness=harness,
+                version=1,
+                created_at=now,
+                updated_at=now,
+                **value.model_dump(),
+            )
+            db.execute(
+                "INSERT INTO work_harnesses (harness, updated_at, data) VALUES (?, ?, ?)",
+                (harness, now.isoformat(), created.model_dump_json()),
+            )
+            return created
+
+    def delete_work_harness(self, harness: str) -> None:
+        with self.connect(write=True) as db:
+            db.execute("DELETE FROM work_harnesses WHERE harness = ?", (harness,))

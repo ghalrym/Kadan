@@ -287,9 +287,7 @@ class RunConversation:
 
     async def search_mcp_tools(self, args: McpSearchArguments) -> dict:
         servers = await self.runs.active_mcp_servers()
-        return search_mcp_tools(
-            servers, server_filter=args.server, query=args.query
-        )
+        return search_mcp_tools(servers, server_filter=args.server, query=args.query)
 
     async def call_mcp_tool(self, args: McpCallArguments) -> dict:
         servers = await self.runs.active_mcp_servers()
@@ -1015,6 +1013,7 @@ class AgentRuns(RunClient):
                     "computer": "computer_task_event",
                     "codex": "codex_thread_event",
                     "t3": "t3_thread_event",
+                    "work": "work_thread_event",
                 }[run.trigger_event.kind],
                 data=detail if isinstance(detail, dict) else {"detail": detail},
             )

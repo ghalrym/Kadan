@@ -24,6 +24,9 @@ import Sidebar, { type Page } from "./Sidebar";
 import SpaceLibrary from "./SpaceLibrary";
 import AgentPage from "./AgentPage";
 import ServerSettings from "./ServerSettings";
+import WorkSetup from "./WorkSetup";
+import WorkThreadView from "./WorkThreadView";
+import { listWorkThreads, organizeWorkThread, parseWorkHash, type WorkThread } from "./work";
 import { PetContext } from "./PetContext";
 
 /** Animate a view change, letting the agent's pet glide between layouts. */
@@ -47,7 +50,10 @@ export default function App() {
   /** The agent's single persistent chat, remembered with the agent it belongs to. */
   const [selection, setSelection] = useState<{ owner: string; id: string } | null>(null);
   const [chain, setChain] = useState<Resource | null>(null);
-  const [page, setPage] = useState<Page>({ name: "chat" });
+  const [page, setPage] = useState<Page>(() => {
+    const hashThread = typeof window !== "undefined" ? parseWorkHash(window.location?.hash ?? "") : null;
+    return hashThread ? { name: "work-thread", threadId: hashThread } : { name: "chat" };
+  });
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState("");
   const [petError, setPetError] = useState<{ key: string; message: string } | null>(null);
@@ -67,6 +73,7 @@ export default function App() {
   const [updateNotice, setUpdateNotice] = useState("");
   const handledDesktopUpdateId = useRef<string | null>(null);
   const [deletingAgent, setDeletingAgent] = useState(false);
+  const [workThreads, setWorkThreads] = useState<WorkThread[]>([]);
   const desktopMode = isDesktopApp();
   const currentAgentKey = useRef(key);
   const agentKey = currentAgentKey;
@@ -228,12 +235,38 @@ export default function App() {
       }
     }
   }
+  const refreshWorkThreads = useCallback(async () => {
+    try {
+      setWorkThreads(await listWorkThreads());
+    } catch {
+      // Ignore transient Work polling errors so chat stays uninterrupted.
+    }
+  }, []);
+
   useEffect(() => {
     void refreshAgent();
     void refreshStatus();
-    const timer = setInterval(() => void refreshStatus(), 30000);
-    return () => clearInterval(timer);
-  }, []);
+    void refreshWorkThreads();
+    const statusTimer = setInterval(() => void refreshStatus(), 30000);
+    const workTimer = setInterval(() => void refreshWorkThreads(), 5000);
+    const onHashChange = () => {
+      const hashThread = typeof window !== "undefined" ? parseWorkHash(window.location?.hash ?? "") : null;
+      if (hashThread) {
+        setMenu(false);
+        transition(() => setPage({ name: "work-thread", threadId: hashThread }));
+      }
+    };
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      window.addEventListener("hashchange", onHashChange);
+    }
+    return () => {
+      clearInterval(statusTimer);
+      clearInterval(workTimer);
+      if (typeof window !== "undefined" && typeof window.removeEventListener === "function") {
+        window.removeEventListener("hashchange", onHashChange);
+      }
+    };
+  }, [refreshWorkThreads]);
   useEffect(() => {
     ++petSelectionRevision.current;
     pendingPetSelection.current = 0;
@@ -365,8 +398,39 @@ export default function App() {
           onRefresh={() => {
             void refreshAgent();
             void refreshStatus();
+            void refreshWorkThreads();
           }}
-          onPage={(name) => show({ name })}
+          onPage={(name) => {
+            if (typeof window !== "undefined" && window.location?.hash?.startsWith("#work/")) {
+              window.history?.replaceState?.(null, "", window.location.pathname + window.location.search);
+            }
+            if (name === "chat" || name === "space" || name === "plugins" || name === "agent") {
+              show({ name });
+            }
+          }}
+          workThreads={workThreads}
+          onOpenWorkThread={(threadId) => {
+            if (typeof window !== "undefined") {
+              window.history?.replaceState?.(null, "", `#work/${threadId}`);
+            }
+            show({ name: "work-thread", threadId });
+          }}
+          onOpenWorkSetup={(tab) => {
+            if (typeof window !== "undefined" && window.location?.hash?.startsWith("#work/")) {
+              window.history?.replaceState?.(null, "", window.location.pathname + window.location.search);
+            }
+            show({ name: "work-setup", tab });
+          }}
+          onUnsettleWorkThread={(threadId) => {
+            void organizeWorkThread(threadId, { action: "unsettle" })
+              .then(() => refreshWorkThreads())
+              .catch(() => {});
+          }}
+          onWakeWorkThread={(threadId) => {
+            void organizeWorkThread(threadId, { action: "default" })
+              .then(() => refreshWorkThreads())
+              .catch(() => {});
+          }}
           desktopHost={desktopHost}
           onServerSettings={desktopMode ? () => { setMenu(false); setServerSettingsOpen(true); } : undefined}
         />
@@ -426,6 +490,28 @@ export default function App() {
               Retry
             </button>
           </div>
+        ) : page.name === "work-thread" ? (
+          <WorkThreadView
+            key={page.threadId}
+            threadId={page.threadId}
+            onChanged={() => void refreshWorkThreads()}
+            onDeleted={() => {
+              void refreshWorkThreads();
+              if (window.location.hash.startsWith("#work/")) {
+                window.history.replaceState(null, "", window.location.pathname + window.location.search);
+              }
+              show({ name: "work-setup", tab: "new" });
+            }}
+          />
+        ) : page.name === "work-setup" ? (
+          <WorkSetup
+            initialTab={page.tab ?? "new"}
+            onChanged={() => void refreshWorkThreads()}
+            onThreadCreated={(threadId) => {
+              window.history.replaceState(null, "", `#work/${threadId}`);
+              show({ name: "work-thread", threadId });
+            }}
+          />
         ) : page.name === "plugins" ? (
           <Plugins agentName={agent?.name || key} />
         ) : page.name === "agent" && agent ? (
