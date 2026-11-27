@@ -808,7 +808,7 @@ TranscriptEntry = Annotated[
 class RunEvent(Model):
     """An external event that wakes the agent; Kadan owns its content."""
 
-    kind: Literal["codex", "computer", "t3"]
+    kind: Literal["codex", "computer", "t3", "work"]
     content: str = Field(min_length=1, max_length=20000)
 
 
@@ -1021,6 +1021,304 @@ class T3ThreadWatchUpdate(Model):
 class T3ThreadWatch(T3ThreadWatchInput):
     status: Literal["watching", "delivered", "dropped"] = "watching"
     last_pending_request_id: str | None = Field(default=None, max_length=256)
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
+WorkBucket = Literal["default", "working", "snoozed", "settled"]
+WorkRunStatus = Literal[
+    "idle",
+    "preparing",
+    "queued",
+    "running",
+    "waiting",
+    "completed",
+    "failed",
+    "interrupted",
+    "cancelled",
+]
+WorkWorkspaceMode = Literal["root", "worktree"]
+WorkHarnessId = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,47}$")]
+WorkActivityKind = Literal[
+    "user_message",
+    "assistant_message",
+    "reasoning",
+    "tool_call",
+    "tool_result",
+    "file_change",
+    "pending_request",
+    "status",
+    "error",
+]
+
+
+def _require_aware(value: datetime | None, label: str) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{label} requires a timezone")
+    return value.astimezone(UTC)
+
+
+class WorkProjectInput(Model):
+    title: Title
+    root_path: str = Field(min_length=1, max_length=4000)
+    default_branch: str = Field(default="main", min_length=1, max_length=256)
+    setup_script: str | None = Field(default=None, max_length=16000)
+
+    @field_validator("title", "root_path", "default_branch")
+    @classmethod
+    def nonblank_project_field(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Field cannot be blank")
+        return stripped
+
+
+class WorkProjectUpdate(WorkProjectInput):
+    expected_version: int = Field(ge=1)
+
+
+class WorkProject(WorkProjectInput):
+    id: UUID
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkPendingRequest(Model):
+    id: str = Field(min_length=1, max_length=256)
+    kind: Literal["question", "approval"]
+    title: str = Field(default="", max_length=500)
+    prompt: str = Field(min_length=1, max_length=16000)
+    options: list[dict[str, JsonValue]] = Field(default_factory=list, max_length=50)
+    tool_name: str | None = Field(default=None, max_length=256)
+    arguments: dict[str, JsonValue] | None = None
+    status: Literal["pending", "answered", "cancelled"] = "pending"
+    response: dict[str, JsonValue] | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    resolved_at: datetime | None = None
+
+    @field_validator("created_at")
+    @classmethod
+    def aware_created_at(cls, value: datetime) -> datetime:
+        result = _require_aware(value, "Pending request timestamp")
+        assert result is not None
+        return result
+
+    @field_validator("resolved_at")
+    @classmethod
+    def aware_resolved_at(cls, value: datetime | None) -> datetime | None:
+        return _require_aware(value, "Resolved timestamp")
+
+
+class WorkPendingRequestResponse(Model):
+    response: dict[str, JsonValue]
+    expected_version: int | None = Field(default=None, ge=1)
+
+
+class WorkThreadInput(Model):
+    id: UUID | None = None
+    client_request_id: str | None = Field(default=None, min_length=1, max_length=256)
+    project_id: UUID
+    title: Title
+    harness: WorkHarnessId
+    model: str | None = Field(default=None, max_length=256)
+    model_options: dict[str, JsonValue] = Field(default_factory=dict)
+    workspace_mode: WorkWorkspaceMode = "root"
+    worktree_path: str | None = Field(default=None, max_length=4000)
+    branch: str | None = Field(default=None, max_length=256)
+    base_ref: str | None = Field(default=None, max_length=256)
+    run_status: WorkRunStatus = "idle"
+    bucket: WorkBucket = "default"
+    snoozed_until: datetime | None = None
+    origin_agent_key: AgentKey | None = None
+    origin_conversation_id: UUID | None = None
+    origin_run_id: UUID | None = None
+    harness_session_id: str | None = Field(default=None, max_length=512)
+    pending_requests: list[WorkPendingRequest] = Field(
+        default_factory=list, max_length=100
+    )
+    error: str | None = Field(default=None, max_length=10000)
+
+    @field_validator("title")
+    @classmethod
+    def nonblank_thread_title(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Title cannot be blank")
+        return value.strip()
+
+    @field_validator("snoozed_until")
+    @classmethod
+    def aware_snoozed_until(cls, value: datetime | None) -> datetime | None:
+        return _require_aware(value, "Snooze wakeup time")
+
+    @model_validator(mode="after")
+    def valid_bucket_state(self) -> Self:
+        if self.bucket == "snoozed" and self.snoozed_until is None:
+            raise ValueError("Snoozed threads require snoozed_until")
+        if self.bucket != "snoozed" and self.snoozed_until is not None:
+            raise ValueError("Only snoozed threads may set snoozed_until")
+        return self
+
+
+class WorkThreadUpdate(Model):
+    title: Title | None = None
+    harness: WorkHarnessId | None = None
+    model: str | None = Field(default=None, max_length=256)
+    model_options: dict[str, JsonValue] | None = None
+    workspace_mode: WorkWorkspaceMode | None = None
+    worktree_path: str | None = Field(default=None, max_length=4000)
+    branch: str | None = Field(default=None, max_length=256)
+    base_ref: str | None = Field(default=None, max_length=256)
+    run_status: WorkRunStatus | None = None
+    bucket: WorkBucket | None = None
+    snoozed_until: datetime | None = None
+    harness_session_id: str | None = Field(default=None, max_length=512)
+    pending_requests: list[WorkPendingRequest] | None = None
+    error: str | None = Field(default=None, max_length=10000)
+    expected_version: int = Field(ge=1)
+
+    @field_validator("title")
+    @classmethod
+    def nonblank_optional_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("Title cannot be blank")
+        return value.strip()
+
+    @field_validator("snoozed_until")
+    @classmethod
+    def aware_snoozed_until(cls, value: datetime | None) -> datetime | None:
+        return _require_aware(value, "Snooze wakeup time")
+
+
+class WorkThreadOrganize(Model):
+    bucket: WorkBucket
+    snoozed_until: datetime | None = None
+    expected_version: int | None = Field(default=None, ge=1)
+
+    @field_validator("snoozed_until")
+    @classmethod
+    def aware_snoozed_until(cls, value: datetime | None) -> datetime | None:
+        return _require_aware(value, "Snooze wakeup time")
+
+    @model_validator(mode="after")
+    def valid_organize(self) -> Self:
+        if self.bucket == "snoozed" and self.snoozed_until is None:
+            raise ValueError("Snoozing a thread requires snoozed_until")
+        if self.bucket != "snoozed" and self.snoozed_until is not None:
+            raise ValueError("Only snooze may include snoozed_until")
+        return self
+
+
+class WorkThread(Model):
+    id: UUID
+    client_request_id: str | None = None
+    project_id: UUID
+    title: Title
+    harness: WorkHarnessId
+    model: str | None = None
+    model_options: dict[str, JsonValue] = Field(default_factory=dict)
+    workspace_mode: WorkWorkspaceMode = "root"
+    worktree_path: str | None = None
+    branch: str | None = None
+    base_ref: str | None = None
+    run_status: WorkRunStatus = "idle"
+    bucket: WorkBucket = "default"
+    snoozed_until: datetime | None = None
+    origin_agent_key: AgentKey | None = None
+    origin_conversation_id: UUID | None = None
+    origin_run_id: UUID | None = None
+    harness_session_id: str | None = None
+    pending_requests: list[WorkPendingRequest] = Field(default_factory=list)
+    error: str | None = None
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkRunInput(Model):
+    id: UUID | None = None
+    client_request_id: str | None = Field(default=None, min_length=1, max_length=256)
+    mode: Literal["send", "steer", "queue"] = "send"
+    prompt: str = Field(min_length=1, max_length=200000)
+
+
+class WorkRunUpdate(Model):
+    status: WorkRunStatus
+    owner_id: UUID | None = None
+    lease_expires_at: datetime | None = None
+    error: str | None = Field(default=None, max_length=10000)
+    final_message: str | None = Field(default=None, max_length=200000)
+    wakeup_delivered: bool | None = None
+    expected_version: int = Field(ge=1)
+
+    @field_validator("lease_expires_at")
+    @classmethod
+    def aware_lease(cls, value: datetime | None) -> datetime | None:
+        return _require_aware(value, "Lease expiry")
+
+    @model_validator(mode="after")
+    def valid_lease(self) -> Self:
+        if self.status in {"preparing", "running", "waiting"}:
+            if self.owner_id is None or self.lease_expires_at is None:
+                raise ValueError("Active work runs require an owner and lease")
+        elif self.owner_id is not None or self.lease_expires_at is not None:
+            raise ValueError("Only active work runs can retain an owner or lease")
+        return self
+
+
+class WorkRun(Model):
+    id: UUID
+    thread_id: UUID
+    ordinal: int = Field(ge=1)
+    client_request_id: str | None = None
+    mode: Literal["send", "steer", "queue"] = "send"
+    prompt: str = Field(min_length=1, max_length=200000)
+    status: WorkRunStatus = "queued"
+    owner_id: UUID | None = None
+    lease_expires_at: datetime | None = None
+    error: str | None = None
+    final_message: str | None = None
+    wakeup_delivered: bool = False
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkActivityInput(Model):
+    id: str = Field(min_length=1, max_length=256)
+    run_id: UUID | None = None
+    kind: WorkActivityKind
+    text: str = Field(default="", max_length=200000)
+    data: dict[str, JsonValue] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("created_at")
+    @classmethod
+    def aware_created_at(cls, value: datetime) -> datetime:
+        result = _require_aware(value, "Activity timestamp")
+        assert result is not None
+        return result
+
+
+class WorkActivityItem(WorkActivityInput):
+    thread_id: UUID
+    position: int = Field(ge=0)
+
+
+class WorkHarnessConfigInput(Model):
+    credential: str | None = Field(default=None, max_length=65536)
+    auth_mode: str | None = Field(default=None, max_length=64)
+    account_label: str | None = Field(default=None, max_length=256)
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class WorkHarnessConfig(WorkHarnessConfigInput):
+    harness: WorkHarnessId
     version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
