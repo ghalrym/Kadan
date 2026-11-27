@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable, Sequence
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MEMORY_QUEUE_POLL_SECONDS = 25.0
+MEMORY_QUEUE_IDLE_DELAY = timedelta(seconds=25)
 DECISION_THRESHOLD = 0.55
 MAX_DECISION_STATE_CHARS = 5500
 MAX_SLICE_MESSAGES = 24
@@ -228,6 +229,7 @@ class MemoryQueue:
         agent_keys: Callable[[], Sequence[str]] | None = None,
         inference: AgentInference | None = None,
         poll_seconds: float = MEMORY_QUEUE_POLL_SECONDS,
+        idle_delay: timedelta = MEMORY_QUEUE_IDLE_DELAY,
         decision_threshold: float = DECISION_THRESHOLD,
     ):
         self.services = services
@@ -236,19 +238,32 @@ class MemoryQueue:
             services.client, services.settings.hikari_url
         )
         self.poll_seconds = poll_seconds
+        self.idle_delay = idle_delay
         self.decision_threshold = decision_threshold
         self.wakeup = asyncio.Event()
         self.runner: asyncio.Task | None = None
+        self._active_work: asyncio.Task | None = None
+        self._next_idle_wait: float | None = None
 
     def set_agent_keys_provider(
         self, provider: Callable[[], Sequence[str]]
     ) -> None:
         self._agent_keys = provider
 
+    def preempt(self) -> bool:
+        """Cancel any in-flight background work so interactive runs get the GPU immediately."""
+        task = self._active_work
+        if task is not None and not task.done():
+            logger.info("Preempting in-flight memory queue work for interactive run")
+            task.cancel()
+            return True
+        return False
+
     def start(self) -> None:
         self.runner = asyncio.create_task(self.run(), name="memory-queue")
 
     async def close(self) -> None:
+        self.preempt()
         if self.runner:
             self.runner.cancel()
             await asyncio.gather(self.runner, return_exceptions=True)
@@ -257,14 +272,18 @@ class MemoryQueue:
         await asyncio.sleep(min(2.0, self.poll_seconds))
         while True:
             self.wakeup.clear()
+            self._next_idle_wait = None
             try:
                 await self.poll_once()
             except ServiceError as error:
                 logger.warning("Memory queue poll failed: %s", error)
             except Exception:
                 logger.exception("Unexpected error in memory queue loop")
+            timeout = self.poll_seconds
+            if self._next_idle_wait is not None:
+                timeout = min(timeout, max(0.05, self._next_idle_wait))
             try:
-                await asyncio.wait_for(self.wakeup.wait(), timeout=self.poll_seconds)
+                await asyncio.wait_for(self.wakeup.wait(), timeout=timeout)
             except TimeoutError:
                 pass
 
@@ -292,7 +311,9 @@ class MemoryQueue:
             {run.conversation_id for run in active_runs},
         )
 
-    async def poll_once(self) -> int:
+    async def poll_once(self, now: datetime | None = None) -> int:
+        current_time = now or datetime.now(UTC)
+        self._next_idle_wait = None
         status = await self.services.inference_status()
         if status.state != "ready":
             return 0
@@ -304,6 +325,7 @@ class MemoryQueue:
 
         active_agent_keys, active_conversation_ids = await self._active_run_sets()
         processed_count = 0
+        soonest_wait: float | None = None
 
         for agent_key in agent_keys:
             if agent_key in active_agent_keys:
@@ -328,16 +350,45 @@ class MemoryQueue:
                 )
                 if not new_messages:
                     continue
-                try:
-                    did_process = await self._process_conversation(
+                latest_message_at = conversation.messages[-1].created_at
+                age = current_time - latest_message_at
+                if age < self.idle_delay:
+                    remaining = (self.idle_delay - age).total_seconds()
+                    soonest_wait = (
+                        remaining
+                        if soonest_wait is None
+                        else min(soonest_wait, remaining)
+                    )
+                    continue
+                work = asyncio.create_task(
+                    self._process_conversation(
                         agent_key=agent_key,
                         conversation=conversation,
                         new_messages=new_messages,
                         model_id=status.model_id,
                         use_local_decisions=use_local_decisions,
-                    )
+                    ),
+                    name=f"memory-queue-work-{agent_key}",
+                )
+                self._active_work = work
+                try:
+                    did_process = await work
                     if did_process:
                         processed_count += 1
+                except asyncio.CancelledError:
+                    current_task = asyncio.current_task()
+                    if current_task is not None and current_task.cancelling():
+                        if not work.done():
+                            work.cancel()
+                            await asyncio.gather(work, return_exceptions=True)
+                        raise
+                    logger.info(
+                        "Memory extraction preempted for agent=%s conversation=%s; will retry when idle",
+                        agent_key,
+                        conversation.id,
+                    )
+                    self._next_idle_wait = soonest_wait
+                    return processed_count
                 except ServiceError as error:
                     if error.status == 409:
                         logger.info(
@@ -359,6 +410,10 @@ class MemoryQueue:
                         conversation.id,
                         error,
                     )
+                finally:
+                    if self._active_work is work:
+                        self._active_work = None
+        self._next_idle_wait = soonest_wait
         return processed_count
 
     async def _process_conversation(
@@ -543,6 +598,9 @@ class MemoryQueue:
             conversation_key=None,
             priority="background",
             reuse_prefix=False,
+            max_tokens=1536,
+            reasoning_tokens=256,
+            reasoning_effort="low",
         )
         return parse_extraction_json(raw)
 

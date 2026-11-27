@@ -176,6 +176,7 @@ def test_create_persists_a_memory_without_workspace_parent_or_other_resource_kin
     def storage(request):
         assert request.method == "POST"
         assert request.url.path == "/api/agents/alpha/resources"
+        assert dict(request.url.params) == {"preserve_memory_snapshot": "true"}
         body = json.loads(request.content)
         assert body == {
             "kind": "memory",
@@ -207,6 +208,7 @@ def test_update_preserves_other_metadata_and_passes_expected_version(
         if request.method == "GET":
             return httpx.Response(200, json=existing)
         assert request.url.path == f"/api/agents/alpha/resources/{MEMORY_ID}"
+        assert dict(request.url.params) == {"preserve_memory_snapshot": "true"}
         body = json.loads(request.content)
         assert body == {
             "kind": "memory",
@@ -376,7 +378,10 @@ def test_forget_trashes_the_read_version_and_returns_confirmation_without_conten
         if request.method == "GET":
             return httpx.Response(200, json=memory())
         assert request.method == "DELETE"
-        assert dict(request.url.params) == {"expected_version": "3"}
+        assert dict(request.url.params) == {
+            "expected_version": "3",
+            "preserve_memory_snapshot": "true",
+        }
         assert request.content == b""
         return httpx.Response(200, json=memory(version=4, deleted_at=NOW))
 
@@ -612,7 +617,10 @@ def test_optional_expected_version_allows_single_call_update_and_forget():
         if request.method == "GET":
             return httpx.Response(200, json=memory(version=7))
         assert request.method == "DELETE"
-        assert dict(request.url.params) == {"expected_version": "7"}
+        assert dict(request.url.params) == {
+            "expected_version": "7",
+            "preserve_memory_snapshot": "true",
+        }
         return httpx.Response(200, json=memory(version=8, deleted_at=NOW))
 
     forgotten = call(

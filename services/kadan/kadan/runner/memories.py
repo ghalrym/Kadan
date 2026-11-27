@@ -102,6 +102,7 @@ class AgentMemories:
             "Tsuchi",
             "POST",
             self.path,
+            params={"preserve_memory_snapshot": "true"},
             json={"kind": "memory", "title": title, "markdown": markdown, "tags": tags},
         )
         return memory_content(self.checked(value))
@@ -143,7 +144,11 @@ class AgentMemories:
             content["tags"] = tags
         await self.check_ownership()
         value = await self.services.json_request(
-            "Tsuchi", "PUT", f"{self.path}/{memory_id}", json=content
+            "Tsuchi",
+            "PUT",
+            f"{self.path}/{memory_id}",
+            params={"preserve_memory_snapshot": "true"},
+            json=content,
         )
         return memory_content(self.checked(value, memory_id=memory_id))
 
@@ -160,7 +165,10 @@ class AgentMemories:
             "Tsuchi",
             "DELETE",
             f"{self.path}/{memory_id}",
-            params={"expected_version": resolved_version},
+            params={
+                "expected_version": resolved_version,
+                "preserve_memory_snapshot": "true",
+            },
         )
         forgotten = self.checked(value, memory_id=memory_id, include_trashed=True)
         if forgotten.deleted_at is None or forgotten.version != resolved_version + 1:

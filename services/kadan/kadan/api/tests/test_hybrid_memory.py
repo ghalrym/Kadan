@@ -25,7 +25,9 @@ from kadan.api.pydantic_models.resources import Agent, Message, Resource, Resour
 from kadan.api.services import STARTER_PERSONA_MARKDOWN, LocalServices
 from kadan.runner.agent_runs import AgentRuns, RunConversation
 from kadan.runner.compaction import IdleCompactor
-from kadan.runner.memory_queue import MemoryQueue
+from kadan.runner.config import RunnerSettings
+from kadan.runner.memory_queue import MEMORY_QUEUE_IDLE_DELAY, MemoryQueue
+from kadan.runner.service import AgentRunner
 from kadan.runner.tools.persona import UpdatePersonaArguments
 
 
@@ -94,6 +96,9 @@ def test_starter_persona_includes_users_name_and_single_call_onboarding():
     assert "- **User's Name:** TODO" in STARTER_PERSONA_MARKDOWN
     assert "Core Memories" in STARTER_PERSONA_MARKDOWN
     assert '"core"' in STARTER_PERSONA_MARKDOWN
+    assert "only once" in STARTER_PERSONA_MARKDOWN
+    assert "Do **not** call `create_memory` on every turn" in STARTER_PERSONA_MARKDOWN
+    assert "Do **not** call `update_persona` on every individual onboarding turn" in STARTER_PERSONA_MARKDOWN
 
 
 def test_single_call_update_persona_resolves_current_version_when_omitted():
@@ -512,15 +517,23 @@ def test_memory_queue_gate_yes_extracts_memories_updates_persona_and_preserves_s
         ),
         complete_text=AsyncMock(return_value=extraction_json),
     )
-    queue = MemoryQueue(boundary, agent_keys=lambda: ["alpha"], inference=fake_inf)
+    queue = MemoryQueue(
+        boundary,
+        agent_keys=lambda: ["alpha"],
+        inference=fake_inf,
+        idle_delay=timedelta(0),
+    )
 
     processed = asyncio.run(queue.poll_once())
     assert processed == 1
-    # Verify extraction call was KV-cache safe.
+    # Verify extraction call was KV-cache safe and token-capped.
     call_kwargs = fake_inf.complete_text.await_args.kwargs
     assert call_kwargs["conversation_key"] is None
     assert call_kwargs["reuse_prefix"] is False
     assert call_kwargs["priority"] == "background"
+    assert call_kwargs["reasoning_effort"] == "low"
+    assert call_kwargs["reasoning_tokens"] == 256
+    assert call_kwargs["max_tokens"] == 1536
 
     # Verify both memory writes passed preserve_memory_snapshot=true.
     assert len(boundary.memory_writes) == 2
@@ -566,3 +579,191 @@ def test_memory_queue_skips_active_runs_and_uses_fallback_for_subscriptions(tmp_
     boundary.status = SimpleNamespace(state="ready", model_id=None, context_limit=32768)
     assert asyncio.run(queue.poll_once()) == 1
     assert fake_inf.evaluate_decisions.await_args.kwargs["use_local_decisions"] is False
+
+
+def test_memory_queue_idle_debounce_waits_for_idle_delay_before_extracting(tmp_path):
+    instructions = tmp_path / "AGENT.md"
+    instructions.write_text("Base instructions.")
+    base = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
+    messages = [
+        Message(id=uuid4(), role="user", content="My name is Andrew.", created_at=base),
+        Message(
+            id=uuid4(),
+            role="assistant",
+            content="Nice to meet you!",
+            created_at=base + timedelta(seconds=5),
+        ),
+    ]
+    boundary = HybridBoundary(instructions, messages)
+    fake_inf = SimpleNamespace(
+        evaluate_decisions=AsyncMock(
+            return_value={"should_save_memory": 0.05, "is_core_memory": 0.05}
+        ),
+        complete_text=AsyncMock(),
+    )
+    queue = MemoryQueue(
+        boundary,
+        agent_keys=lambda: ["alpha"],
+        inference=fake_inf,
+        idle_delay=MEMORY_QUEUE_IDLE_DELAY,
+    )
+
+    # 10 seconds after latest message (< 25s): skipped, schedules remaining ~15s wait.
+    processed = asyncio.run(queue.poll_once(now=base + timedelta(seconds=15)))
+    assert processed == 0
+    fake_inf.evaluate_decisions.assert_not_awaited()
+    assert queue._next_idle_wait == pytest.approx(15.0)
+    assert boundary.conversation.memory_extracted_through_message_id is None
+
+    # 25 seconds after latest message: processes immediately and advances cursor.
+    processed_idle = asyncio.run(queue.poll_once(now=base + timedelta(seconds=30)))
+    assert processed_idle == 1
+    fake_inf.evaluate_decisions.assert_awaited_once()
+    assert queue._next_idle_wait is None
+    assert boundary.conversation.memory_extracted_through_message_id == messages[-1].id
+
+
+def test_memory_queue_preempt_cancels_inflight_work_without_advancing_cursor(tmp_path):
+    instructions = tmp_path / "AGENT.md"
+    instructions.write_text("Base instructions.")
+    base = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
+    messages = [
+        Message(id=uuid4(), role="user", content="I love pour-over coffee.", created_at=base),
+        Message(
+            id=uuid4(),
+            role="assistant",
+            content="Great taste!",
+            created_at=base + timedelta(seconds=2),
+        ),
+    ]
+    boundary = HybridBoundary(instructions, messages)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def slow_extract(*args, **kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    fake_inf = SimpleNamespace(
+        evaluate_decisions=AsyncMock(
+            return_value={"should_save_memory": 0.95, "is_core_memory": 0.9}
+        ),
+        complete_text=AsyncMock(side_effect=slow_extract),
+    )
+    queue = MemoryQueue(
+        boundary,
+        agent_keys=lambda: ["alpha"],
+        inference=fake_inf,
+        idle_delay=timedelta(0),
+    )
+
+    async def run_scenario():
+        poll_task = asyncio.create_task(queue.poll_once())
+        await started.wait()
+        assert queue.preempt() is True
+        processed = await poll_task
+        assert processed == 0
+        assert cancelled.is_set()
+        assert queue._active_work is None
+        assert boundary.conversation.memory_extracted_through_message_id is None
+        assert boundary.memory_writes == []
+
+        # Retries cleanly on next quiet poll and advances cursor.
+        fake_inf.complete_text = AsyncMock(
+            return_value=json.dumps(
+                {
+                    "memories": [
+                        {
+                            "action": "create",
+                            "memory_id": None,
+                            "title": "Coffee",
+                            "markdown": "Loves pour-over coffee.",
+                            "tags": ["core"],
+                        }
+                    ],
+                    "persona_markdown": None,
+                }
+            )
+        )
+        retried = await queue.poll_once()
+        assert retried == 1
+        assert boundary.conversation.memory_extracted_through_message_id == messages[-1].id
+        assert len(boundary.memory_writes) == 1
+
+    asyncio.run(run_scenario())
+
+
+def test_agent_runner_reconcile_and_process_preempt_memory_queue():
+    from kadan.api.pydantic_models.runners import Runner
+
+    async def scenario():
+        owner = uuid4()
+        now = datetime.now(UTC)
+        queued_run = AgentRun(
+            id=uuid4(),
+            agent_key="alpha",
+            conversation_id=uuid4(),
+            version=1,
+            created_at=now,
+            updated_at=now,
+        )
+        preempt_calls = []
+
+        class StubServices:
+            def __init__(self):
+                self.memory_queue = SimpleNamespace(
+                    preempt=lambda: preempt_calls.append("preempt") or True
+                )
+                self.runs = SimpleNamespace(owner=owner, process=self.process)
+
+            async def process(self, run):
+                await asyncio.sleep(0)
+
+            async def json_request(self, service, method, path, **kwargs):
+                if path == "/api/agent-runs":
+                    return [queued_run.model_dump(mode="json")]
+                return Runner(
+                    runner_id="runner-1",
+                    worker_id=owner,
+                    capacity=5,
+                    lease_expires_at=datetime.now(UTC) + timedelta(seconds=60),
+                    agent_keys=["alpha"],
+                ).model_dump(mode="json")
+
+        services = StubServices()
+        runner = AgentRunner(services, RunnerSettings(_env_file=None))
+        try:
+            await runner.reconcile()
+            assert len(preempt_calls) == 1
+        finally:
+            await runner.close()
+
+        # Also verify AgentRuns.process() calls preempt() upon claiming a run.
+        claim_preempts = []
+        claimed_run = queued_run.model_copy(
+            update={
+                "status": "running",
+                "owner_id": owner,
+                "lease_expires_at": datetime.now(UTC) + timedelta(seconds=60),
+                "version": 2,
+            }
+        )
+        proc_services = SimpleNamespace(
+            client=None,
+            settings=SimpleNamespace(hikari_url="http://unused"),
+            memory_queue=SimpleNamespace(
+                wakeup=asyncio.Event(),
+                preempt=lambda: claim_preempts.append("claimed") or True,
+            ),
+            json_request=AsyncMock(return_value=claimed_run.model_dump(mode="json")),
+        )
+        runs = AgentRuns(proc_services, owner=owner)
+        runs.advance = AsyncMock(return_value=None)
+        await runs.process(queued_run)
+        assert claim_preempts == ["claimed"]
+
+    asyncio.run(scenario())

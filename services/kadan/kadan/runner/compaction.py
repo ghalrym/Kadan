@@ -209,6 +209,9 @@ async def generate_rolling_summary(
             conversation_key=None,
             priority=priority,
             reuse_prefix=False,
+            max_tokens=2560,
+            reasoning_tokens=512,
+            reasoning_effort="low",
         )
         rolling = rolling.strip()
         if len(rolling) > MAX_SUMMARY_CHARACTERS:

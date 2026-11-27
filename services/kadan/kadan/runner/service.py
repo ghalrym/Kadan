@@ -70,6 +70,10 @@ class AgentRunner:
         self.assigned_keys = tuple(runner.agent_keys)
         values = await self.services.json_request("Tsuchi", "GET", "/api/agent-runs")
         runs = [AgentRun.model_validate(value) for value in values]
+        if self.work or any(run.status in {"queued", "running"} for run in runs):
+            memory_queue = getattr(self.services, "memory_queue", None)
+            if memory_queue is not None:
+                memory_queue.preempt()
         by_id = {run.id: run for run in runs}
         for key, (run, task) in list(self.work.items()):
             current = by_id.get(run.id)

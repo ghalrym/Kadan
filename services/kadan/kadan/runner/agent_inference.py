@@ -107,6 +107,9 @@ class HikariChatModel(BaseChatModel):
     conversation_key: str | None = None
     reuse_prefix: bool = True
     priority: Literal["interactive", "background"] = "interactive"
+    max_tokens: int | None = Field(default=None, ge=1, strict=True)
+    reasoning_tokens: int | None = Field(default=None, ge=1, strict=True)
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
     on_text_delta: Callable[[str], Awaitable[None]] | None = Field(
         default=None, exclude=True
     )
@@ -199,11 +202,21 @@ class HikariChatModel(BaseChatModel):
         payload: dict[str, Any] = {
             "messages": self._wire_messages(messages),
             "tools": list(tools),
-            "max_tokens": REASONING_TOKENS + REPLY_TOKENS,
-            "reasoning_tokens": REASONING_TOKENS,
+            "max_tokens": (
+                self.max_tokens
+                if self.max_tokens is not None
+                else REASONING_TOKENS + REPLY_TOKENS
+            ),
+            "reasoning_tokens": (
+                self.reasoning_tokens
+                if self.reasoning_tokens is not None
+                else REASONING_TOKENS
+            ),
             "stream": True,
             "priority": self.priority,
         }
+        if self.reasoning_effort is not None:
+            payload["reasoning_effort"] = self.reasoning_effort
         if self.reuse_prefix and self.conversation_key:
             payload["conversation_id"] = self.conversation_key
         else:
@@ -373,6 +386,9 @@ class AgentInference:
         *,
         priority: Literal["interactive", "background"] = "background",
         reuse_prefix: bool = True,
+        max_tokens: int | None = None,
+        reasoning_tokens: int | None = None,
+        reasoning_effort: Literal["low", "medium", "high"] | None = None,
     ) -> str:
         model = HikariChatModel(
             client=self.client,
@@ -381,6 +397,9 @@ class AgentInference:
             conversation_key=conversation_key,
             reuse_prefix=reuse_prefix,
             priority=priority,
+            max_tokens=max_tokens,
+            reasoning_tokens=reasoning_tokens,
+            reasoning_effort=reasoning_effort,
         )
         response = await model.ainvoke(messages)
         text = response.content.strip() if isinstance(response.content, str) else ""
@@ -481,6 +500,9 @@ class AgentInference:
             conversation_key=None,
             priority="background",
             reuse_prefix=False,
+            max_tokens=512,
+            reasoning_tokens=128,
+            reasoning_effort="low",
         )
         return _parse_decision_json(raw, expected_keys)
 

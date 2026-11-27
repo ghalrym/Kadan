@@ -34,6 +34,9 @@ class FakeInference:
         *,
         priority="background",
         reuse_prefix=True,
+        max_tokens=None,
+        reasoning_tokens=None,
+        reasoning_effort=None,
     ):
         self.complete_calls.append(
             {
@@ -42,6 +45,9 @@ class FakeInference:
                 "conversation_key": conversation_key,
                 "priority": priority,
                 "reuse_prefix": reuse_prefix,
+                "max_tokens": max_tokens,
+                "reasoning_tokens": reasoning_tokens,
+                "reasoning_effort": reasoning_effort,
             }
         )
         result = self.summaries.pop(0)
@@ -241,6 +247,9 @@ def test_in_run_budget_compaction_triggers_on_char_budget_and_preserves_tail(tmp
     assert fake.complete_calls[0]["priority"] == "interactive"
     assert fake.complete_calls[0]["conversation_key"] is None
     assert fake.complete_calls[0]["reuse_prefix"] is False
+    assert fake.complete_calls[0]["max_tokens"] == 2560
+    assert fake.complete_calls[0]["reasoning_tokens"] == 512
+    assert fake.complete_calls[0]["reasoning_effort"] == "low"
     assert len(boundary.compaction_requests) == 1
     req = boundary.compaction_requests[0]
     assert req["require_idle"] is False
@@ -398,6 +407,9 @@ def test_idle_compactor_compacts_after_30_minutes_with_background_priority(tmp_p
     assert fake.complete_calls[0]["priority"] == "background"
     assert fake.complete_calls[0]["conversation_key"] is None
     assert fake.complete_calls[0]["reuse_prefix"] is False
+    assert fake.complete_calls[0]["max_tokens"] == 2560
+    assert fake.complete_calls[0]["reasoning_tokens"] == 512
+    assert fake.complete_calls[0]["reasoning_effort"] == "low"
     prompt_text = fake.complete_calls[0]["messages"][1].content
     assert "Earlier summary." in prompt_text
     assert "Turn 2" in prompt_text and "Turn 3" in prompt_text

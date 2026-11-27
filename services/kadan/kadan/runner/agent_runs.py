@@ -609,6 +609,7 @@ class AgentRuns(RunClient):
             if error.status == 409:
                 return
             raise
+        self._preempt_memory_queue()
         now = datetime.now(UTC)
         queue_wait = max(0.0, (now - run.created_at).total_seconds())
         logger.info(
@@ -1655,6 +1656,11 @@ class AgentRuns(RunClient):
         memory_queue = getattr(self.services, "memory_queue", None)
         if memory_queue is not None:
             memory_queue.wakeup.set()
+
+    def _preempt_memory_queue(self) -> None:
+        memory_queue = getattr(self.services, "memory_queue", None)
+        if memory_queue is not None and hasattr(memory_queue, "preempt"):
+            memory_queue.preempt()
 
     async def save_result(
         self, run: AgentRun, name: str, result: dict, end_run: bool

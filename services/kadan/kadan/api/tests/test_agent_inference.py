@@ -621,3 +621,68 @@ def test_evaluate_decisions_local_and_subscription_fallback():
     assert seen[1][1]["reuse_prefix"] is False
     assert "conversation_id" not in seen[1][1]
     assert seen[1][1]["priority"] == "background"
+    assert seen[1][1]["max_tokens"] == 512
+    assert seen[1][1]["reasoning_tokens"] == 128
+    assert seen[1][1]["reasoning_effort"] == "low"
+
+
+def test_complete_text_and_chat_model_send_optional_token_and_reasoning_caps():
+    seen = []
+
+    async def check():
+        stream = completed("Compact output")
+
+        def respond(request):
+            seen.append(json.loads(request.content))
+            return httpx.Response(
+                200, text=stream, headers={"content-type": "text/event-stream"}
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            inference = AgentInference(client, "http://hikari")
+            await inference.complete_text(
+                [HumanMessage(content="Extract")],
+                "inkling-2-mini-iq4-nl",
+                conversation_key=None,
+                priority="background",
+                reuse_prefix=False,
+                max_tokens=1536,
+                reasoning_tokens=256,
+                reasoning_effort="low",
+            )
+            await inference.complete_text(
+                [HumanMessage(content="Defaults")],
+                "inkling-2-mini-iq4-nl",
+                conversation_key=None,
+                priority="background",
+                reuse_prefix=False,
+            )
+
+    asyncio.run(check())
+    assert seen[0]["max_tokens"] == 1536
+    assert seen[0]["reasoning_tokens"] == 256
+    assert seen[0]["reasoning_effort"] == "low"
+    assert seen[1]["max_tokens"] == REASONING_TOKENS + REPLY_TOKENS
+    assert seen[1]["reasoning_tokens"] == REASONING_TOKENS
+    assert "reasoning_effort" not in seen[1]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"max_tokens": 0},
+        {"reasoning_tokens": 0},
+        {"reasoning_effort": "minimal"},
+    ],
+)
+def test_hikari_chat_model_rejects_invalid_reasoning_and_token_caps(kwargs):
+    async def check():
+        async with httpx.AsyncClient() as client:
+            with pytest.raises(ValidationError):
+                HikariChatModel(
+                    client=client,
+                    hikari_url="http://hikari",
+                    **kwargs,
+                )
+
+    asyncio.run(check())
