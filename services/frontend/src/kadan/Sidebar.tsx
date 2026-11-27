@@ -4,13 +4,19 @@ import {
   Puzzle,
   RefreshCw,
   Settings,
+  Users,
   X,
 } from "lucide-react";
 import Pet from "./Pet";
 import { useAgentPet } from "./PetContext";
 import type { Agent, Status } from "./types";
 
-export type Page = { name: "chat" } | { name: "space" } | { name: "plugins" } | { name: "agent" };
+export type Page =
+  | { name: "chat" }
+  | { name: "group-chat" }
+  | { name: "space" }
+  | { name: "plugins" }
+  | { name: "agent" };
 
 interface Props {
   agent: Agent | null;
@@ -69,6 +75,11 @@ export default function Sidebar(props: Props) {
           aria-current={page.name === "chat" ? "page" : undefined} onClick={() => props.onPage("chat")}>
           <MessageSquare size={16} />
           Chat
+        </button>
+        <button className={page.name === "group-chat" ? "selected" : ""} disabled={!key}
+          aria-current={page.name === "group-chat" ? "page" : undefined} onClick={() => props.onPage("group-chat")}>
+          <Users size={16} />
+          Group Chat
         </button>
         <button className={page.name === "space" ? "selected" : ""} disabled={!key}
           aria-current={page.name === "space" ? "page" : undefined} onClick={() => props.onPage("space")}>

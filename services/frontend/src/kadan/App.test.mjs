@@ -65,6 +65,7 @@ async function app(petResponses = [], agentResponses = [[agent]]) {
     "react-dom": { flushSync: callback => callback() },
     "lucide-react": {},
     "./Chat": { default: "Chat" },
+    "./GroupChat": { default: "GroupChat" },
     "./RenameAgent": { default: "RenameAgent" },
     "./DeleteAgent": { default: "DeleteAgent" },
     "./RunnerAssignment": { default: "RunnerAssignment" },

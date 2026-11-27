@@ -12,6 +12,7 @@ from kadan_tracing import configure, shutdown
 
 _API_PREFIXES = (
     "/kadan/api",
+    "/kadan/mcp",
     "/kadan/docs",
     "/kadan/openapi.json",
     "/tsuchi/api",
@@ -27,8 +28,7 @@ _API_PREFIXES = (
 
 def _is_api_path(path: str) -> bool:
     return any(
-        path == prefix or path.startswith(f"{prefix}/")
-        for prefix in _API_PREFIXES
+        path == prefix or path.startswith(f"{prefix}/") for prefix in _API_PREFIXES
     )
 
 

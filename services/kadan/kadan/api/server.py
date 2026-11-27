@@ -7,7 +7,19 @@ from fastapi.responses import JSONResponse
 from kadan_tracing import RequestTracing, configure, shutdown
 
 from .config import ServiceError, Settings
-from .routes import agents, calls, health, mcp, runners, status, transcriptions, updates
+from .group_chat_mcp import GroupChatRateLimiter
+from .routes import (
+    agents,
+    calls,
+    group_chat,
+    group_chat_mcp,
+    health,
+    mcp,
+    runners,
+    status,
+    transcriptions,
+    updates,
+)
 from .routes.agents import (
     assets,
     conversations,
@@ -34,6 +46,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             trust_env=False,
         ) as client:
             app.state.services = LocalServices(client, config)
+            app.state.group_chat_rate_limiter = GroupChatRateLimiter()
             try:
                 yield
             finally:
@@ -54,6 +67,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         status.router,
         updates.router,
         mcp.router,
+        group_chat.router,
+        group_chat_mcp.router,
         transcriptions.router,
         calls.router,
         agents.router,

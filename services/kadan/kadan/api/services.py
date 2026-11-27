@@ -7,6 +7,7 @@ from pydantic_core import from_json
 
 from .config import ServiceError, Settings
 from .conversation_client import DEFAULT_CONVERSATION_TITLE, ConversationClient
+from .group_chat_client import GroupChatClient
 from .mcp_client import McpClient
 from .memory_context import CORE_MEMORIES_MAX_CHARS, format_core_memories
 from .pet_client import PetClient
@@ -28,9 +29,7 @@ DEFAULT_AGENT_NAME = "Kadan Agent"
 ONBOARDING_GREETING_MESSAGE_ID = uuid5(
     NAMESPACE_URL, f"kadan:onboarding:greeting:{DEFAULT_AGENT_KEY}"
 )
-ONBOARDING_GREETING = (
-    "Hey! I'm your new Kadan agent. What would you like to call me?"
-)
+ONBOARDING_GREETING = "Hey! I'm your new Kadan agent. What would you like to call me?"
 STARTER_PERSONA_MARKDOWN = """# Identity
 - **Name:** TODO (ask the user what they'd like to name you; call `rename_self` once when they first give you a name, and never call `rename_self` again once your name is no longer "Kadan Agent")
 - **User's Name:** TODO (check Core Memories first; if not already known, ask for their name naturally; no need to call `create_memory` inline, background memory extraction saves it automatically when chat pauses)
@@ -49,9 +48,7 @@ You are meeting your user for the first time. Keep it relaxed, natural, and dire
 - If the user asks you to help with something else before finishing onboarding, help them right away and weave any remaining questions in naturally later."""
 
 
-def character_persona_section(
-    agent_name: str, persona_markdown: str | None
-) -> str:
+def character_persona_section(agent_name: str, persona_markdown: str | None) -> str:
     style = (
         "Talk like a real person in everyday conversation, not a robotic or overly eager assistant. "
         "Skip canned pleasantries, repetitive openers, and en-dashes or em-dashes."
@@ -59,20 +56,25 @@ def character_persona_section(
     if persona_markdown is not None:
         return (
             f'You are "{agent_name}". {style} Stay true to your persona below.'
-            "\nYour saved persona:\n"
-            + persona_markdown
+            "\nYour saved persona:\n" + persona_markdown
         )
     return f'You are "{agent_name}". {style}'
 
 
 def response_error(response: httpx.Response, service: str) -> ServiceError:
+    body = None
     try:
-        detail = response.json().get("detail")
+        body = response.json()
     except (ValueError, AttributeError):
-        detail = None
+        body = None
+    detail = body.get("detail") if isinstance(body, dict) else None
     if not isinstance(detail, str):
         detail = f"{service} returned HTTP {response.status_code}."
-    code = "version_conflict" if response.status_code == 409 else "upstream_error"
+    upstream_code = body.get("code") if isinstance(body, dict) else None
+    if isinstance(upstream_code, str) and upstream_code.strip():
+        code = upstream_code.strip()
+    else:
+        code = "version_conflict" if response.status_code == 409 else "upstream_error"
     return ServiceError(detail, response.status_code, code)
 
 
@@ -83,6 +85,7 @@ class LocalServices:
         self.pets = PetClient(self)
         self.runs = RunClient(self)
         self.mcp = McpClient(self)
+        self.group_chat = GroupChatClient(self)
         self.conversations = ConversationClient(self)
         self.space = SpaceClient(self)
         self.updates = UpdateClient(self)

@@ -2,7 +2,7 @@
 
 from langchain_core.tools import StructuredTool
 
-from . import conversation, history, memory, persona, updates, workspace
+from . import conversation, group_chat, history, memory, persona, updates, workspace
 
 CONVERSATION_TOOLS: list[StructuredTool] = [
     *conversation.TOOLS,
@@ -10,6 +10,8 @@ CONVERSATION_TOOLS: list[StructuredTool] = [
     *history.TOOLS,
     *updates.TOOLS,
 ]
+GROUP_CHAT_TOOLS: list[StructuredTool] = group_chat.TOOLS
+GROUP_CHAT_TOOLS_BY_NAME = {tool.name: tool for tool in GROUP_CHAT_TOOLS}
 MEMORY_TOOLS: list[StructuredTool] = memory.TOOLS
 PERSONA_TOOLS: list[StructuredTool] = persona.TOOLS
 ALL_TOOLS = [

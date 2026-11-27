@@ -60,7 +60,7 @@ test("sidebar shows single Chat navigation without multi-chat controls or Tsuchi
   const navLabels = elements(nav)
     .filter(node => node.type === "button")
     .map(node => [node.props.children].flat(Infinity).filter(item => typeof item === "string").join(""));
-  assert.deepEqual(navLabels, ["Chat", "Space", "Plugins"]);
+  assert.deepEqual(navLabels, ["Chat", "Group Chat", "Space", "Plugins"]);
   elements(nav).find(node => node.type === "button").props.onClick();
   assert.deepEqual(pages, ["chat"]);
 

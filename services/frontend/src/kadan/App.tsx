@@ -12,6 +12,7 @@ import { latestConversation } from "./agentRuns";
 import { pickConversation } from "./conversations";
 import type { Agent, ConversationSummary, PetJob, Resource, Status } from "./types";
 import Chat from "./Chat";
+import GroupChat from "./GroupChat";
 import Pet, { agentPet } from "./Pet";
 import { agentHue } from "./pet";
 import PetEditor from "./PetEditor";
@@ -426,6 +427,8 @@ export default function App() {
               Retry
             </button>
           </div>
+        ) : page.name === "group-chat" ? (
+          <GroupChat agentKey={key} agentName={agent?.name || key} status={status} />
         ) : page.name === "plugins" ? (
           <Plugins agentName={agent?.name || key} />
         ) : page.name === "agent" && agent ? (

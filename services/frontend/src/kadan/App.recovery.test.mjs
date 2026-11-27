@@ -42,7 +42,7 @@ const mocks = {
   "./Pet": moduleUrl("export default 'Pet'; export const agentPet = () => null; export const useMood = () => [];"),
   "./pet": moduleUrl("export const agentHue = () => 0;"),
   "./PetContext": moduleUrl("export const PetContext = { Provider: 'Provider' }; export const useAgentPet = () => null;"),
-  ...Object.fromEntries(["Chat", "PetEditor", "PersonaEditor", "RenameAgent", "DeleteAgent", "RunnerAssignment", "Plugins", "Sidebar", "SpaceLibrary", "ConfirmDialog", "AgentPage", "ServerSettings"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
+  ...Object.fromEntries(["Chat", "GroupChat", "PetEditor", "PersonaEditor", "RenameAgent", "DeleteAgent", "RunnerAssignment", "Plugins", "Sidebar", "SpaceLibrary", "ConfirmDialog", "AgentPage", "ServerSettings"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
 };
 const loader = registerHooks({
   resolve(specifier, context, nextResolve) {

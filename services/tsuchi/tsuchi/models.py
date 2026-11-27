@@ -808,7 +808,7 @@ TranscriptEntry = Annotated[
 class RunEvent(Model):
     """An external event that wakes the agent; Kadan owns its content."""
 
-    kind: Literal["codex", "computer", "t3"]
+    kind: Literal["codex", "computer", "t3", "group_chat"]
     content: str = Field(min_length=1, max_length=20000)
 
 
@@ -1037,3 +1037,295 @@ class ExportManifest(Model):
     pet_jobs: list[PetJob] = Field(default_factory=list)
     agent_runs: list[AgentRun] = Field(default_factory=list)
     image_jobs: list[ImageJob] = Field(default_factory=list)
+
+
+DEFAULT_GROUP_CHAT_ROOM_ID = UUID("00000000-0000-0000-0000-000000000001")
+DEFAULT_MAX_CONSECUTIVE_AGENT_TURNS = 6
+GroupChatHandle = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,47}$")]
+GroupChatParticipantKind = Literal["kadan_agent", "external_agent"]
+GroupChatSenderKind = Literal["user", "kadan_agent", "external_agent"]
+GroupChatEventName = Literal["group_chat.turn_requested"]
+GroupChatSubscriptionStatus = Literal["active", "expired", "failed", "revoked"]
+GroupChatDeliveryStatus = Literal["pending", "delivered", "failed", "dropped"]
+
+
+def _require_aware(value: datetime, label: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{label} requires a timezone")
+    return value.astimezone(UTC)
+
+
+class GroupChatRoom(Model):
+    id: UUID
+    title: Title = "Group Chat"
+    consecutive_agent_turns: int = Field(default=0, ge=0)
+    max_consecutive_agent_turns: int = Field(
+        default=DEFAULT_MAX_CONSECUTIVE_AGENT_TURNS, ge=1, le=100
+    )
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
+class GroupChatRoomUpdate(Model):
+    title: Title | None = None
+    max_consecutive_agent_turns: int | None = Field(default=None, ge=1, le=100)
+    expected_version: int = Field(ge=1)
+
+    @field_validator("title")
+    @classmethod
+    def nonblank_room_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("Title cannot be blank")
+        return value.strip()
+
+
+class GroupChatParticipant(Model):
+    """Persisted participant record. Bearer token hashes are never exposed here."""
+
+    id: UUID
+    room_id: UUID
+    handle: GroupChatHandle
+    display_name: Title
+    kind: GroupChatParticipantKind
+    agent_key: AgentKey | None = None
+    description: str = Field(default="", max_length=500)
+    enabled: bool = True
+    revoked_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    cursor_seq: int = Field(default=0, ge=0)
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
+class GroupChatParticipantInput(Model):
+    id: UUID | None = None
+    handle: GroupChatHandle | None = None
+    display_name: Title
+    kind: GroupChatParticipantKind
+    agent_key: AgentKey | None = None
+    description: str = Field(default="", max_length=500)
+    token_hash: str | None = Field(default=None, min_length=32, max_length=128)
+    enabled: bool = True
+
+    @field_validator("display_name")
+    @classmethod
+    def nonblank_display_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Display name cannot be blank")
+        return value.strip()
+
+    @field_validator("description")
+    @classmethod
+    def trim_description(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_kind_fields(self) -> Self:
+        if self.kind == "external_agent":
+            if not self.token_hash:
+                raise ValueError("External agents require a token hash")
+            if self.agent_key is not None:
+                raise ValueError("External agents cannot set agent_key")
+        else:
+            if not self.agent_key:
+                raise ValueError("Kadan agents require an agent_key")
+            if self.token_hash is not None:
+                raise ValueError("Kadan agents do not use external bearer tokens")
+        return self
+
+
+class GroupChatParticipantUpdate(Model):
+    display_name: Title | None = None
+    handle: GroupChatHandle | None = None
+    description: str | None = Field(default=None, max_length=500)
+    enabled: bool | None = None
+    token_hash: str | None = Field(default=None, min_length=32, max_length=128)
+    revoke: bool = False
+    expected_version: int = Field(ge=1)
+
+    @field_validator("display_name")
+    @classmethod
+    def nonblank_update_display_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("Display name cannot be blank")
+        return value.strip()
+
+    @field_validator("description")
+    @classmethod
+    def trim_update_description(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
+class GroupChatParticipantTouch(Model):
+    last_seen_at: datetime | None = None
+    cursor_seq: int | None = Field(default=None, ge=0)
+
+    @field_validator("last_seen_at")
+    @classmethod
+    def aware_last_seen(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return _require_aware(value, "last_seen_at")
+
+
+class GroupChatTokenAuth(Model):
+    token_hash: str = Field(min_length=32, max_length=128)
+
+
+class GroupChatMessage(Model):
+    id: UUID
+    room_id: UUID
+    seq: int = Field(ge=1)
+    sender_kind: GroupChatSenderKind
+    participant_id: UUID | None = None
+    sender_name: str = Field(min_length=1, max_length=500)
+    content: str = Field(min_length=1, max_length=100000)
+    handoff_to_participant_ids: list[UUID] = Field(default_factory=list, max_length=20)
+    handoff_suppressed: bool = False
+    reply_to_message_id: UUID | None = None
+    client_request_id: str | None = Field(default=None, max_length=256)
+    created_at: datetime
+
+
+class GroupChatMessageInput(Model):
+    id: UUID | None = None
+    sender_kind: GroupChatSenderKind
+    participant_id: UUID | None = None
+    sender_name: str = Field(min_length=1, max_length=500)
+    content: str = Field(min_length=1, max_length=100000)
+    handoff_to_participant_ids: list[UUID] = Field(default_factory=list, max_length=20)
+    reply_to_message_id: UUID | None = None
+    client_request_id: str | None = Field(default=None, max_length=256)
+
+    @field_validator("sender_name")
+    @classmethod
+    def nonblank_sender_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Sender name cannot be blank")
+        return value.strip()
+
+    @field_validator("content")
+    @classmethod
+    def nonblank_content(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Message content cannot be blank")
+        return value
+
+    @field_validator("client_request_id")
+    @classmethod
+    def normalize_client_request_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @model_validator(mode="after")
+    def validate_sender(self) -> Self:
+        if self.sender_kind == "user":
+            if self.participant_id is not None:
+                raise ValueError("User messages cannot set participant_id")
+        elif self.participant_id is None:
+            raise ValueError("Agent messages require participant_id")
+        return self
+
+
+class GroupChatMessageWriteResult(Model):
+    message: GroupChatMessage
+    room: GroupChatRoom
+    effective_handoff_to_participant_ids: list[UUID] = Field(default_factory=list)
+    turn_cap_reached: bool = False
+    handoff_suppressed: bool = False
+    idempotent_replay: bool = False
+    enqueued_delivery_ids: list[UUID] = Field(default_factory=list)
+
+
+class GroupChatMessagesPage(Model):
+    room: GroupChatRoom
+    messages: list[GroupChatMessage]
+    latest_seq: int = Field(ge=0)
+    has_more: bool = False
+
+
+class GroupChatEventSubscription(Model):
+    id: UUID
+    room_id: UUID
+    participant_id: UUID
+    event_name: GroupChatEventName = "group_chat.turn_requested"
+    filters: dict[str, JsonValue] = Field(default_factory=dict)
+    callback_url: str = Field(min_length=1, max_length=2000)
+    signing_secret: str = Field(min_length=1, max_length=512)
+    status: GroupChatSubscriptionStatus = "active"
+    expires_at: datetime
+    last_delivered_seq: int = Field(default=0, ge=0)
+    last_error: str | None = Field(default=None, max_length=2000)
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
+class GroupChatEventSubscriptionInput(Model):
+    id: UUID | None = None
+    participant_id: UUID
+    event_name: GroupChatEventName = "group_chat.turn_requested"
+    filters: dict[str, JsonValue] = Field(default_factory=dict)
+    callback_url: str = Field(min_length=1, max_length=2000)
+    signing_secret: str = Field(min_length=1, max_length=512)
+    expires_at: datetime
+
+    @field_validator("expires_at")
+    @classmethod
+    def aware_expires_at(cls, value: datetime) -> datetime:
+        return _require_aware(value, "expires_at")
+
+
+class GroupChatEventSubscriptionUpdate(Model):
+    status: GroupChatSubscriptionStatus | None = None
+    expires_at: datetime | None = None
+    last_delivered_seq: int | None = Field(default=None, ge=0)
+    last_error: str | None = Field(default=None, max_length=2000)
+    expected_version: int = Field(ge=1)
+
+    @field_validator("expires_at")
+    @classmethod
+    def aware_update_expires_at(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return _require_aware(value, "expires_at")
+
+
+class GroupChatWebhookDelivery(Model):
+    id: UUID
+    subscription_id: UUID
+    room_id: UUID
+    participant_id: UUID
+    seq: int = Field(ge=1)
+    message_id: UUID
+    payload: dict[str, JsonValue] = Field(default_factory=dict)
+    attempts: int = Field(default=0, ge=0)
+    next_attempt_at: datetime
+    status: GroupChatDeliveryStatus = "pending"
+    last_error: str | None = Field(default=None, max_length=2000)
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
+class GroupChatWebhookDeliveryUpdate(Model):
+    status: GroupChatDeliveryStatus
+    attempts: int = Field(ge=0)
+    next_attempt_at: datetime | None = None
+    last_error: str | None = Field(default=None, max_length=2000)
+    expected_version: int = Field(ge=1)
+
+    @field_validator("next_attempt_at")
+    @classmethod
+    def aware_next_attempt(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return _require_aware(value, "next_attempt_at")
