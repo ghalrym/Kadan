@@ -104,7 +104,7 @@ class AgentRunState(BaseModel):
 
 class RunEvent(BaseModel):
     # "computer" remains readable for events saved before the computer was removed.
-    kind: Literal["codex", "computer", "t3", "work"]
+    kind: Literal["codex", "computer", "t3", "work", "group_chat"]
     content: str = Field(min_length=1, max_length=20000)
 
 

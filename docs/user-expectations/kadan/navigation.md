@@ -7,6 +7,7 @@ Kadan's layout follows coding-assistant apps such as T3 Code and Codex: a sideba
 From top to bottom, the sidebar offers:
 
 - **Chat** opens the agent's single ever-persistent conversation thread.
+- **Group Chat** opens the shared [Group Chat](group-chat.md) room for you, Kadan's agent and connected external agents.
 - **Space** opens the [Space](space.md) library of pages, slides and files.
 - **Plugins** opens the [Plugins](plugins.md) page.
 - **Work** lists native [Work](work.md) coding threads grouped into **Default**, **Working**, **Snoozed**, and collapsible searchable **Settled** buckets, with quick actions to start a new thread or manage projects and coding assistants.

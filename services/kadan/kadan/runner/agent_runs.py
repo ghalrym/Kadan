@@ -27,6 +27,7 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ValidationError
 
 from ..api.config import ServiceError
+from ..api.group_chat_mcp import GroupChatMcpHandler
 from ..api.memory_context import (
     build_core_memories_snapshot,
     extract_recall_terms,
@@ -83,11 +84,17 @@ from .memories import AgentMemories
 from .tools import (
     ALL_TOOLS,
     CONVERSATION_TOOLS,
+    GROUP_CHAT_TOOLS,
+    GROUP_CHAT_TOOLS_BY_NAME,
     MEMORY_TOOLS,
     PERSONA_TOOLS,
     TOOLS_BY_NAME,
 )
 from .tools.conversation import GenerateImageArguments, SendMessageArguments
+from .tools.group_chat import (
+    GroupChatReadMessagesArguments,
+    GroupChatSendMessageArguments,
+)
 from .tools.mcp import MCP_GATEWAY_TOOLS, McpCallArguments, McpSearchArguments
 from .tools.persona import RenameSelfArguments, UpdatePersonaArguments
 from .tools.updates import InstallAppUpdateArguments
@@ -125,6 +132,10 @@ def is_lease_lost(error: BaseException) -> bool:
         and error.status == 409
         and error.code == "lease_lost"
     )
+
+
+def is_group_chat_run(run: AgentRun) -> bool:
+    return run.trigger_event is not None and run.trigger_event.kind == "group_chat"
 
 
 def context_characters(context_limit: int | None) -> int:
@@ -313,6 +324,15 @@ class RunConversation:
         )
 
     async def send_message(self, args: SendMessageArguments) -> dict:
+        if is_group_chat_run(self.run):
+            return {
+                "tool": "send_message",
+                "delivered": False,
+                "error": (
+                    "Group Chat runs cannot send messages to 1-on-1 Chat. "
+                    "Use group_chat_send_message to reply in Group Chat, or call finish."
+                ),
+            }
         message = Message(id=self.action_id, role="assistant", content=args.content)
         async with self.runs.lock:
             await self.runs.services.json_request(
@@ -329,6 +349,85 @@ class RunConversation:
             )
         self.end_run = args.end_run
         return {"tool": "send_message", "delivered": True}
+
+    async def _group_chat_participant(self):
+        group_chat = getattr(self.runs.services, "group_chat", None)
+        if group_chat is None:
+            raise ServiceError(
+                "Group Chat is unavailable.", 503, "group_chat_unavailable"
+            )
+        room_id: UUID | None = None
+        if self.run.trigger_event and self.run.trigger_event.kind == "group_chat":
+            try:
+                parsed = json.loads(self.run.trigger_event.content)
+                if isinstance(parsed, dict) and parsed.get("room_id"):
+                    room_id = UUID(str(parsed["room_id"]))
+            except (ValueError, TypeError):
+                room_id = None
+        if room_id is None:
+            room = await group_chat.default_room()
+            room_id = room.id
+        participant = await group_chat.ensure_kadan_participant(
+            room_id, agent_key=self.run.agent_key
+        )
+        if participant is None:
+            raise ServiceError(
+                "Could not resolve Kadan's Group Chat participant identity.",
+                502,
+                "participant_missing",
+            )
+        return participant
+
+    async def group_chat_list_participants(self) -> dict:
+        try:
+            participant = await self._group_chat_participant()
+            handler = GroupChatMcpHandler(self.runs.services)
+            result, _ = await handler.call_tool(
+                participant, "group_chat_list_participants", {}
+            )
+            return result
+        except ServiceError as error:
+            if is_lease_lost(error):
+                raise
+            return {"tool": "group_chat_list_participants", "error": str(error)}
+
+    async def group_chat_read_messages(
+        self, args: GroupChatReadMessagesArguments
+    ) -> dict:
+        try:
+            participant = await self._group_chat_participant()
+            handler = GroupChatMcpHandler(self.runs.services)
+            result, _ = await handler.call_tool(
+                participant,
+                "group_chat_read_messages",
+                args.model_dump(mode="json", exclude_none=True),
+            )
+            return result
+        except ServiceError as error:
+            if is_lease_lost(error):
+                raise
+            return {"tool": "group_chat_read_messages", "error": str(error)}
+
+    async def group_chat_send_message(
+        self, args: GroupChatSendMessageArguments
+    ) -> dict:
+        await self.runs.owned(self.run)
+        try:
+            participant = await self._group_chat_participant()
+            handler = GroupChatMcpHandler(self.runs.services)
+            payload = args.model_dump(mode="json", exclude_none=True)
+            # Deterministic idempotency key from saved action_id prevents duplicate posts on restart.
+            payload["client_request_id"] = str(self.action_id)
+            result, is_error = await handler.call_tool(
+                participant, "group_chat_send_message", payload
+            )
+            if not is_error:
+                self.end_run = True
+            return result
+        except ServiceError as error:
+            if is_lease_lost(error):
+                raise
+            return {"tool": "group_chat_send_message", "error": str(error)}
 
     async def generate_image(self, args: GenerateImageArguments) -> dict:
         image_status = await self.runs.services.image_inference_status()
@@ -642,6 +741,22 @@ class AgentRuns(RunClient):
             current = await self.owned(run)
         except ServiceError:
             logger.info("Run ended after cancellation or loss of ownership: %s", run.id)
+            return
+        if is_group_chat_run(current):
+            # Never leak Group Chat failure notices into the user's private 1-on-1 Chat.
+            try:
+                await self.update(
+                    current,
+                    status="failed",
+                    owner_id=None,
+                    lease_expires_at=None,
+                    error=error_detail,
+                )
+            except ServiceError:
+                logger.info(
+                    "Run ended after cancellation or loss of ownership: %s",
+                    current.id,
+                )
             return
         reply_id = uuid5(current.id, "failure_reply")
         if reply_id not in current.delivered_message_ids:
@@ -1007,16 +1122,23 @@ class AgentRuns(RunClient):
                 detail = json.loads(run.trigger_event.content)
             except ValueError:
                 detail = run.trigger_event.content
-            event = RunObservation(
-                name={
-                    # Legacy: computer results queued before its removal.
-                    "computer": "computer_task_event",
-                    "codex": "codex_thread_event",
-                    "t3": "t3_thread_event",
-                    "work": "work_thread_event",
-                }[run.trigger_event.kind],
-                data=detail if isinstance(detail, dict) else {"detail": detail},
-            )
+            if run.trigger_event.kind == "group_chat":
+                event_data = await self._build_group_chat_event_data(run, detail)
+                event = RunObservation(
+                    name="group_chat_event",
+                    data=event_data,
+                )
+            else:
+                event = RunObservation(
+                    name={
+                        # Legacy: computer results queued before its removal.
+                        "computer": "computer_task_event",
+                        "codex": "codex_thread_event",
+                        "t3": "t3_thread_event",
+                        "work": "work_thread_event",
+                    }[run.trigger_event.kind],
+                    data=detail if isinstance(detail, dict) else {"detail": detail},
+                )
 
         if limit is None:
             mcp_servers = await self.active_mcp_servers()
@@ -1259,6 +1381,7 @@ class AgentRuns(RunClient):
                             run, limit, inference_status=status
                         ),
                     )
+                    await self._advance_group_chat_cursor(run)
                     break
                 except (ServiceError, ValidationError, OSError) as error:
                     if (
@@ -1521,12 +1644,151 @@ class AgentRuns(RunClient):
             )
         return limit
 
+    async def _build_group_chat_event_data(self, run: AgentRun, detail: object) -> dict:
+        group_chat = getattr(self.services, "group_chat", None)
+        base: dict = dict(detail) if isinstance(detail, dict) else {"detail": detail}
+        if group_chat is None:
+            return base
+        try:
+            room_id = (
+                UUID(str(base["room_id"]))
+                if isinstance(base.get("room_id"), str)
+                else (await group_chat.default_room()).id
+            )
+            participant = await group_chat.ensure_kadan_participant(
+                room_id, agent_key=run.agent_key
+            )
+            if participant is None:
+                return base
+            page = await group_chat.list_messages(
+                room_id, after_seq=participant.cursor_seq, limit=100
+            )
+            roster = await group_chat.list_participants(room_id)
+            by_id = {item.id: item for item in roster}
+            unread = [
+                GroupChatMcpHandler.format_message(
+                    msg, participant=participant, participants_by_id=by_id
+                )
+                for msg in page.messages
+            ]
+            addressed_by = [
+                {
+                    "seq": msg["seq"],
+                    "sender_name": msg["sender_name"],
+                    "sender_kind": msg["sender_kind"],
+                }
+                for msg in unread
+                if msg["addressed_to_me"]
+            ]
+            last_included_seq = (
+                page.messages[-1].seq if page.messages else participant.cursor_seq
+            )
+            return {
+                "room_id": str(page.room.id),
+                "room_title": page.room.title,
+                "my_participant_id": str(participant.id),
+                "my_handle": participant.handle,
+                "my_display_name": participant.display_name,
+                "cursor_seq": participant.cursor_seq,
+                "last_included_seq": last_included_seq,
+                "latest_seq": page.latest_seq,
+                "has_more": page.has_more,
+                "trigger_seq": base.get("trigger_seq"),
+                "addressed_by": addressed_by,
+                "unread_messages": unread,
+                "participants": [
+                    {
+                        "id": str(item.id),
+                        "handle": item.handle,
+                        "display_name": item.display_name,
+                        "kind": item.kind,
+                        "description": item.description,
+                        "active": item.enabled and item.revoked_at is None,
+                    }
+                    for item in roster
+                ],
+                "consecutive_agent_turns": page.room.consecutive_agent_turns,
+                "max_consecutive_agent_turns": page.room.max_consecutive_agent_turns,
+                "turn_cap_reached": (
+                    page.room.consecutive_agent_turns
+                    >= page.room.max_consecutive_agent_turns
+                ),
+                "instruction": (
+                    "You were woken for Group Chat. Reply in Group Chat using "
+                    "group_chat_send_message (pass handoff_to only to hand the turn "
+                    "to another agent, omit handoff_to to return the floor to the user), "
+                    "or call finish silently if no reply is needed."
+                ),
+            }
+        except (ServiceError, ValueError, TypeError) as error:
+            logger.warning(
+                "Could not hydrate full Group Chat context for run=%s: %s",
+                run.id,
+                error,
+            )
+            return base
+
+    async def _advance_group_chat_cursor(self, run: AgentRun) -> None:
+        if not is_group_chat_run(run):
+            return
+        group_chat = getattr(self.services, "group_chat", None)
+        if group_chat is None:
+            return
+        obs = next(
+            (
+                item
+                for item in reversed(run.transcript)
+                if isinstance(item, RunObservation) and item.name == "group_chat_event"
+            ),
+            None,
+        )
+        if obs is None or not isinstance(obs.data, dict):
+            return
+        room_raw = obs.data.get("room_id")
+        pid_raw = obs.data.get("my_participant_id")
+        consumed_seq = obs.data.get("last_included_seq")
+        if not isinstance(consumed_seq, int) or isinstance(consumed_seq, bool):
+            unread_items = obs.data.get("unread_messages")
+            if isinstance(unread_items, list) and unread_items:
+                seqs = [
+                    item["seq"]
+                    for item in unread_items
+                    if isinstance(item, dict)
+                    and isinstance(item.get("seq"), int)
+                    and not isinstance(item.get("seq"), bool)
+                ]
+                consumed_seq = max(seqs) if seqs else 0
+            else:
+                consumed_seq = 0
+        if (
+            not isinstance(room_raw, str)
+            or not isinstance(pid_raw, str)
+            or consumed_seq <= 0
+        ):
+            return
+        try:
+            await group_chat.touch_participant(
+                UUID(room_raw),
+                UUID(pid_raw),
+                last_seen_at=datetime.now(UTC),
+                cursor_seq=consumed_seq,
+            )
+        except (ServiceError, ValueError):
+            logger.debug(
+                "Skipping transient Group Chat cursor update for run=%s", run.id
+            )
+
     def bound_tools(
         self,
         run: AgentRun,
         mcp_servers: list[McpServerRecord] | None = None,
     ) -> list[StructuredTool]:
-        base = list(ALL_TOOLS)
+        if is_group_chat_run(run):
+            base = [tool for tool in ALL_TOOLS if tool.name != "send_message"] + list(
+                GROUP_CHAT_TOOLS
+            )
+        else:
+            base = list(ALL_TOOLS)
         if mcp_servers:
             mcp_tools, _ = build_mcp_tools(mcp_servers, {t.name for t in base})
             return [*base, *mcp_tools]
@@ -1542,7 +1804,9 @@ class AgentRuns(RunClient):
             raise ServiceError(
                 "The selected action does not match the saved work.", 409
             )
-        tool = TOOLS_BY_NAME.get(command.tool)
+        tool = TOOLS_BY_NAME.get(command.tool) or GROUP_CHAT_TOOLS_BY_NAME.get(
+            command.tool
+        )
         conversation = RunConversation(self, run, state.replayed)
         mcp_target: tuple[McpServerRecord, Any] | None = None
         if tool is None:
@@ -1551,7 +1815,10 @@ class AgentRuns(RunClient):
             if command.tool in gateway_by_name:
                 tool = gateway_by_name[command.tool]
             else:
-                _, registry = build_mcp_tools(mcp_servers, set(TOOLS_BY_NAME))
+                _, registry = build_mcp_tools(
+                    mcp_servers,
+                    set(TOOLS_BY_NAME) | set(GROUP_CHAT_TOOLS_BY_NAME),
+                )
                 mcp_target = registry.get(command.tool)
 
         if mcp_target is not None:
@@ -1571,7 +1838,7 @@ class AgentRuns(RunClient):
             )
         elif tool is None:
             result = {"tool": command.tool, "error": "This tool no longer exists."}
-        elif tool in MCP_GATEWAY_TOOLS:
+        elif tool in MCP_GATEWAY_TOOLS or tool in GROUP_CHAT_TOOLS:
             result = await tool.ainvoke(
                 command.arguments,
                 config={"configurable": {"conversation": conversation}},

@@ -36,7 +36,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.exception_handler(StorageError)
     async def storage_error(request: Request, error: StorageError):
-        return JSONResponse({"detail": error.detail}, status_code=error.status_code)
+        payload: dict[str, str] = {"detail": error.detail}
+        if error.code:
+            payload["code"] = error.code
+        return JSONResponse(payload, status_code=error.status_code)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, error: RequestValidationError):

@@ -7,6 +7,7 @@ from pydantic_core import from_json
 
 from .config import ServiceError, Settings
 from .conversation_client import DEFAULT_CONVERSATION_TITLE, ConversationClient
+from .group_chat_client import GroupChatClient
 from .mcp_client import McpClient
 from .memory_context import CORE_MEMORIES_MAX_CHARS, format_core_memories
 from .pet_client import PetClient
@@ -62,13 +63,19 @@ def character_persona_section(agent_name: str, persona_markdown: str | None) -> 
 
 
 def response_error(response: httpx.Response, service: str) -> ServiceError:
+    body = None
     try:
-        detail = response.json().get("detail")
+        body = response.json()
     except (ValueError, AttributeError):
-        detail = None
+        body = None
+    detail = body.get("detail") if isinstance(body, dict) else None
     if not isinstance(detail, str):
         detail = f"{service} returned HTTP {response.status_code}."
-    code = "version_conflict" if response.status_code == 409 else "upstream_error"
+    upstream_code = body.get("code") if isinstance(body, dict) else None
+    if isinstance(upstream_code, str) and upstream_code.strip():
+        code = upstream_code.strip()
+    else:
+        code = "version_conflict" if response.status_code == 409 else "upstream_error"
     return ServiceError(detail, response.status_code, code)
 
 
@@ -79,6 +86,7 @@ class LocalServices:
         self.pets = PetClient(self)
         self.runs = RunClient(self)
         self.mcp = McpClient(self)
+        self.group_chat = GroupChatClient(self)
         self.conversations = ConversationClient(self)
         self.space = SpaceClient(self)
         self.updates = UpdateClient(self)

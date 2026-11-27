@@ -2,7 +2,7 @@ import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from itertools import islice
 from pathlib import Path
 from typing import Literal
@@ -24,8 +24,26 @@ from .models import (
     ConversationMemoryStateUpdate,
     ConversationTaskPage,
     ConversationTaskStatus,
+    DEFAULT_GROUP_CHAT_ROOM_ID,
     ExportManifest,
     ExportRevision,
+    GroupChatDeliveryStatus,
+    GroupChatEventSubscription,
+    GroupChatEventSubscriptionInput,
+    GroupChatEventSubscriptionUpdate,
+    GroupChatMessage,
+    GroupChatMessageInput,
+    GroupChatMessagesPage,
+    GroupChatMessageWriteResult,
+    GroupChatParticipant,
+    GroupChatParticipantInput,
+    GroupChatParticipantTouch,
+    GroupChatParticipantUpdate,
+    GroupChatRoom,
+    GroupChatRoomUpdate,
+    GroupChatSubscriptionStatus,
+    GroupChatWebhookDelivery,
+    GroupChatWebhookDeliveryUpdate,
     ImageJob,
     ImageJobState,
     MarkdownContent,
@@ -219,6 +237,66 @@ class Repository:
                     data TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS t3_thread_watches_status ON t3_thread_watches(status, updated_at);
+                CREATE TABLE IF NOT EXISTS group_chat_rooms (
+                    id TEXT PRIMARY KEY,
+                    updated_at TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS group_chat_participants (
+                    id TEXT PRIMARY KEY,
+                    room_id TEXT NOT NULL REFERENCES group_chat_rooms(id),
+                    handle TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    token_hash TEXT UNIQUE,
+                    updated_at TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    UNIQUE(room_id, handle)
+                );
+                CREATE INDEX IF NOT EXISTS group_chat_participants_room
+                    ON group_chat_participants(room_id, kind);
+                CREATE INDEX IF NOT EXISTS group_chat_participants_token
+                    ON group_chat_participants(token_hash);
+                CREATE TABLE IF NOT EXISTS group_chat_messages (
+                    id TEXT PRIMARY KEY,
+                    room_id TEXT NOT NULL REFERENCES group_chat_rooms(id),
+                    seq INTEGER NOT NULL,
+                    sender_scope TEXT NOT NULL,
+                    client_request_id TEXT,
+                    created_at TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    UNIQUE(room_id, seq),
+                    UNIQUE(room_id, sender_scope, client_request_id)
+                );
+                CREATE INDEX IF NOT EXISTS group_chat_messages_room_seq
+                    ON group_chat_messages(room_id, seq);
+                CREATE TABLE IF NOT EXISTS group_chat_event_subscriptions (
+                    id TEXT PRIMARY KEY,
+                    room_id TEXT NOT NULL REFERENCES group_chat_rooms(id),
+                    participant_id TEXT NOT NULL REFERENCES group_chat_participants(id),
+                    event_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS group_chat_subs_participant
+                    ON group_chat_event_subscriptions(participant_id, status);
+                CREATE INDEX IF NOT EXISTS group_chat_subs_room_event
+                    ON group_chat_event_subscriptions(room_id, event_name, status);
+                CREATE TABLE IF NOT EXISTS group_chat_webhook_deliveries (
+                    id TEXT PRIMARY KEY,
+                    subscription_id TEXT NOT NULL REFERENCES group_chat_event_subscriptions(id),
+                    room_id TEXT NOT NULL REFERENCES group_chat_rooms(id),
+                    participant_id TEXT NOT NULL REFERENCES group_chat_participants(id),
+                    seq INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    next_attempt_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    UNIQUE(subscription_id, seq)
+                );
+                CREATE INDEX IF NOT EXISTS group_chat_deliveries_pending
+                    ON group_chat_webhook_deliveries(status, next_attempt_at);
                 CREATE TABLE IF NOT EXISTS work_projects (
                     id TEXT PRIMARY KEY,
                     root_path TEXT NOT NULL UNIQUE,
@@ -642,7 +720,7 @@ class Repository:
         key: str,
         conversation_id: UUID,
         run_id: UUID,
-        origin_run_id: UUID,
+        origin_run_id: UUID | None,
         event: RunEvent,
     ) -> AgentRun:
         """Queue a run woken by an external event, idempotent by its run ID."""
@@ -660,9 +738,16 @@ class Repository:
                     return existing
                 raise StorageError("This agent run ID is already in use", 409)
             self._conversation(db, key, conversation_id)
-            origin = self._run(db, key, origin_run_id)
-            if origin.conversation_id != conversation_id:
-                raise StorageError("The event belongs to another conversation", 409)
+            if origin_run_id is not None:
+                origin = self._run(db, key, origin_run_id)
+                if origin.conversation_id != conversation_id:
+                    raise StorageError("The event belongs to another conversation", 409)
+                persona_id = origin.persona_id
+                references = origin.references
+            else:
+                agent = self._agent(db, key)
+                persona_id = agent.persona_id
+                references = []
             now = utc_now()
             run = AgentRun(
                 id=run_id,
@@ -670,8 +755,8 @@ class Repository:
                 agent_key=key,
                 conversation_id=conversation_id,
                 trigger_event=event,
-                persona_id=origin.persona_id,
-                references=origin.references,
+                persona_id=persona_id,
+                references=references,
                 version=1,
                 created_at=now,
                 updated_at=now,
@@ -2783,6 +2868,1076 @@ class Repository:
                     str(watch_id),
                 ),
             )
+            return updated
+
+    # ---- Group Chat durable storage ----
+
+    @staticmethod
+    def _group_chat_room(db: sqlite3.Connection, room_id: UUID) -> GroupChatRoom:
+        row = db.execute(
+            "SELECT data FROM group_chat_rooms WHERE id = ?", (str(room_id),)
+        ).fetchone()
+        if not row:
+            raise StorageError("Group chat room not found", 404)
+        return GroupChatRoom.model_validate_json(row[0])
+
+    @staticmethod
+    def _save_group_chat_room(db: sqlite3.Connection, room: GroupChatRoom) -> None:
+        db.execute(
+            """INSERT INTO group_chat_rooms (id, updated_at, data) VALUES (?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at, data=excluded.data""",
+            (str(room.id), room.updated_at.isoformat(), room.model_dump_json()),
+        )
+
+    @staticmethod
+    def _group_chat_participant(
+        db: sqlite3.Connection, room_id: UUID, participant_id: UUID
+    ) -> GroupChatParticipant:
+        row = db.execute(
+            "SELECT data FROM group_chat_participants WHERE room_id = ? AND id = ?",
+            (str(room_id), str(participant_id)),
+        ).fetchone()
+        if not row:
+            raise StorageError("Group chat participant not found", 404)
+        return GroupChatParticipant.model_validate_json(row[0])
+
+    @staticmethod
+    def _derive_group_chat_handle(
+        db: sqlite3.Connection,
+        room_id: UUID,
+        display_name: str,
+        exclude_id: UUID | None = None,
+    ) -> str:
+        raw = re.sub(r"[^a-z0-9_-]+", "-", display_name.strip().lower()).strip("-_")
+        if not raw or not re.match(r"^[a-z0-9]", raw):
+            raw = "agent"
+        base = raw[:40]
+        candidate = base
+        suffix = 2
+        while True:
+            if exclude_id is None:
+                taken = db.execute(
+                    "SELECT 1 FROM group_chat_participants WHERE room_id = ? AND handle = ?",
+                    (str(room_id), candidate),
+                ).fetchone()
+            else:
+                taken = db.execute(
+                    "SELECT 1 FROM group_chat_participants WHERE room_id = ? AND handle = ? AND id != ?",
+                    (str(room_id), candidate, str(exclude_id)),
+                ).fetchone()
+            if not taken:
+                return candidate
+            candidate = f"{base[: 47 - len(str(suffix))]}-{suffix}"
+            suffix += 1
+
+    @staticmethod
+    def _revoke_participant_subscriptions(
+        db: sqlite3.Connection, participant_id: UUID, reason: str, now: datetime
+    ) -> None:
+        rows = db.execute(
+            "SELECT data FROM group_chat_event_subscriptions WHERE participant_id = ? AND status = 'active'",
+            (str(participant_id),),
+        ).fetchall()
+        for row in rows:
+            sub = GroupChatEventSubscription.model_validate_json(row[0])
+            revoked = sub.model_copy(
+                update={
+                    "status": "revoked",
+                    "last_error": reason,
+                    "version": sub.version + 1,
+                    "updated_at": now,
+                }
+            )
+            db.execute(
+                "UPDATE group_chat_event_subscriptions SET status = ?, updated_at = ?, data = ? WHERE id = ?",
+                (
+                    revoked.status,
+                    now.isoformat(),
+                    revoked.model_dump_json(),
+                    str(revoked.id),
+                ),
+            )
+        pending_rows = db.execute(
+            "SELECT data FROM group_chat_webhook_deliveries WHERE participant_id = ? AND status = 'pending'",
+            (str(participant_id),),
+        ).fetchall()
+        for row in pending_rows:
+            delivery = GroupChatWebhookDelivery.model_validate_json(row[0])
+            dropped = delivery.model_copy(
+                update={
+                    "status": "dropped",
+                    "last_error": reason,
+                    "version": delivery.version + 1,
+                    "updated_at": now,
+                }
+            )
+            db.execute(
+                "UPDATE group_chat_webhook_deliveries SET status = ?, updated_at = ?, data = ? WHERE id = ?",
+                (
+                    dropped.status,
+                    now.isoformat(),
+                    dropped.model_dump_json(),
+                    str(dropped.id),
+                ),
+            )
+
+    def get_or_create_default_group_chat_room(self) -> GroupChatRoom:
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT data FROM group_chat_rooms WHERE id = ?",
+                (str(DEFAULT_GROUP_CHAT_ROOM_ID),),
+            ).fetchone()
+            if row:
+                return GroupChatRoom.model_validate_json(row[0])
+            now = utc_now()
+            room = GroupChatRoom(
+                id=DEFAULT_GROUP_CHAT_ROOM_ID,
+                title="Group Chat",
+                consecutive_agent_turns=0,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            self._save_group_chat_room(db, room)
+            return room
+
+    def get_group_chat_room(self, room_id: UUID) -> GroupChatRoom:
+        with self.connect() as db:
+            return self._group_chat_room(db, room_id)
+
+    def update_group_chat_room(
+        self, room_id: UUID, value: GroupChatRoomUpdate
+    ) -> GroupChatRoom:
+        with self.connect(write=True) as db:
+            current = self._group_chat_room(db, room_id)
+            if current.version != value.expected_version:
+                raise StorageError("Group chat room changed; reload before saving", 409)
+            now = utc_now()
+            updated = current.model_copy(
+                update={
+                    "title": value.title if value.title is not None else current.title,
+                    "max_consecutive_agent_turns": (
+                        value.max_consecutive_agent_turns
+                        if value.max_consecutive_agent_turns is not None
+                        else current.max_consecutive_agent_turns
+                    ),
+                    "version": current.version + 1,
+                    "updated_at": now,
+                }
+            )
+            self._save_group_chat_room(db, updated)
+            return updated
+
+    def list_group_chat_participants(self, room_id: UUID) -> list[GroupChatParticipant]:
+        with self.connect() as db:
+            self._group_chat_room(db, room_id)
+            rows = db.execute(
+                "SELECT data FROM group_chat_participants WHERE room_id = ? "
+                "ORDER BY CASE kind WHEN 'kadan_agent' THEN 0 ELSE 1 END, handle",
+                (str(room_id),),
+            ).fetchall()
+            return [GroupChatParticipant.model_validate_json(row[0]) for row in rows]
+
+    def create_group_chat_participant(
+        self, room_id: UUID, value: GroupChatParticipantInput
+    ) -> GroupChatParticipant:
+        with self.connect(write=True) as db:
+            self._group_chat_room(db, room_id)
+            now = utc_now()
+            if value.kind == "kadan_agent":
+                existing_rows = db.execute(
+                    "SELECT data FROM group_chat_participants WHERE room_id = ? AND kind = 'kadan_agent'",
+                    (str(room_id),),
+                ).fetchall()
+                for row in existing_rows:
+                    existing = GroupChatParticipant.model_validate_json(row[0])
+                    if (
+                        existing.agent_key == value.agent_key
+                        and existing.revoked_at is None
+                    ):
+                        if existing.display_name != value.display_name or (
+                            value.description
+                            and existing.description != value.description
+                        ):
+                            updated = existing.model_copy(
+                                update={
+                                    "display_name": value.display_name,
+                                    "description": value.description
+                                    or existing.description,
+                                    "version": existing.version + 1,
+                                    "updated_at": now,
+                                }
+                            )
+                            db.execute(
+                                "UPDATE group_chat_participants SET updated_at = ?, data = ? WHERE id = ?",
+                                (
+                                    now.isoformat(),
+                                    updated.model_dump_json(),
+                                    str(updated.id),
+                                ),
+                            )
+                            return updated
+                        return existing
+
+            if (
+                value.token_hash is not None
+                and db.execute(
+                    "SELECT 1 FROM group_chat_participants WHERE token_hash = ?",
+                    (value.token_hash,),
+                ).fetchone()
+            ):
+                raise StorageError("This participant token is already in use", 409)
+
+            handle = value.handle
+            if handle is not None:
+                if db.execute(
+                    "SELECT 1 FROM group_chat_participants WHERE room_id = ? AND handle = ?",
+                    (str(room_id), handle),
+                ).fetchone():
+                    raise StorageError(
+                        f"A participant with handle '@{handle}' already exists", 409
+                    )
+            else:
+                handle = self._derive_group_chat_handle(db, room_id, value.display_name)
+
+            participant = GroupChatParticipant(
+                id=value.id or uuid4(),
+                room_id=room_id,
+                handle=handle,
+                display_name=value.display_name,
+                kind=value.kind,
+                agent_key=value.agent_key,
+                description=value.description,
+                enabled=value.enabled,
+                revoked_at=None,
+                last_seen_at=None,
+                cursor_seq=0,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            db.execute(
+                """INSERT INTO group_chat_participants
+                (id, room_id, handle, kind, token_hash, updated_at, data)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(participant.id),
+                    str(room_id),
+                    participant.handle,
+                    participant.kind,
+                    value.token_hash,
+                    now.isoformat(),
+                    participant.model_dump_json(),
+                ),
+            )
+            return participant
+
+    def update_group_chat_participant(
+        self,
+        room_id: UUID,
+        participant_id: UUID,
+        value: GroupChatParticipantUpdate,
+    ) -> GroupChatParticipant:
+        with self.connect(write=True) as db:
+            self._group_chat_room(db, room_id)
+            current = self._group_chat_participant(db, room_id, participant_id)
+            if current.version != value.expected_version:
+                raise StorageError("Participant changed; reload before saving", 409)
+            if current.revoked_at is not None:
+                raise StorageError("Revoked participants cannot be modified", 409)
+            if value.revoke and current.kind == "kadan_agent":
+                raise StorageError("Kadan's built-in agent cannot be revoked", 409)
+            if value.token_hash is not None and current.kind != "external_agent":
+                raise StorageError("Only external agents use bearer tokens", 409)
+
+            now = utc_now()
+            next_handle = current.handle
+            if value.handle is not None and value.handle != current.handle:
+                if db.execute(
+                    "SELECT 1 FROM group_chat_participants WHERE room_id = ? AND handle = ? AND id != ?",
+                    (str(room_id), value.handle, str(participant_id)),
+                ).fetchone():
+                    raise StorageError(
+                        f"A participant with handle '@{value.handle}' already exists",
+                        409,
+                    )
+                next_handle = value.handle
+
+            if (
+                value.token_hash is not None
+                and db.execute(
+                    "SELECT 1 FROM group_chat_participants WHERE token_hash = ? AND id != ?",
+                    (value.token_hash, str(participant_id)),
+                ).fetchone()
+            ):
+                raise StorageError("This participant token is already in use", 409)
+
+            next_enabled = (
+                False
+                if value.revoke
+                else (value.enabled if value.enabled is not None else current.enabled)
+            )
+            next_revoked_at = now if value.revoke else current.revoked_at
+            updated = current.model_copy(
+                update={
+                    "display_name": (
+                        value.display_name
+                        if value.display_name is not None
+                        else current.display_name
+                    ),
+                    "handle": next_handle,
+                    "description": (
+                        value.description
+                        if value.description is not None
+                        else current.description
+                    ),
+                    "enabled": next_enabled,
+                    "revoked_at": next_revoked_at,
+                    "version": current.version + 1,
+                    "updated_at": now,
+                }
+            )
+            if value.revoke:
+                db.execute(
+                    "UPDATE group_chat_participants SET handle = ?, token_hash = NULL, updated_at = ?, data = ? WHERE id = ?",
+                    (
+                        updated.handle,
+                        now.isoformat(),
+                        updated.model_dump_json(),
+                        str(participant_id),
+                    ),
+                )
+                self._revoke_participant_subscriptions(
+                    db, participant_id, "Participant was revoked", now
+                )
+            elif value.token_hash is not None:
+                db.execute(
+                    "UPDATE group_chat_participants SET handle = ?, token_hash = ?, updated_at = ?, data = ? WHERE id = ?",
+                    (
+                        updated.handle,
+                        value.token_hash,
+                        now.isoformat(),
+                        updated.model_dump_json(),
+                        str(participant_id),
+                    ),
+                )
+            else:
+                db.execute(
+                    "UPDATE group_chat_participants SET handle = ?, updated_at = ?, data = ? WHERE id = ?",
+                    (
+                        updated.handle,
+                        now.isoformat(),
+                        updated.model_dump_json(),
+                        str(participant_id),
+                    ),
+                )
+            if not value.revoke and current.enabled and not updated.enabled:
+                self._revoke_participant_subscriptions(
+                    db, participant_id, "Participant was paused", now
+                )
+            return updated
+
+    def touch_group_chat_participant(
+        self,
+        room_id: UUID,
+        participant_id: UUID,
+        value: GroupChatParticipantTouch,
+    ) -> GroupChatParticipant:
+        with self.connect(write=True) as db:
+            self._group_chat_room(db, room_id)
+            current = self._group_chat_participant(db, room_id, participant_id)
+            updates: dict[str, object] = {}
+            if value.last_seen_at is not None:
+                updates["last_seen_at"] = value.last_seen_at
+            if value.cursor_seq is not None and value.cursor_seq > current.cursor_seq:
+                updates["cursor_seq"] = value.cursor_seq
+            if not updates:
+                return current
+            updated = current.model_copy(update=updates)
+            db.execute(
+                "UPDATE group_chat_participants SET data = ? WHERE id = ?",
+                (updated.model_dump_json(), str(participant_id)),
+            )
+            return updated
+
+    def authenticate_group_chat_token(self, token_hash: str) -> GroupChatParticipant:
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT data FROM group_chat_participants WHERE token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+            if not row:
+                raise StorageError(
+                    "Invalid group chat bearer token", 401, code="invalid_token"
+                )
+            participant = GroupChatParticipant.model_validate_json(row[0])
+            if participant.revoked_at is not None:
+                raise StorageError(
+                    "This agent's access has been revoked",
+                    403,
+                    code="participant_revoked",
+                )
+            if not participant.enabled:
+                raise StorageError(
+                    "This agent is currently paused", 403, code="participant_paused"
+                )
+            now = utc_now()
+            updated = participant.model_copy(update={"last_seen_at": now})
+            db.execute(
+                "UPDATE group_chat_participants SET data = ? WHERE id = ?",
+                (updated.model_dump_json(), str(participant.id)),
+            )
+            return updated
+
+    def list_group_chat_messages(
+        self,
+        room_id: UUID,
+        *,
+        after_seq: int | None = None,
+        before_seq: int | None = None,
+        limit: int = 50,
+    ) -> GroupChatMessagesPage:
+        with self.connect() as db:
+            room = self._group_chat_room(db, room_id)
+            latest_row = db.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM group_chat_messages WHERE room_id = ?",
+                (str(room_id),),
+            ).fetchone()
+            latest_seq = int(latest_row[0]) if latest_row else 0
+            fetch_limit = limit + 1
+            if after_seq is not None and before_seq is not None:
+                rows = db.execute(
+                    "SELECT data FROM group_chat_messages WHERE room_id = ? AND seq > ? AND seq < ? ORDER BY seq ASC LIMIT ?",
+                    (str(room_id), after_seq, before_seq, fetch_limit),
+                ).fetchall()
+                has_more = len(rows) > limit
+                messages = [
+                    GroupChatMessage.model_validate_json(row[0]) for row in rows[:limit]
+                ]
+            elif after_seq is not None:
+                rows = db.execute(
+                    "SELECT data FROM group_chat_messages WHERE room_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?",
+                    (str(room_id), after_seq, fetch_limit),
+                ).fetchall()
+                has_more = len(rows) > limit
+                messages = [
+                    GroupChatMessage.model_validate_json(row[0]) for row in rows[:limit]
+                ]
+            elif before_seq is not None:
+                rows = db.execute(
+                    "SELECT data FROM group_chat_messages WHERE room_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?",
+                    (str(room_id), before_seq, fetch_limit),
+                ).fetchall()
+                has_more = len(rows) > limit
+                messages = [
+                    GroupChatMessage.model_validate_json(row[0])
+                    for row in reversed(rows[:limit])
+                ]
+            else:
+                rows = db.execute(
+                    "SELECT data FROM group_chat_messages WHERE room_id = ? ORDER BY seq DESC LIMIT ?",
+                    (str(room_id), fetch_limit),
+                ).fetchall()
+                has_more = len(rows) > limit
+                messages = [
+                    GroupChatMessage.model_validate_json(row[0])
+                    for row in reversed(rows[:limit])
+                ]
+            return GroupChatMessagesPage(
+                room=room,
+                messages=messages,
+                latest_seq=latest_seq,
+                has_more=has_more,
+            )
+
+    def create_group_chat_message(
+        self, room_id: UUID, value: GroupChatMessageInput
+    ) -> GroupChatMessageWriteResult:
+        with self.connect(write=True) as db:
+            room = self._group_chat_room(db, room_id)
+            sender_scope = (
+                "user" if value.sender_kind == "user" else str(value.participant_id)
+            )
+            if value.client_request_id is not None:
+                existing_row = db.execute(
+                    "SELECT data FROM group_chat_messages WHERE room_id = ? AND sender_scope = ? AND client_request_id = ?",
+                    (str(room_id), sender_scope, value.client_request_id),
+                ).fetchone()
+                if existing_row is not None:
+                    existing = GroupChatMessage.model_validate_json(existing_row[0])
+                    if (
+                        existing.content != value.content
+                        or existing.reply_to_message_id != value.reply_to_message_id
+                        or existing.sender_kind != value.sender_kind
+                        or existing.participant_id != value.participant_id
+                    ):
+                        raise StorageError(
+                            "This client_request_id was already used for a different message",
+                            409,
+                            code="idempotency_conflict",
+                        )
+                    return GroupChatMessageWriteResult(
+                        message=existing,
+                        room=room,
+                        effective_handoff_to_participant_ids=list(
+                            existing.handoff_to_participant_ids
+                        ),
+                        turn_cap_reached=room.consecutive_agent_turns
+                        >= room.max_consecutive_agent_turns,
+                        handoff_suppressed=existing.handoff_suppressed,
+                        idempotent_replay=True,
+                        enqueued_delivery_ids=[],
+                    )
+
+            sender_participant: GroupChatParticipant | None = None
+            if value.sender_kind != "user":
+                assert value.participant_id is not None
+                sender_participant = self._group_chat_participant(
+                    db, room_id, value.participant_id
+                )
+                if sender_participant.kind != value.sender_kind:
+                    raise StorageError(
+                        "Sender kind does not match participant record", 409
+                    )
+                if sender_participant.revoked_at is not None:
+                    raise StorageError(
+                        "This agent's access has been revoked",
+                        403,
+                        code="participant_revoked",
+                    )
+                if not sender_participant.enabled:
+                    raise StorageError(
+                        "This agent is currently paused",
+                        403,
+                        code="participant_paused",
+                    )
+                if room.consecutive_agent_turns >= room.max_consecutive_agent_turns:
+                    raise StorageError(
+                        "Agents reached the consecutive turn limit. Waiting for the user to send a message.",
+                        409,
+                        code="agent_turn_cap_reached",
+                    )
+
+            if (
+                value.reply_to_message_id is not None
+                and not db.execute(
+                    "SELECT 1 FROM group_chat_messages WHERE room_id = ? AND id = ?",
+                    (str(room_id), str(value.reply_to_message_id)),
+                ).fetchone()
+            ):
+                raise StorageError("Reply target message was not found", 404)
+
+            requested_handoff = list(dict.fromkeys(value.handoff_to_participant_ids))
+            if (
+                value.participant_id is not None
+                and value.participant_id in requested_handoff
+            ):
+                raise StorageError(
+                    "An agent cannot hand off a turn to itself",
+                    422,
+                    code="self_handoff_not_allowed",
+                )
+            for target_id in requested_handoff:
+                target = self._group_chat_participant(db, room_id, target_id)
+                if target.revoked_at is not None or not target.enabled:
+                    raise StorageError(
+                        f"Participant '@{target.handle}' is not active",
+                        409,
+                        code="participant_inactive",
+                    )
+
+            new_turns = (
+                0 if value.sender_kind == "user" else room.consecutive_agent_turns + 1
+            )
+            turn_cap_reached = new_turns >= room.max_consecutive_agent_turns
+            if turn_cap_reached:
+                effective_handoff: list[UUID] = []
+                handoff_suppressed = bool(requested_handoff)
+            else:
+                effective_handoff = requested_handoff
+                handoff_suppressed = False
+
+            next_seq_row = db.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM group_chat_messages WHERE room_id = ?",
+                (str(room_id),),
+            ).fetchone()
+            seq = int(next_seq_row[0])
+            now = utc_now()
+            message = GroupChatMessage(
+                id=value.id or uuid4(),
+                room_id=room_id,
+                seq=seq,
+                sender_kind=value.sender_kind,
+                participant_id=value.participant_id,
+                sender_name=value.sender_name,
+                content=value.content,
+                handoff_to_participant_ids=effective_handoff,
+                handoff_suppressed=handoff_suppressed,
+                reply_to_message_id=value.reply_to_message_id,
+                client_request_id=value.client_request_id,
+                created_at=now,
+            )
+            db.execute(
+                """INSERT INTO group_chat_messages
+                (id, room_id, seq, sender_scope, client_request_id, created_at, data)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(message.id),
+                    str(room_id),
+                    seq,
+                    sender_scope,
+                    value.client_request_id,
+                    now.isoformat(),
+                    message.model_dump_json(),
+                ),
+            )
+            updated_room = room.model_copy(
+                update={
+                    "consecutive_agent_turns": new_turns,
+                    "version": room.version + 1,
+                    "updated_at": now,
+                }
+            )
+            self._save_group_chat_room(db, updated_room)
+
+            if sender_participant is not None:
+                touched = sender_participant.model_copy(update={"last_seen_at": now})
+                db.execute(
+                    "UPDATE group_chat_participants SET data = ? WHERE id = ?",
+                    (touched.model_dump_json(), str(sender_participant.id)),
+                )
+
+            enqueued_delivery_ids: list[UUID] = []
+            if effective_handoff:
+                recent_rows = db.execute(
+                    "SELECT data FROM group_chat_messages WHERE room_id = ? AND seq <= ? ORDER BY seq DESC LIMIT 10",
+                    (str(room_id), seq),
+                ).fetchall()
+                recent_messages = [
+                    GroupChatMessage.model_validate_json(row[0])
+                    for row in reversed(recent_rows)
+                ]
+                recent_context = [
+                    {
+                        "seq": item.seq,
+                        "id": str(item.id),
+                        "sender_kind": item.sender_kind,
+                        "sender_name": item.sender_name,
+                        "content": item.content[:2000],
+                        "created_at": item.created_at.isoformat(),
+                    }
+                    for item in recent_messages
+                ]
+                for target_id in effective_handoff:
+                    sub_rows = db.execute(
+                        "SELECT data FROM group_chat_event_subscriptions "
+                        "WHERE room_id = ? AND participant_id = ? AND event_name = 'group_chat.turn_requested' AND status = 'active'",
+                        (str(room_id), str(target_id)),
+                    ).fetchall()
+                    for sub_row in sub_rows:
+                        sub = GroupChatEventSubscription.model_validate_json(sub_row[0])
+                        if sub.expires_at <= now:
+                            continue
+                        room_filter = sub.filters.get("room_id")
+                        if room_filter is not None and str(room_filter) != str(room_id):
+                            continue
+                        event_id = uuid5(sub.id, f"group-chat:{room_id}:{seq}")
+                        delivery = GroupChatWebhookDelivery(
+                            id=event_id,
+                            subscription_id=sub.id,
+                            room_id=room_id,
+                            participant_id=target_id,
+                            seq=seq,
+                            message_id=message.id,
+                            payload={
+                                "room_id": str(room_id),
+                                "room_title": updated_room.title,
+                                "seq": seq,
+                                "message": {
+                                    "id": str(message.id),
+                                    "seq": seq,
+                                    "sender_kind": message.sender_kind,
+                                    "participant_id": (
+                                        str(message.participant_id)
+                                        if message.participant_id
+                                        else None
+                                    ),
+                                    "sender_name": message.sender_name,
+                                    "content": message.content[:8000],
+                                    "handoff_to_participant_ids": [
+                                        str(pid) for pid in effective_handoff
+                                    ],
+                                    "reply_to_message_id": (
+                                        str(message.reply_to_message_id)
+                                        if message.reply_to_message_id
+                                        else None
+                                    ),
+                                    "created_at": message.created_at.isoformat(),
+                                },
+                                "recent_messages": recent_context,
+                                "consecutive_agent_turns": updated_room.consecutive_agent_turns,
+                                "max_consecutive_agent_turns": updated_room.max_consecutive_agent_turns,
+                                "turn_cap_reached": turn_cap_reached,
+                            },
+                            attempts=0,
+                            next_attempt_at=now,
+                            status="pending",
+                            last_error=None,
+                            version=1,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                        cursor = db.execute(
+                            """INSERT OR IGNORE INTO group_chat_webhook_deliveries
+                            (id, subscription_id, room_id, participant_id, seq, status, next_attempt_at, updated_at, data)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                str(delivery.id),
+                                str(delivery.subscription_id),
+                                str(room_id),
+                                str(target_id),
+                                seq,
+                                delivery.status,
+                                now.isoformat(),
+                                now.isoformat(),
+                                delivery.model_dump_json(),
+                            ),
+                        )
+                        if cursor.rowcount > 0:
+                            enqueued_delivery_ids.append(delivery.id)
+
+            return GroupChatMessageWriteResult(
+                message=message,
+                room=updated_room,
+                effective_handoff_to_participant_ids=effective_handoff,
+                turn_cap_reached=turn_cap_reached,
+                handoff_suppressed=handoff_suppressed,
+                idempotent_replay=False,
+                enqueued_delivery_ids=enqueued_delivery_ids,
+            )
+
+    def list_group_chat_subscriptions(
+        self,
+        room_id: UUID,
+        *,
+        participant_id: UUID | None = None,
+        status: GroupChatSubscriptionStatus | None = None,
+    ) -> list[GroupChatEventSubscription]:
+        with self.connect() as db:
+            self._group_chat_room(db, room_id)
+            clauses = ["room_id = ?"]
+            params: list[object] = [str(room_id)]
+            if participant_id is not None:
+                clauses.append("participant_id = ?")
+                params.append(str(participant_id))
+            if status is not None:
+                clauses.append("status = ?")
+                params.append(status)
+            rows = db.execute(
+                f"SELECT data FROM group_chat_event_subscriptions WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC",
+                tuple(params),
+            ).fetchall()
+            return [
+                GroupChatEventSubscription.model_validate_json(row[0]) for row in rows
+            ]
+
+    def get_group_chat_subscription(
+        self, subscription_id: UUID
+    ) -> GroupChatEventSubscription:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT data FROM group_chat_event_subscriptions WHERE id = ?",
+                (str(subscription_id),),
+            ).fetchone()
+            if not row:
+                raise StorageError("Group chat event subscription not found", 404)
+            return GroupChatEventSubscription.model_validate_json(row[0])
+
+    def create_group_chat_subscription(
+        self, room_id: UUID, value: GroupChatEventSubscriptionInput
+    ) -> GroupChatEventSubscription:
+        with self.connect(write=True) as db:
+            self._group_chat_room(db, room_id)
+            participant = self._group_chat_participant(
+                db, room_id, value.participant_id
+            )
+            if participant.kind != "external_agent":
+                raise StorageError(
+                    "Only external agents can register webhook event subscriptions", 409
+                )
+            if participant.revoked_at is not None or not participant.enabled:
+                raise StorageError(
+                    "Paused or revoked participants cannot subscribe to events", 403
+                )
+            now = utc_now()
+            existing_row = db.execute(
+                "SELECT data FROM group_chat_event_subscriptions "
+                "WHERE room_id = ? AND participant_id = ? AND event_name = ? "
+                "ORDER BY updated_at DESC LIMIT 1",
+                (str(room_id), str(value.participant_id), value.event_name),
+            ).fetchone()
+            if existing_row is not None:
+                existing = GroupChatEventSubscription.model_validate_json(
+                    existing_row[0]
+                )
+                renewed = existing.model_copy(
+                    update={
+                        "filters": value.filters,
+                        "callback_url": value.callback_url,
+                        "signing_secret": value.signing_secret,
+                        "status": "active",
+                        "expires_at": value.expires_at,
+                        "last_error": None,
+                        "version": existing.version + 1,
+                        "updated_at": now,
+                    }
+                )
+                db.execute(
+                    "UPDATE group_chat_event_subscriptions "
+                    "SET status = ?, expires_at = ?, updated_at = ?, data = ? WHERE id = ?",
+                    (
+                        renewed.status,
+                        renewed.expires_at.isoformat(),
+                        now.isoformat(),
+                        renewed.model_dump_json(),
+                        str(renewed.id),
+                    ),
+                )
+                return renewed
+
+            sub = GroupChatEventSubscription(
+                id=value.id or uuid4(),
+                room_id=room_id,
+                participant_id=value.participant_id,
+                event_name=value.event_name,
+                filters=value.filters,
+                callback_url=value.callback_url,
+                signing_secret=value.signing_secret,
+                status="active",
+                expires_at=value.expires_at,
+                last_delivered_seq=0,
+                last_error=None,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            db.execute(
+                """INSERT INTO group_chat_event_subscriptions
+                (id, room_id, participant_id, event_name, status, expires_at, updated_at, data)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(sub.id),
+                    str(room_id),
+                    str(sub.participant_id),
+                    sub.event_name,
+                    sub.status,
+                    sub.expires_at.isoformat(),
+                    now.isoformat(),
+                    sub.model_dump_json(),
+                ),
+            )
+            return sub
+
+    def update_group_chat_subscription(
+        self, subscription_id: UUID, value: GroupChatEventSubscriptionUpdate
+    ) -> GroupChatEventSubscription:
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT data FROM group_chat_event_subscriptions WHERE id = ?",
+                (str(subscription_id),),
+            ).fetchone()
+            if not row:
+                raise StorageError("Group chat event subscription not found", 404)
+            current = GroupChatEventSubscription.model_validate_json(row[0])
+            if current.version != value.expected_version:
+                raise StorageError(
+                    "Group chat event subscription changed; reload before saving", 409
+                )
+            now = utc_now()
+            updates: dict[str, object] = {
+                "version": current.version + 1,
+                "updated_at": now,
+            }
+            if value.status is not None:
+                updates["status"] = value.status
+            if value.expires_at is not None:
+                updates["expires_at"] = value.expires_at
+            if value.last_delivered_seq is not None:
+                updates["last_delivered_seq"] = max(
+                    current.last_delivered_seq, value.last_delivered_seq
+                )
+            if "last_error" in value.model_fields_set:
+                updates["last_error"] = value.last_error
+            updated = current.model_copy(update=updates)
+            db.execute(
+                "UPDATE group_chat_event_subscriptions SET status = ?, expires_at = ?, updated_at = ?, data = ? WHERE id = ?",
+                (
+                    updated.status,
+                    updated.expires_at.isoformat(),
+                    now.isoformat(),
+                    updated.model_dump_json(),
+                    str(subscription_id),
+                ),
+            )
+            return updated
+
+    def revoke_group_chat_subscription(
+        self, subscription_id: UUID, *, participant_id: UUID | None = None
+    ) -> GroupChatEventSubscription | None:
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT data FROM group_chat_event_subscriptions WHERE id = ?",
+                (str(subscription_id),),
+            ).fetchone()
+            if not row:
+                return None
+            current = GroupChatEventSubscription.model_validate_json(row[0])
+            if participant_id is not None and current.participant_id != participant_id:
+                raise StorageError("Subscription belongs to another participant", 403)
+            now = utc_now()
+            if current.status != "revoked":
+                updated = current.model_copy(
+                    update={
+                        "status": "revoked",
+                        "version": current.version + 1,
+                        "updated_at": now,
+                    }
+                )
+                db.execute(
+                    "UPDATE group_chat_event_subscriptions SET status = ?, updated_at = ?, data = ? WHERE id = ?",
+                    (
+                        updated.status,
+                        now.isoformat(),
+                        updated.model_dump_json(),
+                        str(subscription_id),
+                    ),
+                )
+            else:
+                updated = current
+            pending_rows = db.execute(
+                "SELECT data FROM group_chat_webhook_deliveries WHERE subscription_id = ? AND status = 'pending'",
+                (str(subscription_id),),
+            ).fetchall()
+            for prow in pending_rows:
+                delivery = GroupChatWebhookDelivery.model_validate_json(prow[0])
+                dropped = delivery.model_copy(
+                    update={
+                        "status": "dropped",
+                        "last_error": "Subscription unsubscribed",
+                        "version": delivery.version + 1,
+                        "updated_at": now,
+                    }
+                )
+                db.execute(
+                    "UPDATE group_chat_webhook_deliveries SET status = ?, updated_at = ?, data = ? WHERE id = ?",
+                    (
+                        dropped.status,
+                        now.isoformat(),
+                        dropped.model_dump_json(),
+                        str(dropped.id),
+                    ),
+                )
+            return updated
+
+    def list_group_chat_webhook_deliveries(
+        self,
+        *,
+        status: GroupChatDeliveryStatus | None = None,
+        due_before: datetime | None = None,
+        room_id: UUID | None = None,
+        participant_id: UUID | None = None,
+        limit: int = 100,
+    ) -> list[GroupChatWebhookDelivery]:
+        with self.connect() as db:
+            clauses: list[str] = []
+            params: list[object] = []
+            if status is not None:
+                clauses.append("status = ?")
+                params.append(status)
+            if due_before is not None:
+                clauses.append("next_attempt_at <= ?")
+                params.append(due_before.astimezone(UTC).isoformat())
+            if room_id is not None:
+                clauses.append("room_id = ?")
+                params.append(str(room_id))
+            if participant_id is not None:
+                clauses.append("participant_id = ?")
+                params.append(str(participant_id))
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            params.append(limit)
+            rows = db.execute(
+                f"SELECT data FROM group_chat_webhook_deliveries {where} ORDER BY next_attempt_at ASC, seq ASC LIMIT ?",
+                tuple(params),
+            ).fetchall()
+            return [
+                GroupChatWebhookDelivery.model_validate_json(row[0]) for row in rows
+            ]
+
+    def update_group_chat_webhook_delivery(
+        self, delivery_id: UUID, value: GroupChatWebhookDeliveryUpdate
+    ) -> GroupChatWebhookDelivery:
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT data FROM group_chat_webhook_deliveries WHERE id = ?",
+                (str(delivery_id),),
+            ).fetchone()
+            if not row:
+                raise StorageError("Webhook delivery not found", 404)
+            current = GroupChatWebhookDelivery.model_validate_json(row[0])
+            if current.version != value.expected_version:
+                raise StorageError(
+                    "Webhook delivery changed; reload before saving", 409
+                )
+            now = utc_now()
+            updated = current.model_copy(
+                update={
+                    "status": value.status,
+                    "attempts": value.attempts,
+                    "next_attempt_at": (
+                        value.next_attempt_at
+                        if value.next_attempt_at is not None
+                        else current.next_attempt_at
+                    ),
+                    "last_error": value.last_error,
+                    "version": current.version + 1,
+                    "updated_at": now,
+                }
+            )
+            db.execute(
+                "UPDATE group_chat_webhook_deliveries SET status = ?, next_attempt_at = ?, updated_at = ?, data = ? WHERE id = ?",
+                (
+                    updated.status,
+                    updated.next_attempt_at.isoformat(),
+                    now.isoformat(),
+                    updated.model_dump_json(),
+                    str(delivery_id),
+                ),
+            )
+            if updated.status == "delivered":
+                sub_row = db.execute(
+                    "SELECT data FROM group_chat_event_subscriptions WHERE id = ?",
+                    (str(updated.subscription_id),),
+                ).fetchone()
+                if sub_row:
+                    sub = GroupChatEventSubscription.model_validate_json(sub_row[0])
+                    sub_updated = sub.model_copy(
+                        update={
+                            "last_delivered_seq": max(
+                                sub.last_delivered_seq, updated.seq
+                            ),
+                            "last_error": None,
+                            "version": sub.version + 1,
+                            "updated_at": now,
+                        }
+                    )
+                    db.execute(
+                        "UPDATE group_chat_event_subscriptions SET updated_at = ?, data = ? WHERE id = ?",
+                        (
+                            now.isoformat(),
+                            sub_updated.model_dump_json(),
+                            str(sub.id),
+                        ),
+                    )
             return updated
 
     # ── Native Work projects, threads, runs, activity & harness configs ────────

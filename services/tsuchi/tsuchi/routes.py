@@ -1,5 +1,6 @@
 import json
 import threading
+from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -23,6 +24,23 @@ from .models import (
     ConversationCompactionUpdate,
     ConversationMemoryStateUpdate,
     ConversationTaskPage,
+    GroupChatDeliveryStatus,
+    GroupChatEventSubscription,
+    GroupChatEventSubscriptionInput,
+    GroupChatEventSubscriptionUpdate,
+    GroupChatMessageInput,
+    GroupChatMessagesPage,
+    GroupChatMessageWriteResult,
+    GroupChatParticipant,
+    GroupChatParticipantInput,
+    GroupChatParticipantTouch,
+    GroupChatParticipantUpdate,
+    GroupChatRoom,
+    GroupChatRoomUpdate,
+    GroupChatSubscriptionStatus,
+    GroupChatTokenAuth,
+    GroupChatWebhookDelivery,
+    GroupChatWebhookDeliveryUpdate,
     ImageJob,
     ImageJobState,
     MarkdownResource,
@@ -133,7 +151,7 @@ class RunCreate(Model):
 
 class EventRunCreate(Model):
     id: UUID
-    origin_run_id: UUID
+    origin_run_id: UUID | None = None
     event: RunEvent
 
 
@@ -733,6 +751,154 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     @router.put("/t3-watches/{watch_id}", response_model=T3ThreadWatch)
     def update_t3_watch(watch_id: UUID, value: T3ThreadWatchUpdate):
         return repository.update_t3_watch(watch_id, value)
+
+    @router.get("/group-chat/rooms/default", response_model=GroupChatRoom)
+    def default_group_chat_room():
+        return repository.get_or_create_default_group_chat_room()
+
+    @router.get("/group-chat/rooms/{room_id}", response_model=GroupChatRoom)
+    def get_group_chat_room(room_id: UUID):
+        return repository.get_group_chat_room(room_id)
+
+    @router.put("/group-chat/rooms/{room_id}", response_model=GroupChatRoom)
+    def update_group_chat_room(room_id: UUID, value: GroupChatRoomUpdate):
+        return repository.update_group_chat_room(room_id, value)
+
+    @router.get(
+        "/group-chat/rooms/{room_id}/participants",
+        response_model=list[GroupChatParticipant],
+    )
+    def list_group_chat_participants(room_id: UUID):
+        return repository.list_group_chat_participants(room_id)
+
+    @router.post(
+        "/group-chat/rooms/{room_id}/participants",
+        response_model=GroupChatParticipant,
+        status_code=201,
+    )
+    def create_group_chat_participant(room_id: UUID, value: GroupChatParticipantInput):
+        return repository.create_group_chat_participant(room_id, value)
+
+    @router.put(
+        "/group-chat/rooms/{room_id}/participants/{participant_id}",
+        response_model=GroupChatParticipant,
+    )
+    def update_group_chat_participant(
+        room_id: UUID, participant_id: UUID, value: GroupChatParticipantUpdate
+    ):
+        return repository.update_group_chat_participant(room_id, participant_id, value)
+
+    @router.post(
+        "/group-chat/rooms/{room_id}/participants/{participant_id}/touch",
+        response_model=GroupChatParticipant,
+    )
+    def touch_group_chat_participant(
+        room_id: UUID, participant_id: UUID, value: GroupChatParticipantTouch
+    ):
+        return repository.touch_group_chat_participant(room_id, participant_id, value)
+
+    @router.post(
+        "/group-chat/participants/authenticate",
+        response_model=GroupChatParticipant,
+    )
+    def authenticate_group_chat_participant(value: GroupChatTokenAuth):
+        return repository.authenticate_group_chat_token(value.token_hash)
+
+    @router.get(
+        "/group-chat/rooms/{room_id}/messages", response_model=GroupChatMessagesPage
+    )
+    def list_group_chat_messages(
+        room_id: UUID,
+        after_seq: Annotated[int | None, Query(ge=0)] = None,
+        before_seq: Annotated[int | None, Query(ge=1)] = None,
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    ):
+        return repository.list_group_chat_messages(
+            room_id, after_seq=after_seq, before_seq=before_seq, limit=limit
+        )
+
+    @router.post(
+        "/group-chat/rooms/{room_id}/messages",
+        response_model=GroupChatMessageWriteResult,
+        status_code=201,
+    )
+    def create_group_chat_message(room_id: UUID, value: GroupChatMessageInput):
+        return repository.create_group_chat_message(room_id, value)
+
+    @router.get(
+        "/group-chat/rooms/{room_id}/subscriptions",
+        response_model=list[GroupChatEventSubscription],
+    )
+    def list_group_chat_subscriptions(
+        room_id: UUID,
+        participant_id: UUID | None = None,
+        status: GroupChatSubscriptionStatus | None = None,
+    ):
+        return repository.list_group_chat_subscriptions(
+            room_id, participant_id=participant_id, status=status
+        )
+
+    @router.post(
+        "/group-chat/rooms/{room_id}/subscriptions",
+        response_model=GroupChatEventSubscription,
+        status_code=201,
+    )
+    def create_group_chat_subscription(
+        room_id: UUID, value: GroupChatEventSubscriptionInput
+    ):
+        return repository.create_group_chat_subscription(room_id, value)
+
+    @router.get(
+        "/group-chat/subscriptions/{subscription_id}",
+        response_model=GroupChatEventSubscription,
+    )
+    def get_group_chat_subscription(subscription_id: UUID):
+        return repository.get_group_chat_subscription(subscription_id)
+
+    @router.put(
+        "/group-chat/subscriptions/{subscription_id}",
+        response_model=GroupChatEventSubscription,
+    )
+    def update_group_chat_subscription(
+        subscription_id: UUID, value: GroupChatEventSubscriptionUpdate
+    ):
+        return repository.update_group_chat_subscription(subscription_id, value)
+
+    @router.delete("/group-chat/subscriptions/{subscription_id}", status_code=204)
+    def revoke_group_chat_subscription(
+        subscription_id: UUID, participant_id: UUID | None = None
+    ):
+        repository.revoke_group_chat_subscription(
+            subscription_id, participant_id=participant_id
+        )
+
+    @router.get(
+        "/group-chat/webhook-deliveries",
+        response_model=list[GroupChatWebhookDelivery],
+    )
+    def list_group_chat_webhook_deliveries(
+        status: GroupChatDeliveryStatus | None = None,
+        due_before: datetime | None = None,
+        room_id: UUID | None = None,
+        participant_id: UUID | None = None,
+        limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    ):
+        return repository.list_group_chat_webhook_deliveries(
+            status=status,
+            due_before=due_before,
+            room_id=room_id,
+            participant_id=participant_id,
+            limit=limit,
+        )
+
+    @router.put(
+        "/group-chat/webhook-deliveries/{delivery_id}",
+        response_model=GroupChatWebhookDelivery,
+    )
+    def update_group_chat_webhook_delivery(
+        delivery_id: UUID, value: GroupChatWebhookDeliveryUpdate
+    ):
+        return repository.update_group_chat_webhook_delivery(delivery_id, value)
 
     # ── Native Work storage routes ───────────────────────────────────────────
 

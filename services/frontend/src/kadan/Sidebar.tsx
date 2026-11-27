@@ -12,6 +12,7 @@ import {
   Search,
   Settings,
   SlidersHorizontal,
+  Users,
   X,
 } from "lucide-react";
 import Pet from "./Pet";
@@ -26,6 +27,7 @@ import {
 
 export type Page =
   | { name: "chat" }
+  | { name: "group-chat" }
   | { name: "space" }
   | { name: "plugins" }
   | { name: "agent" }
@@ -131,6 +133,11 @@ export default function Sidebar(props: Props) {
           aria-current={page.name === "chat" ? "page" : undefined} onClick={() => props.onPage("chat")}>
           <MessageSquare size={16} />
           Chat
+        </button>
+        <button className={page.name === "group-chat" ? "selected" : ""} disabled={!key}
+          aria-current={page.name === "group-chat" ? "page" : undefined} onClick={() => props.onPage("group-chat")}>
+          <Users size={16} />
+          Group Chat
         </button>
         <button className={page.name === "space" ? "selected" : ""} disabled={!key}
           aria-current={page.name === "space" ? "page" : undefined} onClick={() => props.onPage("space")}>

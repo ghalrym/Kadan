@@ -22,6 +22,7 @@ export default defineConfig({
     proxy: {
       // ws relays Kadan voice calls.
       '/kadan/api': { target: api, ws: true },
+      '/kadan/mcp': api,
       '/tsuchi/api': api,
       '/hikari/v1': { target: api, ws: true },
       '/hikari/model-lifecycle': api,
