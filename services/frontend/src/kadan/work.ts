@@ -63,6 +63,7 @@ export interface WorkRun {
   ordinal: number;
   mode: "send" | "steer" | "queue";
   prompt: string;
+  images?: string[];
   status: WorkRunStatus;
   error: string | null;
   final_message: string | null;
@@ -127,6 +128,7 @@ export interface WorkHarness {
   supports_resume: boolean;
   supports_approvals: boolean;
   supports_questions: boolean;
+  supports_images?: boolean;
 }
 
 export interface FilesystemBrowseResponse {
@@ -193,6 +195,15 @@ export function workStatusLabel(status: WorkRunStatus): string {
 }
 
 export function harnessAuthLabel(auth: WorkHarnessAuth, installed: boolean): string {
+  if (auth.login_method === "local") {
+    if (!installed) return "Offline";
+    if (auth.status === "ready") return "Ready (Local)";
+    if (auth.status === "starting" || auth.status === "waiting" || auth.status === "verifying") {
+      return "Downloading…";
+    }
+    if (auth.status === "error") return "Needs attention";
+    return "Model download needed";
+  }
   if (!installed || auth.status === "unavailable") return "Not installed";
   if (auth.status === "ready") return "Connected";
   if (auth.status === "starting" || auth.status === "waiting" || auth.status === "verifying") {
@@ -256,6 +267,7 @@ export const createWorkThread = (body: {
   harness: string;
   model?: string | null;
   prompt?: string | null;
+  images?: string[];
 }) => api<WorkThread>("/work/threads", body, "POST");
 export const getWorkThreadDetail = (id: string) =>
   api<WorkThreadDetail>(`/work/threads/${encodeURIComponent(id)}`);
@@ -269,8 +281,10 @@ export const organizeWorkThread = (
   id: string,
   body: { action: "default" | "snooze" | "settle" | "unsettle"; snooze_minutes?: number; snoozed_until?: string },
 ) => api<WorkThread>(`/work/threads/${encodeURIComponent(id)}/organize`, body, "POST");
-export const sendWorkMessage = (id: string, body: { prompt: string; mode: "send" | "steer" | "queue" }) =>
-  api<WorkRun>(`/work/threads/${encodeURIComponent(id)}/runs`, body, "POST");
+export const sendWorkMessage = (
+  id: string,
+  body: { prompt: string; mode: "send" | "steer" | "queue"; images?: string[] },
+) => api<WorkRun>(`/work/threads/${encodeURIComponent(id)}/runs`, body, "POST");
 export const interruptWorkThread = (id: string) =>
   api<WorkThread>(`/work/threads/${encodeURIComponent(id)}/interrupt`, {}, "POST");
 export const respondWorkPendingRequest = (

@@ -16,24 +16,28 @@ The **Work** section in Kadan's sidebar organizes your threads into four buckets
 Open **Work** setup from the buttons beside **WORK** in the sidebar:
 
 - **Projects:** Add an existing folder on this computer using Kadan's folder picker. Removing a project removes its saved threads from Kadan while leaving your folder on disk untouched.
-- **Harnesses:** View availability and connection status for **Codex**, **Claude Code**, **Antigravity**, and **Grok**, and sign in directly from the browser. Saved credentials are never shown back in the browser after you connect. You can sign out at any time.
+- **Harnesses:** View availability and readiness for **Inkling (Local)** as well as **Codex**, **Claude Code**, **Antigravity**, and **Grok**.
+  - **Inkling (Local)** runs directly on your computer using Kadan's built-in Inkling 2 Mini model and needs no external account or API key. If the standard Inkling 2 Mini model is not yet downloaded, Kadan shows plain-language guidance to download it in Kadan Server → Hikari → Settings.
+  - External assistants can be signed in to directly from the browser. Saved credentials are never shown back in the browser after you connect, and you can sign out at any time.
 
 ## Working in a thread
 
 Opening a thread shows its project folder, current status, and coding assistant and model pickers. Every thread runs directly in its project folder.
 
-- **Live progress:** Assistant output, thinking progress, tool actions, and changed files stream into the thread as work runs and remain saved if you reload or restart Kadan.
-- **Questions and approvals:** When a coding assistant asks a question or asks permission to run an action, the thread moves to **Default** with an inline card where you can approve, decline, pick an option, or type an answer.
+- **Live progress:** Assistant output, thinking progress, tool actions, changed files, and step diagnostics stream into the thread as work runs and remain saved if you reload or restart Kadan.
+- **Screenshots and mockups:** In **Inkling (Local)** threads, you can attach PNG or JPEG screenshots directly in the thread composer so the assistant can inspect UI issues or visual mockups without an external vision service.
+- **Questions and approvals:** When a coding assistant asks a question or asks permission to run an action (such as a potentially risky shell command), the thread moves to **Default** with an inline card where you can approve, approve for the session, decline, pick an option, or type an answer.
+- **Long threads and memory limits:** When a long **Inkling (Local)** thread approaches the active local memory window, Kadan explicitly summarizes earlier steps into a working-memory checkpoint (keeping the goal, modified files, verified checks, open blockers, and next steps) rather than silently dropping messages. If a single request still does not fit available local memory or the active context limit, Kadan stops cleanly and explains what to do next instead of truncating or switching models.
 - **Follow-ups and stopping:** While a thread is idle, send a new message to continue the same session. While it is running, you can **Steer** (when the assistant supports live updates), **Queue** a follow-up turn, or **Stop** active work. Stopping cancels active work without undoing edits already made.
 - **Deleting a thread:** Deleting a thread removes its saved transcript while leaving your project folder untouched.
 
 ## Delegation from chat
 
-When you ask your Kadan agent in **Chat** to investigate a project or make code changes, it can start and manage native Work threads for you and reply with a direct link that opens the thread inside Kadan.
+When you ask your Kadan agent in **Chat** to investigate a project or make code changes, it can start and manage native Work threads for you (using **Inkling (Local)** or any connected external assistant) and reply with a direct link that opens the thread inside Kadan.
 
-- **Automatic updates:** When an agent-started Work thread finishes, fails, stops, or pauses for a question or approval, Kadan automatically wakes your agent in the same chat conversation to report the result or relay the question.
+- **Automatic updates:** When an agent-started Work thread finishes, fails, stops, or pauses for a question or approval, Kadan automatically wakes your agent in the same chat conversation to report the result or relay the question. Background agent-started Inkling Work turns yield priority to your live chat so normal conversation stays responsive.
 - **Optional T3 Code plugin:** If you prefer using an external T3 Code server, the [T3 Code plugin](plugins.md) remains available under **Plugins** and can be used alongside or instead of native Work.
 
 ## Validation status
 
-Automated unit tests cover durable storage, bucket and snooze transitions, local folder browsing and validation, mocked protocol streams for Codex, Claude Code, and ACP (Antigravity and Grok), replay-safe chat delegation, and sidebar/thread UI behavior. Live end-to-end runs with external coding assistants are verified manually by the project owner.
+Automated unit tests cover durable storage (including image attachments), bucket and snooze transitions, local folder browsing and validation, the Inkling (Local) harness loop (bounded tools, edit mismatch recovery, static prefix immutability, explicit token budgeting and compaction, base-weight and priority routing, mocked Decisions guardrails, multimodal payloads, live steering, and cancellation), mocked protocol streams for Codex, Claude Code, and ACP (Antigravity and Grok), replay-safe chat delegation, and sidebar/thread/setup UI behavior. Live end-to-end runs with local inference and external coding assistants are verified manually by the project owner.

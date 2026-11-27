@@ -98,6 +98,7 @@ class HarnessAvailability:
     supports_resume: bool = True
     supports_approvals: bool = True
     supports_questions: bool = True
+    supports_images: bool = False
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,7 @@ class SessionConfig:
     model_options: dict[str, Any] = field(default_factory=dict)
     harness_session_id: str | None = None
     permission_mode: Literal["ask", "auto_edit", "full_auto"] = "ask"
+    priority: Literal["interactive", "background"] = "interactive"
     env_overrides: dict[str, str] = field(default_factory=dict)
 
 

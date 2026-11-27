@@ -4422,6 +4422,7 @@ class Repository:
                 client_request_id=value.client_request_id,
                 mode=value.mode,
                 prompt=value.prompt,
+                images=value.images,
                 status="queued",
                 version=1,
                 created_at=now,

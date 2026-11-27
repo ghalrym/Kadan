@@ -1225,11 +1225,26 @@ class WorkThread(Model):
     updated_at: datetime
 
 
+def _validate_work_images(images: list[str]) -> list[str]:
+    for item in images:
+        if not item.startswith(("data:image/png;base64,", "data:image/jpeg;base64,")):
+            raise ValueError("Work image attachments must be PNG or JPEG data URLs")
+        if len(item) > 28_000_000:
+            raise ValueError("Image attachment exceeds the 20 MiB limit")
+    return images
+
+
 class WorkRunInput(Model):
     id: UUID | None = None
     client_request_id: str | None = Field(default=None, min_length=1, max_length=256)
     mode: Literal["send", "steer", "queue"] = "send"
     prompt: str = Field(min_length=1, max_length=200000)
+    images: list[str] = Field(default_factory=list, max_length=16)
+
+    @field_validator("images")
+    @classmethod
+    def valid_images(cls, value: list[str]) -> list[str]:
+        return _validate_work_images(value)
 
 
 class WorkRunUpdate(Model):
@@ -1263,6 +1278,7 @@ class WorkRun(Model):
     client_request_id: str | None = None
     mode: Literal["send", "steer", "queue"] = "send"
     prompt: str = Field(min_length=1, max_length=200000)
+    images: list[str] = Field(default_factory=list, max_length=16)
     status: WorkRunStatus = "queued"
     owner_id: UUID | None = None
     lease_expires_at: datetime | None = None

@@ -1,7 +1,7 @@
 """Extensible registry of coding harness adapters for Kadan native Work.
 
-Bundled adapters: Codex, Claude Code, Google Antigravity, and xAI Grok.
-Additional harnesses (such as Inkling 2 Mini in #530) register through `register(...)`.
+Bundled adapters: Inkling (Local), Codex, Claude Code, Google Antigravity, and xAI Grok.
+Additional harnesses register through `register(...)`.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from .claude_adapter import ClaudeHarnessAdapter
 from .codex_adapter import CodexHarnessAdapter
 from .contract import HarnessAdapter
 from .grok_adapter import GrokHarnessAdapter
+from .inkling_adapter import InklingHarnessAdapter
 
 
 class HarnessRegistry:
@@ -40,9 +41,10 @@ class HarnessRegistry:
 
 
 def default_registry() -> HarnessRegistry:
-    """Create the default registry with all bundled #529 harnesses."""
+    """Create the default registry with Inkling (Local) and all bundled coding harnesses."""
     return HarnessRegistry(
         [
+            InklingHarnessAdapter(),
             CodexHarnessAdapter(),
             ClaudeHarnessAdapter(),
             AntigravityHarnessAdapter(),

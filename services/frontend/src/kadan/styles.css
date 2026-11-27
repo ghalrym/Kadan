@@ -3954,6 +3954,43 @@ dialog.persona-modal {
   border-color: var(--error);
 }
 
+.work-local-hint {
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 13px;
+  padding: 10px 12px;
+}
+.work-image-attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.work-attach-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.work-image-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.work-image-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  font-size: 12px;
+  color: var(--muted);
+}
+
 /* Group Chat */
 .group-chat {
   display: flex;
