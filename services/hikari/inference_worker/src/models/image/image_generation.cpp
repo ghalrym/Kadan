@@ -86,13 +86,26 @@ void Generator::validate(const ImageRequest& request) {
     need(
         request.reference
             ? !request.source.empty() && request.mask.empty()
-            : source_width == request.width && source_height == request.height,
+            : source_width == request.width && source_height == request.height
+                  && request.references.empty(),
         "image_reference_bounds"
     );
     need(
         !request.reference || source_width * source_height >= 65536,
         "image_reference_minimum_65536_pixels"
     );
+    need(request.references.size() <= 3, "image_reference_count");
+    for (const auto& extra : request.references) {
+        need(
+            extra.width >= 32 && extra.height >= 32 && extra.width <= 3072
+                && extra.height <= 3072 && extra.width % 32 == 0
+                && extra.height % 32 == 0
+                && extra.width * extra.height >= 65536
+                && extra.width * extra.height <= 4608 * 1024
+                && extra.pixels.size() == extra.width * extra.height * 4,
+            "image_reference_bounds"
+        );
+    }
 }
 
 void Generator::prepare(const ImageRequest& request, const std::atomic_bool& cancel) {
@@ -113,12 +126,26 @@ void Generator::generate(
 }
 
 bool Generator::compatible(const ImageRequest& a, const ImageRequest& b) {
-    return a.width == b.width && a.height == b.height && a.steps == b.steps
-           && a.reference == b.reference && a.source_width == b.source_width
-           && a.source_height == b.source_height && a.mask.empty() && b.mask.empty()
-           && (a.source.empty() || a.reference) && (b.source.empty() || b.reference)
-           && a.source.size() == b.source.size()
-           && std::equal(a.source.begin(), a.source.end(), b.source.begin());
+    if (!(a.width == b.width && a.height == b.height && a.steps == b.steps
+          && a.reference == b.reference && a.source_width == b.source_width
+          && a.source_height == b.source_height && a.mask.empty() && b.mask.empty()
+          && (a.source.empty() || a.reference) && (b.source.empty() || b.reference)
+          && a.source.size() == b.source.size()
+          && std::equal(a.source.begin(), a.source.end(), b.source.begin())
+          && a.references.size() == b.references.size()))
+        return false;
+    for (std::size_t i = 0; i < a.references.size(); ++i) {
+        if (a.references[i].width != b.references[i].width
+            || a.references[i].height != b.references[i].height
+            || a.references[i].pixels.size() != b.references[i].pixels.size()
+            || !std::equal(
+                a.references[i].pixels.begin(),
+                a.references[i].pixels.end(),
+                b.references[i].pixels.begin()
+            ))
+            return false;
+    }
+    return true;
 }
 
 void Generator::prepare_batch(

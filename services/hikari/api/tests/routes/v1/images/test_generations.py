@@ -44,29 +44,67 @@ class ImageModelTests(unittest.TestCase):
     def test_omitted_model_defers_to_settings_selection(self):
         request = generations.ImageRequest(prompt="test")
         self.assertIsNone(request.model_id)
-        self.assertEqual(request.steps, 50)
+        self.assertEqual(request.steps, 4)
         task = InferenceTask(
             input={"feature": "image", **request.model_dump(exclude_unset=True)}
         )
         self.assertNotIn("model_id", task.model_dump(mode="json")["input"])
 
-    def test_turbo_choice_survives_task_serialization(self):
+    def test_klein_choice_survives_task_serialization(self):
         request = generations.ImageRequest(
-            prompt="test", model_id="qwen-image-2.1-turbo"
+            prompt="test", model_id="flux.2-klein-4b"
         )
         task = InferenceTask(input={"feature": "image", **request.model_dump()})
         restored = InferenceTask.model_validate_json(task.model_dump_json())
-        self.assertEqual(restored.input.model_id, "qwen-image-2.1-turbo")
+        self.assertEqual(restored.input.model_id, "flux.2-klein-4b")
 
     def test_unknown_image_model_is_rejected(self):
         with self.assertRaises(ValidationError):
             generations.ImageRequest(prompt="test", model_id="unknown")
-        # The base model was removed; Turbo is the only image model.
+        # Qwen-Image 2.1 was removed; FLUX.2 Klein 4B is the only image model.
         with self.assertRaises(ValidationError):
-            generations.ImageRequest(prompt="test", model_id="qwen-image-2.1")
+            generations.ImageRequest(prompt="test", model_id="qwen-image-2.1-turbo")
         with self.assertRaises(ValidationError):
             InferenceTask(
                 input={"feature": "image", "prompt": "test", "model_id": "unknown"}
+            )
+
+    def test_reference_images_validation_and_serialization(self):
+        png = "data:image/png;base64,cG5n"
+        request = edits.ImageRequest(
+            prompt="pose transfer",
+            image=png,
+            reference_images=[png],
+            mode="reference",
+            width=1536,
+            height=512,
+        )
+        task = InferenceTask(
+            input={"feature": "image", **request.model_dump(exclude_unset=True)}
+        )
+        restored = InferenceTask.model_validate_json(task.model_dump_json())
+        self.assertEqual(restored.input.reference_images, [png])
+
+        with self.assertRaises(ValidationError):
+            edits.ImageRequest(
+                prompt="source edit",
+                image=png,
+                reference_images=[png],
+                mode="source",
+            )
+        with self.assertRaises(ValidationError):
+            edits.ImageRequest(
+                prompt="too many refs",
+                image=png,
+                reference_images=[png, png, png, png],
+                mode="reference",
+            )
+        with self.assertRaises(ValidationError):
+            edits.ImageRequest(
+                prompt="empty refs",
+                image=png,
+                reference_images=[],
+                mode="reference",
             )
 
 

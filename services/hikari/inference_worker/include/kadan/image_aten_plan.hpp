@@ -1,12 +1,14 @@
 #pragma once
 #include <algorithm>
+#include <limits>
+#include <stdexcept>
+#include <vector>
 
 #include "kadan/image_vae_tiles.hpp"
 #include "kadan/resources.hpp"
 
 namespace kadan::image {
 enum class AtenImageStage {
-    vision,
     text,
     denoiser,
     vae,
@@ -84,14 +86,10 @@ inline AtenStagePlan aten_stage_plan(
     }
 }
 
-// These CPU tensors survive component unloading; reserve them independently of
-// each sequential stage's temporary weights and device workspace. Vision tokens
-// are the merged 2x2 patch tokens, and text tokens include their image slots.
-inline Bytes aten_reference_host_bytes(
-    Bytes reference_points, Bytes vision_tokens, Bytes text_tokens
-) {
-    return reference_points * 64 * 4 + vision_tokens * 4096 * 4 * 4
-           + text_tokens * 4096 * 4;
+// CPU tensors retained across sequential stages: encoded reference latents
+// (128 FP32 channels per cell) and Qwen3 stacked hidden states (7680 FP32).
+inline Bytes aten_reference_host_bytes(Bytes reference_points, Bytes text_tokens) {
+    return reference_points * 128 * 4 + text_tokens * 7680 * 4;
 }
 
 inline Bytes aten_stage_workspace(
@@ -99,57 +97,34 @@ inline Bytes aten_stage_workspace(
     Bytes points,
     Bytes tokens,
     bool editing = false,
-    Bytes reference_points = 0,
-    Bytes vision_tokens = 0
+    Bytes reference_points = 0
 ) {
     constexpr Bytes gib = 1024ULL * 1024 * 1024;
-    if (stage == AtenImageStage::vision) {
-        const auto patches = vision_tokens * 4;
-        // Two RGB frames per 16x16 patch; FP32 attention/residual work and MLP
-        // intermediates; final merger plus three retained DeepStack outputs.
-        return 2 * gib + patches * (2 * 3 * 16 * 16 + 16 * 1152 + 4 * 4304) * 4
-               + vision_tokens * 4096 * 4 * 4;
-    }
     if (stage == AtenImageStage::text)
-        return 2 * gib + tokens * 4096 * 4 * 16;
+        return 2 * gib + tokens * 2560 * 4 * 16;
     if (stage == AtenImageStage::denoiser) {
-        // Source/noise, two mask vectors, and the largest simultaneous mask
-        // restoration intermediates are additional to the generation envelope.
-        const auto edit_buffers = editing ? points * (8 * 64 + 2) * 4 : 0;
-        // Prefix cache is retained across all 32 blocks: one BF16 K and V per
-        // block, separate from the twenty live projection/MLP work vectors.
-        // Denoiser text tokens exclude the visual slots replaced by VAE tokens.
-        const auto prefix = tokens + reference_points;
-        const auto prefix_cache = prefix * 32 * 2 * 4096 * 2;
-        const auto text_attention_mask = reference_points ? tokens * prefix : 0;
-        const auto reference_latent = reference_points * 64 * 4;
-        return 2 * gib + (points + prefix) * 4096 * 2 * 20 + prefix_cache + edit_buffers
-               + reference_latent + text_attention_mask;
+        const auto edit_buffers = editing ? points * (8 * 128 + 2) * 4 : 0;
+        const auto sequence = points + reference_points + tokens;
+        const auto reference_latent = reference_points * 128 * 4;
+        // Double-stream and single-stream activations (dim=3072, inner=9216,
+        // fused QKV+MLP=27648) plus cuBLAS/SDPA scratch.
+        return 2 * gib + sequence * 3072 * 2 * 24 + edit_buffers + reference_latent;
     }
     if (stage == AtenImageStage::vae_encoder) {
-        // The first block retains the 96-channel full-resolution shortcut while
-        // normalizing/convolving its residual path. Include six full buffers
-        // for live activations and allocator reuse, plus library scratch.
-        const auto largest_activation = points * 256 * 96 * 4;
+        // AutoencoderKLFlux2 2D encoder: 128 channels at full image resolution.
+        const auto largest_activation = points * 256 * 128 * 4;
         return 2 * gib + 6 * largest_activation;
     }
     if (stage == AtenImageStage::vae) {
-        // The last upsampler has 288 FP32 channels at 16x latent resolution:
-        // 4.50 GiB at 2048x2048 (also the observed failed convolution allocation).
-        // Its shortcut reshape can hold three such buffers at once. Normalization
-        // and residual updates reuse owned outputs; the shortcut releases its
-        // source before reshaping. Allow one more largest buffer for cached/split
-        // allocator blocks (the failure retained 2.31 GiB), separately from the
-        // existing 2 GiB library scratch allowance.
-        const auto largest_activation = points * 256 * 288 * 4;
+        // AutoencoderKLFlux2 2D decoder: 128 channels at full image resolution.
+        const auto largest_activation = points * 256 * 128 * 4;
         return 2 * gib + 4 * largest_activation;
     }
     throw std::invalid_argument("image_aten_stage");
 }
 
-// Components remain sequential. Only denoising retains a batch of padded
-// prefixes, latent images, projections and KV caches; the fixed library scratch
-// and loaded weights are shared. Prefix uses the longest prompt in the batch.
+// Components remain sequential. Only denoising retains a batch of latent
+// images and activations; fixed library scratch and loaded weights are shared.
 inline Bytes aten_batch_workspace(
     Bytes points, Bytes tokens, Bytes reference_points, std::size_t images
 ) {
@@ -254,19 +229,19 @@ inline std::vector<AtenDenoiserLane> aten_denoiser_plan(
     return lanes;
 }
 
-// Tiling changes only the convolutional sections. Global bottleneck attention
-// still sees the complete latent grid and is accounted for independently.
+// Tiling bounds convolutional activations. Global bottleneck attention still
+// runs on the full latent grid (512 channels at 2x latent resolution).
 inline Bytes aten_tiled_vae_workspace(AtenImageStage stage, Bytes points) {
     constexpr Bytes gib = 1024ULL * 1024 * 1024;
     if (stage == AtenImageStage::vae) {
         constexpr Bytes side = vae_tile_core + 2 * vae_decode_halo;
         const auto tile_points = std::min(points, side * side);
-        return 2 * gib + 4 * tile_points * 256 * 288 * 4 + 10 * points * 1152 * 4;
+        return 2 * gib + 4 * tile_points * 256 * 128 * 4 + 10 * points * 4 * 512 * 4;
     }
     if (stage == AtenImageStage::vae_encoder) {
         constexpr Bytes side = vae_tile_core + 2 * vae_encode_halo;
         const auto tile_points = std::min(points, side * side);
-        return 2 * gib + 6 * tile_points * 256 * 96 * 4 + 10 * points * 768 * 4;
+        return 2 * gib + 6 * tile_points * 256 * 128 * 4 + 10 * points * 4 * 512 * 4;
     }
     return 0;
 }

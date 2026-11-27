@@ -35,10 +35,10 @@ class ImageRequest(BaseModel):
         default=None, description="Omit to use the image model selected in Settings."
     )
     steps: int = Field(
-        default=50,
+        default=4,
         ge=2,
         le=100,
-        description="Base model step count. Turbo always uses its saved eight-step schedule.",
+        description="Inference step count. FLUX.2 Klein 4B Distilled uses its fixed four-step schedule.",
     )
 
 

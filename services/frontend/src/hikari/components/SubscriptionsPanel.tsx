@@ -221,7 +221,7 @@ export default function SubscriptionsPanel() {
             <span className="model-row-label">
               <span className="model-row-capability">Images</span>
               <span className="model-row-name">
-                {image === 'local' ? 'Qwen-Image on this computer' : 'Your ChatGPT subscription'}
+                {image === 'local' ? 'FLUX.2 Klein 4B on this computer' : 'Your ChatGPT subscription'}
               </span>
             </span>
             <div className="segments" role="group" aria-label="Image provider">

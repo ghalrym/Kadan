@@ -130,7 +130,7 @@ test('language offers Local Inkling 2 Mini, Claude and Codex without a separate 
   assert.deepEqual(options(view.tree, 'Language').map(content), ['Local', 'Claude', 'Codex'])
   assert.equal(selected(view.tree, 'Language'), 'Local')
   assert.match(content(capabilityRow(view.tree, 'Language')), /Inkling 2 Mini on this computer/)
-  assert.match(content(capabilityRow(view.tree, 'Images')), /Qwen-Image on this computer/)
+  assert.match(content(capabilityRow(view.tree, 'Images')), /FLUX\.2 Klein 4B on this computer/)
 })
 
 test('language subscription options wait for their sign-in', async () => {

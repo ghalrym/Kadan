@@ -222,7 +222,7 @@ void runtime_weight_requirement_units() {
         worker_requirement(kadan::Workload::speech, "medium", host_overflow);
     });
 
-    auto image = entry("qwen-image-2.1-turbo", Json::array());
+    auto image = entry("flux.2-klein-4b", Json::array());
     image["estimated_bytes"] = kadan::Bytes(123);
     image["runtime_weight_bytes"] = runtime_bytes;
     catalog(data, Json::array({image}));
@@ -597,29 +597,26 @@ void checkpoint_catalog_units() {
             throw RequestError("Unexpected checkpoint transfer");
         }
     );
-    const auto& turbo = store.entry("qwen-image-2.1-turbo");
-    assert(turbo.kind == "image" && turbo.inference_available);
-    assert(turbo.repo_id == "Qwen/Qwen-Image-2.1-Turbo");
-    assert(turbo.revision == "fc13ba1986fcb905854dc8de2f52eee395f49b5b");
-    assert(turbo.license == "qwen-research" && turbo.license_notice);
+    const auto& klein = store.entry("flux.2-klein-4b");
+    assert(klein.kind == "image" && klein.inference_available);
+    assert(klein.repo_id == "black-forest-labs/FLUX.2-klein-4B");
+    assert(klein.revision == "e7b7dc27f91deacad38e78976d1f2b499d76a294");
+    assert(klein.license == "apache-2.0" && !klein.license_notice);
     assert(
-        turbo.license_notice->find("research and evaluation only") != std::string::npos
+        klein.license_url
+        == "https://huggingface.co/" + klein.repo_id + "/blob/" + klein.revision
+               + "/LICENSE.md"
     );
-    assert(
-        turbo.license_url
-        == "https://huggingface.co/" + turbo.repo_id + "/blob/" + turbo.revision
-               + "/LICENSE"
-    );
-    assert(store.allowed("text_encoder/model.safetensors", turbo));
-    assert(store.allowed("processor/processor_config.json", turbo));
-    assert(!store.allowed("processor/run.py", turbo));
+    assert(store.allowed("text_encoder/model-00001-of-00002.safetensors", klein));
+    assert(store.allowed("tokenizer/tokenizer.json", klein));
+    assert(!store.allowed("tokenizer/run.py", klein));
     assert(
         std::find(
-            turbo.required_files.begin(),
-            turbo.required_files.end(),
+            klein.required_files.begin(),
+            klein.required_files.end(),
             "text_encoder/model.safetensors.index.json"
         )
-        == turbo.required_files.end()
+        != klein.required_files.end()
     );
     // Inkling 2 Mini is the sole local language + vision model family.
     for (const auto* id :
@@ -655,6 +652,7 @@ void checkpoint_catalog_units() {
           "large",
           "muse-spark-open-q3-xl",
           "qwen-image-2.1",
+          "qwen-image-2.1-turbo",
           "qwen3.6-35b-a3b-q4-k-m",
           "qwen3.8-flash-next-ud-iq3-xxs",
           "qwen3.8-flash-next-q3-k-xl"})
@@ -1796,7 +1794,7 @@ void job_units() {
             .dump();
     Json models = Json::array();
     for (const auto* id :
-         {"inkling-2-mini-iq4-nl", "qwen-image-2.1-turbo", "h3-fl2va-int8-turbo"}) {
+         {"inkling-2-mini-iq4-nl", "flux.2-klein-4b", "h3-fl2va-int8-turbo"}) {
         const auto dir = root / (std::string(id) + "-revision");
         const auto manifest = local_manifest(dir, {{"config.json", config}});
         models.push_back(entry(id, manifest));
@@ -1853,8 +1851,8 @@ void job_units() {
     );
     prepare_task(defaulted, store, files, running);
     assert(
-        defaulted.model == "qwen-image-2.1-turbo"
-        && std::get<ImageRequest>(defaulted.input).steps == 8
+        defaulted.model == "flux.2-klein-4b"
+        && std::get<ImageRequest>(defaulted.input).steps == 4
     );
     files.cleanup(defaulted.id);
     auto video =
@@ -1879,13 +1877,13 @@ void job_units() {
         {{"feature", "image"}, {"prompt", "mountain"}, {"count", 1}}
     );
     prepare_task(default_image, store, files, running);
-    assert(default_image.model == "qwen-image-2.1-turbo");
+    assert(default_image.model == "flux.2-klein-4b");
     files.cleanup(default_image.id);
-    // Image selection is unavailable; all image requests use Turbo.
+    // Image selection is unavailable; all image requests use FLUX.2 Klein 4B.
     rejects([&] {
         request(
             "image-selection",
-            {{"feature", "image_selection"}, {"model_id", "qwen-image-2.1-turbo"}},
+            {{"feature", "image_selection"}, {"model_id", "flux.2-klein-4b"}},
             "configure"
         );
     });
@@ -1899,9 +1897,9 @@ void job_units() {
     );
     prepare_task(image, store, files, running);
     assert(
-        image.model == "qwen-image-2.1-turbo"
-        && std::get<ImageRequest>(image.input).width == 2048
-        && std::get<ImageRequest>(image.input).steps == 8
+        image.model == "flux.2-klein-4b"
+        && std::get<ImageRequest>(image.input).width == 1024
+        && std::get<ImageRequest>(image.input).steps == 4
     );
     bytes(jobs / "image/one.png", "image-one");
     bytes(jobs / "image/two.png", "image-two");
@@ -1915,30 +1913,30 @@ void job_units() {
     rejects([&] { present_image(image, {"/outside.png", "/outside2.png"}); });
     files.cleanup("image");
     assert(!fs::exists(jobs / "image"));
-    for (unsigned steps : {2u, 50u, 100u}) {
-        auto turbo = request(
-            "turbo",
+    for (unsigned steps : {2u, 4u, 50u, 100u}) {
+        auto klein = request(
+            "klein",
             {{"feature", "image"},
-             {"model_id", "qwen-image-2.1-turbo"},
+             {"model_id", "flux.2-klein-4b"},
              {"prompt", "mountain"},
              {"count", 1},
              {"steps", steps},
              {"seed", 7}}
         );
-        prepare_task(turbo, store, files, running);
-        const auto& input = std::get<ImageRequest>(turbo.input);
-        assert(turbo.model == "qwen-image-2.1-turbo" && input.steps == 8);
-        assert(input.width == 2048 && input.height == 2048 && input.seed == 7);
+        prepare_task(klein, store, files, running);
+        const auto& input = std::get<ImageRequest>(klein.input);
+        assert(klein.model == "flux.2-klein-4b" && input.steps == 4);
+        assert(input.width == 1024 && input.height == 1024 && input.seed == 7);
         assert(
-            turbo.configuration.checkpoint == root / "qwen-image-2.1-turbo-revision"
+            klein.configuration.checkpoint == root / "flux.2-klein-4b-revision"
         );
-        bytes(jobs / "turbo/one.png", "image-one");
-        const auto meta = present_image(turbo, {jobs / "turbo/one.png"})
+        bytes(jobs / "klein/one.png", "image-one");
+        const auto meta = present_image(klein, {jobs / "klein/one.png"})
                               .at("image")
                               .at("meta")
                               .get<std::string>();
-        assert(meta.find("8 steps") != std::string::npos);
-        files.cleanup("turbo");
+        assert(meta.find("4 steps") != std::string::npos);
+        files.cleanup("klein");
     }
     const std::string small_source_png =
         "data:image/"
@@ -1984,14 +1982,32 @@ void job_units() {
         );
         assert(input.width == (explicit_size ? 384u : 256u));
         assert(input.height == (explicit_size ? 416u : 256u));
-        assert(input.steps == 8);
+        assert(input.steps == 4);
         bytes(jobs / "reference-image/one.png", "image-one");
         const auto meta = present_image(reference, {jobs / "reference-image/one.png"})
                               .at("image")
                               .at("meta")
                               .get<std::string>();
-        assert(meta.find("8 steps") != std::string::npos);
+        assert(meta.find("4 steps") != std::string::npos);
         files.cleanup("reference-image");
+    }
+    {
+        auto multi_ref = request(
+            "multi-reference-image",
+            {{"feature", "image"},
+             {"prompt", "pose transfer"},
+             {"image", source_png},
+             {"reference_images", Json::array({source_png})},
+             {"mode", "reference"},
+             {"width", 1536},
+             {"height", 512},
+             {"count", 1}}
+        );
+        prepare_task(multi_ref, store, files, running);
+        const auto& input = std::get<ImageRequest>(multi_ref.input);
+        assert(input.reference && input.reference_sources.size() == 1);
+        assert(input.reference_sources[0].width == 256 && input.reference_sources[0].height == 256);
+        files.cleanup("multi-reference-image");
     }
     rejects([&] {
         auto small = request(

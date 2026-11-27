@@ -186,7 +186,7 @@ def test_subscription_language_is_ready_without_local_download(provider):
         (
             [
                 {
-                    "id": "qwen-image-2.1-turbo",
+                    "id": "flux.2-klein-4b",
                     "kind": "image",
                     "status": "complete",
                     "inference_available": True,
@@ -276,7 +276,7 @@ def test_active_inkling_requires_its_own_downloaded_worker(
             "local",
             [
                 {
-                    "id": "qwen-image-2.1-turbo",
+                    "id": "flux.2-klein-4b",
                     "kind": "image",
                     "status": "complete",
                     "inference_available": True,
@@ -290,7 +290,7 @@ def test_active_inkling_requires_its_own_downloaded_worker(
             "local",
             [
                 {
-                    "id": "qwen-image-2.1-turbo",
+                    "id": "flux.2-klein-4b",
                     "kind": "image",
                     "status": "not_downloaded",
                     "inference_available": True,
@@ -304,7 +304,7 @@ def test_active_inkling_requires_its_own_downloaded_worker(
             "local",
             [
                 {
-                    "id": "qwen-image-2.1-turbo",
+                    "id": "flux.2-klein-4b",
                     "kind": "image",
                     "status": "downloading",
                     "inference_available": True,
@@ -318,7 +318,7 @@ def test_active_inkling_requires_its_own_downloaded_worker(
             "local",
             [
                 {
-                    "id": "qwen-image-2.1-turbo",
+                    "id": "flux.2-klein-4b",
                     "kind": "image",
                     "status": "complete",
                     "inference_available": False,

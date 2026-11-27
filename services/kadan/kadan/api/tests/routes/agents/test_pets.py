@@ -14,7 +14,7 @@ from kadan.api.routes.agents import pets
 PET_ID = UUID("10000000-0000-4000-8000-00000000000a")
 
 
-@pytest.mark.parametrize("mode", ["single_image", "character_sheet"])
+@pytest.mark.parametrize("mode", ["template_strips", "single_image", "character_sheet"])
 def test_create_passes_reference_choice_to_durable_job(mode):
     create = AsyncMock(return_value=sentinel.saved_pet)
     req = request(AsyncMock())
@@ -24,8 +24,8 @@ def test_create_passes_reference_choice_to_durable_job(mode):
     create.assert_awaited_once_with("andrew", PET_ID, "Fox", mode)
 
 
-def test_create_defaults_to_single_image_and_rejects_unknown_mode():
-    assert pets.CreatePet(id=PET_ID, prompt="Fox").reference_mode == "single_image"
+def test_create_defaults_to_template_strips_and_rejects_unknown_mode():
+    assert pets.CreatePet(id=PET_ID, prompt="Fox").reference_mode == "template_strips"
     with pytest.raises(ValidationError):
         pets.CreatePet(id=PET_ID, prompt="Fox", reference_mode="unknown")
 

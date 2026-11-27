@@ -39,7 +39,7 @@ std::vector<CompiledWorkload> compiled_workloads() {
     out.push_back({"tts", "Text to Speech (Qwen3-TTS)", true});
 #endif
 #ifdef KADAN_HAS_IMAGE_ENGINE
-    out.push_back({"image", "Image Generation (Qwen-Image Turbo)", true});
+    out.push_back({"image", "Image Generation (FLUX.2 Klein 4B)", true});
 #endif
 #ifdef KADAN_HAS_VIDEO_ENGINE
     out.push_back({"video", "Video Generation (MiniMax H3 Turbo)", true});

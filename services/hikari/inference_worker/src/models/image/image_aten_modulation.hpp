@@ -2,39 +2,52 @@
 #include <ATen/ATen.h>
 
 namespace kadan::image::detail {
-// Comfy Kitchen v0.2.37 (Apache-2.0), commit
-// be003b7c23c5b01328657955b8bc5d3f073d868e, CUDA ops/adaln.cu:
-// normalize and apply (1 + scale) in FP32, then cast once. This composes
-// ATen operations independently; it does not reproduce the CUDA reduction tree.
-struct AtenModulation {
-    at::Tensor attention_scale, attention_gate, mlp_scale, mlp_gate;
+// FLUX.2 shared AdaLN modulation: each parameter set is (shift, scale, gate).
+// Normalize and apply (1 + scale) * norm(x) + shift in FP32, then cast once.
+struct Flux2ModulationSet {
+    at::Tensor shift, scale, gate;
+};
 
-    explicit AtenModulation(const at::Tensor& projected) {
-        const auto width = projected.size(-1) / 4;
-        attention_scale = projected.slice(-1, 0, width).to(at::kFloat).add(1);
-        attention_gate = projected.slice(-1, width, 2 * width).tanh();
-        mlp_scale = projected.slice(-1, 2 * width, 3 * width).to(at::kFloat).add(1);
-        mlp_gate = projected.slice(-1, 3 * width).tanh();
+struct Flux2DoubleModulation {
+    Flux2ModulationSet attention, mlp;
+
+    explicit Flux2DoubleModulation(const at::Tensor& projected) {
+        auto chunks = projected.unsqueeze(1).chunk(6, -1);
+        attention = {
+            chunks[0].to(at::kFloat),
+            chunks[1].to(at::kFloat).add(1),
+            chunks[2]
+        };
+        mlp = {
+            chunks[3].to(at::kFloat),
+            chunks[4].to(at::kFloat).add(1),
+            chunks[5]
+        };
     }
 };
 
-inline at::Tensor
-aten_modulated_norm(const at::Tensor& x, const at::Tensor& scale, std::int64_t prefix) {
+struct Flux2SingleModulation {
+    Flux2ModulationSet parallel;
+
+    explicit Flux2SingleModulation(const at::Tensor& projected) {
+        auto chunks = projected.unsqueeze(1).chunk(3, -1);
+        parallel = {
+            chunks[0].to(at::kFloat),
+            chunks[1].to(at::kFloat).add(1),
+            chunks[2]
+        };
+    }
+};
+
+inline at::Tensor flux2_modulated_norm(
+    const at::Tensor& x, const at::Tensor& shift, const at::Tensor& scale
+) {
     auto normalized = at::layer_norm(x.to(at::kFloat), {x.size(-1)}, {}, {}, 1e-6);
-    normalized.slice(-2, prefix).mul_(scale[0]);
-    if (prefix)
-        normalized.slice(-2, 0, prefix).mul_(scale[1]);
-    return normalized.to(x.scalar_type());
+    return normalized.mul_(scale).add_(shift).to(x.scalar_type());
 }
 
-// The caller owns x. addcmul performs the residual product and addition with
-// one output rounding, rather than materializing a rounded BF16 product.
-inline at::Tensor aten_gated_residual(
-    at::Tensor x, const at::Tensor& delta, const at::Tensor& gate, std::int64_t prefix
-) {
-    x.slice(-2, prefix).addcmul_(delta.slice(-2, prefix), gate[0]);
-    if (prefix)
-        x.slice(-2, 0, prefix).addcmul_(delta.slice(-2, 0, prefix), gate[1]);
-    return x;
+inline at::Tensor
+flux2_gated_residual(at::Tensor x, const at::Tensor& delta, const at::Tensor& gate) {
+    return x.addcmul_(delta, gate);
 }
 }  // namespace kadan::image::detail

@@ -49,12 +49,40 @@ int main() {
     auto reference = envelope;
     reference["input"].update(
         {{"image", "data:image/png;base64,cG5n"},
+         {"reference_images", Json::array({"data:image/png;base64,cG5n"})},
          {"mode", "reference"},
          {"batch_collection_target", 2}}
     );
     const auto parsed = parse_request(reference);
     assert(std::get<ImageRequest>(parsed.input).reference);
+    assert(std::get<ImageRequest>(parsed.input).reference_images.size() == 1);
     assert(std::get<ImageRequest>(parsed.input).batch_collection_target == 2);
+    for (const auto& bad_refs : {Json::array(), Json::array({"a", "b", "c", "d"}), Json("not-array")}) {
+        auto bad = reference;
+        bad["input"]["reference_images"] = bad_refs;
+        bool rejected = false;
+        try {
+            (void)parse_request(bad);
+        } catch (const RequestError& error) {
+            rejected = error.status == 422;
+        }
+        assert(rejected);
+    }
+    {
+        auto bad_mode = envelope;
+        bad_mode["input"].update(
+            {{"image", "data:image/png;base64,cG5n"},
+             {"reference_images", Json::array({"data:image/png;base64,cG5n"})},
+             {"mode", "source"}}
+        );
+        bool rejected = false;
+        try {
+            (void)parse_request(bad_mode);
+        } catch (const RequestError& error) {
+            rejected = error.status == 422;
+        }
+        assert(rejected);
+    }
     auto chat = envelope;
     chat["operation"] = "completion";
     chat["input"] = {

@@ -23,4 +23,4 @@ The service responsible for this feature is Hikari. See [Subscription providers 
 
 ## Image generation provider
 
-Settings also offers an independent Local or ChatGPT choice for image generation using the existing Codex connection (Local uses Qwen-Image Turbo). Claude cannot serve images. Signing out resets both language and image generation when they use that connection. Source and reference editing, pet creation and pet repair stay local. See [image generation](image-generation.md) for supported options and limitations.
+Settings also offers an independent Local or ChatGPT choice for image generation using the existing Codex connection (Local uses FLUX.2 Klein 4B). Claude cannot serve images. Signing out resets both language and image generation when they use that connection. Source and reference editing, pet creation and pet repair stay local. See [image generation](image-generation.md) for supported options and limitations.

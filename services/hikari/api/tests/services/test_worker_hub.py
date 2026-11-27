@@ -693,7 +693,7 @@ class RegistrationTests(HubTestCase):
             "llm",
             store=models(
                 checkpoints=[
-                    checkpoint("qwen-image-2.1-turbo", kind="image"),
+                    checkpoint("flux.2-klein-4b", kind="image"),
                     checkpoint("whisper-tiny.en", kind="transcription"),
                     checkpoint("inkling-2-mini-iq4-nl"),
                 ]
@@ -843,7 +843,7 @@ class JobTests(HubTestCase):
         self.assertEqual(raised.exception.status_code, 422)
 
     async def test_a_download_goes_to_one_worker_of_its_type_per_computer(self):
-        store = models(checkpoints=[checkpoint("qwen-image-2.1-turbo", kind="image")])
+        store = models(checkpoints=[checkpoint("flux.2-klein-4b", kind="image")])
         language, _ = await self.connect("llm", store=store)
         here, _ = await self.connect("image", instance="image-1", store=store)
         twin, _ = await self.connect("image", instance="image-2", store=store)
@@ -851,7 +851,7 @@ class JobTests(HubTestCase):
         await self.hub.submit(
             InferenceTask(
                 operation="download",
-                input={"feature": "models", "model_id": "qwen-image-2.1-turbo"},
+                input={"feature": "models", "model_id": "flux.2-klein-4b"},
             )
         )
         self.assertFalse(language.commands("submit"))

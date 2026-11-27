@@ -11,7 +11,7 @@ export function parsePendingCreation(raw: string | null): CreationRequest | null
     const value = JSON.parse(raw ?? "null");
     if (!value || typeof value.id !== "string" || typeof value.prompt !== "string") return null;
     const mode = value.reference_mode ?? "single_image";
-    if (mode !== "single_image" && mode !== "character_sheet") return null;
+    if (mode !== "template_strips" && mode !== "single_image" && mode !== "character_sheet") return null;
     return { id: value.id, prompt: value.prompt, reference_mode: mode };
   } catch { return null; }
 }

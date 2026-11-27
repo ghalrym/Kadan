@@ -1,5 +1,5 @@
 #pragma once
-#include <array>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -7,12 +7,13 @@
 
 namespace kadan::image {
 struct ImageCheckpointConfig {
-    std::array<float, 64> mean, stddev;
     std::vector<std::string> text_files;
-    Schedule sample_schedule;
+    std::vector<std::string> denoiser_files;
+    float batch_norm_eps = 1e-4f;
+    std::size_t default_steps = 4;
 
     Schedule sampling_schedule(std::size_t tokens, std::size_t steps) const {
-        return sample_schedule.steps ? sample_schedule : schedule(tokens, steps);
+        return schedule(tokens, steps ? steps : default_steps);
     }
 };
 

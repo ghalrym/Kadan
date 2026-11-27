@@ -160,11 +160,11 @@ export interface PetJob {
   agent_key: string;
   prompt: string;
   origin: "generated" | "imported";
-  reference_mode: "single_image" | "character_sheet";
+  reference_mode: "template_strips" | "single_image" | "character_sheet";
   status: "queued" | "running" | "cancelling" | "cancelled" | "interrupted" | "failed" | "ready";
   stage: string;
   completed_steps: number;
-  total_steps: 74 | 75;
+  total_steps: 12 | 74 | 75;
   steps: PetStep[];
   rejections: { step: PetStep; reason: string }[];
   parent_pet_id?: string | null;

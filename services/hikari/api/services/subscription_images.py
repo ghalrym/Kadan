@@ -36,7 +36,7 @@ class SubscriptionImages(CodexAppServer):
                 "ChatGPT images do not support seeds. Clear the seed or choose Local in Settings.",
                 422,
             )
-        if self.body.steps != 50:
+        if self.body.steps != 4:
             raise InferenceFailure(
                 "ChatGPT images do not support sampling steps. Use the default or choose Local in Settings.",
                 422,

@@ -414,7 +414,7 @@ InferenceRequest parse_request(const Json& envelope) {
             );
             input.batch_collection_target = target.get<unsigned>();
         }
-        input.steps = body.value("steps", 50u);
+        input.steps = body.value("steps", 4u);
         input.seed = optional<std::uint64_t>(body, "seed");
         input.image = optional<std::string>(body, "image");
         input.mask = optional<std::string>(body, "mask");
@@ -424,6 +424,27 @@ InferenceRequest parse_request(const Json& envelope) {
             mode == "source" || mode == "reference", "Invalid image edit mode", 422
         );
         input.reference = mode == "reference";
+        if (body.contains("reference_images") && !body.at("reference_images").is_null()) {
+            preparation_check(
+                input.reference,
+                "Additional reference images require reference editing",
+                422
+            );
+            const auto& refs = body.at("reference_images");
+            preparation_check(
+                refs.is_array() && !refs.empty() && refs.size() <= 3,
+                "Reference images must contain between 1 and 3 entries",
+                422
+            );
+            for (const auto& entry : refs) {
+                preparation_check(
+                    entry.is_string() && !entry.get<std::string>().empty(),
+                    "Each reference image must be a non-empty string",
+                    422
+                );
+                input.reference_images.push_back(entry.get<std::string>());
+            }
+        }
         const auto width = optional<unsigned>(body, "width");
         const auto height = optional<unsigned>(body, "height");
         preparation_check(

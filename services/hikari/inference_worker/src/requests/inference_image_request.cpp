@@ -39,6 +39,16 @@ void prepare_input(
         "Reference editing requires an image without a mask",
         422
     );
+    preparation_check(
+        input.reference || input.reference_images.empty(),
+        "Additional reference images require reference editing",
+        422
+    );
+    preparation_check(
+        input.reference_images.size() <= 3,
+        "Reference images must contain at most 3 additional entries",
+        422
+    );
     if (input.image) {
         input.source = prepare_image_upload(*input.image);
         input.image.reset();
@@ -49,6 +59,17 @@ void prepare_input(
             "Reference image must contain at least 65,536 pixels",
             422
         );
+        input.reference_sources.clear();
+        for (const auto& extra : input.reference_images) {
+            auto uploaded = prepare_image_upload(extra);
+            preparation_check(
+                uploaded.width * uploaded.height >= 65536,
+                "Reference image must contain at least 65,536 pixels",
+                422
+            );
+            input.reference_sources.push_back(std::move(uploaded));
+        }
+        input.reference_images.clear();
         if (!input.reference || !input.width) {
             input.width = input.source_width;
             input.height = input.source_height;
@@ -86,24 +107,24 @@ void prepare_input(
             }
         }
     }
-    request.model = input.model.value_or("qwen-image-2.1-turbo");
-    if (request.model != "qwen-image-2.1-turbo")
+    request.model = input.model.value_or("flux.2-klein-4b");
+    if (request.model != "flux.2-klein-4b")
         throw RequestError("Unsupported image model", 422);
-    // The pinned Turbo grid determines updates, even when steps was supplied.
-    input.steps = 8;
+    // FLUX.2 Klein 4B Distilled uses a fixed four-step schedule.
+    input.steps = 4;
     if (!input.source) {
         if (input.aspect == "1:1") {
-            input.width = 2048;
-            input.height = 2048;
+            input.width = 1024;
+            input.height = 1024;
         } else if (input.aspect == "4:3") {
-            input.width = 2400;
-            input.height = 1792;
+            input.width = 1152;
+            input.height = 864;
         } else if (input.aspect == "3:4") {
-            input.width = 1792;
-            input.height = 2400;
+            input.width = 864;
+            input.height = 1152;
         } else if (input.aspect == "16:9") {
-            input.width = 2752;
-            input.height = 1536;
+            input.width = 1344;
+            input.height = 768;
         } else
             throw RequestError("Unsupported image aspect", 422);
     }

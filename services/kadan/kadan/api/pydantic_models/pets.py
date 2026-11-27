@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .resources import AgentKey
 
-PetReferenceMode = Literal["single_image", "character_sheet"]
+PetReferenceMode = Literal["template_strips", "single_image", "character_sheet"]
 
 
 class PetAnimation(BaseModel):
@@ -65,7 +65,7 @@ class PetState(BaseModel):
     ] = "queued"
     stage: str = "queued"
     completed_steps: int = 0
-    total_steps: Literal[74, 75] = 74
+    total_steps: Literal[12, 74, 75] = 74
     error: str | None = None
     cancel_requested: bool = False
     steps: list[PetStep] = Field(default_factory=list)
@@ -100,7 +100,12 @@ class PetState(BaseModel):
 
     @model_validator(mode="after")
     def valid_pending_frames(self) -> Self:
-        if self.total_steps != (75 if self.reference_mode == "character_sheet" else 74):
+        expected_steps = (
+            12
+            if self.reference_mode == "template_strips"
+            else (75 if self.reference_mode == "character_sheet" else 74)
+        )
+        if self.total_steps != expected_steps:
             raise ValueError("Pet total steps must match its reference mode")
         if (self.pending_step_name is None) != (self.pending_request_id is None):
             raise ValueError(

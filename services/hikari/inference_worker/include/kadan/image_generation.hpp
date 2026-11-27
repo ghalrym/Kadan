@@ -28,14 +28,20 @@ struct BatchMeasurement {
     Footprint additional_image;
 };
 
+struct ImageReferenceBuffer {
+    std::span<const float> pixels;
+    std::size_t width = 0, height = 0;
+};
+
 struct ImageRequest {
     std::string prompt;
-    std::size_t width = 2048, height = 2048, steps = 50;
+    std::size_t width = 1024, height = 1024, steps = 4;
     std::uint64_t seed = 0;
     std::span<const float> source, mask;
     float strength = .65f;
     bool reference = false;
     std::size_t source_width = 0, source_height = 0;
+    std::vector<ImageReferenceBuffer> references;
 };
 
 // Checkpoint-specific generation, source-latent edits and reference conditioning.

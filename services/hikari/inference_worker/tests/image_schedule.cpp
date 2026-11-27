@@ -18,20 +18,20 @@ void supported_canvases() {
         std::size_t width, height;
     };
 
-    // Published API aspect sizes plus the generator's admitted pixel boundary.
     for (auto canvas : std::array{
-             Canvas{2048, 2048},
-             Canvas{2400, 1792},
-             Canvas{1792, 2400},
-             Canvas{2752, 1536},
+             Canvas{1024, 1024},
+             Canvas{1152, 864},
+             Canvas{864, 1152},
+             Canvas{1344, 768},
+             Canvas{1536, 512},
+             Canvas{768, 832},
              Canvas{3072, 1536},
          }) {
         check(canvas.width * canvas.height <= 4608 * 1024);
         const auto points = canvas.width / 16 * (canvas.height / 16);
-        for (std::size_t steps : {2u, 3u, 4u, 40u, 100u}) {
+        for (std::size_t steps : {2u, 4u, 8u, 40u, 100u}) {
             const auto schedule = kadan::image::schedule(points, steps);
             check(schedule.steps == steps && schedule.sigma[0] == 1.f);
-            check(std::abs(schedule.sigma[steps - 1] - .02f) < 1e-6f);
             check(schedule.sigma[steps] == 0.f);
             for (std::size_t i = 1; i <= steps; ++i)
                 check(
@@ -42,13 +42,28 @@ void supported_canvases() {
     }
 }
 
-void square_schedule_values() {
-    // Checkpoint parameters: exponential shift mu=1.3129032258064515,
-    // terminal .02. Golden values were evaluated in double precision offline.
-    const auto schedule = kadan::image::schedule(16384, 40);
-    check(std::abs(schedule.sigma[1] - .9926459799f) < 1e-6f);
-    check(std::abs(schedule.sigma[19] - .7898675096f) < 1e-6f);
-    check(std::abs(schedule.sigma[38] - .1022295822f) < 1e-6f);
+void klein_four_step_golden_values() {
+    // Verified directly against Diffusers FlowMatchEulerDiscreteScheduler + compute_empirical_mu.
+    {
+        const auto s = kadan::image::schedule(1024, 4);
+        check(std::abs(s.sigma[0] - 1.0f) < 1e-6f);
+        check(std::abs(s.sigma[1] - 0.95808536f) < 1e-5f);
+        check(std::abs(s.sigma[2] - 0.88398188f) < 1e-5f);
+        check(std::abs(s.sigma[3] - 0.71749657f) < 1e-5f);
+        check(s.sigma[4] == 0.0f);
+    }
+    {
+        const auto s = kadan::image::schedule(3072, 4);
+        check(std::abs(s.sigma[1] - 0.96453035f) < 1e-5f);
+        check(std::abs(s.sigma[2] - 0.90063941f) < 1e-5f);
+        check(std::abs(s.sigma[3] - 0.75133359f) < 1e-5f);
+    }
+    {
+        const auto s = kadan::image::schedule(4096, 4);
+        check(std::abs(s.sigma[1] - 0.96738404f) < 1e-5f);
+        check(std::abs(s.sigma[2] - 0.90814394f) < 1e-5f);
+        check(std::abs(s.sigma[3] - 0.76719993f) < 1e-5f);
+    }
 }
 
 void rejected_bounds() {
@@ -72,7 +87,7 @@ void rejected_bounds() {
 
 int main() {
     supported_canvases();
-    square_schedule_values();
+    klein_four_step_golden_values();
     rejected_bounds();
     std::cout << "image schedule scalar units passed (no inference)\n";
 }

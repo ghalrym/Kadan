@@ -6,7 +6,7 @@ Source editing keeps that normalized size. Edit strength starts at 65%: zero pre
 
 An optional opaque mask must match the original source size. Black preserves pixels, white allows editing and gray blends. Replacing or removing the source clears its mask; transparent masks are rejected.
 
-Reference editing is also available to applications using Hikari, including pet generation. It creates a new image guided by a reference's character and appearance, with an optional different output size. The current browser editor uses source editing. Reference editing does not use masks or strength and does not promise exact character identity or pixel preservation.
+Reference editing is also available to applications using Hikari, including pet generation. It creates a new image guided by one or more reference images (for example, a pose template paired with a character still), with an optional different output size. The current browser editor uses source editing. Reference editing does not use masks or strength and does not promise exact character identity or pixel preservation.
 
 The same [progress, cancellation and result lifetime](image-generation.md) apply. Users need to inspect the artwork to decide whether an edit meets their intent.
 

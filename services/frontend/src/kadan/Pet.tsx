@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { hatchlingSheet } from "./hatchling";
 import {
   CELL_RATIO,
   COLUMNS,
   ROWS,
-  agentHue,
   cellPosition,
   cycleLength,
   lookAngle,
@@ -14,9 +12,15 @@ import {
   type PetState,
 } from "./pet";
 
-/** The pet for an agent. Agents without an installed pet get a hatchling. */
-export function agentPet(key: string): PetSheet {
-  return hatchlingSheet(agentHue(key));
+const DEFAULT_PET: PetSheet = {
+  url: "/kadan-default-spritesheet.png",
+  version: 2,
+  pixelated: true,
+};
+
+/** The pet for an agent. Agents without a selected custom pet use Kadan's shipped default pet. */
+export function agentPet(_key?: string): PetSheet {
+  return DEFAULT_PET;
 }
 
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");

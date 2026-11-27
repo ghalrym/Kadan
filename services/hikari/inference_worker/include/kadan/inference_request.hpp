@@ -104,9 +104,11 @@ struct ImageRequest {
     std::string prompt, aspect = "1:1";
     std::optional<std::string> model;
     std::optional<std::uint64_t> seed;
-    unsigned count = 4, steps = 50, width = 0, height = 0;
+    unsigned count = 4, steps = 4, width = 0, height = 0;
     std::optional<std::string> image, mask;
+    std::vector<std::string> reference_images;
     std::optional<ImageUpload> source, edit_mask;
+    std::vector<ImageUpload> reference_sources;
     float strength = .65f;
     bool reference = false;
     std::size_t source_width = 0, source_height = 0;

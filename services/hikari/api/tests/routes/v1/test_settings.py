@@ -37,7 +37,7 @@ def snapshot():
             "models": [
                 checkpoint("inkling-2-mini-iq4-nl", "llm", "downloading"),
                 checkpoint("superwhisper-s1-mini", "formatting", "complete"),
-                checkpoint("qwen-image-2.1-turbo", "image"),
+                checkpoint("flux.2-klein-4b", "image"),
                 checkpoint("qwen-tts-1.7b-custom", "speech"),
                 checkpoint("whisper-medium", "transcription"),
             ],
@@ -63,7 +63,7 @@ class SettingsTests(unittest.IsolatedAsyncioTestCase):
             settings.SettingsRequest(tier="go")
         for models in (
             {"LLM": "inkling-2-mini-iq4-nl"},
-            {"Image": "qwen-image-2.1-turbo"},
+            {"Image": "flux.2-klein-4b"},
         ):
             with self.assertRaises(ValidationError):
                 settings.SettingsRequest(models=models)

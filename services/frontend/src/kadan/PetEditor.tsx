@@ -16,7 +16,7 @@ const statuses: Record<PetJob["status"], string> = {
 };
 const active = (job: PetJob) => ["queued", "running", "cancelling"].includes(job.status);
 const NEW = "new";
-const HATCHLING = "hatchling";
+const DEFAULT_PET_VIEW = "default";
 const ideas = [
   "A small copper fox, illustrated in watercolor",
   "A round moss golem with glowing eyes, soft clay style",
@@ -50,6 +50,11 @@ function readPendingCreation(key: string): CreationRequest | null {
 }
 
 function frameLabel(name: string): string {
+  if (!name.includes("/")) {
+    if (name === "look-0") return "Look directions (0°–157.5°)";
+    if (name === "look-1") return "Look directions (180°–337.5°)";
+    return animationLabel(name);
+  }
   const [animation, index] = name.split("/");
   const label = animation.startsWith("look-")
     ? `Look ${Number(animation.slice(5)) * 180 + Number(index) * 22.5}°`
@@ -135,7 +140,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
   const [view, setView] = useState(initialRevision?.parentId ?? (initialCreation ? NEW : selected?.id ?? ""));
   const [newTab, setNewTab] = useState<"describe" | "import">("describe");
   const [prompt, setPrompt] = useState(initialCreation?.prompt ?? "");
-  const [referenceMode, setReferenceMode] = useState<PetJob["reference_mode"]>(initialCreation?.reference_mode ?? "single_image");
+  const [referenceMode, setReferenceMode] = useState<PetJob["reference_mode"]>(initialCreation?.reference_mode ?? "template_strips");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -151,11 +156,16 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
   const folderInput = useRef<HTMLInputElement>(null);
   const candidate = jobs.find((job) => job.id === view) ?? null;
   const characterSheet = candidate?.steps.find((step) => step.name === "character-sheet");
-  const repairFrames = candidate?.steps.filter((step) => step.name.includes("/") && step.method !== "canonical") ?? [];
+  const isStripMode = candidate?.reference_mode === "template_strips";
+  const repairFrames = candidate?.steps.filter((step) =>
+    isStripMode
+      ? step.name !== "base" && step.name !== "character-sheet"
+      : step.name.includes("/") && step.method !== "canonical",
+  ) ?? [];
   const frame = repairFrames.find((step) => step.name === repairFrame) ?? repairFrames[0];
   const sheet = useMemo(() => petSheet(candidate), [candidate]);
   const image = usePetImage(sheet);
-  const hatchling = useMemo(() => agentPet(agentKey), [agentKey]);
+  const defaultPet = useMemo(() => agentPet(agentKey), [agentKey]);
   const path = `${agentPath(agentKey)}/pets`;
   const hasActive = jobs.some(active);
 
@@ -250,7 +260,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
       update(await api<PetJob>(path, pendingCreation.current));
       pendingCreation.current = null;
       sessionStorage.removeItem(creationKey);
-      if (alive.current) { setPrompt(""); setReferenceMode("single_image"); }
+      if (alive.current) { setPrompt(""); setReferenceMode("template_strips"); }
     } catch (e) {
       if (alive.current) setError((e as Error).message);
     } finally {
@@ -413,7 +423,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
   const importReady = !!importPackage && importPackage.kind !== "error"
     && (importPackage.kind === "zip" || !!importSheet);
 
-  const showsNewPanel = view === NEW || (view !== HATCHLING && !candidate && !loading);
+  const showsNewPanel = view === NEW || (view !== DEFAULT_PET_VIEW && !candidate && !loading);
   // The import form shows its own error beside the button, where a failed upload is noticed.
   const importErrorInline = showsNewPanel && newTab === "import";
   const newPanel = (
@@ -433,17 +443,8 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
         <div className="pet-ideas" aria-label="Ideas">
           {ideas.map((idea) => <button key={idea} type="button" className="chip" onClick={() => setPrompt(idea)}>{idea}</button>)}
         </div>
-        <label htmlFor="pet-reference-mode">Generation reference</label>
-        <select id="pet-reference-mode" value={referenceMode} disabled={busy}
-          onChange={(event) => setReferenceMode(event.target.value as PetJob["reference_mode"])}>
-          <option value="single_image">Single image</option>
-          <option value="character_sheet">Character sheet</option>
-        </select>
-        {referenceMode === "character_sheet" && <p className="field-hint">
-          Generate a reference showing the same character from several views and poses, then draw each animation frame separately. Adds a generation step; consistency is not guaranteed.
-        </p>}
         <p className="field-hint">
-          Kadan draws 73 animation and look frames in the background, which takes a while. You can close this window; your current pet stays in use until you choose the new one.
+          Kadan draws a reference portrait and 11 animation and look strips in the background. You can close this window; your current pet stays in use until you choose the new one.
         </p>
         {hasActive && <p className="field-hint">Another pet is being created. Wait for it to finish or cancel it first.</p>}
         <div className="form-actions">
@@ -501,17 +502,17 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
     </section>
   );
 
-  const hatchlingPanel = (
-    <section className="pet-panel" aria-labelledby="pet-hatchling-title">
+  const defaultPetPanel = (
+    <section className="pet-panel" aria-labelledby="pet-default-title">
       <div className="pet-panel-head">
-        <h3 id="pet-hatchling-title">Hatchling</h3>
+        <h3 id="pet-default-title">Default pet</h3>
         <span className={`pet-badge ${selected ? "" : "in-use"}`}>{selected ? "Default" : "In use"}</span>
       </div>
-      <p className="pet-description">The pixel pet every agent starts with, coloured from {agentName}’s key.</p>
-      <PetStage sheet={hatchling} />
+      <p className="pet-description">Kadan’s built-in animated pet, ready with every animation and look direction.</p>
+      <PetStage sheet={defaultPet} />
       <div className="form-actions">
         <button className="primary" disabled={busy || !selected} onClick={() => void select(null)}>
-          {selected ? "Use hatchling" : "In use"}
+          {selected ? "Use default pet" : "In use"}
         </button>
       </div>
     </section>
@@ -562,18 +563,18 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
             onClick={() => void select(candidate.id)}>{inUse ? "In use" : "Use pet"}</button>}
         </div>
         {!active(candidate) && frame && <details className="pet-repair" open={revisionPending || undefined}>
-          <summary><Wrench size={14} aria-hidden="true" /> Repair a frame</summary>
+          <summary><Wrench size={14} aria-hidden="true" /> {isStripMode ? "Repair an animation" : "Repair a frame"}</summary>
           <div className="pet-repair-body">
-            <img className="pet-repair-image" width={144} height={156}
+            <img className="pet-repair-image" width={isStripMode ? 240 : 144} height={isStripMode ? 80 : 156}
               src={`/kadan/api${agentPath(agentKey)}/assets/${encodeURIComponent(frame.output_asset_id)}/content`}
               alt={`${frameLabel(frame.name)} saved artwork`} />
             <div className="pet-form">
-              <label htmlFor="pet-repair-frame">Frame</label>
+              <label htmlFor="pet-repair-frame">{isStripMode ? "Animation" : "Frame"}</label>
               <select id="pet-repair-frame" value={frame.name} disabled={busy || revisionPending}
                 onChange={(event) => setRepairFrame(event.target.value)}>
                 {repairFrames.map((step) => <option key={step.name} value={step.name}>{frameLabel(step.name)}</option>)}
               </select>
-              {["idle/0", "idle/5"].includes(frame.name) && <p className="field-hint">
+              {!isStripMode && ["idle/0", "idle/5"].includes(frame.name) && <p className="field-hint">
                 This neutral frame will reuse the original reference to keep its standing pose consistent.
               </p>}
               <label htmlFor="pet-repair-reason">What needs fixing?</label>
@@ -582,10 +583,14 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
                 onChange={(event) => setRepairReason(event.target.value)} />
             </div>
           </div>
-          <p className="field-hint">Creates a revised candidate that keeps every other saved frame. Preview it before choosing Use pet.</p>
+          <p className="field-hint">
+            {isStripMode
+              ? "Creates a revised candidate that keeps every other saved animation. Preview it before choosing Use pet."
+              : "Creates a revised candidate that keeps every other saved frame. Preview it before choosing Use pet."}
+          </p>
           <div className="form-actions">
             <button disabled={busy || hasActive || revisionPending || !repairReason.trim()}
-              onClick={() => void regenerate()}>Regenerate frame</button>
+              onClick={() => void regenerate()}>{isStripMode ? "Regenerate animation" : "Regenerate frame"}</button>
           </div>
         </details>}
       </section>
@@ -608,10 +613,10 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
             <span className="pet-card-text"><span className="pet-card-title">New pet</span>
               <span className="pet-card-meta">Describe or import</span></span>
           </button>
-          <button className={`pet-card ${view === HATCHLING ? "current" : ""}`} aria-current={view === HATCHLING || undefined}
-            onClick={() => show(HATCHLING)}>
-            <span className="pet-thumb"><SheetThumb sheet={hatchling} /></span>
-            <span className="pet-card-text"><span className="pet-card-title"><Egg size={12} aria-hidden="true" /> Hatchling</span>
+          <button className={`pet-card ${view === DEFAULT_PET_VIEW ? "current" : ""}`} aria-current={view === DEFAULT_PET_VIEW || undefined}
+            onClick={() => show(DEFAULT_PET_VIEW)}>
+            <span className="pet-thumb"><SheetThumb sheet={defaultPet} /></span>
+            <span className="pet-card-text"><span className="pet-card-title"><Egg size={12} aria-hidden="true" /> Default pet</span>
               <span className={`pet-card-meta ${selected ? "" : "in-use"}`}>{selected ? "Default" : "In use"}</span></span>
           </button>
           {loading && <p className="quiet" role="status">Loading pets…</p>}
@@ -645,7 +650,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
             <button onClick={() => void refresh()}>Retry</button>
           </div>}
           {view === NEW ? newPanel
-            : view === HATCHLING ? hatchlingPanel
+            : view === DEFAULT_PET_VIEW ? defaultPetPanel
             : candidatePanel ?? (loading ? <p className="quiet" role="status">Loading pets…</p> : newPanel)}
         </div>
       </div>

@@ -1,5 +1,6 @@
 #include "kadan/image_reference.hpp"
 
+#include <array>
 #include <source_location>
 #include <stdexcept>
 
@@ -9,98 +10,52 @@ void check(bool value, std::source_location at = std::source_location::current()
         throw std::runtime_error("image_reference_unit:" + std::to_string(at.line()));
 }
 
-void batch_padding_keeps_requests_independent() {
-    using namespace kadan::image;
-    const auto short_prompt = image_reference_layout(6, 2, 1, 2, 2, 2, 4);
-    const auto long_prompt = image_reference_layout(10, 2, 1, 2, 2, 2, 4);
-    const auto batch = image_batch_reference_layout({short_prompt, long_prompt});
-    check(batch.padded && batch.prefix == long_prompt.prefix);
-    for (std::size_t i = 0; i < batch.items.size(); ++i) {
-        const auto& original = i ? long_prompt : short_prompt;
-        const auto& padded = batch.items[i];
-        check(padded.valid_prefix == original.prefix);
-        check(padded.positions.size() == long_prompt.positions.size());
-        check(
-            std::equal(
-                original.positions.begin(),
-                original.positions.begin() + original.prefix,
-                padded.positions.begin()
-            )
-        );
-        check(
-            std::equal(
-                original.positions.begin() + original.prefix,
-                original.positions.end(),
-                padded.positions.begin() + batch.prefix
-            )
-        );
-        for (std::size_t token = 0; token < padded.valid_keys.size(); ++token)
-            check(
-                bool(padded.valid_keys[token])
-                == (token < std::size_t(original.prefix)
-                    || token >= std::size_t(batch.prefix))
-            );
-        check(padded.segments.size() == original.segments.size());
-        for (std::size_t segment = 0; segment < original.segments.size(); ++segment) {
-            check(padded.segments[segment].start == original.segments[segment].start);
-            check(padded.segments[segment].end == original.segments[segment].end);
-            check(padded.segments[segment].text == original.segments[segment].text);
-        }
-    }
-    const auto singleton = image_batch_reference_layout({short_prompt});
-    check(!singleton.padded && singleton.prefix == short_prompt.prefix);
-    check(singleton.items[0].positions == short_prompt.positions);
-    check(
-        std::all_of(
-            singleton.items[0].valid_keys.begin(),
-            singleton.items[0].valid_keys.end(),
-            [](auto value) { return value == 1; }
-        )
-    );
-    bool rejected = false;
+template <typename F> void rejects(F&& fn) {
     try {
-        (void)image_batch_reference_layout(
-            {short_prompt, image_reference_layout(3, 0, 0, 0, 0, 2, 2)}
-        );
+        fn();
     } catch (const std::invalid_argument&) {
-        rejected = true;
+        return;
     }
-    check(rejected);
+    check(false);
 }
 }  // namespace
 
 int main() {
-    batch_padding_keeps_requests_independent();
-    using kadan::image::image_reference_layout;
-    // Two text tokens, one 2x2 reference slot, three text tokens, then target.
-    const auto layout = image_reference_layout(6, 2, 1, 2, 2, 2, 4);
-    check(layout.prefix == 9);
-    check(layout.positions.size() == 17);
-    check(layout.segments.size() == 3);
-    check(
-        layout.segments[0].start == 0 && layout.segments[0].end == 2
-        && layout.segments[0].text
-    );
-    check(
-        layout.segments[1].start == 2 && layout.segments[1].end == 6
-        && !layout.segments[1].text
-    );
-    check(
-        layout.segments[2].start == 6 && layout.segments[2].end == 9
-        && layout.segments[2].text
-    );
-    check((layout.positions[2] == std::array<std::int64_t, 3>{2, -1, -1}));
-    check((layout.positions[5] == std::array<std::int64_t, 3>{2, 0, 0}));
-    check((layout.positions[6] == std::array<std::int64_t, 3>{4, 4, 4}));
-    check((layout.positions[9] == std::array<std::int64_t, 3>{7, -1, -2}));
-    const auto text = image_reference_layout(3, 0, 0, 0, 0, 2, 2);
-    check(text.prefix == 3 && text.segments.size() == 1);
-    check((text.positions[3] == std::array<std::int64_t, 3>{3, -1, -1}));
-    bool rejected = false;
-    try {
-        (void)image_reference_layout(6, 2, 2, 2, 2, 2, 4);
-    } catch (const std::invalid_argument&) {
-        rejected = true;
-    }
-    check(rejected);
+    using namespace kadan::image;
+    const auto text_only = flux2_position_layout(3, 2, 2);
+    check(text_only.text_tokens == 3);
+    check(text_only.target_tokens == 4);
+    check(text_only.reference_tokens == 0);
+    check(text_only.positions.size() == 7);
+    check((text_only.positions[0] == std::array<std::int64_t, 4>{0, 0, 0, 0}));
+    check((text_only.positions[2] == std::array<std::int64_t, 4>{0, 0, 0, 2}));
+    check((text_only.positions[3] == std::array<std::int64_t, 4>{0, 0, 0, 0}));
+    check((text_only.positions[6] == std::array<std::int64_t, 4>{0, 1, 1, 0}));
+
+    // Two ordered reference images receive distinct time offsets T=10 and T=20.
+    const std::array<ImageGrid, 2> refs{ImageGrid{2, 3}, ImageGrid{2, 2}};
+    const auto multi = flux2_position_layout(4, 2, 2, refs);
+    check(multi.text_tokens == 4);
+    check(multi.target_tokens == 4);
+    check(multi.reference_tokens == 10);
+    check(multi.positions.size() == 18);
+    // Ref 0 starts at index 8 with T=10.
+    check((multi.positions[8] == std::array<std::int64_t, 4>{10, 0, 0, 0}));
+    check((multi.positions[13] == std::array<std::int64_t, 4>{10, 1, 2, 0}));
+    // Ref 1 starts at index 14 with T=20.
+    check((multi.positions[14] == std::array<std::int64_t, 4>{20, 0, 0, 0}));
+    check((multi.positions[17] == std::array<std::int64_t, 4>{20, 1, 1, 0}));
+
+    rejects([] { (void)flux2_position_layout(0, 2, 2); });
+    rejects([] { (void)flux2_position_layout(4, 0, 2); });
+    rejects([] {
+        const std::array<ImageGrid, 5> too_many{
+            ImageGrid{1, 1}, ImageGrid{1, 1}, ImageGrid{1, 1}, ImageGrid{1, 1}, ImageGrid{1, 1}
+        };
+        (void)flux2_position_layout(4, 2, 2, too_many);
+    });
+    rejects([] {
+        const std::array<ImageGrid, 1> bad_ref{ImageGrid{0, 2}};
+        (void)flux2_position_layout(4, 2, 2, bad_ref);
+    });
 }

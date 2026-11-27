@@ -64,9 +64,16 @@ inline bool compatible_images(const InferenceRequest& a, const InferenceRequest&
         || left->source_height != right->source_height || left->edit_mask
         || right->edit_mask || bool(left->source) != bool(right->source))
         return false;
-    if (left->source)
-        return left->reference && left->source->png == right->source->png;
-    return true;
+    if (left->source) {
+        if (!left->reference || left->source->png != right->source->png
+            || left->reference_sources.size() != right->reference_sources.size())
+            return false;
+        for (std::size_t i = 0; i < left->reference_sources.size(); ++i)
+            if (left->reference_sources[i].png != right->reference_sources[i].png)
+                return false;
+        return true;
+    }
+    return left->reference_sources.empty() && right->reference_sources.empty();
 }
 
 class InferenceEngine {

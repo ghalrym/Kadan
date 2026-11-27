@@ -76,6 +76,10 @@ private:
 };
 
 image::ImageRequest native_request(const ImageRequest& input) {
+    std::vector<image::ImageReferenceBuffer> references;
+    references.reserve(input.reference_sources.size());
+    for (const auto& extra : input.reference_sources)
+        references.push_back({{}, extra.width, extra.height});
     return {
         input.prompt,
         input.width,
@@ -87,7 +91,8 @@ image::ImageRequest native_request(const ImageRequest& input) {
         input.strength,
         input.reference,
         input.source_width,
-        input.source_height
+        input.source_height,
+        std::move(references)
     };
 }
 
@@ -95,17 +100,23 @@ struct BatchShape {
     unsigned width, height, steps;
     bool reference;
     std::size_t source_width, source_height;
+    std::vector<std::pair<std::size_t, std::size_t>> extra_references;
     auto operator<=>(const BatchShape&) const = default;
 };
 
 BatchShape batch_shape(const ImageRequest& input) {
+    std::vector<std::pair<std::size_t, std::size_t>> extra;
+    extra.reserve(input.reference_sources.size());
+    for (const auto& ref : input.reference_sources)
+        extra.emplace_back(ref.width, ref.height);
     return {
         input.width,
         input.height,
         input.steps,
         input.reference,
         input.source_width,
-        input.source_height
+        input.source_height,
+        std::move(extra)
     };
 }
 }  // namespace
@@ -122,6 +133,7 @@ class ImageEngine final : public InferenceEngine {
     std::unique_ptr<HostAllocation> request_memory_;
     std::unique_ptr<BatchMonitor> host_peak_;
     std::vector<float> source_, mask_;
+    std::vector<std::vector<float>> reference_buffers_;
     std::vector<image::ImageRequest> images_;
 
     struct ImageOwner {
@@ -147,6 +159,7 @@ class ImageEngine final : public InferenceEngine {
         outputs_.clear();
         std::vector<float>().swap(source_);
         std::vector<float>().swap(mask_);
+        std::vector<std::vector<float>>().swap(reference_buffers_);
         request_memory_.reset();
     }
 
@@ -267,14 +280,18 @@ public:
                 "incompatible_image_batch"
             );
             bytes +=
-                (64ULL * input.height * input.width + 8192ULL * 4096 * sizeof(float))
+                (64ULL * input.height * input.width + 512ULL * 7680 * sizeof(float))
                 * input.count;
         }
         if (first.source)
             bytes += 32ULL * first.source_height * first.source_width;
+        for (const auto& extra : first.reference_sources)
+            bytes += 32ULL * extra.height * extra.width;
         if (first.reference) {
-            const auto points = first.source_width / 16 * (first.source_height / 16);
-            bytes += image::aten_reference_host_bytes(points, points / 4, 0);
+            Bytes points = first.source_width / 16 * (first.source_height / 16);
+            for (const auto& extra : first.reference_sources)
+                points += extra.width / 16 * (extra.height / 16);
+            bytes += image::aten_reference_host_bytes(points, 0);
         }
         if (bytes > available[0])
             throw AdmissionWait("image_request_headroom");
@@ -289,6 +306,14 @@ public:
                 mask_.resize(pixels);
                 decode_image_mask(*first.edit_mask, rgba, mask_);
             }
+            reference_buffers_.resize(first.reference_sources.size());
+            for (std::size_t r = 0; r < first.reference_sources.size(); ++r) {
+                const auto& extra = first.reference_sources[r];
+                const auto extra_pixels = extra.width * extra.height;
+                std::vector<std::uint8_t> extra_rgba(extra_pixels * 4);
+                reference_buffers_[r].resize(extra_pixels * 4);
+                decode_image_upload(extra, extra_rgba, reference_buffers_[r]);
+            }
         }
         for (std::size_t index = 0; index < batch.size(); ++index) {
             const auto& input = std::get<ImageRequest>(batch[index].request->input);
@@ -296,6 +321,8 @@ public:
             auto native = native_request(input);
             native.source = source_;
             native.mask = mask_;
+            for (std::size_t r = 0; r < reference_buffers_.size(); ++r)
+                native.references[r].pixels = reference_buffers_[r];
             try {
                 image::Generator::validate(native);
                 if (!batch[index].cancel->load())
@@ -460,7 +487,7 @@ public:
                     std::get<ImageRequest>(batch[owners[0].request].request->input);
                 auto per_image = measurement.additional_image;
                 per_image[0] = 64ULL * requests[0].width * requests[0].height
-                               + 8192ULL * 4096 * sizeof(float);
+                               + 512ULL * 7680 * sizeof(float);
                 measured_[batch_shape(input)].memory.observe(
                     requests.size(), incremental, per_image
                 );

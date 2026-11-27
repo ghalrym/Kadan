@@ -464,10 +464,19 @@ PET_STEP_NAMES = (
         for frame in range(count)
     ),
 )
-PetReferenceMode = Literal["single_image", "character_sheet"]
+PET_STRIP_STEP_NAMES = ("base", *PET_FRAME_COUNTS.keys())
+PetReferenceMode = Literal["template_strips", "single_image", "character_sheet"]
 PetStatus = Literal[
     "queued", "running", "cancelling", "cancelled", "interrupted", "failed", "ready"
 ]
+
+
+def pet_step_order(reference_mode: PetReferenceMode) -> tuple[str, ...]:
+    if reference_mode == "template_strips":
+        return PET_STRIP_STEP_NAMES
+    if reference_mode == "character_sheet":
+        return ("character-sheet", *PET_STEP_NAMES)
+    return PET_STEP_NAMES
 
 
 class PetAnimation(Model):
@@ -543,7 +552,7 @@ class PetState(Model):
     status: PetStatus = "queued"
     stage: str = Field(default="queued", min_length=1, max_length=500)
     completed_steps: int = Field(default=0, ge=0, le=75)
-    total_steps: Literal[74, 75] = 74
+    total_steps: Literal[12, 74, 75] = 74
     error: str | None = Field(default=None, max_length=10000)
     cancel_requested: bool = False
     steps: list[PetStep] = Field(default_factory=list, max_length=75)
@@ -586,9 +595,7 @@ class PetState(Model):
     @model_validator(mode="after")
     def valid_progress(self) -> Self:
         sheet_mode = self.reference_mode == "character_sheet"
-        step_order = (
-            ("character-sheet", *PET_STEP_NAMES) if sheet_mode else PET_STEP_NAMES
-        )
+        step_order = pet_step_order(self.reference_mode)
         if self.total_steps != len(step_order):
             raise ValueError("Pet total steps must match its reference mode")
         if self.completed_steps != len(self.steps):
@@ -597,7 +604,10 @@ class PetState(Model):
         if (
             names != [name for name in step_order if name in names]
             or (names and names[0] != step_order[0])
-            or (any("/" in name for name in names) and "base" not in names)
+            or (
+                any(name not in {"base", "character-sheet"} for name in names)
+                and "base" not in names
+            )
         ):
             raise ValueError("Pet steps must follow the canonical creation order")
         if len({step.output_asset_id for step in self.steps}) != len(self.steps):

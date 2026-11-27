@@ -69,7 +69,7 @@ class PetClient:
         key: str,
         pet_id: UUID,
         prompt: str,
-        reference_mode: PetReferenceMode = "single_image",
+        reference_mode: PetReferenceMode = "template_strips",
     ) -> PetJob:
         value = await self.services.json_request(
             "Tsuchi",

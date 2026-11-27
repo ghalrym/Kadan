@@ -60,7 +60,7 @@ from .services import FileStorage, inline_media, safe_filename
 class PetCreate(Model):
     id: UUID
     prompt: str = Field(min_length=1, max_length=10000)
-    reference_mode: PetReferenceMode = "single_image"
+    reference_mode: PetReferenceMode = "template_strips"
 
     @field_validator("prompt")
     @classmethod

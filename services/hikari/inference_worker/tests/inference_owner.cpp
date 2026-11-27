@@ -1180,6 +1180,14 @@ void shared_reference_compatibility_ignores_prompt_and_seed() {
     a.source = b.source = ImageUpload{"same-reference", 256, 256};
     a.source_width = b.source_width = a.source_height = b.source_height = 256;
     assert(compatible_images(first, second));
+    a.reference_sources = {ImageUpload{"extra-1", 256, 256}};
+    assert(!compatible_images(first, second));
+    b.reference_sources = {ImageUpload{"extra-1", 256, 256}};
+    assert(compatible_images(first, second));
+    b.reference_sources[0].png = "extra-2";
+    assert(!compatible_images(first, second));
+    a.reference_sources.clear();
+    b.reference_sources.clear();
     b.source->png = "other-reference";
     assert(!compatible_images(first, second));
     b.source = a.source;

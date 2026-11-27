@@ -961,7 +961,7 @@ export type ModelAssignments = {
   /**
    * Image
    */
-  image?: 'qwen-image-2.1-turbo'
+  image?: 'flux.2-klein-4b'
   /**
    * Llm
    */
@@ -1847,17 +1847,23 @@ export type ApiRoutesV1ImagesEditsImageRequest = {
   /**
    * Mode
    *
-   * Source edits noise the input image. Reference edits generate a new image conditioned on the reference character and appearance.
+   * Source edits noise the input image. Reference edits generate a new image conditioned on one or more reference images.
    */
   mode?: 'source' | 'reference'
   /**
    * Model Id
    */
-  model_id?: 'qwen-image-2.1-turbo' | null
+  model_id?: 'flux.2-klein-4b' | null
   /**
    * Prompt
    */
   prompt: string
+  /**
+   * Reference Images
+   *
+   * Optional additional PNG reference data URLs for reference mode, ordered after image (up to 4 total references).
+   */
+  reference_images?: Array<string> | null
   /**
    * Seed
    */
@@ -1901,7 +1907,7 @@ export type ApiRoutesV1ImagesGenerationsImageRequest = {
    *
    * Omit to use the image model selected in Settings.
    */
-  model_id?: 'qwen-image-2.1-turbo' | null
+  model_id?: 'flux.2-klein-4b' | null
   /**
    * Prompt
    */
@@ -1919,7 +1925,7 @@ export type ApiRoutesV1ImagesGenerationsImageRequest = {
   /**
    * Steps
    *
-   * Base model step count. Turbo always uses its saved eight-step schedule.
+   * Inference step count. FLUX.2 Klein 4B Distilled uses its fixed four-step schedule.
    */
   steps?: number
 }

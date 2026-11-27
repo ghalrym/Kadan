@@ -98,4 +98,4 @@ class ExperimentalRoutingTests(unittest.TestCase):
         self.assertEqual(defaults.audio_call, "lfm3-audio-2b-bf16")
         self.assertEqual(defaults.transcription, "whisper-medium")
         self.assertEqual(defaults.speech, "qwen-tts-1.7b-custom")
-        self.assertEqual(defaults.image, "qwen-image-2.1-turbo")
+        self.assertEqual(defaults.image, "flux.2-klein-4b")

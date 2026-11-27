@@ -18,6 +18,14 @@ test("sheet submission retries retain mode and UUID after reopening", () => {
   assert.equal(creationRequest(pending, "Owl", "character_sheet", () => "owl").id, "owl");
 });
 
+test("template_strips submission retries retain mode and UUID after reopening", () => {
+  const strips = creationRequest(null, "Fox", "template_strips", () => "strips");
+  const pending = parsePendingCreation(JSON.stringify(strips));
+  assert.equal(creationRequest(pending, "Fox", "template_strips", () => "new"), pending);
+  assert.equal(pending.id, "strips");
+  assert.equal(pending.reference_mode, "template_strips");
+});
+
 test("invalid saved modes are discarded", () => {
   for (const raw of [null, "{", '{"id":"old","prompt":"Fox","reference_mode":"unknown"}']) {
     assert.equal(parsePendingCreation(raw), null);

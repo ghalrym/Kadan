@@ -131,9 +131,9 @@ class Boundary:
     async def image_inference_status(self):
         return SimpleNamespace(
             state="ready",
-            model_id="qwen-image-2.1-turbo",
+            model_id="flux.2-klein-4b",
             download_state="complete",
-            message="Qwen-Image 2.1 Turbo is downloaded and ready.",
+            message="FLUX.2 Klein 4B is downloaded and ready.",
         )
 
     def check_owned(self, body):
@@ -1037,12 +1037,12 @@ def test_generate_image_without_downloaded_model_returns_user_instructions(
     async def missing_image_model():
         return SimpleNamespace(
             state="model_required",
-            model_id="qwen-image-2.1-turbo",
+            model_id="flux.2-klein-4b",
             download_state="not_downloaded",
             message=(
                 "Image generation is not set up yet because the image model has not been "
                 "downloaded. Tell the user to open Kadan Server, go to Hikari → Settings, "
-                "and either download the local image model (Qwen-Image 2.1 Turbo) or sign in "
+                "and either download the local image model (FLUX.2 Klein 4B) or sign in "
                 "to Codex and switch Images to ChatGPT."
             ),
         )
@@ -1051,7 +1051,7 @@ def test_generate_image_without_downloaded_model_returns_user_instructions(
     boundary.controller.inference = Commands(
         command("generate_image", prompt="A little blue bird"),
         send(
-            content="Please open Kadan Server and download Qwen-Image 2.1 Turbo in Hikari Settings.",
+            content="Please open Kadan Server and download FLUX.2 Klein 4B in Hikari Settings.",
             end_run=True,
         ),
     )
@@ -1080,9 +1080,9 @@ def test_read_task_status_includes_image_setup_instructions_when_not_ready(
     async def downloading_image_model():
         return SimpleNamespace(
             state="model_required",
-            model_id="qwen-image-2.1-turbo",
+            model_id="flux.2-klein-4b",
             download_state="downloading",
-            message="The local image model (Qwen-Image 2.1 Turbo) is currently downloading.",
+            message="The local image model (FLUX.2 Klein 4B) is currently downloading.",
         )
 
     boundary.json_request = read

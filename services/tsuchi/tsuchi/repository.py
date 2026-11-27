@@ -54,6 +54,7 @@ from .models import (
     T3ThreadWatch,
     T3ThreadWatchInput,
     T3ThreadWatchUpdate,
+    pet_step_order,
     resource_adapter,
     resource_input_adapter,
     utc_now,
@@ -1227,7 +1228,7 @@ class Repository:
         key: str,
         pet_id: UUID,
         prompt: str,
-        reference_mode: PetReferenceMode = "single_image",
+        reference_mode: PetReferenceMode = "template_strips",
     ) -> PetJob:
         now = utc_now()
         pet = PetJob(
@@ -1236,7 +1237,7 @@ class Repository:
             agent_key=key,
             prompt=prompt,
             reference_mode=reference_mode,
-            total_steps=75 if reference_mode == "character_sheet" else 74,
+            total_steps=len(pet_step_order(reference_mode)),
             version=1,
             created_at=now,
             updated_at=now,
@@ -1322,7 +1323,14 @@ class Repository:
             self._check_version(source, expected_version)
             if source.status in {"queued", "running", "cancelling"}:
                 raise StorageError("Stop pet creation before repairing frames", 409)
-            rejected_names = set(frame_names)
+            if source.reference_mode == "template_strips":
+                rejected_names = {name.split("/", 1)[0] for name in frame_names}
+                if rejected_names & {"base", "character-sheet"}:
+                    raise StorageError(
+                        "Choose distinct completed frames to repair; references cannot be replaced"
+                    )
+            else:
+                rejected_names = set(frame_names)
             if not rejected_names <= {step.name for step in source.steps}:
                 raise StorageError("Only completed frames can be repaired")
             rejections = [

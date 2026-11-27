@@ -18,16 +18,25 @@ from ..api.config import ServiceError
 from ..api.pet_artwork import (
     ROWS,
     SOURCE_CELL,
+    STILL_SIZE,
+    STRIP_SIZE,
     PetRow,
     assemble_atlas,
+    assemble_atlas_from_strips,
     base_prompt,
     character_sheet_prompt,
+    compose_on_magenta,
     frame_name,
     frame_prompt,
     prepare_base,
     prepare_character_sheet,
     prepare_frame,
+    prepare_still,
+    prepare_strip,
     sheet_base_prompt,
+    strip_base_prompt,
+    strip_prompt,
+    template_bytes,
     validate_row,
 )
 from ..api.pet_client import PetClient
@@ -47,16 +56,16 @@ logger = logging.getLogger(__name__)
 LEASE_SECONDS = 60
 LEASE_RENEWAL_SECONDS = 10
 MAX_IMAGE_BYTES = 20 * 1024**2
-IMAGE_MODEL = "qwen-image-2.1-turbo"
+IMAGE_MODEL = "flux.2-klein-4b"
 MAX_PENDING_FRAMES = 32
 
 
 def step_name(row: PetRow | None, frame: int) -> str:
-    return (
-        frame_name(row, frame)
-        if row is not None
-        else ("character-sheet" if frame == -1 else "base")
-    )
+    if row is None:
+        return "character-sheet" if frame == -1 else "base"
+    if frame == -2:
+        return row.name
+    return frame_name(row, frame)
 
 
 class PetJobs(PetClient):
@@ -273,6 +282,9 @@ class PetJobs(PetClient):
         seed: int | None = None,
         *,
         batch_collection_target: int | None = None,
+        reference_images: list[bytes] | None = None,
+        width: int | None = None,
+        height: int | None = None,
     ) -> GeneratedImage:
         body: dict[str, Any] = {
             "prompt": prompt,
@@ -293,9 +305,14 @@ class PetJobs(PetClient):
             body.update(
                 image="data:image/png;base64," + base64.b64encode(source).decode(),
                 mode="reference",
-                width=SOURCE_CELL[0],
-                height=SOURCE_CELL[1],
+                width=width if width is not None else SOURCE_CELL[0],
+                height=height if height is not None else SOURCE_CELL[1],
             )
+            if reference_images:
+                body["reference_images"] = [
+                    "data:image/png;base64," + base64.b64encode(ref).decode()
+                    for ref in reference_images
+                ]
         response = await self.services.client.post(
             self.services.settings.hikari_url
             + ("/v1/images/edits" if source is not None else "/v1/images/generations"),
@@ -342,6 +359,10 @@ class PetJobs(PetClient):
     async def prepare_output(
         self, job: PetJob, raw: bytes, row: PetRow | None, frame: int
     ) -> bytes:
+        if getattr(job, "reference_mode", "single_image") == "template_strips":
+            if row is None:
+                return await asyncio.to_thread(prepare_still, raw)
+            return await asyncio.to_thread(prepare_strip, raw, row)
         if row is None:
             return await asyncio.to_thread(
                 prepare_character_sheet if frame == -1 else prepare_base, raw
@@ -356,7 +377,7 @@ class PetJobs(PetClient):
     async def validate_completed_row(
         self, job: PetJob, output: bytes, row: PetRow | None, frame: int
     ) -> None:
-        if row is None:
+        if row is None or getattr(job, "reference_mode", "single_image") == "template_strips":
             return
         saved = {step.name: step for step in job.steps}
         names = [frame_name(row, index) for index in range(row.frame_count)]
@@ -380,29 +401,60 @@ class PetJobs(PetClient):
         batch_collection_target: int,
     ) -> int | None:
         name = step_name(row, frame)
-        canonical = name in {"idle/0", "idle/5"}
+        strip_mode = job.reference_mode == "template_strips"
+        canonical = not strip_mode and name in {"idle/0", "idle/5"}
         sheet_mode = job.reference_mode == "character_sheet"
         base = next((step for step in job.steps if step.name == "base"), None)
-        if canonical:
-            prompt = "Reuse the canonical neutral artwork without altering its pose."
-        elif row is not None:
-            prompt = frame_prompt(job.prompt, row, frame, character_sheet=sheet_mode)
-        elif name == "character-sheet":
-            prompt = character_sheet_prompt(job.prompt)
+        reference_images: list[bytes] | None = None
+        width: int | None = None
+        height: int | None = None
+
+        if strip_mode:
+            if row is None:
+                prompt = strip_base_prompt(job.prompt)
+                source_id = None
+                source = await asyncio.to_thread(template_bytes, "still")
+                width, height = STILL_SIZE
+            else:
+                prompt = strip_prompt(job.prompt, row)
+                source_id = base.output_asset_id if base is not None else None
+                base_cutout = (
+                    await self.content(job.agent_key, source_id)
+                    if source_id is not None
+                    else None
+                )
+                source = await asyncio.to_thread(template_bytes, row.name)
+                if base_cutout is not None:
+                    reference_images = [
+                        await asyncio.to_thread(compose_on_magenta, base_cutout)
+                    ]
+                width, height = STRIP_SIZE
         else:
-            prompt = (
-                sheet_base_prompt(job.prompt) if sheet_mode else base_prompt(job.prompt)
+            if canonical:
+                prompt = "Reuse the canonical neutral artwork without altering its pose."
+            elif row is not None:
+                prompt = frame_prompt(
+                    job.prompt, row, frame, character_sheet=sheet_mode
+                )
+            elif name == "character-sheet":
+                prompt = character_sheet_prompt(job.prompt)
+            else:
+                prompt = (
+                    sheet_base_prompt(job.prompt)
+                    if sheet_mode
+                    else base_prompt(job.prompt)
+                )
+            reference_name = "base" if canonical or not sheet_mode else "character-sheet"
+            reference = next(
+                (step for step in job.steps if step.name == reference_name), None
             )
-        reference_name = "base" if canonical or not sheet_mode else "character-sheet"
-        reference = next(
-            (step for step in job.steps if step.name == reference_name), None
-        )
-        source_id = reference.output_asset_id if reference is not None else None
-        source = (
-            await self.content(job.agent_key, source_id)
-            if source_id is not None
-            else None
-        )
+            source_id = reference.output_asset_id if reference is not None else None
+            source = (
+                await self.content(job.agent_key, source_id)
+                if source_id is not None
+                else None
+            )
+
         pending = next(item for item in job.pending_images if item.name == name)
         seed = pending.seed
         rejected = next(
@@ -458,13 +510,22 @@ class PetJobs(PetClient):
                     ),
                 )
             else:
+                image_kwargs: dict[str, Any] = {
+                    "batch_collection_target": batch_collection_target,
+                }
+                if reference_images is not None:
+                    image_kwargs["reference_images"] = reference_images
+                if width is not None:
+                    image_kwargs["width"] = width
+                if height is not None:
+                    image_kwargs["height"] = height
                 generation = await self.image(
                     request_id,
                     prompt,
                     source,
                     job.steps[0].model_id if job.steps else None,
                     seed,
-                    batch_collection_target=batch_collection_target,
+                    **image_kwargs,
                 )
             raw = base64.b64decode(generation.images_base64[0], validate=True)
             metadata = generation.model_dump(exclude={"images_base64"})
@@ -520,16 +581,23 @@ class PetJobs(PetClient):
 
     @traced("kadan.pet_jobs.generate")
     async def generate(self, job: PetJob) -> None:
-        frames = [(row, frame) for row in ROWS for frame in range(row.frame_count)]
-        references = (
-            [(None, -1), (None, 0)]
-            if job.reference_mode == "character_sheet"
-            else [(None, 0)]
-        )
-        items = [*references, *frames]
+        strip_mode = job.reference_mode == "template_strips"
+        if strip_mode:
+            items: list[tuple[PetRow | None, int]] = [
+                (None, 0),
+                *((row, -2) for row in ROWS),
+            ]
+        else:
+            frames = [(row, frame) for row in ROWS for frame in range(row.frame_count)]
+            references = (
+                [(None, -1), (None, 0)]
+                if job.reference_mode == "character_sheet"
+                else [(None, 0)]
+            )
+            items = [*references, *frames]
         order = [step_name(row, frame) for row, frame in items]
         # Generate references serially. Earn a pose measurement before growing
-        # the independent frame producer window.
+        # the independent frame/strip producer window.
         capacity = 1
         while True:
             job = await self.owned_job(job)
@@ -590,13 +658,15 @@ class PetJobs(PetClient):
             # Persist every member before any HTTP request is launched. Recovery
             # can then fence all siblings even if this process disappears.
             first_row, first_frame = cohort[0]
+            if first_row is None:
+                stage_label = f"Generating {step_name(first_row, first_frame).replace('-', ' ')}"
+            elif strip_mode:
+                stage_label = f"Generating {first_row.name} animation strip"
+            else:
+                stage_label = f"Generating {first_row.name} frame {first_frame + 1}/{first_row.frame_count}"
             job = await self.owned_update(
                 job,
-                stage=(
-                    f"Generating {first_row.name} frame {first_frame + 1}/{first_row.frame_count}"
-                    if first_row is not None
-                    else f"Generating {step_name(first_row, first_frame).replace('-', ' ')}"
-                ),
+                stage=stage_label,
                 **self.pending_state(pending),
             )
             cohort_size = len(cohort)
@@ -625,21 +695,27 @@ class PetJobs(PetClient):
             for result in results:
                 if isinstance(result, BaseException):
                     raise result
-            if first_row is not None and frame_name(first_row, first_frame) not in {
-                "idle/0",
-                "idle/5",
-            }:
-                # All members share the reference canvas. Use the conservative
-                # hint if pressure changed between sub-batches; missing advice
-                # returns to a singleton instead of guessing from GPU count.
+            if first_row is not None and (
+                strip_mode
+                or frame_name(first_row, first_frame) not in {"idle/0", "idle/5"}
+            ):
+                # Use the conservative capacity hint; missing advice returns to singleton.
                 capacity = min(MAX_PENDING_FRAMES, *(result or 1 for result in results))
         job = await self.owned_update(job, stage="Validating and assembling animation")
-        frames = {
-            step.name: await self.content(job.agent_key, step.output_asset_id)
-            for step in job.steps
-            if "/" in step.name
-        }
-        atlas = await asyncio.to_thread(assemble_atlas, frames)
+        if strip_mode:
+            strips = {
+                step.name: await self.content(job.agent_key, step.output_asset_id)
+                for step in job.steps
+                if step.name != "base"
+            }
+            atlas = await asyncio.to_thread(assemble_atlas_from_strips, strips)
+        else:
+            frames = {
+                step.name: await self.content(job.agent_key, step.output_asset_id)
+                for step in job.steps
+                if "/" in step.name
+            }
+            atlas = await asyncio.to_thread(assemble_atlas, frames)
         atlas_id = uuid5(job.id, "atlas")
         await self.upload(job, atlas_id, "atlas", atlas, "image/webp")
         manifest = PetManifest(

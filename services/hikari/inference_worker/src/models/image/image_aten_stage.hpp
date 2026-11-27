@@ -3,6 +3,7 @@
 #include <ATen/Context.h>
 #include <ATen/cuda/CUDAContextLight.h>
 #include <algorithm>
+#include <array>
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <c10/cuda/CUDAFunctions.h>
 #include <c10/cuda/CUDAGuard.h>
@@ -20,7 +21,7 @@ namespace kadan::image::detail {
 using Tensor = at::Tensor;
 using Clock = std::chrono::steady_clock;
 constexpr Bytes mib = 1024 * 1024;
-constexpr const char* text_prefix = "model.language_model.";
+constexpr const char* text_prefix = "model.";
 
 inline void need(bool value, const char* error) {
     if (!value)
@@ -57,10 +58,8 @@ struct Inventory {
                                     ? at::kFloat
                                     : at::kBFloat16
                             ) {
-        const std::string_view prefix = component == AtenImageStage::text ? text_prefix
-                                        : component == AtenImageStage::vision
-                                            ? "model.visual."
-                                            : "";
+        const std::string_view prefix =
+            component == AtenImageStage::text ? text_prefix : "";
         for (const auto& file : files) {
             stop(cancel);
             auto shard = std::make_unique<checkpoint::Shard>(
@@ -70,13 +69,16 @@ struct Inventory {
                 auto info = shard->tensor_at(i);
                 if (!info.name.starts_with(prefix))
                     continue;
+                if (info.name == "bn.num_batches_tracked")
+                    continue;
                 if (stage == AtenImageStage::vae && !info.name.starts_with("decoder.")
-                    && !info.name.starts_with("post_quant_conv."))
+                    && !info.name.starts_with("post_quant_conv.")
+                    && !info.name.starts_with("bn."))
                     continue;
                 if (stage == AtenImageStage::vae_encoder
-                    && ((!info.name.starts_with("encoder.")
-                         && !info.name.starts_with("quant_conv."))
-                        || info.name.find(".time_conv.") != std::string_view::npos))
+                    && !info.name.starts_with("encoder.")
+                    && !info.name.starts_with("quant_conv.")
+                    && !info.name.starts_with("bn."))
                     continue;
                 need(
                     info.dtype == checkpoint::Dtype::bf16
@@ -84,10 +86,20 @@ struct Inventory {
                     "image_aten_weight_dtype"
                 );
                 std::string name(info.name.substr(prefix.size()));
-                // Text conditioning stops before the final language-model norm.
-                if (stage == AtenImageStage::text && name != "embed_tokens.weight"
-                    && !name.starts_with("layers."))
-                    continue;
+                // FLUX.2 Klein 4B extracts Qwen3 hidden states at indices (9, 18, 27),
+                // corresponding to layers 0..26; layers 27..35 and lm_head are unused.
+                if (stage == AtenImageStage::text) {
+                    if (name != "embed_tokens.weight") {
+                        if (!name.starts_with("layers."))
+                            continue;
+                        const auto dot = name.find('.', 7);
+                        if (dot == std::string::npos)
+                            continue;
+                        const int layer = std::stoi(name.substr(7, dot - 7));
+                        if (layer < 0 || layer >= 27)
+                            continue;
+                    }
+                }
                 need(
                     weights.emplace(name, Weight{shard.get(), info}).second,
                     "image_aten_duplicate_tensor"
@@ -116,45 +128,62 @@ struct Inventory {
     }
 
     void validate_text() const {
-        shape("embed_tokens.weight", {151936, 4096});
-        for (int i = 0; i < 36; ++i) {
+        shape("embed_tokens.weight", {151936, 2560});
+        for (int i = 0; i < 27; ++i) {
             auto p = "layers." + std::to_string(i) + ".";
             for (auto n : {"input_layernorm.weight", "post_attention_layernorm.weight"})
-                shape(p + n, {4096});
+                shape(p + n, {2560});
             for (auto n : {"q_norm.weight", "k_norm.weight"})
                 shape(p + "self_attn." + n, {128});
-            for (auto n : {"q_proj.weight", "o_proj.weight"})
-                shape(p + "self_attn." + n, {4096, 4096});
+            shape(p + "self_attn.q_proj.weight", {4096, 2560});
+            shape(p + "self_attn.o_proj.weight", {2560, 4096});
             for (auto n : {"k_proj.weight", "v_proj.weight"})
-                shape(p + "self_attn." + n, {1024, 4096});
+                shape(p + "self_attn." + n, {1024, 2560});
             for (auto n : {"gate_proj.weight", "up_proj.weight"})
-                shape(p + "mlp." + n, {12288, 4096});
-            shape(p + "mlp.down_proj.weight", {4096, 12288});
+                shape(p + "mlp." + n, {9728, 2560});
+            shape(p + "mlp.down_proj.weight", {2560, 9728});
         }
     }
 
     void validate_denoiser() const {
-        shape("img_in.weight", {4096, 64});
-        shape("txt_in.text_norm.weight", {4096});
-        for (auto n :
-             {"txt_in.in_layer.weight",
-              "txt_in.out_layer.weight",
-              "time_text_embed.timestep_embedder.linear_2.weight",
-              "norm_out.linear.weight"})
-            shape(n, {4096, 4096});
-        shape("time_text_embed.timestep_embedder.linear_1.weight", {4096, 256});
-        shape("modulation.1.weight", {16384, 4096});
-        shape("proj_out.weight", {64, 4096});
-        for (int i = 0; i < 32; ++i) {
+        shape("x_embedder.weight", {3072, 128});
+        shape("context_embedder.weight", {3072, 7680});
+        shape("time_guidance_embed.timestep_embedder.linear_1.weight", {3072, 256});
+        shape("time_guidance_embed.timestep_embedder.linear_2.weight", {3072, 3072});
+        shape("double_stream_modulation_img.linear.weight", {18432, 3072});
+        shape("double_stream_modulation_txt.linear.weight", {18432, 3072});
+        shape("single_stream_modulation.linear.weight", {9216, 3072});
+        shape("norm_out.linear.weight", {6144, 3072});
+        shape("proj_out.weight", {128, 3072});
+        for (int i = 0; i < 5; ++i) {
             auto p = "transformer_blocks." + std::to_string(i) + ".";
             for (auto n :
-                 {"to_q.weight", "to_k.weight", "to_v.weight", "to_out.0.weight"})
-                shape(p + "attn." + n, {4096, 4096});
-            for (auto n : {"norm_q.weight", "norm_k.weight"})
+                 {"to_q.weight",
+                  "to_k.weight",
+                  "to_v.weight",
+                  "to_out.0.weight",
+                  "add_q_proj.weight",
+                  "add_k_proj.weight",
+                  "add_v_proj.weight",
+                  "to_add_out.weight"})
+                shape(p + "attn." + n, {3072, 3072});
+            for (auto n :
+                 {"norm_q.weight",
+                  "norm_k.weight",
+                  "norm_added_q.weight",
+                  "norm_added_k.weight"})
                 shape(p + "attn." + n, {128});
-            for (auto n : {"proj.weight", "gate_layer.weight"})
-                shape(p + "img_mlp." + n, {12288, 4096});
-            shape(p + "img_mlp.out.weight", {4096, 12288});
+            for (auto branch : {"ff.", "ff_context."}) {
+                shape(p + branch + "linear_in.weight", {18432, 3072});
+                shape(p + branch + "linear_out.weight", {3072, 9216});
+            }
+        }
+        for (int i = 0; i < 20; ++i) {
+            auto p = "single_transformer_blocks." + std::to_string(i) + ".attn.";
+            shape(p + "to_qkv_mlp_proj.weight", {27648, 3072});
+            shape(p + "norm_q.weight", {128});
+            shape(p + "norm_k.weight", {128});
+            shape(p + "to_out.weight", {3072, 12288});
         }
     }
 
@@ -166,66 +195,72 @@ struct Inventory {
             shape(p + ".weight", {out, in, kernel, kernel});
             shape(p + ".bias", {out});
         };
+        auto norm = [&](const std::string& p, std::uint64_t channels) {
+            shape(p + ".weight", {channels});
+            shape(p + ".bias", {channels});
+        };
+        auto linear = [&](const std::string& p, std::uint64_t in, std::uint64_t out) {
+            shape(p + ".weight", {out, in});
+            shape(p + ".bias", {out});
+        };
         auto residual = [&](const std::string& p, std::uint64_t in, std::uint64_t out) {
-            shape(p + ".norm1.gamma", {in, 1, 1, 1});
-            shape(p + ".norm2.gamma", {out, 1, 1, 1});
+            norm(p + ".norm1", in);
+            norm(p + ".norm2", out);
             conv(p + ".conv1", in, out, 3);
             conv(p + ".conv2", out, out, 3);
             if (in != out)
                 conv(p + ".conv_shortcut", in, out, 1);
         };
+        auto attention = [&](const std::string& p, std::uint64_t channels) {
+            norm(p + ".group_norm", channels);
+            linear(p + ".to_q", channels, channels);
+            linear(p + ".to_k", channels, channels);
+            linear(p + ".to_v", channels, channels);
+            linear(p + ".to_out.0", channels, channels);
+        };
+        shape("bn.running_mean", {128});
+        shape("bn.running_var", {128});
         if (stage == AtenImageStage::vae_encoder) {
-            conv("encoder.conv_in", 4, 96, 3);
-            const std::array<std::uint64_t, 6> dims{1, 1, 2, 4, 8, 8};
-            for (int i = 0; i < 5; ++i) {
+            conv("encoder.conv_in", 3, 128, 3);
+            const std::array<std::uint64_t, 5> dims{128, 128, 256, 512, 512};
+            for (int i = 0; i < 4; ++i) {
                 const auto p = "encoder.down_blocks." + std::to_string(i);
                 for (int j = 0; j < 2; ++j)
                     residual(
                         p + ".resnets." + std::to_string(j),
-                        96 * dims[j ? i + 1 : i],
-                        96 * dims[i + 1]
+                        j ? dims[i + 1] : dims[i],
+                        dims[i + 1]
                     );
-                if (i < 4)
-                    conv(
-                        p + ".downsampler.resample.1",
-                        96 * dims[i + 1],
-                        96 * dims[i + 1],
-                        3
-                    );
+                if (i < 3)
+                    conv(p + ".downsamplers.0.conv", dims[i + 1], dims[i + 1], 3);
             }
-            residual("encoder.mid_block.resnets.0", 768, 768);
-            residual("encoder.mid_block.resnets.1", 768, 768);
-            shape("encoder.mid_block.attentions.0.norm.gamma", {768, 1, 1});
-            conv("encoder.mid_block.attentions.0.to_qkv", 768, 2304, 1);
-            conv("encoder.mid_block.attentions.0.proj", 768, 768, 1);
-            shape("encoder.norm_out.gamma", {768, 1, 1, 1});
-            conv("encoder.conv_out", 768, 128, 3);
-            conv("quant_conv", 128, 128, 1);
+            residual("encoder.mid_block.resnets.0", 512, 512);
+            attention("encoder.mid_block.attentions.0", 512);
+            residual("encoder.mid_block.resnets.1", 512, 512);
+            norm("encoder.conv_norm_out", 512);
+            conv("encoder.conv_out", 512, 64, 3);
+            conv("quant_conv", 64, 64, 1);
             return;
         }
-        conv("post_quant_conv", 64, 64, 1);
-        conv("decoder.conv_in", 64, 1152, 3);
-        residual("decoder.mid_block.resnets.0", 1152, 1152);
-        residual("decoder.mid_block.resnets.1", 1152, 1152);
-        shape("decoder.mid_block.attentions.0.norm.gamma", {1152, 1, 1});
-        conv("decoder.mid_block.attentions.0.to_qkv", 1152, 3456, 1);
-        conv("decoder.mid_block.attentions.0.proj", 1152, 1152, 1);
-        const std::array<std::uint64_t, 6> dims{8, 8, 8, 4, 2, 1};
-        for (int i = 0; i < 5; ++i) {
-            auto p = "decoder.up_blocks." + std::to_string(i);
+        conv("post_quant_conv", 32, 32, 1);
+        conv("decoder.conv_in", 32, 512, 3);
+        residual("decoder.mid_block.resnets.0", 512, 512);
+        attention("decoder.mid_block.attentions.0", 512);
+        residual("decoder.mid_block.resnets.1", 512, 512);
+        const std::array<std::uint64_t, 5> dims{512, 512, 512, 256, 128};
+        for (int i = 0; i < 4; ++i) {
+            const auto p = "decoder.up_blocks." + std::to_string(i);
             for (int j = 0; j < 3; ++j)
                 residual(
                     p + ".resnets." + std::to_string(j),
-                    144 * dims[j ? i + 1 : i],
-                    144 * dims[i + 1]
+                    j ? dims[i + 1] : dims[i],
+                    dims[i + 1]
                 );
-            if (i < 4)
-                conv(
-                    p + ".upsampler.resample.1", 144 * dims[i + 1], 144 * dims[i + 1], 3
-                );
+            if (i < 3)
+                conv(p + ".upsamplers.0.conv", dims[i + 1], dims[i + 1], 3);
         }
-        shape("decoder.norm_out.gamma", {144, 1, 1, 1});
-        conv("decoder.conv_out", 144, 4, 3);
+        norm("decoder.conv_norm_out", 128);
+        conv("decoder.conv_out", 128, 3, 3);
     }
 };
 
@@ -300,9 +335,6 @@ public:
     }
 
     static Bytes weight_bytes(const Inventory& inventory) {
-        // CUDA's large allocation segments round to 2 MiB. Reserve an upper
-        // envelope per tensor, including a small-pool segment, rather than
-        // treating tensor payload bytes as total retained allocator memory.
         return image_device_weight_bytes(inventory.bytes, inventory.weights.size());
     }
 
@@ -420,8 +452,6 @@ public:
             streamed = candidate;
         } catch (const ResourceExhausted&) {
         }
-        // This is a projection only. Stage::make_room physically evicts and
-        // re-probes before reserving any additional memory from this plan.
         try {
             return aten_stage_plan(
                 reclaimable_snapshot(snapshot),
@@ -545,8 +575,6 @@ public:
     }
 };
 
-// Admission precedes allocation. ATen's allocator is capped at this ledger
-// envelope; clear its cached blocks before acknowledging release to the worker.
 class Stage {
     Resources& resources_;
     DeviceWeightCache& cache_;
@@ -698,7 +726,7 @@ public:
     ~Stage() noexcept {
         try {
             close();
-        } catch (...) { /* Keep admission when cleanup is unconfirmed. */
+        } catch (...) {
         }
     }
 
@@ -734,8 +762,6 @@ public:
         }
         at::cuda::clearCublasWorkspaces();
         c10::cuda::CUDACachingAllocator::emptyCache();
-        // Caller temporaries must be gone; only explicitly retained banks may
-        // survive this stage. Their reservations remain in the shared ledger.
         cache_.verify(device);
         resources_.released(handle_);
         handle_ = 0;
@@ -750,8 +776,15 @@ public:
     }
 
     Tensor linear(const std::string& p, const Tensor& x) const {
-        // Text stores BF16 weights but uses the reference FP32 forward.
         return at::linear(x, weight(p + ".weight").to(x.scalar_type()));
+    }
+
+    Tensor linear_bias(const std::string& p, const Tensor& x) const {
+        return at::linear(
+            x,
+            weight(p + ".weight").to(x.scalar_type()),
+            weight(p + ".bias").to(x.scalar_type())
+        );
     }
 
     Tensor rms(const std::string& p, const Tensor& x, bool centered = false) const {

@@ -34,7 +34,7 @@ std::string default_model(Workload workload, const ModelStore& store) {
     case Workload::speech:
         return "whisper-" + store.whisper_selected();
     case Workload::image:
-        return "qwen-image-2.1-turbo";
+        return "flux.2-klein-4b";
     case Workload::tts:
         return "qwen-tts-1.7b-custom";
     case Workload::video:

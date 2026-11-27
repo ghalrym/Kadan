@@ -1,6 +1,6 @@
 # Image worker (`image`)
 
-Generates and edits images with Qwen Image 2.1 Turbo.
+Generates and edits images with FLUX.2 Klein 4B Distilled (`flux.2-klein-4b`, Apache-2.0).
 
 ## Program and container
 
@@ -20,8 +20,9 @@ Generates and edits images with Qwen Image 2.1 Turbo.
 
 ## Engine
 
-- Components (text encoder, denoiser, VAE) are staged through VRAM one at a
-  time. The engine therefore runs on far less VRAM than its checkpoint size.
+- Components (Qwen3-4B text encoder, Flux2Transformer2DModel denoiser, AutoencoderKLFlux2 VAE)
+  are staged through VRAM one at a time. The engine therefore runs on far less VRAM
+  than its ~15.98 GB checkpoint size.
 - Compatible adjacent requests are prepared together as one batch. The batch
   size comes from free memory bounded by the worker's budget, never from raw
   free VRAM.
@@ -46,13 +47,13 @@ Generates and edits images with Qwen Image 2.1 Turbo.
 
 ## Generation and editing contracts
 
-Image generation and editing share worker scheduling and admission so neither path bypasses resource limits. The browser starts with a square aspect, four images and a random seed. Prompts must be nonblank and at most 8,000 characters; supported counts are one, two and four, with aspects 1:1, 4:3, 3:4 and 16:9. The API's base step default is 50; Turbo uses its saved eight-step schedule.
+Image generation and editing share worker scheduling and admission so neither path bypasses resource limits. The browser starts with a square aspect, four images and a random seed. Prompts must be nonblank and at most 8,000 characters; supported counts are one, two and four, with aspects 1:1 (1024×1024), 4:3 (1152×864), 3:4 (864×1152) and 16:9 (1344×768). FLUX.2 Klein 4B Distilled runs its 4-step empirical-mu flow-matching Euler schedule (`steps` defaults to 4, CFG 1.0).
 
 The browser normalizes PNG, JPEG and WebP uploads to PNG on a 32-pixel grid, with at most 3,072 pixels per side and 4,718,592 pixels total. Each upload is limited to 20 MiB. Masks must be opaque and match the original source dimensions; source and mask receive the same resize. API uploads must already be normalized PNG data URLs.
 
-`POST /v1/images/edits` defaults to `mode: source` and `strength: 0.65`. Output follows source dimensions; independent width and height are rejected. Zero strength returns source pixels; full strength starts the editable area from noise. Intermediate strengths encode the source with the checkpoint VAE and use a suffix of its sampling schedule. Latent mask restoration and a final source-pixel composite preserve black mask regions, edit white regions and blend gray regions.
+`POST /v1/images/edits` defaults to `mode: source` and `strength: 0.65`. Output follows source dimensions; independent width and height are rejected. Zero strength returns source pixels; full strength starts the editable area from noise. Intermediate strengths encode the source with `AutoencoderKLFlux2` (including patchify + batch-norm normalization) and use a suffix of its sampling schedule. Latent mask restoration and a final source-pixel composite preserve black mask regions, edit white regions and blend gray regions.
 
-`mode: reference` uses native reference conditioning for character and appearance. It rejects a mask or an explicitly supplied strength. The reference must contain at least 65,536 pixels. Output defaults to the reference size; independent `width` and `height` must be supplied together, on the same 32-pixel grid and within the side and total-pixel bounds. This is a separate conditioning contract from source denoising and pixel preservation.
+`mode: reference` uses native FLUX.2 multi-reference conditioning. Callers supply the primary `image` and optionally `reference_images` (1 to 3 additional PNG data URLs, up to 4 ordered conditioning references total). Each reference is VAE-encoded into patchified latent tokens assigned distinct 4D `(T, H, W, L)` rotary coordinates (`T = 10 * (k + 1)` for 0-based reference index `k`, while denoised target tokens sit at `T = 0`), matching `Flux2KleinPipeline`'s in-context image conditioning. Reference mode rejects a mask or an explicitly supplied strength. Each reference must contain at least 65,536 pixels. Output defaults to the primary reference size; independent `width` and `height` must be supplied together, on the same 32-pixel grid and within the side and total-pixel bounds.
 
 ## Cancellation and result ownership
 
@@ -85,34 +86,12 @@ CPU unit/tool builds leave image generation disabled. Distribute the dependency
 license notices with the binary; Docker retains the PyTorch and NVIDIA notices
 under `/opt/kadan/share/kadan/licenses`. Hikari's license is unchanged.
 
-The accepted October 13 fox comparison used build
-`bdf012f034158c27b08ec13ff78c8cd39aa87a2a`, ATen enabled and TF32 disabled,
-2048×2048 Turbo, eight Euler steps and CFG 1. Generation took **52.339790 s** in
-Kadan and **53.031068 s** in ComfyUI. Kadan loading and unloading took 6.402629 s
-and 0.580019 s separately. This was one sample per engine, with different noise
-implementations; it establishes the accepted path for that workload, not broad
-performance or numerical parity. The evidence is the October 13 task-26
-`comparison.json`, `kadan-turbo.png` and `comfy-turbo.png`. Later arithmetic
-corrections are documented below; the measured timings belong to the stated build.
+### FLUX.2 Klein 4B ATen model stages
 
-The execution comparison uses official ComfyUI commit
-[`8010b48d2c1be986613f8e8c761527d205bd756f`](https://github.com/Comfy-Org/ComfyUI/tree/8010b48d2c1be986613f8e8c761527d205bd756f),
-specifically `comfy/text_encoders/qwen_image21.py` and
-`comfy/ldm/qwen_image21/model.py`. This is an independently composed ATen model
-implementation, not a direct ComfyUI source port. Its modulation keeps
-normalization and `(1 + scale)` in FP32 until the final BF16 cast, following the
-arithmetic boundary in Apache-2.0 Comfy Kitchen
-[`be003b7c23c5b01328657955b8bc5d3f073d868e`, `comfy_kitchen/backends/cuda/ops/adaln.cu`](https://github.com/Comfy-Org/comfy-kitchen/blob/be003b7c23c5b01328657955b8bc5d3f073d868e/comfy_kitchen/backends/cuda/ops/adaln.cu)
-(Copyright 2025 Comfy Org). Shared scales and tanh gates are prepared once per
-step; residuals use ATen `addcmul_` with one output rounding. CPU arithmetic unit
-fixtures verify these boundaries without a model or CUDA execution.
-
-This composition does not reproduce Comfy Kitchen’s CUDA reduction tree or
-kernel fusion. ComfyUI also fuses gate/up projections and forms rotary tables in
-FP64 before casting; Hikari retains separate projections and FP32 rotary tables.
-Matching those kernels, equal-seed noise, or full numerical output is not
-established by this correction. No GPL source or upstream kernel source is
-copied, and no license is added to Hikari.
+- **Text encoder (`Qwen3ForCausalLM`, 36 layers total, executed through layer 26):** Formats prompts with the Qwen3 `enable_thinking=False` chat template (`<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n`), right-pads to fixed length 512 (`pad_token_id = 151643`), executes transformer layers `0..26` in BF16/FP32 with causal attention + `q_norm`/`k_norm`, and concatenates hidden states after layers `8, 17, 26` (`hidden_states[9, 18, 27]`) into `[B, 512, 7680]`.
+- **Denoiser (`Flux2Transformer2DModel`, 5 double-stream + 20 single-stream blocks, `dim = 3072`, 24 heads × 128):** Uses shared `double_stream_modulation_img`, `double_stream_modulation_txt`, and `single_stream_modulation` (modulations kept in FP32 for normalization and `(1 + scale)` before BF16 cast), SwiGLU feed-forward blocks (`linear_in`/`linear_out`), 4D `(32, 32, 32, 32)` rotary embeddings (`theta = 2000`), and `Flux2TimestepGuidanceEmbeddings` (`sigma * 1000`, distilled without guidance embedding). Reference latent tokens are concatenated onto the image stream for attention and sliced off before the final `norm_out` / `proj_out` velocity prediction.
+- **Scheduler (`FlowMatchEulerDiscreteScheduler`):** Empirical-mu exponential time shift (`compute_empirical_mu` over target image sequence length and step count) with FP32 Euler steps (`sigma_0 = 1.0` to `0.0`).
+- **VAE (`AutoencoderKLFlux2`, 32 latent channels → 128 patchified channels):** 2D GroupNorm32 + SiLU + Conv2d encoder/decoder with 2D mid-block linear attention, 2×2 spatial patchify/unpatchify (16× total spatial downsampling), and `bn.running_mean` / `bn.running_var` normalization (skipping `bn.num_batches_tracked`). Full-resolution FP32 execution falls back to halo-tiled convolutional blocks when workspace does not fit.
 
 Image stages reuse component weight banks retained on an admitted GPU when their
 workspace fits. Each bank keeps a shared-memory-manager reservation, is pinned
@@ -126,31 +105,6 @@ using at most half the RAM left after request and stage staging budgets. GPU
 uploads still occur on a device-cache miss. If whole-component residency does not
 fit even after reclaiming inactive banks, the existing operator-streaming path
 remains available. Weights keep their checkpoint precision.
-
-Denoiser placement compares measured loading plus concurrent denoising time and
-the reload cost of component banks it would displace. It starts conservatively,
-permits one successful parallel calibration per comparable shape/cache regime,
-and retains both-GPU execution when the measured cost or memory constraints favor
-it. This is a bounded estimator, not a guarantee of optimal placement. In
-particular, 24 GiB cards cannot keep both the approximately 14.1 GiB text bank
-and 13.3 GiB denoiser bank on one device. Keeping them on separate GPUs can avoid
-reloads that two simultaneous denoiser replicas would cause.
-
-Text stores BF16 weights and performs FP32 forward operations; denoising keeps
-BF16 weights/hidden states and uses library SDPA, normalization, SwiGLU and linear
-operations. Text prefix K/V is cached for the current sampling request only. The
-FP32 Euler latent and Hikari noise/seed contract are retained.
-
-VAE computation stays on the GPU in FP32. If the full-resolution workspace does
-not fit, the decoder keeps global attention on the full latent grid, then runs
-its convolutional up blocks in 16-cell latent tiles with a 13-cell halo. Only
-the tile interiors are published. The encoder tiles its convolutional down blocks
-with a nine-cell halo and assembles the complete bottleneck before global attention.
-Halos cover convolution dependencies and preserve stride alignment; no blending or
-independent per-tile attention is used. The 1152-channel VAE attention still uses
-256-query SDPA slices to bound scratch. Different convolution shapes may select
-different library kernels; numerical parity and lower-tier performance require
-manual validation on the installed model.
 
 All stage plans are preflighted before the queue commits to running. Preparation
 and execution use the same planner, and stage admission caps ATen's allocator.
@@ -167,21 +121,11 @@ weights are retained only under explicit cache reservations. Activations and
 unused allocator blocks are released at stage boundaries; model retirement also
 releases all cached banks before ledger acknowledgment. Failed cleanup retains
 admission and blocks worker idle.
-Repeated model switching remains a manual lifecycle check.
 
 `KADAN_ATEN_IMAGE_TIMING` lines on stderr report synchronized `load`, `generation`
-and `unload` seconds per component and the automatically chosen device. Sum the
-`generation` records for the loading-free comparison (three for generation,
-four when editing also encodes a source image). Transfers,
-operator setup and conversion to owned CPU outputs are included; tokenizer/noise
-preparation and PNG/API publication are outside these timers. The former resident
-image timing option no longer drives worker execution; component timing utilities
-remain available for unit checks and diagnostic tooling.
-
+and `unload` seconds per component and the automatically chosen device.
 TF32 remains disabled for FP32 matrix multiplication and cuDNN operations during
-ATen generation, as does BF16 reduced-precision reduction. This consolidation does not change the accepted
-precision policy, sampling or model operators. New deployments and GPU validation
-remain separate owner-coordinated actions.
+ATen generation, as does BF16 reduced-precision reduction.
 
 ## Subscription generation branch
 

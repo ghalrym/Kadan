@@ -423,7 +423,7 @@ class LocalServices:
                 (
                     item
                     for item in catalog.models
-                    if item.kind == "image" or item.id.startswith("qwen-image-")
+                    if item.kind == "image" or item.id == "flux.2-klein-4b"
                 ),
                 None,
             )
@@ -441,7 +441,7 @@ class LocalServices:
                     state="ready",
                     model_id=model.id,
                     download_state="complete",
-                    message="Qwen-Image 2.1 Turbo is downloaded and ready.",
+                    message="FLUX.2 Klein 4B is downloaded and ready.",
                 )
             if model.status == "downloading":
                 return InferenceState(
@@ -449,7 +449,7 @@ class LocalServices:
                     model_id=model.id,
                     download_state="downloading",
                     message=(
-                        "The local image model (Qwen-Image 2.1 Turbo) is currently downloading. "
+                        "The local image model (FLUX.2 Klein 4B) is currently downloading. "
                         "Tell the user to check download progress in Kadan Server under "
                         "Hikari → Settings and try again once it finishes."
                     ),
@@ -461,7 +461,7 @@ class LocalServices:
                 message=(
                     "Image generation is not set up yet because the image model has not been "
                     "downloaded. Tell the user to open Kadan Server, go to Hikari → Settings, "
-                    "and either download the local image model (Qwen-Image 2.1 Turbo) or sign in "
+                    "and either download the local image model (FLUX.2 Klein 4B) or sign in "
                     "to Codex and switch Images to ChatGPT."
                 ),
             )

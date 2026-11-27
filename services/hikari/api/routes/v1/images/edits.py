@@ -26,16 +26,31 @@ class ImageRequest(BaseModel):
     )
     seed: int | None = Field(default=None, ge=0, le=2**64 - 1)
     model_id: ImageModel | None = None
-    steps: int = Field(default=50, ge=2, le=100)
+    steps: int = Field(default=4, ge=2, le=100)
     image: str = Field(
         min_length=1,
         max_length=4 * ((20 * 1024**2 + 2) // 3) + 22,
         pattern=r"^data:image/png;base64,",
         description="PNG data URL, at most 20 MiB. Dimensions must be multiples of 32, at most 3072 per side and 4,718,592 pixels. Reference inputs must contain at least 65,536 pixels. Source mode uses the source dimensions; reference mode accepts an independent target width and height.",
     )
+    reference_images: list[
+        Annotated[
+            str,
+            Field(
+                min_length=1,
+                max_length=4 * ((20 * 1024**2 + 2) // 3) + 22,
+                pattern=r"^data:image/png;base64,",
+            ),
+        ]
+    ] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=3,
+        description="Optional additional PNG reference data URLs for reference mode, ordered after image (up to 4 total references).",
+    )
     mode: Literal["source", "reference"] = Field(
         default="source",
-        description="Source edits noise the input image. Reference edits generate a new image conditioned on the reference character and appearance.",
+        description="Source edits noise the input image. Reference edits generate a new image conditioned on one or more reference images.",
     )
     width: int | None = Field(default=None, ge=32, le=3072, multiple_of=32)
     height: int | None = Field(default=None, ge=32, le=3072, multiple_of=32)
@@ -61,8 +76,15 @@ class ImageRequest(BaseModel):
         if self.mode == "reference":
             if self.mask is not None or "strength" in self.model_fields_set:
                 raise ValueError("Reference editing does not accept a mask or strength")
-        elif self.width is not None:
-            raise ValueError("Output dimensions can only be set for reference editing")
+        else:
+            if self.width is not None:
+                raise ValueError(
+                    "Output dimensions can only be set for reference editing"
+                )
+            if self.reference_images is not None:
+                raise ValueError(
+                    "Additional reference images can only be set for reference editing"
+                )
         if self.width is not None and self.width * self.height > 4_718_592:
             raise ValueError("Reference output may contain at most 4,718,592 pixels")
         return self

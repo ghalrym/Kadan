@@ -14,7 +14,7 @@ See [Image editing](image-editing.md) for source and reference behavior, and [Im
 
 ## Subscription generation on this branch
 
-This branch adds ChatGPT image generation through the existing Codex sign-in and an independent provider choice in Settings. This is not verified behavior on master; owner validation remains pending. Local retains Qwen and its existing loading and memory requirements. ChatGPT generation needs no local image download or available inference memory.
+This branch adds ChatGPT image generation through the existing Codex sign-in and an independent provider choice in Settings. This is not verified behavior on master; owner validation remains pending. Local uses FLUX.2 Klein 4B with its existing loading and memory requirements. ChatGPT generation needs no local image download or available inference memory.
 
 ChatGPT can generate one, two or four images, requested separately. Aspect is a request to the provider, not a guaranteed output shape; results report their actual dimensions. Seeds and custom sampling steps are unsupported and fail with an explanation. Results have no seed. Only completed PNG artwork is returned; a text response is not artwork. There is no automatic fallback. A failed multi-image request can have consumed usage without returning a gallery.
 

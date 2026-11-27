@@ -1,6 +1,6 @@
 # Images in agent conversations
 
-Kadan agents can request image generation through Hikari during a text conversation. If no local image model is downloaded and ChatGPT Images is not selected in Hikari Settings, Kadan does not queue a background job; instead the agent tells the user in plain language to open **Kadan Server → Hikari → Settings** to download **Qwen-Image 2.1 Turbo** or switch **Images** to **ChatGPT**. When an image provider is ready, submission starts background work; it does not mean an image is ready. Users can continue sending messages while the image waits or generates.
+Kadan agents can request image generation through Hikari during a text conversation. If no local image model is downloaded and ChatGPT Images is not selected in Hikari Settings, Kadan does not queue a background job; instead the agent tells the user in plain language to open **Kadan Server → Hikari → Settings** to download **FLUX.2 Klein 4B** or switch **Images** to **ChatGPT**. When an image provider is ready, submission starts background work; it does not mean an image is ready. Users can continue sending messages while the image waits or generates.
 
 Hikari supplies the artwork, and Tsuchi stores completed images for the agent. Completion wakes the agent to deliver the image in the same conversation. Saved artwork and delivered messages survive navigation and service recovery. A completed generation and delivery to chat are separate steps.
 

@@ -42,14 +42,15 @@ class Storage:
             body = kwargs["json"]
             job_id = UUID(body["id"])
             if job_id not in self.jobs:
+                mode = body.get("reference_mode", "template_strips")
                 self.jobs[job_id] = PetJob(
                     id=job_id,
                     agent_key=KEY,
                     prompt=body["prompt"],
-                    reference_mode=body.get("reference_mode", "single_image"),
-                    total_steps=75
-                    if body.get("reference_mode") == "character_sheet"
-                    else 74,
+                    reference_mode=mode,
+                    total_steps=12
+                    if mode == "template_strips"
+                    else (75 if mode == "character_sheet" else 74),
                     version=1,
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
@@ -1008,5 +1009,97 @@ def test_initial_pet_artwork_explicitly_uses_local_generation():
         )
         await PetJobs(services).image(uuid4(), "fox", None, IMAGE_MODEL)
         assert services.client.post.call_args.kwargs["json"]["provider"] == "local"
+
+    asyncio.run(run())
+
+
+def test_template_strips_generates_still_and_eleven_strips_with_dual_references(
+    monkeypatch,
+):
+    async def run():
+        pets, services, job = await setup_running("template_strips")
+        assert job.reference_mode == "template_strips"
+        assert job.total_steps == 12
+        assert IMAGE_MODEL == "flux.2-klein-4b"
+
+        assets = {}
+
+        async def upload(pet_job, asset_id, label, data, media_type):
+            assets[asset_id] = data
+            return asset_id
+
+        async def content(key, asset_id):
+            return assets[asset_id]
+
+        pets.upload = upload
+        pets.content = content
+        pets.prepare_output = AsyncMock(side_effect=lambda job, raw, row, frame: raw)
+        monkeypatch.setattr(
+            "kadan.runner.pet_jobs.compose_on_magenta",
+            lambda data: b"\x89PNG\r\n\x1a\nmagenta-still",
+        )
+        assembled = {}
+
+        def fake_assemble(strips):
+            assembled.update(strips)
+            return b"RIFFatlasWEBP"
+
+        monkeypatch.setattr(
+            "kadan.runner.pet_jobs.assemble_atlas_from_strips", fake_assemble
+        )
+
+        calls = []
+
+        async def fake_image(
+            request_id,
+            prompt,
+            source,
+            model_id,
+            seed=None,
+            *,
+            batch_collection_target=None,
+            reference_images=None,
+            width=None,
+            height=None,
+        ):
+            calls.append(
+                {
+                    "prompt": prompt,
+                    "source": source,
+                    "model_id": model_id,
+                    "seed": seed,
+                    "reference_images": reference_images,
+                    "width": width,
+                    "height": height,
+                }
+            )
+            return GeneratedImage(
+                model_id=IMAGE_MODEL,
+                seeds=[seed if seed is not None else 77],
+                images_base64=[base64.b64encode(PNG).decode()],
+                mime_type="image/png",
+                next_batch_capacity=4,
+            )
+
+        pets.image = fake_image
+        await pets.generate(job)
+
+        finished = services.jobs[job.id]
+        assert finished.status == "ready"
+        assert finished.completed_steps == 12
+        assert len(calls) == 12
+        # First call is the base still conditioned on still.png at 768x832.
+        assert calls[0]["width"] == 768
+        assert calls[0]["height"] == 832
+        assert calls[0]["source"].startswith(b"\x89PNG\r\n\x1a\n")
+        assert calls[0]["reference_images"] is None
+        # Remaining 11 calls are horizontal strips at 1536x512 conditioned on [template, magenta_still].
+        for strip_call in calls[1:]:
+            assert strip_call["width"] == 1536
+            assert strip_call["height"] == 512
+            assert strip_call["source"].startswith(b"\x89PNG\r\n\x1a\n")
+            assert strip_call["reference_images"] == [b"\x89PNG\r\n\x1a\nmagenta-still"]
+            assert strip_call["model_id"] == "flux.2-klein-4b"
+        assert set(assembled.keys()) == {row.name for row in ROWS}
 
     asyncio.run(run())

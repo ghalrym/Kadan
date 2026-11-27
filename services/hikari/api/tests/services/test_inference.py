@@ -288,8 +288,8 @@ class InferenceBoundaryTests(unittest.IsolatedAsyncioTestCase):
 class ImageProgressTests(unittest.IsolatedAsyncioTestCase):
     async def test_prepared_image_uses_worker_step_total(self):
         for model, requested_steps, prepared_steps in (
-            (None, 50, 8),
-            ("qwen-image-2.1-turbo", 20, 8),
+            (None, 4, 4),
+            ("flux.2-klein-4b", 20, 4),
         ):
             with self.subTest(model=model):
                 service = InferenceService()

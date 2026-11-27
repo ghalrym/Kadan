@@ -2,7 +2,7 @@
 export const capabilities = [
   { id: 'inkling-2-mini', kind: 'llm', label: 'Language & Decisions', short: 'Language', tone: 'llm' },
   { id: 'lfm3-audio-2b-bf16', label: 'Voice calls', short: 'Calls', tone: 'tts' },
-  { id: 'qwen-image-2.1-turbo', label: 'Image', short: 'Image', tone: 'image' },
+  { id: 'flux.2-klein-4b', label: 'Image', short: 'Image', tone: 'image' },
   { id: 'whisper-medium', label: 'Speech to text', short: 'STT', tone: 'stt' },
   { id: 'superwhisper-s1-mini', label: 'Speech formatter', short: 'Formatter', tone: 'formatter' },
   { id: 'qwen-tts-1.7b-custom', label: 'Text to speech', short: 'TTS', tone: 'tts' },

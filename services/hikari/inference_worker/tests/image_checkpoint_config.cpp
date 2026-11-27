@@ -20,59 +20,62 @@ void check(bool ok, std::source_location at = std::source_location::current()) {
 
 struct Checkpoint {
     fs::path root;
-    Json pipeline{{"_class_name", "QwenImage21Pipeline"}},
-        scheduler{
-            {"_class_name", "FlowMatchEulerDiscreteScheduler"},
-            {"base_image_seq_len", 256},
-            {"max_image_seq_len", 8192},
-            {"base_shift", .5},
-            {"max_shift", .9},
-            {"shift", 1},
-            {"shift_terminal", .02},
-            {"time_shift_type", "exponential"},
-            {"use_dynamic_shifting", true},
-            {"num_train_timesteps", 1000},
-            {"invert_sigmas", false},
-            {"stochastic_sampling", false},
-            {"use_beta_sigmas", false},
-            {"use_exponential_sigmas", false},
-            {"use_karras_sigmas", false}
-        };
-
+    Json pipeline{
+        {"_class_name", "Flux2KleinPipeline"},
+        {"is_distilled", true}
+    };
+    Json scheduler{
+        {"_class_name", "FlowMatchEulerDiscreteScheduler"},
+        {"shift", 1.0},
+        {"shift_terminal", nullptr},
+        {"time_shift_type", "exponential"},
+        {"use_dynamic_shifting", true},
+        {"num_train_timesteps", 1000},
+        {"invert_sigmas", false},
+        {"stochastic_sampling", false},
+        {"use_beta_sigmas", false},
+        {"use_exponential_sigmas", false},
+        {"use_karras_sigmas", false}
+    };
     Json text{
-        {"model_type", "qwen3_vl"},
-        {"image_token_id", 151655},
-        {"vision_start_token_id", 151652},
-        {"vision_end_token_id", 151653},
-        {"text_config",
-         {{"vocab_size", 151936},
-          {"hidden_size", 4096},
-          {"num_hidden_layers", 36},
-          {"num_attention_heads", 32},
-          {"num_key_value_heads", 8},
-          {"head_dim", 128},
-          {"intermediate_size", 12288},
-          {"rope_theta", 5000000},
-          {"rms_norm_eps", 1e-6},
-          {"attention_bias", false},
-          {"rope_scaling",
-           {{"mrope_interleaved", true},
-            {"mrope_section", {24, 20, 20}},
-            {"rope_type", "default"}}}}},
-        {"vision_config",
-         {{"model_type", "qwen3_vl"},
-          {"depth", 27},
-          {"hidden_size", 1152},
-          {"num_heads", 16},
-          {"intermediate_size", 4304},
-          {"out_hidden_size", 4096},
-          {"in_channels", 3},
-          {"patch_size", 16},
-          {"spatial_merge_size", 2},
-          {"temporal_patch_size", 2},
-          {"num_position_embeddings", 2304},
-          {"hidden_act", "gelu_pytorch_tanh"},
-          {"deepstack_visual_indexes", {8, 16, 24}}}}
+        {"model_type", "qwen3"},
+        {"vocab_size", 151936},
+        {"hidden_size", 2560},
+        {"num_hidden_layers", 36},
+        {"num_attention_heads", 32},
+        {"num_key_value_heads", 8},
+        {"head_dim", 128},
+        {"intermediate_size", 9728},
+        {"rope_theta", 1000000},
+        {"rms_norm_eps", 1e-6},
+        {"attention_bias", false}
+    };
+    Json vae{
+        {"_class_name", "AutoencoderKLFlux2"},
+        {"in_channels", 3},
+        {"out_channels", 3},
+        {"latent_channels", 32},
+        {"block_out_channels", {128, 256, 512, 512}},
+        {"layers_per_block", 2},
+        {"norm_num_groups", 32},
+        {"mid_block_add_attention", true},
+        {"use_quant_conv", true},
+        {"use_post_quant_conv", true},
+        {"patch_size", {2, 2}},
+        {"batch_norm_eps", 1e-4}
+    };
+    Json transformer{
+        {"num_layers", 5},
+        {"num_single_layers", 20},
+        {"num_attention_heads", 24},
+        {"attention_head_dim", 128},
+        {"in_channels", 128},
+        {"joint_attention_dim", 7680},
+        {"axes_dims_rope", {32, 32, 32, 32}},
+        {"rope_theta", 2000},
+        {"guidance_embeds", false},
+        {"mlp_ratio", 3.0},
+        {"eps", 1e-6}
     };
 
     Checkpoint() {
@@ -80,35 +83,6 @@ struct Checkpoint {
         const auto* dir = mkdtemp(name);
         check(dir != nullptr);
         root = dir;
-        write(
-            "vae/config.json",
-            {{"decoder_base_dim", 144},
-             {"base_dim", 96},
-             {"z_dim", 64},
-             {"dim_mult", {1, 2, 4, 8, 8}},
-             {"num_res_blocks", 2},
-             {"out_channels", 4},
-             {"in_channels", 4},
-             {"is_residual", true},
-             {"patch_size", nullptr},
-             {"temperal_downsample", {false, true, true, true}},
-             {"latents_mean", std::vector<float>(64, 0)},
-             {"latents_std", std::vector<float>(64, 1)}}
-        );
-        write(
-            "transformer/config.json",
-            {{"num_layers", 32},
-             {"num_attention_heads", 32},
-             {"attention_head_dim", 128},
-             {"in_channels", 64},
-             {"context_in_dim", 4096},
-             {"axes_dims_rope", {16, 56, 56}},
-             {"patch_size", 1},
-             {"mlp_ratio", 3},
-             {"eps", 1e-6},
-             {"causal_condition", true},
-             {"out_channels", 64}}
-        );
     }
 
     ~Checkpoint() {
@@ -125,16 +99,9 @@ struct Checkpoint {
         write("text_encoder/config.json", text);
         write("model_index.json", pipeline);
         write("scheduler/scheduler_config.json", scheduler);
+        write("vae/config.json", vae);
+        write("transformer/config.json", transformer);
         return kadan::image::validate_checkpoint_config(root.string());
-    }
-
-    void turbo() {
-        // Official grid at fc13ba1986fcb905854dc8de2f52eee395f49b5b.
-        pipeline["sample_sigmas"] = {
-            1.0, .978453, .95418, .926626, .89508, .845148, .704534, .414568
-        };
-        scheduler["use_dynamic_shifting"] = false;
-        scheduler["shift_terminal"] = nullptr;
     }
 
     void rejects(std::string_view expected) const {
@@ -148,108 +115,61 @@ struct Checkpoint {
     }
 };
 
-void base_profile() {
+void klein_profile() {
     Checkpoint checkpoint;
-    for (bool explicit_null : {false, true}) {
-        if (explicit_null)
-            checkpoint.pipeline["sample_sigmas"] = nullptr;
-        const auto config = checkpoint.load();
-        check(config.text_files.size() == 4);
-        check(config.text_files.front() == "model-00001-of-00004.safetensors");
-        check(config.sample_schedule.steps == 0);
-        for (std::size_t steps : {2u, 40u, 100u}) {
-            const auto actual = config.sampling_schedule(16384, steps);
-            const auto original = kadan::image::schedule(16384, steps);
-            check(actual.steps == steps && actual.sigma == original.sigma);
-        }
-    }
-}
-
-void turbo_profile() {
-    Checkpoint checkpoint;
-    checkpoint.turbo();
     const auto config = checkpoint.load();
-    check(config.text_files == std::vector<std::string>{"model.safetensors"});
-    const std::array<float, 9> expected{
-        1, .978453f, .95418f, .926626f, .89508f, .845148f, .704534f, .414568f, 0
-    };
-    // Neither requested steps nor canvas size transforms the saved Turbo grid.
-    for (std::size_t tokens : {16384u, 18432u})
-        for (std::size_t steps : {2u, 8u, 50u, 100u}) {
-            const auto actual = config.sampling_schedule(tokens, steps);
-            check(actual.steps == 8);
-            for (std::size_t i = 0; i < expected.size(); ++i)
-                check(actual.sigma[i] == expected[i]);
-            check(actual.sigma[7] != .02f);
-        }
-}
-
-void rejected_multimodal_profiles() {
-    for (const auto& field :
-         {"depth",
-          "hidden_size",
-          "num_heads",
-          "intermediate_size",
-          "out_hidden_size",
-          "in_channels",
-          "patch_size",
-          "spatial_merge_size",
-          "temporal_patch_size",
-          "num_position_embeddings"}) {
-        Checkpoint checkpoint;
-        checkpoint.text["vision_config"][field] = 1;
-        checkpoint.rejects("image_vision_config_contract");
-    }
-    for (const auto& field : {"model_type", "hidden_act", "deepstack_visual_indexes"}) {
-        Checkpoint checkpoint;
-        checkpoint.text["vision_config"][field] = "unsupported";
-        checkpoint.rejects("image_vision_config_contract");
-    }
-    for (const auto& field :
-         {"image_token_id", "vision_start_token_id", "vision_end_token_id"}) {
-        Checkpoint checkpoint;
-        checkpoint.text[field] = 0;
-        checkpoint.rejects("image_multimodal_config_contract");
-    }
-    for (const auto& field : {"mrope_interleaved", "mrope_section", "rope_type"}) {
-        Checkpoint checkpoint;
-        checkpoint.text["text_config"]["rope_scaling"][field] = nullptr;
-        checkpoint.rejects("image_multimodal_config_contract");
-    }
+    check(config.text_files.size() == 2);
+    check(config.text_files.front() == "model-00001-of-00002.safetensors");
+    check(config.denoiser_files == std::vector<std::string>{"diffusion_pytorch_model.safetensors"});
+    check(config.default_steps == 4);
+    check(std::abs(config.batch_norm_eps - 1e-4f) < 1e-9f);
+    const auto actual = config.sampling_schedule(4096, 4);
+    const auto expected = kadan::image::schedule(4096, 4);
+    check(actual.steps == 4 && actual.sigma == expected.sigma);
 }
 
 void rejected_profiles() {
-    for (const auto& sigmas : std::array<Json, 7>{
-             Json::array(),
-             Json::array({1, .9}),
-             Json::array({1, .9, .8, .7, .6, .5, .4, 0}),
-             Json::array({.99, .9, .8, .7, .6, .5, .4, .3}),
-             Json::array({1, .9, .8, .7, .7, .5, .4, .3}),
-             Json::array({1, .9, .8, .7, .6, .5, .4, "bad"}),
-             Json::array({1, .9, .8, .7, .6, .5, .4, 1e100})
-         }) {
-        Checkpoint checkpoint;
-        checkpoint.turbo();
-        checkpoint.pipeline["sample_sigmas"] = sigmas;
-        checkpoint.rejects("image_sample_sigmas");
+    {
+        Checkpoint cp;
+        cp.pipeline["_class_name"] = "QwenImage21Pipeline";
+        cp.rejects("image_pipeline_contract");
     }
-    for (const auto& field :
-         {"use_dynamic_shifting", "shift_terminal", "shift", "use_karras_sigmas"}) {
-        Checkpoint checkpoint;
-        checkpoint.turbo();
-        checkpoint.scheduler[field] =
-            std::string_view(field) == "shift_terminal" ? Json(.02) : Json(true);
-        checkpoint.rejects("image_scheduler_contract");
+    {
+        Checkpoint cp;
+        cp.pipeline["is_distilled"] = false;
+        cp.rejects("image_pipeline_contract");
     }
-    Checkpoint base;
-    base.scheduler["use_dynamic_shifting"] = false;
-    base.rejects("image_scheduler_contract");
+    for (const auto& field : {"hidden_size", "num_hidden_layers", "intermediate_size", "rope_theta"}) {
+        Checkpoint cp;
+        cp.text[field] = 1;
+        cp.rejects("image_text_config_contract");
+    }
+    for (const auto& field : {"latent_channels", "layers_per_block", "batch_norm_eps"}) {
+        Checkpoint cp;
+        cp.vae[field] = 0;
+        cp.rejects("image_vae_config_contract");
+    }
+    for (const auto& field : {"num_layers", "num_single_layers", "in_channels", "joint_attention_dim"}) {
+        Checkpoint cp;
+        cp.transformer[field] = 1;
+        cp.rejects("image_transformer_contract");
+    }
+    {
+        Checkpoint cp;
+        cp.transformer["guidance_embeds"] = true;
+        cp.rejects("image_transformer_contract");
+    }
+    for (const auto& field : {"use_dynamic_shifting", "shift_terminal", "use_karras_sigmas"}) {
+        Checkpoint cp;
+        cp.scheduler[field] = std::string_view(field) == "shift_terminal" ? Json(.02)
+                            : std::string_view(field) == "use_dynamic_shifting" ? Json(false)
+                            : Json(true);
+        cp.rejects("image_scheduler_contract");
+    }
 }
 }  // namespace
 
 int main() {
-    base_profile();
-    turbo_profile();
+    klein_profile();
     rejected_profiles();
-    rejected_multimodal_profiles();
 }

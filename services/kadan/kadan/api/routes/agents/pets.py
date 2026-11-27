@@ -17,7 +17,7 @@ class CreatePet(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: UUID
     prompt: str = Field(min_length=1, max_length=4000, pattern=r"\S")
-    reference_mode: PetReferenceMode = "single_image"
+    reference_mode: PetReferenceMode = "template_strips"
 
 
 class SelectPet(BaseModel):

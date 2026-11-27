@@ -15,8 +15,8 @@ LlmModel = Literal[
     "inkling-2-mini-abliterated-iq4-nl",
     "inkling-2-mini-abliterated-q8-0",
 ]
-# Image inference uses Turbo.
-ImageModel = Literal["qwen-image-2.1-turbo"]
+# Image inference uses FLUX.2 Klein 4B Distilled.
+ImageModel = Literal["flux.2-klein-4b"]
 
 
 class TaskInput(BaseModel):
@@ -53,8 +53,9 @@ class ImageTask(TaskInput):
         description="Expected image count in the submitting cohort. Only shortens collection waiting; queued compatible requests may still share a larger admitted batch.",
     )
     seed: int | None = None
-    steps: int = 50
+    steps: int = 4
     image: str | None = None
+    reference_images: list[str] | None = Field(default=None, min_length=1, max_length=3)
     mask: str | None = None
     strength: float = Field(default=0.65, ge=0, le=1)
     mode: Literal["source", "reference"] = "source"
@@ -74,8 +75,15 @@ class ImageTask(TaskInput):
                 raise ValueError("Reference editing requires an image")
             if self.mask is not None or "strength" in self.model_fields_set:
                 raise ValueError("Reference editing does not accept a mask or strength")
-        elif self.width is not None:
-            raise ValueError("Output dimensions can only be set for reference editing")
+        else:
+            if self.width is not None:
+                raise ValueError(
+                    "Output dimensions can only be set for reference editing"
+                )
+            if self.reference_images is not None:
+                raise ValueError(
+                    "Additional reference images can only be set for reference editing"
+                )
         if self.width is not None and self.width * self.height > 4_718_592:
             raise ValueError("Reference output may contain at most 4,718,592 pixels")
         return self

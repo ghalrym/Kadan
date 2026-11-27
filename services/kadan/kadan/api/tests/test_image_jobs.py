@@ -132,12 +132,12 @@ def test_failed_generation_emits_terminal_failure_after_fencing():
     async def run():
         services, images, job = setup()
         services.client.post.return_value = httpx.Response(
-            503, json={"detail": "Download Qwen-Image in Hikari Settings."}
+            503, json={"detail": "Download FLUX.2 Klein 4B in Hikari Settings."}
         )
         await images.process(job)
         assert services.job.status == "failed"
         assert "503" in services.job.error
-        assert "Download Qwen-Image in Hikari Settings." in services.job.error
+        assert "Download FLUX.2 Klein 4B in Hikari Settings." in services.job.error
         assert services.fences == [f"/v1/images/requests/{job.request_id}/cancel"]
         assert services.runs.wakeup.is_set()
 

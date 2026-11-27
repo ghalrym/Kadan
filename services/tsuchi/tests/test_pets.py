@@ -13,6 +13,7 @@ from tsuchi.config import StorageError
 from tsuchi.models import (
     PET_ANIMATIONS,
     PET_STEP_NAMES,
+    PET_STRIP_STEP_NAMES,
     AgentInput,
     Asset,
     Metadata,
@@ -21,6 +22,7 @@ from tsuchi.models import (
     PetManifest,
     PetState,
     PetStep,
+    pet_step_order,
     utc_now,
 )
 from tsuchi.repository import Repository
@@ -86,11 +88,7 @@ def ready_pet(repository, reference_mode="single_image"):
         repository,
         repository.create_pet("alpha", uuid4(), "Watercolor fox", reference_mode),
     )
-    names = (
-        ("character-sheet", *PET_STEP_NAMES)
-        if reference_mode == "character_sheet"
-        else PET_STEP_NAMES
-    )
+    names = pet_step_order(reference_mode)
     steps = [
         PetStep(
             name=name,
@@ -306,7 +304,10 @@ def test_pet_exclusivity_preserves_exact_retries_and_existing_active_updates(
     )
     with repository.connect(write=True) as db:
         repository._save_pet(db, legacy)
-    assert repository.create_pet("alpha", legacy.id, legacy.prompt) == legacy
+    assert (
+        repository.create_pet("alpha", legacy.id, legacy.prompt, legacy.reference_mode)
+        == legacy
+    )
     assert (
         repository.revise_pet(
             "alpha", original.id, revision_id, original.version, ["idle/2"], "Clipped"
@@ -344,7 +345,9 @@ def test_pet_exclusivity_preserves_exact_retries_and_existing_active_updates(
     assert repository.get_pet("alpha", legacy.id) == legacy
 
 
-@pytest.mark.parametrize("reference_mode", ["single_image", "character_sheet"])
+@pytest.mark.parametrize(
+    "reference_mode", ["template_strips", "single_image", "character_sheet"]
+)
 def test_ready_pet_persists_and_exports_without_auto_activation(
     repository, reference_mode
 ):
@@ -774,7 +777,9 @@ def generation_step(repository, name):
 
 
 def test_completed_frame_survives_cancel_resume_and_rejects_replacement(repository):
-    pet = claim(repository, repository.create_pet("alpha", uuid4(), "Fox"))
+    pet = claim(
+        repository, repository.create_pet("alpha", uuid4(), "Fox", "single_image")
+    )
     for name in ("base", "idle/0"):
         step = generation_step(repository, name)
         pet = repository.update_pet(
@@ -834,7 +839,9 @@ def test_completed_frame_survives_cancel_resume_and_rejects_replacement(reposito
 
 
 def test_progress_rejects_skipping_frame_persistence(repository):
-    pet = claim(repository, repository.create_pet("alpha", uuid4(), "Fox"))
+    pet = claim(
+        repository, repository.create_pet("alpha", uuid4(), "Fox", "single_image")
+    )
     with pytest.raises(StorageError, match="one completed step"):
         repository.update_pet(
             "alpha",
@@ -1159,7 +1166,9 @@ def test_canonical_frames_require_base_and_idle_endpoints(repository):
 def test_pending_cohort_supports_out_of_order_checkpoints_and_survives_resume(
     repository,
 ):
-    pet = claim(repository, repository.create_pet("alpha", uuid4(), "Fox"))
+    pet = claim(
+        repository, repository.create_pet("alpha", uuid4(), "Fox", "single_image")
+    )
     for name in ("base", "idle/0"):
         pet = repository.update_pet(
             "alpha",
@@ -1508,4 +1517,37 @@ def test_manifest_rows_match_sprite_version():
     with pytest.raises(ValidationError, match="9 rows"):
         PetManifest.model_validate(
             {**imported_manifest(uuid4()).model_dump(), "sprite_version": 1}
+        )
+
+
+def test_template_strips_is_default_and_maps_row_and_frame_repairs(repository):
+    created = repository.create_pet("beta", uuid4(), "A tiny wizard")
+    assert created.reference_mode == "template_strips"
+    assert created.total_steps == 12
+    assert len(PET_STRIP_STEP_NAMES) == 12
+    assert PET_STRIP_STEP_NAMES[0] == "base"
+    assert PET_STRIP_STEP_NAMES[1:] == (*PET_ANIMATIONS, "look-0", "look-1")
+    ready = ready_pet(repository, "template_strips")
+    assert ready.total_steps == 12
+    assert len(ready.steps) == 12
+    # Both strip names ("waving") and legacy frame names ("running/3") target the parent strip.
+    revision = repository.revise_pet(
+        "alpha",
+        ready.id,
+        uuid4(),
+        ready.version,
+        ["waving", "running/3", "running/1"],
+        "Fix waving and running strips",
+    )
+    assert revision.reference_mode == "template_strips"
+    assert revision.total_steps == 12
+    assert [r.step.name for r in revision.rejections] == ["waving", "running"]
+    kept_names = [step.name for step in revision.steps]
+    assert "base" in kept_names
+    assert "waving" not in kept_names
+    assert "running" not in kept_names
+    assert len(revision.steps) == 10
+    with pytest.raises(StorageError, match="references"):
+        repository.revise_pet(
+            "alpha", ready.id, uuid4(), ready.version, ["base"], "Cannot replace base"
         )

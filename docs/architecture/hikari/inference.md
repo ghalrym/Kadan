@@ -4,7 +4,7 @@ Hikari manages model loading and memory allocations across inference workers so 
 
 ## Language model execution
 
-Public conversations, agent runs, and screenshot vision use Thinking Machines Lab's Inkling 2 Mini (`inkling-2-mini-iq4-nl` by default, or `inkling-2-mini-q8-0` via `HIKARI_LLM_QUANT`, and the abliterated `inkling-2-mini-abliterated-*` variants via `HIKARI_LLM_ABLITERATED=true`) running natively on Hikari's C++ Strata engine (`hikari-worker-llm`). The checkpoint is a dense GGUF multimodal model with a bundled vision projector (`mmproj`) and shares host RAM and GPU VRAM with other workers (such as Qwen-Image, H3 video, Qwen3-TTS, and LFM3-Audio) through the memory scheduler.
+Public conversations, agent runs, and screenshot vision use Thinking Machines Lab's Inkling 2 Mini (`inkling-2-mini-iq4-nl` by default, or `inkling-2-mini-q8-0` via `HIKARI_LLM_QUANT`, and the abliterated `inkling-2-mini-abliterated-*` variants via `HIKARI_LLM_ABLITERATED=true`) running natively on Hikari's C++ Strata engine (`hikari-worker-llm`). The checkpoint is a dense GGUF multimodal model with a bundled vision projector (`mmproj`) and shares host RAM and GPU VRAM with other workers (such as FLUX.2 Klein 4B, H3 video, Qwen3-TTS, and LFM3-Audio) through the memory scheduler.
 
 The engine keeps model weights, vision projector, and KV cache within the memory budget granted by the API. Offloading and admission preserve the configured checkpoint rather than substituting another model or silently truncating context.
 

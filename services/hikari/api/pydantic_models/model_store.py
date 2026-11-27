@@ -51,7 +51,7 @@ class ModelAssignments(BaseModel):
 
     llm: LlmModel = "inkling-2-mini-iq4-nl"
     audio_call: Literal["lfm3-audio-2b-bf16"] = "lfm3-audio-2b-bf16"
-    image: Literal["qwen-image-2.1-turbo"] = "qwen-image-2.1-turbo"
+    image: Literal["flux.2-klein-4b"] = "flux.2-klein-4b"
     video: Literal["h3-fl2va-int8-turbo"] = "h3-fl2va-int8-turbo"
     speech: Literal["qwen-tts-1.7b-custom"] = "qwen-tts-1.7b-custom"
     transcription: Literal["whisper-medium"] = "whisper-medium"

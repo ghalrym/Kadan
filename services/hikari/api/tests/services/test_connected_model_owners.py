@@ -19,7 +19,7 @@ CATALOG = (
     ("qwen-tts-1.7b-custom", "speech"),
     ("whisper-medium", "transcription"),
     ("superwhisper-s1-mini", "formatting"),
-    ("qwen-image-2.1-turbo", "image"),
+    ("flux.2-klein-4b", "image"),
     ("h3-fl2va-int8-turbo", "video"),
 )
 
@@ -74,7 +74,7 @@ class ConnectedModelOwnersTests(unittest.TestCase):
                 "qwen-tts-1.7b-custom",
                 "whisper-medium",
                 "superwhisper-s1-mini",
-                "qwen-image-2.1-turbo",
+                "flux.2-klein-4b",
                 "h3-fl2va-int8-turbo",
             },
         )
@@ -92,7 +92,7 @@ class ConnectedModelOwnersTests(unittest.TestCase):
         self.assertEqual(hub.models.defaults.decisions, "inkling-2-mini-q8-0")
         self.assertEqual(
             {model.id for model in hub.models.models},
-            {"inkling-2-mini-q8-0", "qwen-image-2.1-turbo"},
+            {"inkling-2-mini-q8-0", "flux.2-klein-4b"},
         )
 
     def test_llm_worker_abliterated_selection_propagates_to_snapshot_and_defaults(self):
@@ -114,7 +114,7 @@ class ConnectedModelOwnersTests(unittest.TestCase):
         )
         self.assertEqual(
             {model.id for model in hub.models.models},
-            {"inkling-2-mini-abliterated-iq4-nl", "qwen-image-2.1-turbo"},
+            {"inkling-2-mini-abliterated-iq4-nl", "flux.2-klein-4b"},
         )
 
     def test_lfm_only_snapshot_includes_default_audio_without_native_primary(self):

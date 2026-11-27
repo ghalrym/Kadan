@@ -41,7 +41,7 @@ test('every capability reads its checkpoint from the model snapshot including ac
     models: [
       checkpoint('inkling-2-mini-q8-0'),
       checkpoint('laya'),
-      checkpoint('qwen-image-2.1-turbo'),
+      checkpoint('flux.2-klein-4b'),
       checkpoint('qwen-tts-1.7b-custom'),
     ],
   })
@@ -49,7 +49,7 @@ test('every capability reads its checkpoint from the model snapshot including ac
   assert.deepEqual(result.map(row => row.capability.label),
     ['Language & Decisions', 'Voice calls', 'Image', 'Speech to text', 'Speech formatter', 'Text to speech', 'Video'])
   assert.equal(result[0].model.id, 'inkling-2-mini-q8-0')
-  assert.equal(result[2].model.id, 'qwen-image-2.1-turbo')
+  assert.equal(result[2].model.id, 'flux.2-klein-4b')
   assert.equal(result[5].model.id, 'qwen-tts-1.7b-custom')
   assert.equal(result[3].model, null)
   assert.equal(capabilities.length, 7)
