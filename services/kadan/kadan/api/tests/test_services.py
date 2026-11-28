@@ -1038,3 +1038,26 @@ def test_delete_agent_followed_by_list_agents_bootstraps_fresh_default_agent():
     assert fresh_conv.messages[0].id == ONBOARDING_GREETING_MESSAGE_ID
     assert fresh_conv.messages[0].content == ONBOARDING_GREETING
     assert personas[DEFAULT_AGENT_KEY].markdown == STARTER_PERSONA_MARKDOWN
+
+
+def test_inference_status_detects_downloaded_abliterated_companion():
+    settings = ready_models()
+    settings["models"].append(
+        {
+            **settings["models"][0],
+            "id": "inkling-2-mini-abliterated-iq4-nl",
+            "status": "complete",
+        }
+    )
+    status = run(
+        Boundary(settings=settings), lambda service: service.inference_status()
+    )
+    assert status.state == "ready"
+    assert status.model_id == "inkling-2-mini-iq4-nl"
+    assert status.abliterated_available is True
+
+    base_only = ready_models()
+    status_base = run(
+        Boundary(settings=base_only), lambda service: service.inference_status()
+    )
+    assert status_base.abliterated_available is False

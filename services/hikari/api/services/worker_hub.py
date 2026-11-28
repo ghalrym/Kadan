@@ -20,6 +20,7 @@ from uuid import uuid4
 from api.pydantic_models.inference_task import (
     InferenceTask,
     resolve_inkling_variant_model,
+    same_inkling_precision_family,
 )
 from api.pydantic_models.model_store import ModelStoreStatus
 from api.services.inference_cancellation import await_cleanup
@@ -300,7 +301,15 @@ class WorkerHub:
             if worker.models is None:
                 continue
             for model in worker.models.models:
-                if model.id not in visible or model.id in known:
+                is_companion = (
+                    worker.kind == "llm"
+                    and model.kind == "llm"
+                    and model.status == "complete"
+                    and same_inkling_precision_family(
+                        model.id, snapshot.selected_model_id
+                    )
+                )
+                if (model.id not in visible and not is_companion) or model.id in known:
                     continue
                 kind = CHECKPOINT_WORKERS.get(model.kind)
                 if kind == worker.kind:

@@ -56,6 +56,6 @@ shared request tracing strip or keep that prefix explicitly.
 - **Migrations.** `hikari-migrate` runs Hikari's Alembic migrations from the same
   image before `api` starts.
 
-The image is built from `services/api` with the `hikari`, `tsuchi`, `kadan` and
-`tracing` named build contexts, so each service's code stays in its own folder.
-Compose bind-mounts those folders for hot reload.
+Each service's code stays in its own folder (`services/hikari`, `services/tsuchi`,
+`services/kadan`, `services/tracing`) and is staged together by
+`scripts/bundle-kadan-runtime.sh` / `.ps1`.

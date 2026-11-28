@@ -33,7 +33,7 @@ export default defineConfig({
       '/hikari/docs': api,
     },
     watch: {
-      // Poll bind-mounted files when running inside Docker.
+      // Optional polling for filesystems where native watchers miss edits.
       usePolling: process.env.WATCH_POLLING === 'true',
       interval: 250,
     },

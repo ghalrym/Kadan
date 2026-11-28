@@ -5,6 +5,7 @@ import httpx
 from pydantic import ValidationError
 from pydantic_core import from_json
 
+from ..work.client import WorkClient
 from .config import ServiceError, Settings
 from .conversation_client import DEFAULT_CONVERSATION_TITLE, ConversationClient
 from .group_chat_client import GroupChatClient
@@ -23,7 +24,6 @@ from .routes.status import InferenceState, ServiceState, Status
 from .run_client import RunClient
 from .space_client import SpaceClient
 from .update_client import UpdateClient
-from ..work.client import WorkClient
 
 DEFAULT_AGENT_KEY = "kadan"
 DEFAULT_AGENT_NAME = "Kadan Agent"
@@ -392,11 +392,23 @@ class LocalServices:
                     else catalog.selected_model_id,
                     message="Chat isn’t running on Kadan Server right now. Check AI models in Kadan Server.",
                 )
+            abliterated_available = any(
+                item.status == "complete"
+                and item.inference_available
+                and item.id
+                in (
+                    "inkling-2-mini-abliterated-iq4-nl",
+                    "inkling-2-mini-abliterated-q8-0",
+                )
+                and item.id.endswith("-q8-0") == model.id.endswith("-q8-0")
+                for item in catalog.models
+            )
             return InferenceState(
                 state="ready" if model.status == "complete" else "model_required",
                 model_id=model.id,
                 download_state=model.status,
                 context_limit=model.context_limit or model.architecture_context_limit,
+                abliterated_available=abliterated_available,
                 message=(
                     "Inkling 2 Mini is downloaded. Hikari loads it when chat starts."
                     if model.status == "complete"

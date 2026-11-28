@@ -2,21 +2,18 @@
 
 Serves public chat, agent tool-calling turns, and multimodal screenshot vision using Thinking Machines Lab's Inkling 2 Mini (`ggml-org/Inkling-2-Mini-GGUF`) on Hikari's native C++ Strata engine. This is the only local language model in Hikari; Qwen LLM checkpoints and the separate LFM3 text/vision Python workers have been removed.
 
-## Program and container
+## Program
 
-- Its own program, `kadan-worker-llm`, built from
-  `services/hikari/inference_worker/workers/llm/`. It links only this engine;
-  the shared worker runtime supplies the API contract, the WebSocket client and
-  the model store.
-- Its own image, built by `workers/llm/Dockerfile`: CUDA; no LibTorch, no FFmpeg.
-- Its own Compose service, `hikari-worker-llm` (GPU). It can be scaled, and
-  run on another computer using the same services in `compose.yaml`.
-- Configured via Compose environment variables:
+- Built into the unified `kadan-worker` binary (`--workload=llm`) and also
+  available standalone as `kadan-worker-llm` from
+  `services/hikari/inference_worker/workers/llm/`.
+- Configured via `llm-selection.json` (saved from **AI models**) or fallback
+  environment variables:
   - `HIKARI_LLM_QUANT`: `IQ4_NL` (default) or `Q8_0`.
   - `HIKARI_LLM_ABLITERATED`: `false` (default, standard `ggml-org/Inkling-2-Mini-GGUF` checkpoints `inkling-2-mini-iq4-nl` / `inkling-2-mini-q8-0`) or `true` (abliterated `mrfakename/Inkling-2-Mini-abliterated-GGUF` checkpoints `inkling-2-mini-abliterated-iq4-nl` / `inkling-2-mini-abliterated-q8-0`).
   - `HIKARI_LLM_CONTEXT_LIMIT`: effective context window in tokens (default `65536`, range `[4096, 1048576]`).
-- It connects to the API and takes memory only as the API grants it. Workers on
-  one computer share its RAM and GPUs in the API's ledger.
+- Connects to `/hikari/v1/workers` and takes memory only as the API grants it.
+  Workers on one computer share its RAM and GPUs in the API's ledger.
 
 ## Serves
 

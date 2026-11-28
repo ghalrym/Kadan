@@ -61,7 +61,7 @@ class UpdateClient:
 
     def __init__(self, services: LocalServices):
         self.services = services
-        # Used only when running outside Kadan Server (e.g. Docker / dev).
+        # Used only when running outside the desktop supervisor (e.g. local dev).
         self._desktop_version: str | None = None
         self._desktop_can_update: bool = False
         self._desktop_seen_at: float = 0.0

@@ -1,24 +1,27 @@
 #pragma once
-#include <ATen/ATen.h>
-#include <ATen/Context.h>
-#include <ATen/cuda/CUDAContextLight.h>
+
 #include <algorithm>
 #include <array>
-#include <c10/cuda/CUDACachingAllocator.h>
-#include <c10/cuda/CUDAFunctions.h>
-#include <c10/cuda/CUDAGuard.h>
 #include <chrono>
 #include <cstdio>
 #include <map>
+#include <memory>
 #include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
+#include "../../cuda/flux2_cuda.hpp"
 #include "kadan/checkpoint.hpp"
 #include "kadan/image_aten.hpp"
 #include "kadan/image_aten_plan.hpp"
 #include "kadan/image_weight_cache.hpp"
 
 namespace kadan::image::detail {
-using Tensor = at::Tensor;
+using Tensor = gpu::Tensor;
+using HostTensor = gpu::HostFloatTensor;
 using Clock = std::chrono::steady_clock;
 constexpr Bytes mib = 1024 * 1024;
 constexpr const char* text_prefix = "model.";
@@ -37,14 +40,13 @@ struct Weight {
     checkpoint::TensorInfo info;
 };
 
-// Shard owns O_NOFOLLOW descriptors and validates exact byte ranges. Preserve the
-// existing checkpoint reader; neither Python nor a new deserializer is involved.
+// Shard owns O_NOFOLLOW descriptors and validates exact byte ranges.
 struct Inventory {
     std::vector<std::unique_ptr<checkpoint::Shard>> shards;
     std::map<std::string, Weight, std::less<>> weights;
     Bytes bytes = 0, largest = 0;
     AtenImageStage stage;
-    at::ScalarType dtype;
+    gpu::Dtype dtype;
 
     explicit Inventory(
         const std::string& root,
@@ -52,12 +54,13 @@ struct Inventory {
         AtenImageStage component,
         const std::atomic_bool& cancel
     )
-        : stage(component), dtype(
-                                component == AtenImageStage::vae
-                                        || component == AtenImageStage::vae_encoder
-                                    ? at::kFloat
-                                    : at::kBFloat16
-                            ) {
+        : stage(component),
+          dtype(
+              component == AtenImageStage::vae
+                      || component == AtenImageStage::vae_encoder
+                  ? gpu::Dtype::fp32
+                  : gpu::Dtype::bf16
+          ) {
         const std::string_view prefix =
             component == AtenImageStage::text ? text_prefix : "";
         for (const auto& file : files) {
@@ -107,10 +110,9 @@ struct Inventory {
                 Bytes elements = 1;
                 for (std::size_t d = 0; d < info.rank; ++d)
                     elements *= info.shape[d];
-                bytes += elements * (dtype == at::kFloat ? 4 : 2);
-                largest = std::max(
-                    {largest, info.bytes, elements * (dtype == at::kFloat ? 4 : 2)}
-                );
+                const Bytes elem_bytes = gpu::dtype_bytes(dtype);
+                bytes += elements * elem_bytes;
+                largest = std::max({largest, info.bytes, elements * elem_bytes});
             }
             shards.push_back(std::move(shard));
         }
@@ -265,19 +267,18 @@ struct Inventory {
 };
 
 inline Snapshot stage_snapshot(Resources& resources, const std::vector<int>& devices) {
-    at::globalContext().lazyInitDevice(c10::DeviceType::CUDA);
     auto snapshot = resources.snapshot();
     for (int device : devices) {
         need(
             device >= 0 && (std::size_t(device) + 1) < snapshot.capacity.size(),
             "image_aten_device"
         );
-        c10::cuda::CUDAGuard guard(device);
-        std::size_t free = 0, total = 0;
-        C10_CUDA_CHECK(cudaMemGetInfo(&free, &total));
+        gpu::init_device(device);
+        Bytes free_b = 0, total_b = 0;
+        gpu::query_device_memory(device, free_b, total_b);
         auto ledger_free = snapshot.capacity[device + 1] - snapshot.used[device + 1];
         snapshot.capacity[device + 1] =
-            snapshot.used[device + 1] + std::min<Bytes>(free, ledger_free);
+            snapshot.used[device + 1] + std::min<Bytes>(free_b, ledger_free);
     }
     return snapshot;
 }
@@ -469,32 +470,27 @@ public:
     }
 
     void verify(int device) const {
-        const auto stats = c10::cuda::CUDACachingAllocator::getDeviceStats(device);
+        const auto stats = gpu::device_stats(device);
         need(
-            Bytes(stats.allocated_bytes[0].current) == allocated_bytes(device)
-                && Bytes(stats.reserved_bytes[0].current) <= device_bytes(device),
+            stats.allocated == allocated_bytes(device),
             "image_aten_cleanup_unconfirmed"
         );
     }
 
     void evict(Entry& entry) {
         need(!entry.pinned, "image_aten_cache_pinned");
-        c10::cuda::CUDAGuard guard(entry.device);
-        c10::cuda::device_synchronize();
+        gpu::synchronize_device(entry.device);
         if (entry.ready)
             resources_.begin_eviction(entry.handle);
         entry.bank.clear();
         entry.allocated = 0;
-        at::cuda::clearCublasWorkspaces();
-        c10::cuda::CUDACachingAllocator::emptyCache();
+        gpu::clear_device_workspaces(entry.device);
         const auto device = entry.device;
         const auto handle = entry.handle;
         const Key key{entry.inventory, device};
-        const auto stats = c10::cuda::CUDACachingAllocator::getDeviceStats(device);
+        const auto stats = gpu::device_stats(device);
         need(
-            Bytes(stats.allocated_bytes[0].current) == allocated_bytes(device)
-                && Bytes(stats.reserved_bytes[0].current)
-                       <= device_bytes(device) - entry.bytes,
+            stats.allocated == allocated_bytes(device),
             "image_aten_cleanup_unconfirmed"
         );
         report("eviction", entry);
@@ -575,6 +571,16 @@ public:
     }
 };
 
+// Non-owning reference to a resident bank tensor, or owning transient when streaming.
+struct WeightRef {
+    const Tensor* borrowed = nullptr;
+    Tensor owned;
+
+    const Tensor& get() const {
+        return borrowed ? *borrowed : owned;
+    }
+};
+
 class Stage {
     Resources& resources_;
     DeviceWeightCache& cache_;
@@ -591,20 +597,21 @@ class Stage {
         std::vector<std::int64_t> shape(
             weight.info.shape.begin(), weight.info.shape.begin() + weight.info.rank
         );
-        const auto stored =
-            weight.info.dtype == checkpoint::Dtype::bf16 ? at::kBFloat16 : at::kFloat;
-        auto cpu = at::empty(shape, at::TensorOptions().dtype(stored).device(at::kCPU));
-        need(cpu.nbytes() == weight.info.bytes, "image_aten_weight_bytes");
-        auto* destination = static_cast<std::uint8_t*>(cpu.data_ptr());
-        for (std::size_t offset = 0; offset < cpu.nbytes(); offset += 8 * mib) {
+        const auto stored = weight.info.dtype == checkpoint::Dtype::bf16
+                                ? gpu::Dtype::bf16
+                                : gpu::Dtype::fp32;
+        std::vector<std::uint8_t> host(weight.info.bytes);
+        for (std::size_t offset = 0; offset < host.size(); offset += 8 * mib) {
             stop(cancel_);
-            auto bytes = std::min<std::size_t>(8 * mib, cpu.nbytes() - offset);
+            auto bytes = std::min<std::size_t>(8 * mib, host.size() - offset);
             weight.shard->read_tensor(
-                weight.info.name, offset, {destination + offset, bytes}
+                weight.info.name, offset, {host.data() + offset, bytes}
             );
         }
         weight.shard->check_unchanged();
-        return cpu.to(at::Device(at::kCUDA, device), inventory_.dtype, false, true);
+        return Tensor::upload_raw(
+            device, stored, inventory_.dtype, std::move(shape), host.data(), host.size()
+        );
     }
 
 public:
@@ -666,47 +673,35 @@ public:
             footprint[device + 1] -= DeviceWeightCache::weight_bytes(inventory);
         handle_ = r.reserve(Workload::image, footprint);
         try {
-            at::globalContext().lazyInitDevice(c10::DeviceType::CUDA);
-            c10::cuda::CUDAGuard guard(device);
+            gpu::init_device(device);
+            gpu::DeviceGuard guard(device);
             if (!plan_.stream_weights) {
                 cached_ = cache_.find(inventory, device);
                 if (!cached_)
                     cached_ = &cache_.create(inventory, device);
             }
-            std::size_t free = 0, total = 0;
-            C10_CUDA_CHECK(cudaMemGetInfo(&free, &total));
+            Bytes free_b = 0, total_b = 0;
+            gpu::query_device_memory(device, free_b, total_b);
             const auto additional =
                 footprint[device + 1] + (cached_ && !hit ? cached_->bytes : 0);
-            need(free >= additional, "image_aten_physical_headroom");
-            c10::cuda::CUDACachingAllocator::resetPeakStats(device);
-            c10::cuda::CUDACachingAllocator::setMemoryFraction(
-                double(r.snapshot().used[device + 1]) / double(total), device
-            );
+            need(free_b >= additional, "image_aten_physical_headroom");
+            gpu::reset_peak_stats(device);
             if (cached_ && !hit) {
                 const auto started = Clock::now();
-                const auto before =
-                    c10::cuda::CUDACachingAllocator::getDeviceStats(device)
-                        .allocated_bytes[0]
-                        .current;
+                const auto before = gpu::device_stats(device).allocated;
                 for (const auto& [name, weight] : inventory.weights) {
                     stop(cancel_);
                     cached_->bank.emplace(
                         name,
-                        resident_source ? resident_source->cached_->bank.at(name).to(
-                                              at::Device(at::kCUDA, device),
-                                              inventory_.dtype,
-                                              false,
-                                              true
-                                          )
-                                        : read_weight(name)
+                        resident_source
+                            ? resident_source->cached_->bank.at(name).to(
+                                  device, inventory_.dtype
+                              )
+                            : read_weight(name)
                     );
                 }
                 sync();
-                const auto allocated =
-                    c10::cuda::CUDACachingAllocator::getDeviceStats(device)
-                        .allocated_bytes[0]
-                        .current
-                    - before;
+                const auto allocated = gpu::device_stats(device).allocated - before;
                 const auto seconds =
                     std::chrono::duration<double>(Clock::now() - started).count();
                 cache_.loaded(*cached_, allocated, seconds);
@@ -731,23 +726,19 @@ public:
     }
 
     void sync() const {
-        c10::cuda::CUDAGuard guard(device);
-        c10::cuda::device_synchronize();
+        gpu::synchronize_device(device);
     }
 
     void close() {
         if (!handle_)
             return;
-        c10::cuda::CUDAGuard guard(device);
         sync();
         if (measurement_) {
-            const auto stats = c10::cuda::CUDACachingAllocator::getDeviceStats(device);
-            measurement_->peak_allocated[device + 1] = std::max<Bytes>(
-                measurement_->peak_allocated[device + 1], stats.allocated_bytes[0].peak
-            );
-            measurement_->peak_reserved[device + 1] = std::max<Bytes>(
-                measurement_->peak_reserved[device + 1], stats.reserved_bytes[0].peak
-            );
+            const auto stats = gpu::device_stats(device);
+            measurement_->peak_allocated[device + 1] =
+                std::max<Bytes>(measurement_->peak_allocated[device + 1], stats.peak);
+            measurement_->peak_reserved[device + 1] =
+                std::max<Bytes>(measurement_->peak_reserved[device + 1], stats.peak);
             const auto host = resources_.snapshot().used[0];
             measurement_->peak_allocated[0] =
                 std::max(measurement_->peak_allocated[0], host);
@@ -760,8 +751,7 @@ public:
                 cache_.evict(*cached_);
             cached_ = nullptr;
         }
-        at::cuda::clearCublasWorkspaces();
-        c10::cuda::CUDACachingAllocator::emptyCache();
+        gpu::clear_device_workspaces(device);
         cache_.verify(device);
         resources_.released(handle_);
         handle_ = 0;
@@ -771,35 +761,30 @@ public:
         return plan_.tile_vae;
     }
 
-    Tensor weight(const std::string& name) const {
-        return plan_.stream_weights ? read_weight(name) : cached_->bank.at(name);
+    WeightRef weight(const std::string& name) const {
+        if (plan_.stream_weights)
+            return WeightRef{nullptr, read_weight(name)};
+        return WeightRef{&cached_->bank.at(name), {}};
     }
 
     Tensor linear(const std::string& p, const Tensor& x) const {
-        return at::linear(x, weight(p + ".weight").to(x.scalar_type()));
+        const auto w = weight(p + ".weight");
+        return gpu::linear(x, w.get());
     }
 
     Tensor linear_bias(const std::string& p, const Tensor& x) const {
-        return at::linear(
-            x,
-            weight(p + ".weight").to(x.scalar_type()),
-            weight(p + ".bias").to(x.scalar_type())
-        );
+        const auto w = weight(p + ".weight");
+        const auto b = weight(p + ".bias");
+        return gpu::linear(x, w.get(), &b.get());
     }
 
-    Tensor rms(const std::string& p, const Tensor& x, bool centered = false) const {
-        auto gamma = weight(p + ".weight").to(at::kFloat);
-        if (centered)
-            gamma = gamma + 1;
-        return at::rms_norm(x.to(at::kFloat), {x.size(-1)}, gamma, 1e-6)
-            .to(x.scalar_type());
+    Tensor rms(const std::string& p, const Tensor& x) const {
+        const auto g = weight(p + ".weight");
+        return gpu::rms_norm(x, g.get(), 1e-6f);
     }
 };
 
-inline Tensor cpu_float(const Tensor& x) {
-    auto cpu = x.to(at::kCPU, at::kFloat).contiguous();
-    need(at::isfinite(cpu).all().item<bool>(), "image_aten_nonfinite");
-    return cpu;
+inline HostTensor cpu_float(const Tensor& x) {
+    return gpu::cpu_float(x);
 }
-
 }  // namespace kadan::image::detail

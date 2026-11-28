@@ -3,17 +3,13 @@
 Transcribes audio, up to 30 seconds of mono 16-bit 16 kHz PCM WAV, with native
 Qwen3-ASR 1.7B (`Qwen/Qwen3-ASR-1.7B`, Apache 2.0).
 
-## Program and container
+## Program
 
-- Its own program, `kadan-worker-speech`, built from
-  `services/hikari/inference_worker/workers/speech/`. It links only this engine;
-  the shared worker runtime supplies the API contract, the WebSocket client and
-  the model store.
-- Its own image, built by `workers/speech/Dockerfile`: CUDA and OpenBLAS.
-- Its own Compose service, `hikari-worker-speech` (GPU). It can be scaled, and
-  run on another computer using the same services in `compose.yaml`.
-- It connects to the API and takes memory only as the API grants it. Workers on
-  one computer share its RAM and GPUs in the API's ledger.
+- Built into the unified `kadan-worker` binary (`--workload=speech`) and also
+  available standalone as `kadan-worker-speech` from
+  `services/hikari/inference_worker/workers/speech/`.
+- Connects to `/hikari/v1/workers` and takes memory only as the API grants it.
+  Workers on one computer share its RAM and GPUs in the API's ledger.
 
 ## Serves
 

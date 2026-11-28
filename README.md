@@ -1,353 +1,118 @@
 # Kadan
 
-Kadan is the local agent application and the primary place to work with your agents.
-It ships with two supporting services in this repository: Hikari provides
-inference, and Tsuchi stores agent memory, documents, files and conversations.
-One web app serves Kadan at its home page and Kadan Server's management pages
-(AI models, the agent's stored data, activity and settings) under `/server`.
+Kadan is one local desktop application (`apps/kadan/`) that runs directly on your
+computer with no Docker or external database required. It either hosts all Kadan
+services locally or connects to another computer running Kadan.
+
+It ships with two supporting services in this repository: **Hikari** provides
+native local inference (and optional subscription passthrough), and **Tsuchi**
+stores agent memory, documents, files and conversations. One web app serves
+Kadan at its home page and Kadan Server's management pages (Home, AI models,
+Your agent, Activity and Settings) under `/server`.
 
 | Service | Responsibility | Local interface |
 | --- | --- | --- |
-| Kadan | Agent conversations and actions | <http://127.0.0.1:8630> |
-| Kadan Server pages | AI models, the agent's stored data, activity and settings | <http://127.0.0.1:8630/server> |
+| Kadan | Agent conversations, coding threads and actions | Embedded desktop app or <http://127.0.0.1:8000> |
+| Kadan Server pages | AI models, the agent's stored data, activity and settings | <http://127.0.0.1:8000/server> |
 | Tsuchi | Durable per-agent storage, search and history | API at `/tsuchi` |
 | Hikari | Chat, decisions, images, speech and transcription | API at `/hikari` |
-| Frontend | The single web app for Kadan and Kadan Server's pages | <http://127.0.0.1:8630> |
-| API | One application serving all three APIs under `/kadan`, `/tsuchi` and `/hikari` | <http://127.0.0.1:8000> |
+| Combined API | One FastAPI application serving `/kadan`, `/tsuchi` and `/hikari` | <http://127.0.0.1:8000> |
 
-[Start all services with Docker](#docker-compose). Kadan owns agent decisions;
-Tsuchi owns storage and retrieval; Hikari owns inference. Kadan and Tsuchi run
-without a GPU. Hikari's API does too; its GPU worker containers need a supported
-NVIDIA host.
+Kadan owns agent decisions; Tsuchi owns storage and retrieval; Hikari owns
+inference. All four local inference capabilities ship compiled into one native
+C++/CUDA `kadan-worker` binary (`llm`, `speech`, `tts`, `image`) with zero
+LibTorch or container dependencies.
 
 [User expectations](docs/user-expectations/README.md) describe current behavior,
 limits and recovery by feature. [Open proposals](docs/user-expectations/proposals.md)
 are separate from behavior available on master.
 
-## Hikari rename and existing installations
+## Architecture and services
 
-Hikari is the inference service formerly named Kadan. The user-facing agent app
-now owns the Kadan name. All three services ship together in `ghalrym/Kadan`;
-the repository and webhooks keep that name. The
-inference service, agent application and storage service live in
-`services/hikari/`, `services/kadan/` and `services/tsuchi/`.
+- **Combined API (`services/api/combined/main.py`):** Mounts Tsuchi (`/tsuchi`),
+  Hikari (`/hikari`), and Kadan (`/kadan`), and serves the built frontend SPA
+  when `KADAN_FRONTEND_DIR` is set. Uses SQLite WAL mode (`HIKARI_DATABASE_URL`)
+  out of the box.
+- **Agent runner (`python -m kadan.runner`):** Runs agent conversation loops,
+  background memory extraction, compaction, and image/pet queues against the
+  combined API.
+- **Native inference worker (`kadan-worker`):** Single C++20/CUDA executable
+  launched once per capability (`--workload=llm|speech|tts|image`). Every worker
+  connects over WebSocket to `/hikari/v1/workers` and shares one per-computer
+  RAM/VRAM ledger (`WorkerHub` + `memory_scheduler`). Models load lazily on
+  demand, queue by priority (`llm` → `tts` → `speech` → `image`), and reclaim
+  idle VRAM automatically.
+  - **Language, Vision & Decisions (`llm`):** Inkling 2 Mini on Hikari's native
+    Strata engine, with exact in-place hot-swapping between standard (`base`)
+    and `abliterated` weights when both checkpoints of the same precision are
+    downloaded.
+  - **Image generation & editing (`image`):** FLUX.2 Klein 4B Distilled on pure
+    native C++/CUDA (cuBLAS + custom FlashAttention/Conv/GroupNorm kernels, no
+    LibTorch).
+  - **Speech to text (`speech`):** Qwen3-ASR 1.7B.
+  - **Text to speech (`tts`):** Qwen3-TTS 1.7B CustomVoice.
 
-Existing installations keep their data and operational identifiers:
+## Building and bundling natively
 
-| Surface | Hikari behavior |
-| --- | --- |
-| Developer CLI | Use `python services/hikari/bin/hikari.py`; `python services/hikari/bin/kadan.py` still runs the same commands. |
-| API configuration | `HIKARI_MODEL_DIR` and `HIKARI_INFERENCE_WORKER` take precedence over their `KADAN_*` counterparts. Unset Hikari variables retain the existing configuration and defaults. |
-| CLI API URL | `HIKARI_API_URL` takes precedence over `KADAN_API_URL`; an explicit `infer --url` takes precedence over both. |
-| Persistent storage | Keep `~/.local/share/kadan/models`, `/var/lib/kadan/models`, database credentials and named volumes. No automatic moves or data rewriting occur. |
-| Compose | The default project name stays `kadan`, even from a checkout named Hikari. Keep any existing `-p` / `COMPOSE_PROJECT_NAME` and storage overrides. |
-| HTTP clients | Endpoint paths, request/response fields, model IDs and `X-Kadan-Request-Id` are unchanged. |
-| Native tools | `kadan-*` tool names, C++ namespaces/includes, `KADAN_*` CMake options, native environment variables, timing records and prepared-asset formats stay compatible. The single `kadan-inference-worker` is replaced by one `kadan-worker-<type>` program per inference type. |
+### Stage the desktop runtime (web app + Python venv + all 4 CUDA workers)
 
-Keep the old `/kadan.svg` asset URL for already-open clients; the application now
-uses `/hikari.svg`. Historical benchmark names and evidence remain unchanged.
-
-The combined Compose project keeps the existing
-Hikari storage identifiers and adds Tsuchi's dedicated store. Kadan has no
-separate server-side data volume.
-
-## Docker Compose
-
-Use a Linux NVIDIA host with a compatible driver, Docker Compose and NVIDIA
-Container Toolkit. The Hikari image builds its native inference executable and
-runtime libraries. The browser containers run Vite with hot reload and need no model downloads.
-
-Run from the repository root; no `.env` file is required:
+From the repository root on a Linux machine with the NVIDIA CUDA Toolkit
+installed:
 
 ```sh
-docker compose up --build -d
-docker compose ps
+bash scripts/bundle-kadan-runtime.sh
 ```
 
-Open **[Kadan](http://127.0.0.1:8630)** to use your agents. One `frontend`
-container serves the web app and one `api` container serves the Kadan, Tsuchi
-and Hikari APIs, each under its own prefix:
+This builds the frontend (`services/frontend`), stages the Python services and a
+relocatable `venv`, compiles `kadan-worker` with `KADAN_ENABLE_CUDA=ON` (all 4
+workloads: `llm`, `speech`, `tts`, `image`), and **verifies** via
+`kadan-worker --list-workloads` that all 4 workloads are present before
+finishing.
 
-| Container | Role |
-| --- | --- |
-| `frontend` | The web app for every service |
-| `api` | Kadan at `/kadan`, Tsuchi at `/tsuchi` and Hikari at `/hikari` |
-| `kadan-runner` | Executes agent work |
-| `hikari-postgres`, `hikari-migrate` | Hikari's database and its one-shot migration |
-| `hikari-worker-*` | Hikari's inference workers |
-
-Manage models and the agent's stored data in [Kadan Server](http://127.0.0.1:8630/server).
-API references are at [`/hikari/docs`](http://127.0.0.1:8000/hikari/docs), `/kadan/docs`
-and `/tsuchi/docs` on the API port. Download the required models in Kadan Server's
-**AI models** before asking an agent to generate a response. Startup does not
-generate content or load a model.
-
-All published ports bind to `0.0.0.0`. This is a single-owner prototype;
-namespace keys are storage selectors, not credentials. Operators are responsible
-for securing access to their deployment. See [security and operator responsibility](docs/user-expectations/security.md). Inside the `api` container, Kadan
-reaches Tsuchi and Hikari at `http://127.0.0.1:8000/tsuchi` and `/hikari`; see
-[the combined API's design](docs/architecture/api/combined-app.md). The `frontend`
-container runs Vite and proxies every service's API paths, including streaming
-responses, through the same browser origin; see [the web app's design](docs/architecture/frontend/web-app.md).
-Only the frontend and the combined API publish ports.
-
-Optionally copy `.env.example` to `.env` to change browser ports, credentials or
-the Tsuchi upload limit. The worker bearer API key defaults to
-`insecure-api-key`.
-`KADAN_PORT` sets the web app's published port and `API_PORT` the combined API's
-(default 8000). Tsuchi and Hikari no longer publish their own web ports (formerly 8620
-and 8088); use the `/tsuchi` and `/hikari` pages instead. Hikari's API moved from
-`http://127.0.0.1:8000/v1` to `http://127.0.0.1:8000/hikari/v1`; update direct
-clients and remote workers (`ws://API_HOST:8000/hikari/v1/workers`).
+To build the desktop app (`apps/kadan`):
 
 ```sh
-docker compose logs --tail=100 frontend api kadan-runner
-docker compose stop
+cd apps/kadan && cargo tauri build
 ```
 
-### Agent runners
+### Remote GPU workers
 
-Kadan's API, served by `api` under `/kadan`, manages agents, conversations,
-messages, cancellation and events.
-`kadan-runner` executes LangGraph work and the independent image/pet queues through
-Tsuchi and Hikari. Hikari retains inference resource management and its separate
-workload workers. The runner has no published port and uses the Kadan image
-(`services/kadan/Dockerfile`) with watchfiles restarting it after Python edits.
-
-Each stable `KADAN_RUNNER_ID` owns at most `KADAN_RUNNER_CAPACITY` distinct registered
-agent keys (default **5**, a validated positive integer). Idle agents retain their
-slots. This is assignment capacity, not active-run concurrency, OS threads, inference
-workers or one container per agent. Excess agents remain durably unassigned until a
-slot becomes available or an operator explicitly reassigns them. Stopping a runner
-does not release its assignments. See [assignment and recovery](docs/architecture/kadan/runners.md).
-
-The optional `runners` profile adds `runner-2` alongside the default `runner-1`,
-with five slots each. Enable it with:
+To run inference workers on a separate GPU machine pointing at an existing Kadan
+server:
 
 ```sh
-docker compose --profile runners up --build -d
+kadan-worker --workload=llm --api-url=ws://API_HOST:8000/hikari/v1/workers --token=insecure-api-key
+kadan-worker --workload=image --api-url=ws://API_HOST:8000/hikari/v1/workers --token=insecure-api-key
+kadan-worker --workload=speech --api-url=ws://API_HOST:8000/hikari/v1/workers --token=insecure-api-key
+kadan-worker --workload=tts --api-url=ws://API_HOST:8000/hikari/v1/workers --token=insecure-api-key
 ```
 
-Keep runner IDs stable across restarts and unique among live processes. Do not
-use `--scale kadan-runner=2`: those replicas would share an ID and compete for the
-same ownership. The second runner inherits the first runner's hot-reload settings
-and capacity, with its own fixed ID `runner-2`. Keep `KADAN_RUNNER_ID` distinct
-from `runner-2` when enabling the profile.
+## Development and unit tests
 
-### Existing installations and data
-
-Keep your existing Compose project name, database settings and reviewed storage
-overrides. The `model_data` and `postgres_data` declarations are unchanged.
-Tsuchi uses the named volume `tsuchi_tsuchi_data` by default, matching its initial
-standalone deployment. Set `TSUCHI_DATA_VOLUME` when using a different existing
-store or an isolated installation. Kadan stores its durable state through Tsuchi.
-
-Switching a running installation is an owner-coordinated cutover. Stop the
-standalone Tsuchi service using its original Compose project, then back up its
-volume using the original project's stopped-volume backup procedure. Stop the
-standalone Kadan service and the host Hikari frontend before starting their
-Compose replacements on the same ports. Do not run two
-Tsuchi containers against the same data volume. Preserve Hikari's current model
-and database mounts, and do not start a second API against its model store.
-A volume created by the standalone Tsuchi project may produce a Compose ownership
-warning when reused; keep that volume and its contents.
-
-`docker compose stop` and `docker compose down` preserve stored data. **Do not use
-`docker compose down -v`**: it removes the database, model and Tsuchi volumes.
-This source change does not switch or restart an existing installation.
-
-Services were renamed to `hikari-*`, `kadan-*` and `tsuchi-*`. When upgrading,
-run `docker compose down` (never `-v`) before `docker compose up --build -d`, or
-pass `--remove-orphans` to `up`. Otherwise the old `api`, `frontend`, `kadan` and
-`tsuchi` containers keep running, holding the published ports and the model-store
-lock. Named volumes belong to the project, not the service, so data is kept.
-
-The `kadan-frontend`, `tsuchi-frontend` and `hikari-frontend` containers were
-merged into one `frontend` container. When upgrading, pass `--remove-orphans`
-to `up` so the old `kadan-frontend` releases port 8630 for the new container.
-
-Likewise `hikari-api`, `tsuchi-api` and `kadan-api` were merged into one `api`
-container. Pass `--remove-orphans` so the old `hikari-api` releases port 8000.
-Tsuchi's data volume and Hikari's database and model volumes are unchanged.
-
-Run one API process. Each Hikari worker container runs one worker program and
-locks its own workspace in the shared model volume. Reloading the API drops its
-worker connections, which cancels in-flight work; the workers reconnect. Because
-all three APIs share the process, a Kadan or Tsuchi edit reloads Hikari too.
-
-### Local tracing with Jaeger
-
-[Observability architecture](docs/architecture/observability.md) defines the shared
-span-first performance details, privacy boundary and role of operational logs.
-
-Jaeger is optional infrastructure for inspecting trace waterfalls. Application
-tracing remains disabled until an OTLP trace endpoint is configured. The `tracing`
-profile adds one official Jaeger 2.22.0 container, pinned to its multi-platform
-image digest, with no additional database or collector.
-
-After configuring `.env` as above, start only Jaeger in the existing Compose
-project (keep your existing `-p` / `COMPOSE_PROJECT_NAME`):
+Install the shared tracing package into `.venv` first:
 
 ```sh
-docker compose --profile tracing up -d --no-deps jaeger
-docker compose logs --tail=100 jaeger
+.venv/bin/python -m pip install -e services/tracing
 ```
 
-Open <http://127.0.0.1:16686>. The UI and query API have no authentication; operators control access to them. OTLP collection
-ports 4317 and 4318 are reachable only on the existing Compose network and are
-not published to the host. The query gRPC server binds to `0.0.0.0` inside the container.
-Legacy Jaeger/Zipkin receivers, remote sampling, debug endpoints, AI/MCP and
-external telemetry exporters are not configured.
-
-Storage is **temporary RAM only**, capped at 10,000 traces. This is a count-based
-capacity limit, not a time-based retention promise: traces can be evicted as the
-store fills, and all traces disappear whenever the Jaeger process exits,
-including on stop, restart, recreation, upgrade or an out-of-memory kill. There
-is no persistent volume, disk archive or backup. Export a selected trace from
-the UI before stopping if you need to keep it; treat exported files as sensitive.
-Durable tracing with a time-based deletion policy needs a separately reviewed
-storage configuration; Kadan's Postgres and Tsuchi stores are not used for traces.
-
-The container is limited to one CPU, 512 MiB RAM and 128 processes. Go has a
-400 MiB soft memory limit. The ingestion memory limiter starts applying pressure
-at 288 MiB with a 384 MiB hard threshold, checked once per second; batches hold
-at most 1,024 spans and OTLP requests are limited to 4 MiB. Trace count is not a
-byte limit. Oversized traces or load can cause rejected/dropped spans or a
-container restart; this local diagnostic store does not guarantee delivery.
+Run unit tests (automated tests are unit tests only; no inference runs):
 
 ```sh
-docker compose stop jaeger
-docker compose rm -f jaeger
+.venv/bin/python services/hikari/bin/hikari.py check inference-worker
+.venv/bin/python services/hikari/bin/hikari.py check api
+.venv/bin/pytest services/kadan/kadan/api/tests services/tsuchi/tests services/api/tests services/tracing/tests
+cd apps/kadan/src-tauri && cargo test
+cd services/frontend && npm test
 ```
 
-These commands affect only Jaeger and clear its temporary traces. To start it
-again, repeat the `up` command. After changing its config or pinned image, use
-`docker compose --profile tracing up -d --no-deps --force-recreate jaeger`.
-Do not use `down -v` to clear traces: it would remove application data volumes.
+## Local tracing
 
-#### Service tracing and waterfall coverage
+[Observability architecture](docs/architecture/observability.md) defines the
+shared span-first tracing model and privacy boundary. Tracing stays disabled
+until `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is configured (with
+`OTEL_SDK_DISABLED=false`).
 
-After an owner-authorized rollout of the application images, set these values in
-`.env` to opt in. This is configuration guidance; rebuilding or restarting the
-application services is a separate rollout decision.
+## Security
 
-```dotenv
-OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://jaeger:4318/v1/traces
-KADAN_TRACE_SAMPLE_RATIO=0.1
-OTEL_SDK_DISABLED=false
-```
-
-Use `KADAN_TRACE_SAMPLE_RATIO=1` temporarily when inspecting a particular ordinary
-request. Sampling is parent based: a downstream service follows its parent’s
-sample decision. The ratio controls new root traces, not an incoming sampled
-parent. Leave the endpoint empty, or set `OTEL_SDK_DISABLED=true`, to disable the
-SDK, exporter thread, and automatic HTTP client instrumentation. A missing Jaeger
-container does not prevent startup or request completion: export uses a bounded
-512-span queue, batches of 64, a one-second exporter timeout and a one-second
-batch schedule. A full queue drops telemetry; it never backpressures requests.
-Shutdown drains that bounded queue on a background thread. Trace loss is expected
-when collectors or workers disconnect or processes terminate abruptly.
-
-| Service / boundary | Waterfall coverage | Limits |
-| --- | --- | --- |
-| Web app (Kadan pages) | Its API request appears at Kadan ingress; `x-kadan-trace-id` on the response identifies the trace | Browser rendering, browser-to-server network time, and Vite serving time are not measured |
-| Kadan API and runner | API HTTP ingress through the last response body; outgoing HTTPX calls; runner graph context, inference, tool invocation and execution; image generation, recovery, saved-asset verification and completion; pet/frame generation | No LangChain/LangGraph payload callbacks, per-token spans, or prompt capture |
-| Durable conversation, image and pet queues | Optional W3C parent persisted in the existing JSON job record; worker execution restores it; queue wait uses the persisted preclaim enqueue timestamp; image completion events retain causality | Existing records without a parent start a new trace. Recovery attempts are marked `kadan.recovery=true`; their full job age is not called queue wait |
-| Tsuchi API | HTTP ingress, durable run/image mutations and message delivery, asset upload and export | SQLite statement text, document contents and individual filesystem operations are not traced |
-| Web app (Tsuchi pages) | API ingress traces under `/tsuchi` routes | Browser/proxy timing is not measured |
-| Hikari API | HTTP ingress, inference lifetime, result presentation/delivery after the native result, worker FIFO wait | Result presentation is distinct from HTTP response serialization/stream delivery; transport delay is visible between worker and API intervals, not presented as a measured network metric |
-| Web app (Hikari pages) | API ingress traces under `/hikari` routes | Browser/proxy timing is not measured |
-| All four native workload workers: llm, tts, speech, image | `hikari-worker-<kind>` resources; actual native request preparation, model load, request admission and batch execution intervals | Shared batch intervals overlap across participating requests; they are wall time, not exclusive GPU time |
-| Language worker | Separate native prefill and decode intervals | Decode includes token selection/text streaming work; no per-token, kernel or inner-loop tracing |
-| Speech recognition worker | Separate audio frontend, acoustic encode and decode intervals | No per-layer tracing |
-| Image and TTS engine internals | Native execution interval plus separate preparation/load/admission | Finer conditioning, denoise, VAE, codec and TTS subphases are not split in this change |
-| Postgres, migration job, Jaeger and frontend containers | Application requests around those boundaries only | No database-query, migration, collector-self, or proxy spans |
-
-Native workers receive W3C `traceparent` in the existing job envelope and retain it
-through the FIFO and engine calls. Each sampled request buffers at most 16 fixed
-phase records in memory and attaches them to its existing terminal result over
-the authenticated WebSocket. No new worker thread, port, collector dependency,
-or telemetry send is added during inference. The API validates the worker/job
-association and parent, then exports those measured intervals using the originating
-worker’s service resource. This is an API export relay, not an OTLP SDK running in
-the native process. Native intervals appear after the terminal result, and can be
-lost if the worker disconnects first. Retries can exceed the 16-record cap; extra
-phase records are dropped. Queue intervals use native timestamps; clock skew
-between machines can affect their placement in the waterfall.
-
-HTTP and job propagation carries only `traceparent`; arbitrary baggage and vendor
-`tracestate` are deliberately omitted. Context copying into asyncio tasks and
-threadpool calls follows OpenTelemetry/Python contextvars. Queue workers restore
-the persisted context before claiming work instead of inheriting the polling loop’s trace. Duplicate
-submissions return the original durable record and parent; tracing does not
-resubmit inference or alter cancellation, leases, image saving or completion
-transactions.
-
-The exporter has an attribute allowlist for route templates, HTTP method/status,
-fixed operation/stage names, worker kind, recovery state and fixed numeric text
-phase counters. Sampled language-worker prefill/decode spans include projection dispatch
-counts and completed-call wall costs within a bounded 32-attribute limit. These
-do not measure individual CUDA kernels. Span names use fixed
-operations and server route templates. It strips all exception descriptions,
-events, links and unapproved attributes, including automatic HTTPX URLs. No prompt,
-completion, image/audio payload, tool arguments/results, file content, auth header,
-credential, query string, arbitrary header, conversation ID or personal content is
-exported. Error spans retain status without exception text. No payload callback or
-SQL instrumentation is installed.
-
-`kadan.kv_cache.cross_request_reuse=false` on language prefill describes the current
-engine behavior: `text::Engine::begin_request()` resets the request’s recurrent/KV
-state. It is not a measured cache hit/miss count. The native engine does not expose
-measured cross-request KV hit/miss counters, so none are invented from the API’s
-compatibility cache fields. Weight-cache reuse is a separate mechanism and is not
-reported as KV reuse.
-
-In Jaeger, select `kadan-services` and a recent trace, or copy `x-kadan-trace-id` from the
-frontend request’s response in developer tools and search that trace ID. Expand
-the Kadan graph/tool spans, HTTP child calls to Tsuchi/Hikari, native worker queue,
-load/admission/execute spans, and language prefill/decode siblings. Compare the
-intervals to identify where wall time is spent. All three APIs share the
-`kadan-services` service; a span's route starts with `/kadan`, `/tsuchi` or
-`/hikari`. Absence of a sampled trace is not evidence of a fast
-request. Jaeger’s existing RAM-only retention still applies.
-
-For local Python development, install the shared package before service dependencies:
-`python -m pip install -e services/tracing`. Compose supplies it as the named
-`tracing` build context; standalone API image builds need the equivalent
-`--build-context tracing=<path-to-services/tracing>` option. No local collector is
-needed for unit tests: `python -m pytest services/tracing/tests` uses an in-memory
-exporter and fake boundaries. The implementation follows the official
-[Python exporter guidance](https://opentelemetry.io/docs/languages/python/exporters/),
-[SDK processor contract](https://opentelemetry.io/docs/specs/otel/trace/sdk/), and
-[Python batch processor API](https://opentelemetry-python.readthedocs.io/en/latest/sdk/trace.export.html).
-
-Configuration references: [official deployment guide](https://www.jaegertracing.io/docs/2.22/deployment/),
-[memory storage](https://www.jaegertracing.io/docs/2.22/storage/memory/), and
-[v2.22.0 configuration](https://www.jaegertracing.io/docs/2.22/deployment/configuration/).
-
-### Hot reload
-
-`compose.yaml` uses hot reload by default. It bind-mounts application source;
-the frontend runs Vite, the APIs run uvicorn with `--reload`, and watchfiles
-restarts agent runners after Python edits. No override file is needed. Existing
-installations should remove any `COMPOSE_FILE` setting that selects the deleted
-override files from `.env` or their shell environment.
-
-```sh
-docker compose up --build -d
-```
-
-Each Hikari worker container rebuilds only its own program from
-the source mount and restarts it when its binary changes, so other workers keep
-running. Any Python edit to Kadan, Tsuchi or Hikari reloads the whole `api`
-process, which drops Hikari's worker connections and cancels inference in
-progress. To pick up frontend or API image changes:
-
-```sh
-docker compose up -d --no-deps --build --force-recreate --wait frontend api
-```
-
-Frontend dependencies install into the frontend's `node_modules` volume on start,
-so `package.json` changes need only a container restart. Python dependency
-changes need an image rebuild. Every Dockerfile runs the same hot-reloading
-setup used by Compose.
+Kadan is a single-owner local prototype with simple bearer API-key checks
+(default `insecure-api-key`). See [security and operator responsibility](docs/user-expectations/security.md).

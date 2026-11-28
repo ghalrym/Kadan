@@ -49,12 +49,32 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
         -r (Join-Path $Root "services\api\requirements.txt")
 }
 
-Write-Host "[4/4] Staging native C++ kadan-worker binary..."
+Write-Host "[4/4] Staging native C++ kadan-worker runtime..."
 if ($WorkerBin -and (Test-Path $WorkerBin)) {
-    Copy-Item -Force $WorkerBin (Join-Path $RuntimeDir "bin\kadan-worker.exe")
-    Write-Host "  Staged kadan-worker.exe from $WorkerBin"
+    if (Test-Path $WorkerBin -PathType Container) {
+        foreach ($sub in @("bin", "libexec", "lib", "share")) {
+            $src = Join-Path $WorkerBin $sub
+            if (Test-Path $src) {
+                robocopy $src (Join-Path $RuntimeDir $sub) /E | Out-Null
+            }
+        }
+        Write-Host "  Staged kadan-worker install prefix from $WorkerBin"
+    } else {
+        Copy-Item -Force $WorkerBin (Join-Path $RuntimeDir "bin\kadan-worker.exe")
+        Write-Host "  Staged kadan-worker.exe from $WorkerBin"
+    }
+    $exe = Join-Path $RuntimeDir "bin\kadan-worker.exe"
+    $caps = (& $exe --list-workloads | ConvertFrom-Json)
+    $found = @($caps.workloads | ForEach-Object { $_.id })
+    $missing = @("llm", "speech", "tts", "image" | Where-Object { $found -notcontains $_ })
+    if ($missing.Count -gt 0) {
+        throw "kadan-worker.exe is missing required workloads: $($missing -join ', ') (found: $($found -join ', '))"
+    }
+    Write-Host "  Verified all workloads compiled into kadan-worker.exe: $($found -join ', ')"
+} elseif ($env:KADAN_ALLOW_NO_WORKER -eq "1") {
+    Write-Host "  Note: no WorkerBin provided (KADAN_ALLOW_NO_WORKER=1)."
 } else {
-    Write-Host "  Note: no WorkerBin provided."
+    throw "No KADAN_WORKER_BIN provided. Build kadan-worker.exe with all 4 CUDA workloads or set KADAN_ALLOW_NO_WORKER=1."
 }
 
 Write-Host "Done! Staged Kadan Server runtime in $RuntimeDir"

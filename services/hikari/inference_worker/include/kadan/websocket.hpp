@@ -8,8 +8,8 @@
 #include <string>
 #include <string_view>
 
-// A minimal RFC 6455 client: the worker's only transport to the API. The
-// Docker image's libcurl predates WebSocket support, so framing lives here and
+// A minimal RFC 6455 client: the worker's only transport to the API. Framing
+// lives here so older system libcurl builds work without WebSocket support, and
 // TLS uses the OpenSSL the worker already links.
 namespace kadan::serving::websocket {
 struct Url {

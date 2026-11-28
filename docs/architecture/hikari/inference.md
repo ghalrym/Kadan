@@ -71,20 +71,13 @@ Detached bytes remain charged as a host-only worker budget after confirmed offlo
 
 ## Workers on another computer
 
-`compose.yaml` also runs workers on a computer other than the API's. Configure
-`.env` as described in the [root README](../../../README.md#docker-compose), then start selected workers with
-`--no-deps` so the local API and database stay stopped. Set the remote API URL
-and its worker token; source edits rebuild and restart these workers too:
+Run the native `kadan-worker` binary on a separate GPU computer pointing at the
+main server's WebSocket endpoint and worker token:
 
 ```sh
-HIKARI_API_URL=ws://API_HOST:8000/hikari/v1/workers HIKARI_WORKER_TOKEN=... \
-  docker compose -p kadan-workers up --build -d --no-deps hikari-worker-image hikari-worker-tts
+kadan-worker --workload=image --api-url=ws://API_HOST:8000/hikari/v1/workers --token=...
 ```
 
-To reuse a model store created by the former standalone worker configuration,
-set `HIKARI_MODEL_VOLUME=kadan-workers_worker_models` in that computer's `.env`.
-Otherwise the workers project uses `kadan-workers_model_data`. Keep the existing
-project name if it differs from `kadan-workers`.
-
-Compose publishes the API on `0.0.0.0` (all IPv4 interfaces). Remote workers
-connect using the server's reachable address; use TLS for `wss://`.
+When network access is enabled in Kadan Server's Settings, the API binds to
+`0.0.0.0`. Remote workers connect using the server's reachable address; use TLS
+for `wss://`.

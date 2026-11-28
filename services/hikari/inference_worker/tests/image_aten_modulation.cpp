@@ -14,46 +14,52 @@ void check(bool value, std::source_location at = std::source_location::current()
 
 void double_and_single_modulation() {
     using namespace kadan::image::detail;
-    auto x = at::tensor({-3.f, -1.f, 1.f, 3.f})
-                 .to(at::kBFloat16)
-                 .reshape({1, 1, 4})
-                 .repeat({2, 3, 1});
-    auto projected = at::zeros({1, 24}, at::kBFloat16);
-    projected.slice(1, 0, 4).fill_(0.25f);    // shift_msa
-    projected.slice(1, 4, 8).fill_(0.5f);     // scale_msa -> 1.5
-    projected.slice(1, 8, 12).fill_(0.5f);    // gate_msa
-    projected.slice(1, 12, 16).fill_(-0.25f); // shift_mlp
-    projected.slice(1, 16, 20).fill_(1.0f);   // scale_mlp -> 2.0
-    projected.slice(1, 20, 24).fill_(-0.5f);  // gate_mlp
+    const std::vector<float> row_vals{-3.f, -1.f, 1.f, 3.f};
+    std::vector<std::uint16_t> x(2 * 3 * 4);
+    for (std::size_t i = 0; i < x.size(); ++i)
+        x[i] = float_to_bf16(row_vals[i % 4]);
 
-    Flux2DoubleModulation dmod(projected);
-    check(dmod.attention.scale.scalar_type() == at::kFloat);
-    check(dmod.attention.shift[0][0][0].item<float>() == 0.25f);
-    check(dmod.attention.scale[0][0][0].item<float>() == 1.5f);
-    check(dmod.attention.gate[0][0][0].item<float>() == 0.5f);
-    check(dmod.mlp.shift[0][0][0].item<float>() == -0.25f);
-    check(dmod.mlp.scale[0][0][0].item<float>() == 2.0f);
-    check(dmod.mlp.gate[0][0][0].item<float>() == -0.5f);
+    std::vector<std::uint16_t> projected(24, float_to_bf16(0.f));
+    for (std::size_t i = 0; i < 4; ++i) {
+        projected[i] = float_to_bf16(0.25f);        // shift_msa
+        projected[4 + i] = float_to_bf16(0.5f);     // scale_msa -> 1.5
+        projected[8 + i] = float_to_bf16(0.5f);     // gate_msa
+        projected[12 + i] = float_to_bf16(-0.25f);  // shift_mlp
+        projected[16 + i] = float_to_bf16(1.0f);    // scale_mlp -> 2.0
+        projected[20 + i] = float_to_bf16(-0.5f);   // gate_mlp
+    }
 
-    auto normed = flux2_modulated_norm(x, dmod.attention.shift, dmod.attention.scale);
-    check(normed.scalar_type() == at::kBFloat16);
-    check(at::equal(normed[0], normed[1]));
+    Flux2CpuDoubleModulation dmod(projected);
+    check(dmod.attention.shift[0] == 0.25f);
+    check(dmod.attention.scale[0] == 1.5f);
+    check(bf16_to_float(dmod.attention.gate[0]) == 0.5f);
+    check(dmod.mlp.shift[0] == -0.25f);
+    check(dmod.mlp.scale[0] == 2.0f);
+    check(bf16_to_float(dmod.mlp.gate[0]) == -0.5f);
 
-    auto single_proj = at::zeros({1, 12}, at::kBFloat16);
-    single_proj.slice(1, 0, 4).fill_(0.1f);
-    single_proj.slice(1, 4, 8).fill_(0.2f);
-    single_proj.slice(1, 8, 12).fill_(0.5f);
-    Flux2SingleModulation smod(single_proj);
-    auto base = at::ones({2, 3, 4}, at::kBFloat16);
-    auto delta = at::full({2, 3, 4}, 2.0f, at::kBFloat16);
-    auto updated = flux2_gated_residual(base, delta, smod.parallel.gate);
-    check(updated.data_ptr() == base.data_ptr());
-    check(updated[0][0][0].item<float>() == 2.0f);
+    const auto normed = flux2_modulated_norm_cpu(
+        x, 6, 4, dmod.attention.shift, dmod.attention.scale
+    );
+    check(normed.size() == x.size());
+    for (std::size_t i = 0; i < 12; ++i)
+        check(normed[i] == normed[12 + i]);
+
+    std::vector<std::uint16_t> single_proj(12, float_to_bf16(0.f));
+    for (std::size_t i = 0; i < 4; ++i) {
+        single_proj[i] = float_to_bf16(0.1f);
+        single_proj[4 + i] = float_to_bf16(0.2f);
+        single_proj[8 + i] = float_to_bf16(0.5f);
+    }
+    Flux2CpuSingleModulation smod(single_proj);
+    std::vector<std::uint16_t> base(2 * 3 * 4, float_to_bf16(1.0f));
+    std::vector<std::uint16_t> delta(2 * 3 * 4, float_to_bf16(2.0f));
+    flux2_gated_residual_cpu(base, delta, smod.parallel.gate);
+    check(bf16_to_float(base[0]) == 2.0f);
 }
 }  // namespace
 
 int main() {
     double_and_single_modulation();
     std::cout
-        << "image ATen modulation arithmetic units passed (CPU only, no inference)\n";
+        << "image modulation arithmetic units passed (CPU only, no inference)\n";
 }

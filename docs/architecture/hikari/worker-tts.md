@@ -3,17 +3,13 @@
 Turns text into speech with fixed Qwen3-TTS 1.7B
 CustomVoice: named speakers, supported languages and instructions.
 
-## Program and container
+## Program
 
-- Its own program, `kadan-worker-tts`, built from
-  `services/hikari/inference_worker/workers/tts/`. It links only this engine;
-  the shared worker runtime supplies the API contract, the WebSocket client and
-  the model store.
-- Its own image, built by `workers/tts/Dockerfile`: CUDA.
-- Its own Compose service, `hikari-worker-tts` (GPU). It can be scaled, and
-  run on another computer using the same services in `compose.yaml`.
-- It connects to the API and takes memory only as the API grants it. Workers on
-  one computer share its RAM and GPUs in the API's ledger.
+- Built into the unified `kadan-worker` binary (`--workload=tts`) and also
+  available standalone as `kadan-worker-tts` from
+  `services/hikari/inference_worker/workers/tts/`.
+- Connects to `/hikari/v1/workers` and takes memory only as the API grants it.
+  Workers on one computer share its RAM and GPUs in the API's ledger.
 
 ## Serves
 

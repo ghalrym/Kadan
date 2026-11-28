@@ -2049,3 +2049,36 @@ def test_streaming_draft_clears_when_model_returns_non_message_tool(boundary):
     assert boundary.deliveries == []
     assert boundary.current.status == "completed"
 
+
+def test_persona_chat_routes_to_abliterated_via_task_class_when_available(boundary):
+    seen_calls = []
+
+    async def infer(
+        messages,
+        model_id,
+        conversation_key,
+        tools,
+        *,
+        priority="interactive",
+        on_text_delta=None,
+        task_class=None,
+        **kwargs,
+    ):
+        seen_calls.append((model_id, task_class))
+        return RunCall(command=send(content="Hi there", end_run=True))
+
+    async def ready_abliterated():
+        return SimpleNamespace(
+            state="ready",
+            model_id="inkling-2-mini-iq4-nl",
+            context_length=32768,
+            message="Ready.",
+            abliterated_available=True,
+        )
+
+    boundary.inference_status = ready_abliterated
+    boundary.controller.inference = SimpleNamespace(call=infer)
+    asyncio.run(boundary.controller.process(boundary.current))
+    assert seen_calls == [(None, "persona_chat")]
+    assert boundary.current.status == "completed"
+

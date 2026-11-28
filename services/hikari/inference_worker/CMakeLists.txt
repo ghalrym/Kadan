@@ -6,18 +6,12 @@ if(KADAN_TRACE_WEIGHT_CACHE)
   # the same layout. This developer build does not change runtime settings.
   add_compile_definitions(KADAN_TRACE_WEIGHT_CACHE)
 endif()
-option(KADAN_ENABLE_CUDA "Build original SM86 NVFP4/FP8 projections" OFF)
-option(KADAN_ALLOW_MULTI_ARCH "Allow multi-architecture CUDA builds for release packaging" OFF)
-option(KADAN_ENABLE_IMAGE_GENERATION "Build C++ ATen CUDA image generation" OFF)
-if(KADAN_ENABLE_IMAGE_GENERATION AND NOT KADAN_ENABLE_CUDA)
-  message(FATAL_ERROR "Image generation requires KADAN_ENABLE_CUDA=ON and LibTorch 2.14.1+cu130; no CPU image backend is supported")
-endif()
+option(KADAN_ENABLE_CUDA "Build native CUDA inference engines (LLM, Speech, TTS, Image)" OFF)
+option(KADAN_ALLOW_MULTI_ARCH "Allow multi-architecture CUDA builds for release packaging" ON)
+option(KADAN_ENABLE_IMAGE_GENERATION "Build native CUDA image generation (enabled automatically with CUDA)" ON)
 if(KADAN_ENABLE_CUDA)
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES 86)
-  endif()
-  if(NOT KADAN_ALLOW_MULTI_ARCH AND NOT "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "86")
-    message(FATAL_ERROR "The first native GPU path requires explicit SM86 (86), never native device probing")
+    set(CMAKE_CUDA_ARCHITECTURES "80;86;89;90")
   endif()
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
@@ -197,7 +191,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(kadan_tts_generator PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 endif()
 
-option(KADAN_ENABLE_TTS_WORKER "Build complete native custom-voice CPU speech worker" OFF)
+option(KADAN_ENABLE_TTS_WORKER "Build native custom-voice speech worker (enabled automatically with CUDA)" ON)
 
 # Decoder-boundary helpers remain for shared CUDA utilities and CPU unit checks.
 add_library(kadan_image_vae src/models/image/image_vae.cpp)
@@ -213,33 +207,30 @@ add_library(kadan_text_tokenizer src/tokenization/text_tokenizer.cpp)
 target_link_libraries(kadan_text_tokenizer PUBLIC kadan_resources PRIVATE nlohmann_json::nlohmann_json ICU::uc ICU::i18n ${KADAN_TEXT_PCRE2})
 target_compile_options(kadan_text_tokenizer PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-if(KADAN_ENABLE_IMAGE_GENERATION)
-  # Avoid Torch's native GPU probing and keep toolkit/library versions coherent.
-  set(TORCH_CUDA_ARCH_LIST "8.6")
-  if(CUDAToolkit_VERSION VERSION_LESS 13.0 OR NOT CUDAToolkit_VERSION VERSION_LESS 13.1)
-    message(FATAL_ERROR "Pinned ATen image libraries require the CUDA 13.0 toolkit")
-  endif()
-  find_package(Torch 2.14.1 EXACT REQUIRED)
-  if(NOT TARGET torch_cuda)
-    message(FATAL_ERROR "Image generation requires CUDA-enabled LibTorch 2.14.1+cu130")
-  endif()
-  # LibTorch caches device handles for the process lifetime. Resetting a device
-  # on any workload's retirement would invalidate later image requests.
-  target_compile_definitions(kadan_h3_cuda PRIVATE KADAN_ATEN_RUNTIME=1)
+if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_IMAGE_GENERATION)
+  add_library(kadan_flux2_cuda src/cuda/flux2_cuda.cu)
+  target_link_libraries(kadan_flux2_cuda PUBLIC kadan_resources CUDA::cudart CUDA::cublas)
+  set_target_properties(kadan_flux2_cuda PROPERTIES
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED YES
+    CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+  target_compile_options(kadan_flux2_cuda PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--default-stream=legacy;--ftz=false;--fmad=false>)
+
   add_library(kadan_image_aten src/models/image/image_aten.cpp src/models/image/image_checkpoint_config.cpp)
-  target_link_libraries(kadan_image_aten PRIVATE ${TORCH_LIBRARIES} CUDA::cudart
+  target_link_libraries(kadan_image_aten PRIVATE kadan_flux2_cuda CUDA::cudart
     PUBLIC kadan_checkpoint kadan_resources kadan_text_tokenizer)
-  target_compile_options(kadan_image_aten PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  target_compile_options(kadan_image_aten PRIVATE ${KADAN_STRICT_CXX_FLAGS})
   add_library(kadan_image_generation src/models/image/image_generation.cpp src/models/image/image_png.cpp)
   target_link_libraries(kadan_image_generation PUBLIC kadan_image_aten PRIVATE nlohmann_json::nlohmann_json)
-  target_compile_options(kadan_image_generation PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
-  if(BUILD_TESTING)
-    add_executable(image-aten-modulation-tests tests/image_aten_modulation.cpp)
-    target_link_libraries(image-aten-modulation-tests PRIVATE ${TORCH_LIBRARIES})
-    target_compile_features(image-aten-modulation-tests PRIVATE cxx_std_20)
-    target_compile_options(image-aten-modulation-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
-    add_test(NAME image-aten-modulation COMMAND image-aten-modulation-tests)
-  endif()
+  target_compile_options(kadan_image_generation PRIVATE ${KADAN_STRICT_CXX_FLAGS} $<$<CXX_COMPILER_ID:GNU,Clang>:-ffp-contract=off>)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(image-aten-modulation-tests tests/image_aten_modulation.cpp)
+  target_compile_features(image-aten-modulation-tests PRIVATE cxx_std_20)
+  target_compile_options(image-aten-modulation-tests PRIVATE ${KADAN_STRICT_CXX_FLAGS})
+  add_test(NAME image-aten-modulation COMMAND image-aten-modulation-tests)
 endif()
 
 if(BUILD_TESTING)
@@ -488,7 +479,7 @@ if(KADAN_ENABLE_CUDA)
 endif()
 kadan_install_worker(kadan-worker)
 
-if(KADAN_ENABLE_IMAGE_GENERATION)
+if(KADAN_ENABLE_CUDA AND KADAN_ENABLE_IMAGE_GENERATION)
   add_executable(kadan-worker-image workers/image/main.cpp src/inference/inference_image.cpp)
   target_compile_definitions(kadan-worker-image PRIVATE KADAN_WORKER_CUDA=1)
   target_link_libraries(kadan-worker-image PRIVATE kadan_worker_runtime

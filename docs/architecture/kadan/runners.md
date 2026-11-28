@@ -41,9 +41,9 @@ Assignments are durable across process restarts; they are not queue leases.
 
 Kadan's assignment dialog derives the current owner from the runner roster and sends that observed owner as `expected_runner_id`. Roster snapshots refresh explicitly and after confirmed writes; mutation failures block another write until a fresh read succeeds. A release is not represented optimistically as an unassigned agent because another runner can claim it before the next read. The browser offers only destinations with free capacity and an unexpired heartbeat in its snapshot, rechecking expiry at submission. Tsuchi remains responsible for atomic ownership and capacity checks.
 
-Keep IDs unique and stable. The root `compose.yaml` provides a second explicit service behind the
-`runners` profile with ID `runner-2`; do not scale identical copies of `runner-1`.
-When mounting a custom instruction file, mount it in every runner: snapshots are
+Keep IDs unique and stable when running multiple runners (for example `runner-1`
+and `runner-2`); do not run duplicate processes with the same runner ID.
+When using a custom instruction file, make it available to every runner: snapshots are
 read at run start by the executing process, and resumed runs retain their snapshot.
 Tracing uses the existing durable W3C parent across the API/runner boundary, stays
 disabled without an OTLP endpoint and excludes prompt/tool payloads.

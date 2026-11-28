@@ -1,9 +1,0 @@
-.git
-.venv
-web
-__pycache__
-**/__pycache__
-.pytest_cache
-.env
-evidence
-*.bundle

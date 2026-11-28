@@ -14,8 +14,7 @@ from bin.process import ROOT
 
 app = typer.Typer(no_args_is_help=True)
 
-# Each worker image keeps its own build tree; see
-# inference_worker/workers/<name>/Dockerfile.
+# Local developer hot-reload build paths for native inference workers.
 WORKER_SOURCE = Path(os.getenv("HIKARI_WORKER_SOURCE", "/src/inference_worker"))
 WORKER_BUILD = Path(os.getenv("HIKARI_WORKER_BUILD", "/build"))
 WORKER_PREFIX = Path(os.getenv("HIKARI_WORKER_PREFIX", "/opt/kadan"))

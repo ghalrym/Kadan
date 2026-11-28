@@ -25,6 +25,8 @@ class InferenceState(BaseModel):
         Literal["unloaded", "loading", "ready", "offloaded", "unloading", "error"]
         | None
     ) = None
+    # True when a same-precision abliterated Inkling checkpoint is downloaded for hot-swap.
+    abliterated_available: bool = False
 
 
 class Status(BaseModel):

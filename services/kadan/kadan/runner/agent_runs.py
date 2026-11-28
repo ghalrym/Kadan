@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4, uuid5
 
 from kadan_tracing import traced, traced_job
@@ -1442,6 +1442,8 @@ class AgentRuns(RunClient):
         messages: list[BaseMessage],
         model_id: str | None,
         tools: list[StructuredTool],
+        *,
+        task_class: Literal["persona_chat", "harness"] | None = None,
     ) -> tuple[RunCall, ToolCommand, ArgumentRejection | None]:
         started = monotonic()
         logger.info(
@@ -1480,18 +1482,23 @@ class AgentRuns(RunClient):
 
         command: ToolCommand | None = None
         try:
+            call_kwargs: dict[str, Any] = {
+                "priority": "interactive",
+                "reasoning_effort": CHAT_REASONING_EFFORT,
+                "temperature": CHAT_TEMPERATURE,
+                "top_p": CHAT_TOP_P,
+                "min_p": CHAT_MIN_P,
+                "presence_penalty": CHAT_PRESENCE_PENALTY,
+                "on_text_delta": publish_draft if can_stream_draft else None,
+            }
+            if task_class is not None:
+                call_kwargs["task_class"] = task_class
             call = await self.inference.call(
                 messages,
                 model_id,
                 f"kadan:{run.agent_key}:{run.conversation_id}",
                 tools,
-                priority="interactive",
-                reasoning_effort=CHAT_REASONING_EFFORT,
-                temperature=CHAT_TEMPERATURE,
-                top_p=CHAT_TOP_P,
-                min_p=CHAT_MIN_P,
-                presence_penalty=CHAT_PRESENCE_PENALTY,
-                on_text_delta=publish_draft if can_stream_draft else None,
+                **call_kwargs,
             )
             command = call.command
             rejection = validate(command, tools)
@@ -1566,11 +1573,15 @@ class AgentRuns(RunClient):
                         raise ServiceError(
                             "The agent run exceeded its context limit.", 422
                         )
+                    abliterated_available = bool(
+                        getattr(status, "abliterated_available", False)
+                    )
                     call, command, rejection = await self._infer_once(
                         run,
                         [*base_messages, *retry_messages],
-                        status.model_id,
+                        None if abliterated_available else status.model_id,
                         tools,
+                        task_class="persona_chat" if abliterated_available else None,
                     )
                     break
                 except (ServiceError, ValidationError, OSError) as error:

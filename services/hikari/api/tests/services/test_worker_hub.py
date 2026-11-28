@@ -2405,3 +2405,24 @@ class LoadContextTests(HubTestCase):
             requested_model(chat_base),
             "inkling-2-mini-iq4-nl",
         )
+
+    async def test_refresh_models_exposes_completed_same_precision_inkling_companion(self):
+        await self.connect(
+            "llm",
+            store=models(
+                selected_model_id="inkling-2-mini-abliterated-iq4-nl",
+                checkpoints=(
+                    checkpoint("inkling-2-mini-abliterated-iq4-nl", kind="llm"),
+                    checkpoint("inkling-2-mini-iq4-nl", kind="llm"),
+                    checkpoint("inkling-2-mini-q8-0", kind="llm"),
+                    {
+                        **checkpoint("inkling-2-mini-abliterated-q8-0", kind="llm"),
+                        "status": "not_downloaded",
+                    },
+                ),
+            ),
+        )
+        ids = {model.id for model in self.hub.models.models}
+        self.assertEqual(
+            ids, {"inkling-2-mini-abliterated-iq4-nl", "inkling-2-mini-iq4-nl"}
+        )

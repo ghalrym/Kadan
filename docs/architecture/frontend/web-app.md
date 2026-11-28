@@ -32,7 +32,7 @@ them is follow-up work.
 ## API routing
 
 Browser API paths match the [combined API](../api/combined-app.md)'s, so the
-Vite server forwards them unchanged to `API_URL` (Compose: `http://api:8000`):
+Vite dev server forwards them unchanged to `API_URL` (default `http://127.0.0.1:8000`):
 
 | Browser path | Service | Notes |
 | --- | --- | --- |

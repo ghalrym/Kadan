@@ -14,6 +14,7 @@
 #include "../weights/metadata_json.hpp"
 #include "kadan/gguf_text.hpp"
 #include "kadan/platform.hpp"
+#include "kadan/inkling_variant.hpp"
 #include "kadan/preparation.hpp"
 
 namespace kadan::serving {
@@ -991,8 +992,11 @@ Json ModelStore::status() const {
     );
     Json models = Json::array();
     for (const auto& item : catalog_) {
-        if (has_active_llm && item.kind == "llm" && item.id != active_llm)
-            continue;
+        if (has_active_llm && item.kind == "llm" && item.id != active_llm) {
+            if (!inkling_hot_swap_compatible(active_llm, item.id)
+                || !completed_bytes(item))
+                continue;
+        }
         const auto id = item.id;
         const auto text = [](const std::optional<std::string>& value) -> Json {
             return value ? Json(*value) : Json(nullptr);

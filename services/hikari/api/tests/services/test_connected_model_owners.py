@@ -58,6 +58,7 @@ class ConnectedModelOwnersTests(unittest.TestCase):
             {model.id for model in hub.models.models},
             {
                 "inkling-2-mini-iq4-nl",
+                "inkling-2-mini-abliterated-iq4-nl",
                 "qwen-tts-1.7b-custom",
                 "qwen3-asr-1.7b",
                 "flux.2-klein-4b",
@@ -77,7 +78,11 @@ class ConnectedModelOwnersTests(unittest.TestCase):
         self.assertEqual(hub.models.defaults.decisions, "inkling-2-mini-q8-0")
         self.assertEqual(
             {model.id for model in hub.models.models},
-            {"inkling-2-mini-q8-0", "flux.2-klein-4b"},
+            {
+                "inkling-2-mini-q8-0",
+                "inkling-2-mini-abliterated-q8-0",
+                "flux.2-klein-4b",
+            },
         )
 
     def test_llm_worker_abliterated_selection_propagates_to_snapshot_and_defaults(self):
@@ -99,7 +104,11 @@ class ConnectedModelOwnersTests(unittest.TestCase):
         )
         self.assertEqual(
             {model.id for model in hub.models.models},
-            {"inkling-2-mini-abliterated-iq4-nl", "flux.2-klein-4b"},
+            {
+                "inkling-2-mini-abliterated-iq4-nl",
+                "inkling-2-mini-iq4-nl",
+                "flux.2-klein-4b",
+            },
         )
 
     def test_snapshot_rows_are_deep_copied_and_duplicate_owners_are_deduplicated(self):

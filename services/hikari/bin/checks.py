@@ -35,6 +35,7 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "image-checkpoint-config-tests",
     "image-upload-tests",
     "image-edit-tests",
+    "image-aten-modulation-tests",
     "image-aten-plan-tests",
     "image-aten-performance-tests",
     "image-batch-performance-tests",

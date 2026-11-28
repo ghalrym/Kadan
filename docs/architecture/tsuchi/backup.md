@@ -2,13 +2,12 @@
 
 **Export** in the website downloads a ZIP for the selected namespace. It includes a JSON manifest with resources, revisions, metadata, trash, activity, and original files under `files/{asset-id}`. This is a portable export; there is no ZIP import endpoint in v1.
 
-For a complete backup of all namespaces, stop the service and archive the whole volume. Stop it first so the SQLite database and files cannot change during the copy. The commands below apply to Tsuchi managed by this repository's root Compose project. If you still use the standalone deployment, stop and back up through that original Compose project first; root Compose cannot stop a container belonging to another project. Run these commands from the repository root, writing the backup somewhere with enough free disk space:
+For a complete backup of all namespaces, stop Kadan Server from Settings (so the
+SQLite database and files cannot change during the copy) and archive the `tsuchi`
+folder inside your Kadan data directory (`<data_dir>/tsuchi`):
 
 ```sh
-docker compose stop api
-docker compose run --rm -T --no-deps --entrypoint tar api \
-  -czf - -C /data . > tsuchi-backup.tar.gz
-docker compose up -d
+tar -czf tsuchi-backup.tar.gz -C "$KADAN_DATA_DIR/tsuchi" .
 ```
 
 Check that the archive is readable before relying on it:
@@ -17,13 +16,11 @@ Check that the archive is readable before relying on it:
 tar -tzf tsuchi-backup.tar.gz
 ```
 
-Restore your own trusted backup into a **new empty volume**, preserving the original. The following uses a separate Compose project and refuses to extract into a nonempty data directory:
+Restore your own trusted backup into a **new empty folder**, preserving the original:
 
 ```sh
-TSUCHI_DATA_VOLUME=tsuchi-restored-data docker compose -p tsuchi-restored run --rm -T --no-deps --entrypoint sh api \
-  -c 'test -z "$(ls -A /data)" && tar -xzf - -C /data --no-same-owner' \
-  < tsuchi-backup.tar.gz
-TSUCHI_DATA_VOLUME=tsuchi-restored-data KADAN_PORT=8621 API_PORT=8001 docker compose -p tsuchi-restored up -d api frontend
+mkdir -p "$RESTORE_DIR" && test -z "$(ls -A "$RESTORE_DIR")" && \
+  tar -xzf tsuchi-backup.tar.gz -C "$RESTORE_DIR"
 ```
 
-Inspect the restored instance at <http://127.0.0.1:8621/tsuchi> before switching anything over. Tsuchi shares the `api` container with Kadan and Hikari, so stopping it for a backup pauses all three, and the restored copy starts its own API and Hikari database (empty, with no workers or models). Coordinate these additional services and ports with the server owner. The original volume is untouched.
+Point Kadan Server's data folder at a copy of the restored store (or inspect it separately) before switching over. The original folder stays untouched.

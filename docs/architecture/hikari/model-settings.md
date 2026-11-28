@@ -21,8 +21,7 @@ Completed native status reports sum the downloaded artifact sizes recorded in a 
 ## Checkpoint storage
 
 The catalog pins revisions and verifies downloaded files before publishing them.
-Docker Compose persists models in `model_data` at `/var/lib/kadan/models`.
-`docker compose down -v` deletes named volumes, including stored data.
+Kadan stores downloaded models inside `<data_dir>/models` (or `KADAN_MODEL_DIR`).
 Do not modify completed checkpoints externally or share a store between
 independent API servers. Review the catalog model cards and licenses before use.
 

@@ -1631,9 +1631,7 @@ public:
         destroy_inkling_runtime();
         release_mirrors();
         checked(cudaDeviceSynchronize());
-#ifndef KADAN_ATEN_RUNTIME
         checked(cudaDeviceReset());
-#endif
     }
 
     template <class T> T* at(std::size_t offset) {
