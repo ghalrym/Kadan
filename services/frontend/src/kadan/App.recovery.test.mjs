@@ -41,9 +41,11 @@ const mocks = {
   "./desktop": moduleUrl("export const isDesktopApp = () => false; export const getDesktopServerConfig = async () => ({ active_host: '', saved_servers: [] }); export const installDesktopUpdate = async () => ({ ok: true, target_version: null, restarting: false, message: '' });"),
   "./Pet": moduleUrl("export default 'Pet'; export const agentPet = () => null; export const useMood = () => [];"),
   "./pet": moduleUrl("export const agentHue = () => 0;"),
-  "./PetContext": moduleUrl("export const PetContext = { Provider: 'Provider' }; export const useAgentPet = () => null;"),
+  "./PetContext": moduleUrl("export const PetContext = { Provider: 'Provider' }; export const useAgentPet = () => null; export const usePetRefJob = () => null;"),
+  "./community": moduleUrl("export const useProfile = () => ({ profile: { display_name: 'You', pet: null, version: 0 }, setProfile() {}, reload: async () => {} }); export const useGroupChatSummary = () => ({ summary: null, unread: false, onSnapshot() {} }); export const useChatUnread = () => false;"),
+  "./profile": moduleUrl("export const saveProfile = async () => ({});"),
   "./work": moduleUrl("export const listWorkThreads = async () => []; export const organizeWorkThread = async () => null; export const parseWorkHash = () => null;"),
-  ...Object.fromEntries(["Chat", "GroupChat", "PetEditor", "PersonaEditor", "RenameAgent", "DeleteAgent", "Plugins", "Sidebar", "SpaceLibrary", "ConfirmDialog", "ServerSettings", "SettingsPage", "WorkThreadView"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
+  ...Object.fromEntries(["Chat", "GroupChat", "PetEditor", "PersonaEditor", "RenameAgent", "DeleteAgent", "Plugins", "Sidebar", "SpaceLibrary", "ConfirmDialog", "ServerSettings", "SettingsPage", "WorkThreadView", "ProfileDialog"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
 };
 const loader = registerHooks({
   resolve(specifier, context, nextResolve) {

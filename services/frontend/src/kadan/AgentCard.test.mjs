@@ -45,5 +45,6 @@ test("the agent card exposes Call, Rename, Persona, Edit pet, a divider, then De
   assert.deepEqual(personas, [[]]);
   assert.deepEqual(pets, [[]]);
   assert.deepEqual(deletes, [[]]);
-  assert.equal(tree.props.children.length, 2);
+  assert.equal(tree.props.children.length, 3);
+  assert.equal(tree.props.children[2].props.className, "agent-card-note");
 });

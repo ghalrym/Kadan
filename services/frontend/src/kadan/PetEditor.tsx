@@ -116,13 +116,15 @@ function PetThumb({ job, agentKey }: { job: PetJob; agentKey: string }) {
 interface Props {
   agentKey: string;
   agentName: string;
+  /** Heading for the dialog; defaults to the agent's pet. */
+  title?: string;
   selected: PetJob | null;
   onSelect: (id: string | null) => Promise<void>;
   onRefreshSelection: () => Promise<void>;
   onClose: () => void;
 }
 
-export default function PetEditor({ agentKey, agentName, selected, onSelect, onRefreshSelection, onClose }: Props) {
+export default function PetEditor({ agentKey, agentName, title, selected, onSelect, onRefreshSelection, onClose }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const alive = useRef(true);
   const refreshRevision = useRef(0);
@@ -602,7 +604,7 @@ export default function PetEditor({ agentKey, agentName, selected, onSelect, onR
       style={{ "--agent-h": agentHue(agentKey) } as React.CSSProperties}
       onCancel={(event) => { event.preventDefault(); onClose(); }}>
       <header className="pet-editor-head">
-        <h2 id="pet-editor-title">{agentName}’s pet</h2>
+        <h2 id="pet-editor-title">{title ?? `${agentName}’s pet`}</h2>
         <button className="icon" aria-label="Close pet editor" onClick={onClose}><X size={18} /></button>
       </header>
       <div className="pet-editor-body">

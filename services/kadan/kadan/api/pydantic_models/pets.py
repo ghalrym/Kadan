@@ -11,6 +11,14 @@ from .resources import AgentKey
 PetReferenceMode = Literal["template_strips", "single_image", "character_sheet"]
 
 
+class PetRef(BaseModel):
+    """A finished pet in an agent's pet library, borrowed by a person or another agent."""
+
+    model_config = ConfigDict(extra="forbid")
+    agent_key: AgentKey
+    pet_id: UUID
+
+
 class PetAnimation(BaseModel):
     name: str
     row: int

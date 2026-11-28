@@ -20,8 +20,17 @@ from ..pydantic_models.group_chat import (
     GroupChatUserMessageRequest,
     GroupChatUserMessageResponse,
 )
+from ..pydantic_models.profile import UserProfile
 
 router = APIRouter(prefix="/api/group-chat")
+
+
+async def _user_display_name(services) -> str:
+    """Name the user's messages after their profile so agents know who is talking."""
+    profile = UserProfile.model_validate(
+        await services.json_request("Tsuchi", "GET", "/api/profile")
+    )
+    return profile.display_name
 
 
 @router.get("/chatgpt-plugin.zip")
@@ -88,7 +97,7 @@ async def post_group_chat_user_message(
     result = await services.group_chat.create_message(
         room.id,
         sender_kind="user",
-        sender_name="You",
+        sender_name=await _user_display_name(services),
         content=payload.content,
         handoff_to_participant_ids=payload.handoff_to_participant_ids,
         reply_to_message_id=payload.reply_to_message_id,
@@ -150,6 +159,8 @@ async def update_group_chat_participant(
         enabled=payload.enabled,
         rotate_token=payload.rotate_token,
         revoke=payload.revoke,
+        pet=payload.pet,
+        clear_pet=payload.clear_pet,
     )
     public_list = await services.group_chat.list_public_participants(room.id)
     public = next(item for item in public_list if item.id == updated.id)

@@ -76,6 +76,8 @@ from .models import (
     T3ThreadWatch,
     T3ThreadWatchInput,
     T3ThreadWatchUpdate,
+    UserProfile,
+    UserProfileUpdate,
     VersionInput,
     WorkActivityInput,
     WorkActivityItem,
@@ -1073,6 +1075,14 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     )
     def append_work_activity(thread_id: UUID, items: list[WorkActivityInput]):
         return repository.append_work_activity(thread_id, items)
+
+    @router.get("/profile", response_model=UserProfile)
+    def get_user_profile():
+        return repository.get_user_profile()
+
+    @router.put("/profile", response_model=UserProfile)
+    def update_user_profile(value: UserProfileUpdate):
+        return repository.update_user_profile(value)
 
     @router.get("/work/harnesses", response_model=list[WorkHarnessConfig])
     def list_work_harnesses():

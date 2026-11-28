@@ -11,10 +11,13 @@ import {
   Search,
   Settings,
   SquarePen,
-  Users,
   X,
 } from "lucide-react";
+import type { GroupChatSummary } from "./community";
+import { isParticipantActive } from "./groupChat";
 import Pet from "./Pet";
+import { ParticipantAvatar, UserAvatar } from "./PetAvatar";
+import type { UserProfile } from "./profile";
 import { useAgentPet } from "./PetContext";
 import ProviderIcon from "./ProviderIcon";
 import type { Agent, Status } from "./types";
@@ -74,8 +77,16 @@ function bySnoozeAsc(a: WorkThread, b: WorkThread): number {
   return (a.snoozed_until ?? "").localeCompare(b.snoozed_until ?? "");
 }
 
+/** Avatars shown on the Group Chat row before the rest are counted. */
+const STACK = 3;
+
 interface Props {
   agent: Agent | null;
+  profile: UserProfile;
+  onProfile: () => void;
+  groupChat: GroupChatSummary | null;
+  groupChatUnread: boolean;
+  chatUnread: boolean;
   page: Page;
   status: Status | null;
   loading: boolean;
@@ -98,6 +109,10 @@ export default function Sidebar(props: Props) {
   const { agent, page, status, loading, disabled } = props;
   const sheet = useAgentPet(agent?.key ?? "");
   const key = agent?.key ?? "";
+  // Until Group Chat answers, the agent is the only other member worth showing.
+  const groupMembers = props.groupChat
+    ? props.groupChat.participants.filter(isParticipantActive)
+    : key ? [{ kind: "kadan_agent" as const, agent_key: key, handle: key, pet: null }] : [];
   const [query, setQuery] = useState("");
   const [shelves, setShelves] = useState<Shelves>(() => readShelves());
   const [settledLimit, setSettledLimit] = useState(SETTLED_PAGE);
@@ -325,7 +340,7 @@ export default function Sidebar(props: Props) {
           <input
             type="search"
             aria-label="Search threads"
-            placeholder="Search"
+            placeholder="Search threads"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -348,13 +363,24 @@ export default function Sidebar(props: Props) {
               <Pet sheet={sheet} state="idle" size={28} />
             </span>
             <span className="agent-link-name">{agent.name}</span>
-            <span className="agent-link-hint">Agent</span>
+            {props.chatUnread && <span className="unread-dot" role="status" aria-label="New messages" />}
           </button>
         )}
-        <button className={page.name === "group-chat" ? "selected" : ""} disabled={!key}
+        <button className={`group-chat-link ${page.name === "group-chat" ? "selected" : ""}`} disabled={!key}
           aria-current={page.name === "group-chat" ? "page" : undefined} onClick={() => props.onPage("group-chat")}>
-          <Users size={15} />
-          Group Chat
+          <span className="member-stack" aria-hidden="true">
+            <UserAvatar profile={props.profile} size={22} />
+            {groupMembers.slice(0, STACK - 1).map((member) => (
+              <ParticipantAvatar key={member.handle} participant={member} size={22} />
+            ))}
+          </span>
+          <span className="group-chat-link-name">Group Chat</span>
+          {groupMembers.length > STACK - 1 && (
+            <span className="member-count" title={`${groupMembers.length + 1} members`}>
+              +{groupMembers.length - (STACK - 1)}
+            </span>
+          )}
+          {props.groupChatUnread && <span className="unread-dot" role="status" aria-label="New messages" />}
         </button>
         <button className={page.name === "space" ? "selected" : ""} disabled={!key}
           aria-current={page.name === "space" ? "page" : undefined} onClick={() => props.onPage("space")}>
@@ -386,6 +412,11 @@ export default function Sidebar(props: Props) {
       </section>
 
       <footer className="panel-foot">
+        <button className="profile-link" onClick={props.onProfile} title="Your name and pet">
+          <UserAvatar profile={props.profile} size={30} className="profile-link-pet" />
+          <span className="profile-link-name">{props.profile.display_name}</span>
+          <span className="agent-link-hint">You</span>
+        </button>
         <div className="sidebar-server-row">
           <button
             className={`server-settings-trigger ${page.name === "settings" ? "selected" : ""}`}

@@ -108,6 +108,7 @@ export default function AgentCard({
           Delete agent
         </button>
       </div>
+      <p className="agent-card-note">To see what {agentName} remembers, open Memories in Kadan Server.</p>
     </div>
   );
 }

@@ -44,6 +44,8 @@ class FakeTsuchiGroupChat:
         self.subscriptions: dict[str, dict[str, Any]] = {}
         self.event_runs: list[dict[str, Any]] = []
         self.webhook_deliveries: list[dict[str, Any]] = []
+        self.profile: dict[str, Any] = {"display_name": "You", "pet": None, "version": 0}
+        self.profile_puts: list[dict[str, Any]] = []
 
     def add_participant(
         self,
@@ -85,6 +87,19 @@ class FakeTsuchiGroupChat:
         method = request.method
         now = datetime.now(UTC).isoformat()
 
+        if path == "/api/profile" and method == "GET":
+            return httpx.Response(200, json=self.profile)
+        if path == "/api/profile" and method == "PUT":
+            body = json.loads(request.content)
+            self.profile_puts.append(body)
+            if body.get("display_name"):
+                self.profile["display_name"] = body["display_name"]
+            if body.get("clear_pet"):
+                self.profile["pet"] = None
+            elif body.get("pet"):
+                self.profile["pet"] = body["pet"]
+            self.profile["version"] += 1
+            return httpx.Response(200, json=self.profile)
         if path == "/api/agents" and method == "GET":
             return httpx.Response(200, json=self.agents)
         if path == "/api/agents/kadan" and method == "GET":
@@ -207,6 +222,10 @@ class FakeTsuchiGroupChat:
                     rec["display_name"] = body["display_name"]
                 if body.get("description") is not None:
                     rec["description"] = body["description"]
+                if body.get("clear_pet"):
+                    rec["pet"] = None
+                elif body.get("pet") is not None:
+                    rec["pet"] = body["pet"]
                 if body.get("revoke"):
                     rec["enabled"] = False
                     rec["revoked_at"] = now
@@ -1094,3 +1113,58 @@ def test_browser_group_chat_routes_create_rotate_revoke_and_redact_secrets():
         assert posted.status_code == 201
         assert posted.json()["message"]["seq"] == 1
         assert len(tsuchi.event_runs) == 1
+
+
+def test_profile_names_user_messages_and_participants_carry_pets():
+    tsuchi = FakeTsuchiGroupChat()
+    settings = Settings(tsuchi_url="http://tsuchi.test", hikari_url="http://hikari.test")
+    app = create_app(settings)
+    with TestClient(app) as client:
+        mock_http = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda req: tsuchi.handle_tsuchi(req))
+        )
+        app.state.services = LocalServices(mock_http, settings)
+
+        assert client.get("/api/profile").json()["display_name"] == "You"
+        pet = {"agent_key": "kadan", "pet_id": str(uuid4())}
+        saved = client.put(
+            "/api/profile",
+            json={"display_name": "  Andrew ", "pet": pet, "expected_version": 0},
+        )
+        assert saved.status_code == 200
+        assert saved.json()["display_name"] == "Andrew"
+        assert saved.json()["pet"] == pet
+        assert tsuchi.profile_puts[-1] == {
+            "display_name": "Andrew",
+            "pet": pet,
+            "clear_pet": False,
+            "expected_version": 0,
+        }
+        assert (
+            client.put(
+                "/api/profile", json={"pet": pet, "clear_pet": True, "expected_version": 1}
+            ).status_code
+            == 422
+        )
+
+        posted = client.post(
+            "/api/group-chat/messages",
+            json={"content": "Hello room", "client_request_id": "browser-name"},
+        )
+        assert posted.status_code == 201
+        assert posted.json()["message"]["sender_name"] == "Andrew"
+
+        dot = client.post("/api/group-chat/participants", json={"display_name": "Dot"})
+        dot_id = dot.json()["participant"]["id"]
+        assert dot.json()["participant"]["pet"] is None
+        assigned = client.put(
+            f"/api/group-chat/participants/{dot_id}",
+            json={"pet": pet, "expected_version": 1},
+        )
+        assert assigned.status_code == 200
+        assert assigned.json()["participant"]["pet"] == pet
+        cleared = client.put(
+            f"/api/group-chat/participants/{dot_id}",
+            json={"clear_pet": True, "expected_version": 2},
+        )
+        assert cleared.json()["participant"]["pet"] is None

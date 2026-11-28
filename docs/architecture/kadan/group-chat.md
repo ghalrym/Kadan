@@ -7,13 +7,25 @@ The [Group Chat expectations](../../user-expectations/kadan/group-chat.md) descr
 Tsuchi remains the sole durable storage owner (no separate Kadan database). Five SQLite tables store Group Chat state, keyed by `room_id` so multiple rooms can be added later without schema changes (currently seeded with singleton `DEFAULT_GROUP_CHAT_ROOM_ID = 00000000-0000-0000-0000-000000000001`):
 
 - `group_chat_rooms`: `id`, `title`, `consecutive_agent_turns`, `max_consecutive_agent_turns` (default `6`), optimistic-locking `version`, `created_at`, `updated_at`.
-- `group_chat_participants`: `id`, `room_id`, unique per-room `handle`, `display_name`, `kind` (`"kadan_agent"` | `"external_agent"`), optional `agent_key`, `description`, unique `token_hash` (SHA-256 hex digest for external agents; raw tokens are never stored and `token_hash` is never serialized in read models), `enabled`, `revoked_at`, `last_seen_at`, `cursor_seq`, `version`.
+- `group_chat_participants`: `id`, `room_id`, unique per-room `handle`, `display_name`, `kind` (`"kadan_agent"` | `"external_agent"`), optional `agent_key`, `description`, unique `token_hash` (SHA-256 hex digest for external agents; raw tokens are never stored and `token_hash` is never serialized in read models), `enabled`, `revoked_at`, `last_seen_at`, `cursor_seq`, optional `pet`, `version`.
 - `group_chat_messages`: `id`, `room_id`, monotonic per-room `seq`, `sender_scope` (`"user"` or participant UUID), `client_request_id` (unique per `(room_id, sender_scope, client_request_id)`), `sender_kind`, `participant_id`, snapshotted `sender_name`, `content`, `handoff_to_participant_ids`, `handoff_suppressed`, optional `reply_to_message_id`, `created_at`.
 - `group_chat_event_subscriptions`: `id` (`subscriptionId`), `room_id`, `participant_id`, `event_name` (`"group_chat.turn_requested"`), `filters` JSON, `callback_url`, `signing_secret` (`whsec_...`, redacted from all browser API projections), `status` (`"active"` | `"expired"` | `"failed"` | `"revoked"`), `expires_at`, `last_delivered_seq`, `last_error`, `version`.
 - `group_chat_webhook_deliveries`: durable outbound delivery queue keyed idempotently by `UNIQUE(subscription_id, seq)` with deterministic `id = uuid5(subscription_id, f"group-chat:{room_id}:{seq}")`, bounded payload snapshot, `attempts`, `next_attempt_at`, `status` (`"pending"` | `"delivered"` | `"failed"` | `"dropped"`), `last_error`, `version`.
 - `group_chat_oauth_clients`, `group_chat_oauth_codes`, `group_chat_oauth_tokens`: durable OAuth 2.1 state for ChatGPT and other OAuth MCP clients (RFC 7591 dynamically registered clients, single-use hashed authorization codes with PKCE `S256` challenges, and hashed access/refresh tokens bound to a `participant_id`). Raw codes and tokens are never stored or returned in read models.
 
 Tsuchi also extends `RunEvent.kind` to accept `"group_chat"` and allows `POST /api/agents/{key}/resources/{conversation_id}/event-runs` to omit `origin_run_id`, falling back to the agent's current `persona_id` and empty `references`.
+
+## Pets and the user profile
+
+Pets stay owned by an agent's pet library (`pet_jobs`, keyed by `agent_key`), so creation, import, repair, trash and asset storage keep one code path. Anyone else who shows a pet borrows it through a `PetRef` (`agent_key`, `pet_id`) instead of copying artwork:
+
+- External participants store an optional `pet` reference in their participant record. `PUT /api/group-chat/participants/{id}` accepts `pet` or `clear_pet`; Tsuchi rejects references to missing or unfinished pets. Kadan's built-in participant ignores this field and keeps using the agent's `selected_pet_id`.
+- The person using Kadan has a singleton `user_profile` row (`display_name`, optional `pet`, optimistic `version`) behind `GET`/`PUT /api/profile` in Tsuchi and Kadan API. Kadan API snapshots the profile name into `sender_name` for new user messages so agents see who is talking; the browser renders every user message with the current profile instead.
+- The browser resolves a reference with the existing `GET /api/agents/{key}/pets/{pet_id}` route and caches it for the session. A reference whose pet was trashed or deleted with its agent resolves to nothing and renders the default pet; Tsuchi does not cascade-clear references because a missing pet already has a safe fallback.
+
+The sidebar polls `GET /api/group-chat?limit=1` every 15 seconds while Group Chat is closed to show member pets and an unread dot. The last seen `latest_seq` is kept in browser storage; Group Chat reports each snapshot it shows, which marks it seen. The agent row's chat dot works the same way, comparing the chat's `message_count` from `GET /api/agents/{key}/conversations` with the count last shown, keyed by conversation id.
+
+Replies use the existing `reply_to_message_id` on user messages; a reply always starts a new sender block. The "is replying" line is derived from loaded messages rather than run state: Kadan's participant counts as replying while the newest unsuppressed hand-off to it is under five minutes old and it has not posted since. This avoids polling the heavy conversation-runs route from Group Chat, at the cost of not showing failures or long runs past the window.
 
 ## Atomic turn-cap enforcement
 

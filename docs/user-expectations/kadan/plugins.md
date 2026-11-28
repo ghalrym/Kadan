@@ -15,7 +15,7 @@ Choose **T3 Code** under **Available**:
 1. Paste your T3 Code address and choose **Connect T3 Code**.
 2. If T3 Code asks you to sign in or approve access, Kadan opens an approval page in a new browser tab. Complete the approval there; the plugin's status switches to **Connected**. **Open the approval page again** reopens it if the tab was closed. If you opened Kadan from another device over a local network address and the approval tab cannot load back into Kadan, copy the full address from that tab and paste it into Kadan's **Finish sign-in** box.
 
-Choose **Custom plugin** to add any other remote MCP server by entering its name, address and sign-in method (browser sign-in, access token, or no sign-in). Saved tokens are never shown back in the browser after you save them.
+Choose **Custom plugin** to add any other remote MCP server by entering its name, address and sign-in method (browser sign-in, access key, or no sign-in). Saved keys are never shown back in the browser after you save them.
 
 ## Managing plugins and tools
 

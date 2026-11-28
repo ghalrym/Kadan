@@ -17,7 +17,7 @@ interface Props {
 type Selection = { name: "catalog" } | { name: "server"; id: string } | { name: "setup"; preset: "t3_code" | "custom" };
 
 const T3_DESCRIPTION = "Hand coding work to T3 Code, follow its threads and answer its questions from chat.";
-const CUSTOM_DESCRIPTION = "Connect any app or service that gives you an MCP address.";
+const CUSTOM_DESCRIPTION = "Connect any app or service that gives you a connection address.";
 
 function PluginIcon({ preset, name, size = 40 }: { preset: McpServer["preset"]; name: string; size?: number }) {
   const hue = [...name].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 360;
@@ -350,13 +350,13 @@ export default function Plugins({ agentName }: Props) {
                 <select value={customAuth} disabled={busy}
                   onChange={(e) => setCustomAuth(e.target.value as "oauth" | "bearer" | "none")}>
                   <option value="oauth">Sign in through the browser</option>
-                  <option value="bearer">Paste an access token</option>
+                  <option value="bearer">Paste an access key</option>
                   <option value="none">No sign-in needed</option>
                 </select>
               </label>
               {customAuth === "bearer" && (
                 <label>
-                  Access token
+                  Access key
                   <input type="password" required value={customToken} disabled={busy}
                     onChange={(e) => setCustomToken(e.target.value)} />
                 </label>

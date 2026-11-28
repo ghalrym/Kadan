@@ -26,7 +26,10 @@ import ServerSettings from "./ServerSettings";
 import SettingsPage from "./SettingsPage";
 import WorkThreadView from "./WorkThreadView";
 import { listWorkThreads, organizeWorkThread, parseWorkHash, type WorkThread } from "./work";
-import { PetContext } from "./PetContext";
+import { PetContext, usePetRefJob } from "./PetContext";
+import ProfileDialog from "./ProfileDialog";
+import { useChatUnread, useGroupChatSummary, useProfile } from "./community";
+import { saveProfile } from "./profile";
 
 /** Animate a view change, letting the agent's pet glide between layouts. */
 function transition(update: () => void) {
@@ -72,6 +75,20 @@ export default function App() {
   const handledDesktopUpdateId = useRef<string | null>(null);
   const [deletingAgent, setDeletingAgent] = useState(false);
   const [workThreads, setWorkThreads] = useState<WorkThread[]>([]);
+  const { profile, setProfile, reload: reloadProfile } = useProfile(!!agent);
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [editingUserPet, setEditingUserPet] = useState(false);
+  const userPetJob = usePetRefJob(profile.pet);
+  const groupChat = useGroupChatSummary(!!agent, page.name === "group-chat");
+  const chatId = selection?.owner === key ? selection.id : null;
+  const chatUnread = useChatUnread(
+    key,
+    chatId,
+    chain && chain.id === chatId ? chain.messages.length : null,
+    page.name === "chat",
+  );
   const desktopMode = isDesktopApp();
   const currentAgentKey = useRef(key);
   const agentKey = currentAgentKey;
@@ -129,6 +146,15 @@ export default function App() {
     }
   }, []);
   const refreshEditedPet = useCallback(async () => { await refreshPetSelection(key); }, [key, refreshPetSelection]);
+  const selectUserPet = useCallback(async (id: string | null) => {
+    try {
+      setProfile(await saveProfile(profileRef.current, id ? { pet: { agent_key: key, pet_id: id } } : { clear_pet: true }));
+    } catch (error) {
+      // The write may have committed even when its response never arrived.
+      await reloadProfile().catch(() => {});
+      throw error;
+    }
+  }, [key, reloadProfile, setProfile]);
 
   useEffect(() => {
     if (!desktopMode) return;
@@ -202,8 +228,8 @@ export default function App() {
       setStatus(await api<Status>("/status"));
     } catch {
       setStatus({
-        tsuchi: { state: "unavailable", message: "Kadan cannot reach its services." },
-        hikari: { state: "unavailable", message: "Kadan cannot reach Hikari.", model_id: null },
+        tsuchi: { state: "unavailable", message: "Kadan can’t reach the server right now." },
+        hikari: { state: "unavailable", message: "Kadan can’t reach its AI models right now.", model_id: null },
       });
     }
   }
@@ -386,6 +412,11 @@ export default function App() {
       >
         <Sidebar
           agent={agent}
+          profile={profile}
+          onProfile={() => setEditingProfile(true)}
+          groupChat={groupChat.summary}
+          groupChatUnread={groupChat.unread}
+          chatUnread={chatUnread}
           page={page}
           status={status}
           loading={loading}
@@ -499,7 +530,9 @@ export default function App() {
             </button>
           </div>
         ) : page.name === "group-chat" ? (
-          <GroupChat agentKey={key} agentName={agent?.name || key} status={status} />
+          <GroupChat agentKey={key} agentName={agent?.name || key} status={status} profile={profile}
+            onSnapshot={groupChat.onSnapshot} onEditProfile={() => setEditingProfile(true)}
+            onEditAgentPet={() => setEditingPet(true)} />
         ) : page.name === "work-thread" || page.name === "work-new" ? (
           <WorkThreadView
             key={page.name === "work-thread" ? page.threadId : "work-new"}
@@ -596,6 +629,25 @@ export default function App() {
         onSelect={(id) => selectPet(key, id)}
         onRefreshSelection={refreshEditedPet}
         onClose={() => setEditingPet(false)}
+      />}
+      {editingProfile && <ProfileDialog
+        profile={profile}
+        onSaved={setProfile}
+        onEditPet={() => setEditingUserPet(true)}
+        onReload={reloadProfile}
+        onClose={() => {
+          setEditingProfile(false);
+          restoreFocus();
+        }}
+      />}
+      {editingUserPet && agent && <PetEditor
+        agentKey={key}
+        agentName={profile.display_name}
+        title="Your pet"
+        selected={userPetJob}
+        onSelect={selectUserPet}
+        onRefreshSelection={reloadProfile}
+        onClose={() => setEditingUserPet(false)}
       />}
       {editingPersona && agent && <PersonaEditor
         agentKey={key}

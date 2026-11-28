@@ -28,7 +28,7 @@ export default function AttachmentPicker({ attachments, disabled }: { attachment
         }} />
       </label>}
       <button className="icon" type="button" disabled={disabled} aria-label={`Remove ${item.name}`}
-        title="Remove from this message; uploaded files stay saved in Tsuchi" onClick={() => attachments.remove(item.id)}><X size={14} /></button>
+        title="Remove from this message. The uploaded file stays saved." onClick={() => attachments.remove(item.id)}><X size={14} /></button>
     </div>)}
     {error && <p role="alert">{error}</p>}
   </div>;

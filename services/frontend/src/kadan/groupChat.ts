@@ -1,3 +1,5 @@
+import type { PetRef } from "./profile";
+
 export type GroupChatParticipantKind = "kadan_agent" | "external_agent";
 export type GroupChatSenderKind = "user" | "kadan_agent" | "external_agent";
 export type GroupChatPushStatus =
@@ -31,6 +33,7 @@ export interface GroupChatParticipant {
   revoked_at: string | null;
   last_seen_at: string | null;
   cursor_seq: number;
+  pet: PetRef | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -168,19 +171,19 @@ export function participantStatusBadge(
     case "built_in":
       return { label: "Built-in agent", tone: "ok" };
     case "active":
-      return { label: "Push wake-ups active", tone: "ok" };
+      return { label: "Replies when tagged", tone: "ok" };
     case "paused":
       return { label: "Paused", tone: "warn" };
     case "expired":
-      return { label: "Subscription expired", tone: "warn" };
+      return { label: "Needs to reconnect", tone: "warn" };
     case "error":
-      return { label: "Delivery error", tone: "error" };
+      return { label: "Can’t reach agent", tone: "error" };
     case "revoked":
       return { label: "Revoked", tone: "muted" };
     case "idle":
     default:
       return participant.last_seen_at
-        ? { label: "Connected (no push)", tone: "muted" }
+        ? { label: "Checks in on its own", tone: "muted" }
         : { label: "Not connected yet", tone: "muted" };
   }
 }
@@ -202,4 +205,81 @@ export function formatLastSeen(value: string | null, now = new Date()): string {
 export function turnCapNotice(room: Pick<GroupChatRoom, "consecutive_agent_turns" | "max_consecutive_agent_turns">): string | null {
   if (room.consecutive_agent_turns < room.max_consecutive_agent_turns) return null;
   return `Agent replies are paused after reaching the ${room.max_consecutive_agent_turns}-turn limit. Send a message to continue.`;
+}
+
+/** Messages from the same sender this close together read as one block, like Discord or Slack. */
+export const GROUP_GAP_MS = 7 * 60 * 1000;
+
+export interface GroupChatRow {
+  message: GroupChatMessage;
+  /** First message of a sender block: shows the avatar and name. */
+  startsBlock: boolean;
+  /** Set on the first message of each calendar day. */
+  dayLabel: string | null;
+}
+
+function senderKey(message: Pick<GroupChatMessage, "sender_kind" | "participant_id" | "sender_name">): string {
+  return message.sender_kind === "user"
+    ? "user"
+    : `${message.sender_kind}:${message.participant_id ?? message.sender_name}`;
+}
+
+function dayKey(date: Date): string {
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+export function dayLabel(date: Date, now = new Date()): string {
+  const today = dayKey(now);
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (dayKey(date) === today) return "Today";
+  if (dayKey(date) === dayKey(yesterday)) return "Yesterday";
+  return date.toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+  });
+}
+
+export function groupChatRows(messages: GroupChatMessage[], now = new Date()): GroupChatRow[] {
+  let previous: GroupChatMessage | null = null;
+  return messages.map((message) => {
+    const at = new Date(message.created_at);
+    const before = previous ? new Date(previous.created_at) : null;
+    const newDay = !before || dayKey(at) !== dayKey(before);
+    const startsBlock =
+      newDay ||
+      !!message.reply_to_message_id ||
+      !previous ||
+      senderKey(previous) !== senderKey(message) ||
+      at.getTime() - (before?.getTime() ?? 0) > GROUP_GAP_MS;
+    previous = message;
+    return { message, startsBlock, dayLabel: newDay ? dayLabel(at, now) : null };
+  });
+}
+
+/** How long a tagged agent counts as replying before Kadan stops saying so. */
+export const REPLYING_WINDOW_MS = 5 * 60 * 1000;
+
+/** True while the latest hand-off to this participant is recent and it has not answered since. */
+export function isAwaitingReply(
+  messages: Pick<GroupChatMessage, "participant_id" | "handoff_to_participant_ids" | "handoff_suppressed" | "created_at">[],
+  participantId: string,
+  now = Date.now(),
+): boolean {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.participant_id === participantId) return false;
+    if (!message.handoff_suppressed && message.handoff_to_participant_ids.includes(participantId)) {
+      return now - new Date(message.created_at).getTime() < REPLYING_WINDOW_MS;
+    }
+  }
+  return false;
+}
+
+/** One line of a message for reply previews. */
+export function messageSnippet(content: string, max = 90): string {
+  const line = content.replace(/\s+/g, " ").trim();
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }

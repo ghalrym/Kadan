@@ -11,7 +11,7 @@ const render = (text) => renderToStaticMarkup(createElement(ReactMarkdown, { rem
 test("chat Markdown enables GitHub-style tables, task lists and strikethrough", () => {
   const source = readFileSync(new URL("./Markdown.tsx", import.meta.url), "utf8");
   assert.match(source, /import remarkGfm from "remark-gfm"/);
-  assert.match(source, /remarkPlugins=\{markdownPlugins\}/);
+  assert.match(source, /markdownPlugins/);
   assert.match(source, /className="markdown-table"/);
 });
 
@@ -35,4 +35,25 @@ test("task lists, strikethrough and bare links render", () => {
   assert.match(html, /type="checkbox"/);
   assert.match(html, /<del>old<\/del>/);
   assert.match(html, /<a href="https:\/\/example.com">/);
+});
+
+test("known @handles become highlighted mentions outside code, unknown ones stay plain", async () => {
+  const ts = (await import("typescript")).default;
+  const { runInNewContext } = await import("node:vm");
+  const exports = {};
+  runInNewContext(
+    ts.transpileModule(readFileSync(new URL("./mentions.ts", import.meta.url), "utf8"), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS },
+    }).outputText,
+    { exports },
+  );
+  const html = renderToStaticMarkup(createElement(
+    ReactMarkdown,
+    { remarkPlugins: [remarkGfm, exports.remarkMentions(new Set(["dot", "kadan"]))] },
+    "Hey @Dot and @nobody, ask @kadan. Not `@dot` or [@dot](https://x.test) or me@dot.com",
+  ));
+  assert.match(html, /Hey <span class="mention">@Dot<\/span> and @nobody, ask <span class="mention">@kadan<\/span>\./);
+  assert.match(html, /<code>@dot<\/code>/);
+  assert.match(html, /<a href="https:\/\/x.test">@dot<\/a>/);
+  assert.doesNotMatch(html, /me<span/);
 });

@@ -438,7 +438,7 @@ export default function Chat({
       presence={working ? perchStatus : activeLabel(saved)}
       onClose={closeCard}
       callDisabled={!ready.storage || sending || blocked || dictating || voiceCall.active || !!voiceCall.unavailable}
-      callTitle={voiceCall.active ? "Already in a call" : voiceCall.unavailable ?? (!ready.storage ? "Calls need storage for the agent’s persona" : "Start a voice call")}
+      callTitle={voiceCall.active ? "Already in a call" : voiceCall.unavailable ?? (!ready.storage ? "Calls are unavailable until Kadan reconnects to the server" : "Start a voice call")}
       onCall={() => {
         setCard(false);
         voiceCall.start();

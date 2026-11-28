@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { agentPath } from "./api";
 import { agentPet } from "./Pet";
 import type { PetSheet } from "./pet";
+import { loadPetRef, petRefKey, type PetRef } from "./profile";
 import type { PetJob } from "./types";
 
 export const PetContext = createContext<Record<string, PetJob | null>>({});
@@ -37,4 +38,26 @@ export function useAgentPet(key: string): PetSheet {
   const sheet = useMemo(() => petSheet(selected), [selected]);
   const image = usePetImage(sheet);
   return sheet && image.ready ? sheet : agentPet(key);
+}
+
+/** The finished pet a person or another agent borrowed, or null while loading or when it is gone. */
+export function usePetRefJob(ref: PetRef | null | undefined): PetJob | null {
+  const key = petRefKey(ref);
+  const [loaded, setLoaded] = useState<{ key: string; job: PetJob | null }>({ key: "", job: null });
+  useEffect(() => {
+    if (!ref) return;
+    let alive = true;
+    void loadPetRef(ref).then((job) => { if (alive) setLoaded({ key, job }); });
+    return () => { alive = false; };
+    // The key captures every field of the reference.
+  }, [key]);
+  return key && loaded.key === key ? loaded.job : null;
+}
+
+/** Sprite sheet for a borrowed pet, falling back to the default pet until it loads. */
+export function usePetRefSheet(ref: PetRef | null | undefined): PetSheet {
+  const job = usePetRefJob(ref);
+  const sheet = useMemo(() => petSheet(job), [job]);
+  const image = usePetImage(sheet);
+  return sheet && image.ready ? sheet : agentPet();
 }

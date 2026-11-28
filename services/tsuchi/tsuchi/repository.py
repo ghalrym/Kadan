@@ -12,6 +12,7 @@ from kadan_tracing import carrier, traced
 
 from .config import StorageError
 from .models import (
+    DEFAULT_GROUP_CHAT_ROOM_ID,
     Activity,
     Agent,
     AgentInput,
@@ -24,7 +25,6 @@ from .models import (
     ConversationMemoryStateUpdate,
     ConversationTaskPage,
     ConversationTaskStatus,
-    DEFAULT_GROUP_CHAT_ROOM_ID,
     ExportManifest,
     ExportRevision,
     GroupChatDeliveryStatus,
@@ -63,6 +63,7 @@ from .models import (
     OwnedPersonaUpdate,
     PetJob,
     PetManifest,
+    PetRef,
     PetReferenceMode,
     PetRejection,
     PetState,
@@ -79,6 +80,8 @@ from .models import (
     T3ThreadWatch,
     T3ThreadWatchInput,
     T3ThreadWatchUpdate,
+    UserProfile,
+    UserProfileUpdate,
     WorkActivityInput,
     WorkActivityItem,
     WorkBucket,
@@ -371,6 +374,11 @@ class Repository:
                 CREATE INDEX IF NOT EXISTS work_activity_thread ON work_activity(thread_id, position);
                 CREATE TABLE IF NOT EXISTS work_harnesses (
                     harness TEXT PRIMARY KEY,
+                    updated_at TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS user_profile (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
                     updated_at TEXT NOT NULL,
                     data TEXT NOT NULL
                 );
@@ -1372,6 +1380,12 @@ class Repository:
         if row is None:
             raise StorageError("Pet not found in this namespace", 404)
         return PetJob.model_validate_json(row[0])
+
+    @classmethod
+    def _ready_pet_ref(cls, db: sqlite3.Connection, ref: PetRef) -> PetRef:
+        if cls._pet(db, ref.agent_key, ref.pet_id).status != "ready":
+            raise StorageError("Only finished pets can be chosen", 409)
+        return ref
 
     @staticmethod
     def _save_pet(db: sqlite3.Connection, pet: PetJob) -> None:
@@ -3211,8 +3225,18 @@ class Repository:
                 else (value.enabled if value.enabled is not None else current.enabled)
             )
             next_revoked_at = now if value.revoke else current.revoked_at
+            next_pet = (
+                None
+                if value.clear_pet
+                else (
+                    self._ready_pet_ref(db, value.pet)
+                    if value.pet is not None
+                    else current.pet
+                )
+            )
             updated = current.model_copy(
                 update={
+                    "pet": next_pet,
                     "display_name": (
                         value.display_name
                         if value.display_name is not None
@@ -4992,3 +5016,38 @@ class Repository:
     def delete_work_harness(self, harness: str) -> None:
         with self.connect(write=True) as db:
             db.execute("DELETE FROM work_harnesses WHERE harness = ?", (harness,))
+
+    def get_user_profile(self) -> UserProfile:
+        with self.connect() as db:
+            row = db.execute("SELECT data FROM user_profile WHERE id = 1").fetchone()
+            return UserProfile.model_validate_json(row[0]) if row else UserProfile()
+
+    def update_user_profile(self, value: UserProfileUpdate) -> UserProfile:
+        with self.connect(write=True) as db:
+            row = db.execute("SELECT data FROM user_profile WHERE id = 1").fetchone()
+            current = UserProfile.model_validate_json(row[0]) if row else UserProfile()
+            if current.version != value.expected_version:
+                raise StorageError("Profile changed; reload before saving", 409)
+            now = utc_now()
+            updated = current.model_copy(
+                update={
+                    "display_name": value.display_name or current.display_name,
+                    "pet": (
+                        None
+                        if value.clear_pet
+                        else (
+                            self._ready_pet_ref(db, value.pet)
+                            if value.pet is not None
+                            else current.pet
+                        )
+                    ),
+                    "version": current.version + 1,
+                    "updated_at": now,
+                }
+            )
+            db.execute(
+                """INSERT INTO user_profile (id, updated_at, data) VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at, data=excluded.data""",
+                (now.isoformat(), updated.model_dump_json()),
+            )
+            return updated

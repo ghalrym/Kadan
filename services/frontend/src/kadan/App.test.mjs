@@ -91,7 +91,14 @@ async function app(petResponses = [], agentResponses = [[agent]]) {
     "./pet": { agentHue: () => 252 },
     "./PetEditor": { default: "PetEditor" },
     "./PersonaEditor": { default: "PersonaEditor" },
-    "./PetContext": { PetContext: { Provider: "PetProvider" } },
+    "./PetContext": { PetContext: { Provider: "PetProvider" }, usePetRefJob: () => null },
+    "./ProfileDialog": { default: "ProfileDialog" },
+    "./community": {
+      useProfile: () => ({ profile: { display_name: "You", pet: null, version: 0 }, setProfile() {}, reload: async () => {} }),
+      useGroupChatSummary: () => ({ summary: null, unread: false, onSnapshot() {} }),
+      useChatUnread: () => false,
+    },
+    "./profile": { saveProfile: async () => ({}) },
     "./api": {
       agentPath: key => `/agents/${key}`,
       async allResources(key, kind) {

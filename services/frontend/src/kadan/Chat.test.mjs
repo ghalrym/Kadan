@@ -421,7 +421,7 @@ test("Call, Persona, Rename and Delete agent need Tsuchi storage", async () => {
   assert.equal(view.callDisabled(), true);
   assert.equal(card.personaDisabled, true);
   assert.equal(card.agentDisabled, true);
-  assert.match(card.callTitle, /storage.*persona/);
+  assert.match(card.callTitle, /reconnects to the server/);
 });
 
 test("Call reports missing browser support before starting", async () => {

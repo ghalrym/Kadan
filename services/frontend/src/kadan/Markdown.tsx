@@ -1,13 +1,14 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { remarkMentions } from "./mentions";
 
 export const markdownPlugins = [remarkGfm];
 
-export default function Markdown({ children }: { children: string }) {
+export default function Markdown({ children, mentions }: { children: string; mentions?: Set<string> }) {
   return (
     <div className="markdown">
       <ReactMarkdown
-        remarkPlugins={markdownPlugins}
+        remarkPlugins={mentions?.size ? [...markdownPlugins, remarkMentions(mentions)] : markdownPlugins}
         components={{
           img: ({ alt }) => (
             <span className="field-hint">[Image: {alt || "not loaded"}]</span>

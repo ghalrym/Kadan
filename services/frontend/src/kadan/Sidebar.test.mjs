@@ -41,7 +41,9 @@ function renderSidebar(overrides = {}, stateOverrides = []) {
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
     "lucide-react": new Proxy({}, { get: (_, name) => String(name) }),
     "./Pet": { default: "Pet" },
+    "./PetAvatar": { ParticipantAvatar: "ParticipantAvatar", UserAvatar: "UserAvatar" },
     "./PetContext": { useAgentPet: () => null },
+    "./groupChat": { isParticipantActive: p => p.enabled && p.revoked_at === null },
     "./ProviderIcon": { default: "ProviderIcon" },
     "./work": workExports,
   };
@@ -52,6 +54,11 @@ function renderSidebar(overrides = {}, stateOverrides = []) {
   });
   return exports.default({
     agent: { key: "mi", name: "Mi" },
+    profile: { display_name: "Andrew", pet: null, version: 1 },
+    onProfile() {},
+    groupChat: null,
+    groupChatUnread: false,
+    chatUnread: false,
     page: { name: "chat" },
     status: {
       tsuchi: { state: "ready", message: "Connected" },
@@ -89,7 +96,7 @@ test("sidebar opens chat from the agent row at the top of navigation, without mu
   const navLabels = elements(nav)
     .filter(node => node.type === "button")
     .map(textOf);
-  assert.deepEqual(navLabels, ["MiAgent", "Group Chat", "Space", "Plugins"]);
+  assert.deepEqual(navLabels, ["Mi", "Group Chat", "Space", "Plugins"]);
   const agentRow = elements(nav).find(node => node.type === "button");
   assert.ok(agentRow.props.className.includes("agent-link"));
   assert.ok(agentRow.props.className.includes("selected"));
@@ -100,7 +107,9 @@ test("sidebar opens chat from the agent row at the top of navigation, without mu
   const footer = nodes.find(node => node.type === "footer");
   const footerChildren = [footer.props.children].flat(Infinity).filter(Boolean);
   assert.equal(footerChildren.some(child => child.props?.className?.includes?.("agent-link")), false);
-  const serverRow = footerChildren[0];
+  assert.equal(footerChildren[0].props.className, "profile-link");
+  assert.equal(textOf(footerChildren[0]), "AndrewYou");
+  const serverRow = footerChildren[1];
   assert.equal(serverRow.props.className, "sidebar-server-row");
   const rowNodes = elements(serverRow);
   assert.ok(rowNodes.find(node => typeof node.props?.className === "string" && node.props.className.includes("server-settings-trigger")));
@@ -231,4 +240,42 @@ test("sidebar collapses Snoozed and Settled by default, hides empty shelves, and
   assert.ok(text.includes("Upgrade deps"), "project title matches reveal collapsed shelves");
   assert.ok(!text.includes("Fix auth"));
   assert.ok(text.includes("No threads found"));
+});
+
+test("Group Chat row stacks member pets, counts the rest, flags unread messages, and the profile row opens the profile", () => {
+  const pages = [];
+  const profiles = [];
+  const member = (handle, extra = {}) => ({
+    handle, kind: "external_agent", agent_key: null, pet: null, enabled: true, revoked_at: null, ...extra,
+  });
+  const tree = renderSidebar({
+    onPage: name => pages.push(name),
+    onProfile: () => profiles.push(true),
+    groupChatUnread: true,
+    chatUnread: true,
+    groupChat: {
+      latestSeq: 9,
+      participants: [
+        member("mi", { kind: "kadan_agent", agent_key: "mi" }),
+        member("dot"),
+        member("sol"),
+        member("gone", { revoked_at: "2026-11-27T12:00:00Z", enabled: false }),
+      ],
+    },
+  });
+  const nodes = elements(tree);
+  const row = nodes.find(node => node.type === "button" && node.props?.className?.includes("group-chat-link"));
+  const rowNodes = elements(row);
+  assert.equal(rowNodes.filter(node => node.type === "UserAvatar").length, 1);
+  assert.deepEqual(rowNodes.filter(node => node.type === "ParticipantAvatar").map(node => node.props.participant.handle), ["mi", "dot"]);
+  assert.ok(textOf(row).includes("+1"));
+  assert.ok(rowNodes.some(node => node.props?.className === "unread-dot"));
+  row.props.onClick();
+  assert.deepEqual(pages, ["group-chat"]);
+
+  const agentRow = nodes.find(node => node.type === "button" && node.props?.className?.includes("agent-link"));
+  assert.ok(elements(agentRow).some(node => node.props?.className === "unread-dot"));
+
+  nodes.find(node => node.props?.className === "profile-link").props.onClick();
+  assert.equal(profiles.length, 1);
 });

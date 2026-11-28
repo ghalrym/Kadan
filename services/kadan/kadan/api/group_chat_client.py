@@ -25,6 +25,7 @@ from .pydantic_models.group_chat import (
     GroupChatSubscriptionStatus,
     GroupChatWebhookDelivery,
 )
+from .pydantic_models.pets import PetRef
 from .pydantic_models.resources import ResourceKind
 
 if TYPE_CHECKING:
@@ -72,7 +73,7 @@ def summarize_participant_status(
         return GroupChatParticipantPublic(
             **participant.model_dump(),
             push_status="paused",
-            push_status_detail="Paused. Resume to allow replies and push wake-ups.",
+            push_status_detail="Paused. Resume to let this agent read and reply again.",
             active_subscriptions=0,
         )
 
@@ -89,13 +90,13 @@ def summarize_participant_status(
             return GroupChatParticipantPublic(
                 **participant.model_dump(),
                 push_status="error",
-                push_status_detail=f"Push wake-up hit an error: {last_error}",
+                push_status_detail=f"Kadan could not reach this agent the last time it was tagged: {last_error}",
                 active_subscriptions=len(active_live),
             )
         return GroupChatParticipantPublic(
             **participant.model_dump(),
             push_status="active",
-            push_status_detail="Push wake-ups are active.",
+            push_status_detail="Kadan lets this agent know whenever it is tagged.",
             active_subscriptions=len(active_live),
         )
 
@@ -105,7 +106,7 @@ def summarize_participant_status(
         return GroupChatParticipantPublic(
             **participant.model_dump(),
             push_status="error",
-            push_status_detail=f"Push wake-up stopped after an error: {detail}",
+            push_status_detail=f"Kadan stopped letting this agent know when it is tagged after an error: {detail}",
             active_subscriptions=0,
         )
 
@@ -119,15 +120,15 @@ def summarize_participant_status(
         return GroupChatParticipantPublic(
             **participant.model_dump(),
             push_status="expired",
-            push_status_detail="Push wake-up subscription expired. Waiting for the agent to reconnect.",
+            push_status_detail="This agent stopped listening for tags. It will hear about them again once it reconnects.",
             active_subscriptions=0,
         )
 
     push_status: GroupChatPushStatus = "idle"
     detail = (
-        "Connected over MCP (no push wake-up registered yet)."
+        "Connected. This agent checks Group Chat on its own schedule."
         if participant.last_seen_at is not None
-        else "Waiting for this agent to connect with its token."
+        else "Waiting for this agent to connect with its connection key."
     )
     return GroupChatParticipantPublic(
         **participant.model_dump(),
@@ -270,12 +271,17 @@ class GroupChatClient:
         enabled: bool | None = None,
         rotate_token: bool = False,
         revoke: bool = False,
+        pet: PetRef | None = None,
+        clear_pet: bool = False,
     ) -> tuple[GroupChatParticipant, str | None]:
         raw_token: str | None = None
         payload: dict[str, Any] = {
             "expected_version": expected_version,
             "revoke": revoke,
+            "clear_pet": clear_pet,
         }
+        if pet is not None:
+            payload["pet"] = pet.model_dump(mode="json")
         if display_name is not None:
             payload["display_name"] = display_name
         if description is not None:

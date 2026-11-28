@@ -6,7 +6,16 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
+
+from .pets import PetRef
 
 GroupChatParticipantKind = Literal["kadan_agent", "external_agent"]
 GroupChatSenderKind = Literal["user", "kadan_agent", "external_agent"]
@@ -42,6 +51,7 @@ class GroupChatParticipant(BaseModel):
     revoked_at: datetime | None = None
     last_seen_at: datetime | None = None
     cursor_seq: int = Field(default=0, ge=0)
+    pet: PetRef | None = None
     version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
@@ -129,6 +139,7 @@ class GroupChatParticipantPublic(BaseModel):
     revoked_at: datetime | None = None
     last_seen_at: datetime | None = None
     cursor_seq: int = Field(default=0, ge=0)
+    pet: PetRef | None = None
     version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
@@ -182,6 +193,8 @@ class GroupChatUpdateParticipantRequest(BaseModel):
     enabled: bool | None = None
     rotate_token: bool = False
     revoke: bool = False
+    pet: PetRef | None = None
+    clear_pet: bool = False
     expected_version: int = Field(ge=1)
 
     @field_validator("display_name")
@@ -198,6 +211,12 @@ class GroupChatUpdateParticipantRequest(BaseModel):
     @classmethod
     def trim_update_description(cls, value: str | None) -> str | None:
         return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def one_pet_change(self) -> GroupChatUpdateParticipantRequest:
+        if self.pet is not None and self.clear_pet:
+            raise ValueError("Choose a pet or clear it, not both")
+        return self
 
 
 class GroupChatUpdateParticipantResponse(BaseModel):

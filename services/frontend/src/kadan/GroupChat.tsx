@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import {
   AlertTriangle,
   ArrowDown,
   ArrowUp,
   AtSign,
-  Bot,
   Check,
+  CornerUpLeft,
   Copy,
   Download,
   KeyRound,
+  Palette,
   Pause,
   Pencil,
   Play,
@@ -24,7 +25,10 @@ import {
   filterMentionCandidates,
   findActiveMention,
   formatLastSeen,
+  groupChatRows,
+  isAwaitingReply,
   isParticipantActive,
+  messageSnippet,
   participantStatusBadge,
   resolveTaggedParticipantIds,
   turnCapNotice,
@@ -38,7 +42,11 @@ import {
 } from "./groupChat";
 import Markdown from "./Markdown";
 import Pet from "./Pet";
-import { useAgentPet } from "./PetContext";
+import { ParticipantAvatar, UserAvatar } from "./PetAvatar";
+import { useAgentPet, usePetRefJob } from "./PetContext";
+import PetEditor from "./PetEditor";
+import { USER_SEED, type PetRef, type UserProfile } from "./profile";
+import { agentHue } from "./pet";
 import type { Status } from "./types";
 import { randomUuid } from "./uuid";
 
@@ -46,6 +54,11 @@ interface Props {
   agentKey: string;
   agentName: string;
   status: Status | null;
+  profile: UserProfile;
+  /** Every snapshot shown here; the sidebar uses it for members and unread state. */
+  onSnapshot?: (snapshot: GroupChatSnapshot) => void;
+  onEditProfile: () => void;
+  onEditAgentPet: () => void;
 }
 
 const DRAFT_KEY = "kadan:group-chat:draft";
@@ -57,6 +70,7 @@ interface PendingGroupChatMessage {
   client_request_id: string;
   content: string;
   handoff_to_participant_ids: string[];
+  reply_to_message_id?: string | null;
 }
 
 interface OneTimeCredential {
@@ -83,6 +97,8 @@ function readPendingOutbox(): PendingGroupChatMessage | null {
         handoff_to_participant_ids: parsed.handoff_to_participant_ids.filter(
           (id): id is string => typeof id === "string",
         ),
+        reply_to_message_id:
+          typeof parsed.reply_to_message_id === "string" ? parsed.reply_to_message_id : null,
       };
     }
   } catch {
@@ -97,7 +113,20 @@ function formatMessageTime(value: string): string {
   return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
-export default function GroupChat({ agentKey, agentName, status }: Props) {
+function formatFullTime(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
+}
+
+export default function GroupChat({
+  agentKey,
+  agentName,
+  status,
+  profile,
+  onSnapshot,
+  onEditProfile,
+  onEditAgentPet,
+}: Props) {
   const petSheet = useAgentPet(agentKey);
   const [snapshot, setSnapshot] = useState<GroupChatSnapshot | null>(null);
   const [messages, setMessages] = useState<GroupChatMessage[]>([]);
@@ -143,12 +172,19 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
   const [downloadingPlugin, setDownloadingPlugin] = useState(false);
   const [pluginDownloadNotice, setPluginDownloadNotice] = useState("");
+  const [petFor, setPetFor] = useState<GroupChatParticipant | null>(null);
+  const petForJob = usePetRefJob(petFor?.pet);
+  const [replyTo, setReplyTo] = useState<GroupChatMessage | null>(null);
 
   const activeRef = useRef(true);
   const storageReady = status?.tsuchi.state !== "unavailable";
   const participants = snapshot?.participants ?? [];
   const activeParticipants = participants.filter(isParticipantActive);
   const participantsById = new Map(participants.map((item) => [item.id, item]));
+  const messagesById = new Map(messages.map((item) => [item.id, item]));
+  const mentionHandles = new Set(participants.map((item) => item.handle.toLowerCase()));
+  const kadanParticipant = participants.find((item) => item.kind === "kadan_agent" && isParticipantActive(item));
+  const kadanReplying = !!kadanParticipant && isAwaitingReply(messages, kadanParticipant.id);
 
   const mentionCandidates = mention
     ? filterMentionCandidates(participants, mention.query)
@@ -167,6 +203,7 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
 
   const mergeLatestSnapshot = useCallback((next: GroupChatSnapshot) => {
     setSnapshot(next);
+    onSnapshot?.(next);
     setMessages((prev) => {
       if (!prev.length) {
         setHasOlder(next.has_more);
@@ -189,7 +226,7 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
       }
       return current;
     });
-  }, []);
+  }, [onSnapshot]);
 
   const refresh = useCallback(
     async (silent = false) => {
@@ -313,6 +350,7 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
           content: payload.content,
           handoff_to_participant_ids: payload.handoff_to_participant_ids,
           client_request_id: payload.client_request_id,
+          reply_to_message_id: payload.reply_to_message_id ?? null,
         },
         "POST",
       );
@@ -325,6 +363,7 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
       setPendingOutbox(null);
       setDraft("");
       setSelectedTags([]);
+      setReplyTo(null);
       setMention(null);
       setMessages((prev) => {
         const byId = new Map(prev.map((m) => [m.id, m]));
@@ -360,6 +399,7 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
       client_request_id: randomUuid(),
       content: trimmed,
       handoff_to_participant_ids: effectiveTags,
+      reply_to_message_id: replyTo?.id ?? null,
     });
   }
 
@@ -388,7 +428,7 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
         bearerToken: created.bearer_token,
         rotated: false,
       });
-      setNotice(`Added ${created.participant.display_name}. Copy its token now — it won't be shown again.`);
+      setNotice(`Added ${created.participant.display_name}. Copy its connection key now. It won't be shown again.`);
       await refresh(true);
     } catch (e) {
       if (activeRef.current) setError((e as Error).message);
@@ -442,6 +482,24 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
     }
   }
 
+  async function selectParticipantPet(participant: GroupChatParticipant, petId: string | null) {
+    const current = participantsById.get(participant.id) ?? participant;
+    const change: { pet?: PetRef; clear_pet?: boolean } = petId
+      ? { pet: { agent_key: agentKey, pet_id: petId } }
+      : { clear_pet: true };
+    try {
+      const updated = await api<GroupChatUpdateParticipantResponse>(
+        `/group-chat/participants/${encodeURIComponent(participant.id)}`,
+        { ...change, expected_version: current.version },
+        "PUT",
+      );
+      if (activeRef.current) setPetFor(updated.participant);
+    } finally {
+      // A lost response may still have saved; the next snapshot shows what stuck.
+      await refresh(true);
+    }
+  }
+
   async function copyText(text: string, field: "url" | "token") {
     try {
       await navigator.clipboard.writeText(text);
@@ -486,16 +544,59 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
     }
   }
 
+  function senderOf(msg: GroupChatMessage) {
+    const isUser = msg.sender_kind === "user";
+    const isKadan = msg.sender_kind === "kadan_agent";
+    const participant = msg.participant_id ? participantsById.get(msg.participant_id) : null;
+    const avatar = participant ?? {
+      kind: isKadan ? ("kadan_agent" as const) : ("external_agent" as const),
+      agent_key: isKadan ? agentKey : null,
+      handle: msg.sender_name,
+      pet: null,
+    };
+    const name = isUser ? profile.display_name : participant?.display_name ?? msg.sender_name;
+    const seed = isUser ? USER_SEED : isKadan ? agentKey : avatar.handle;
+    return { isUser, isKadan, participant, avatar, name, seed };
+  }
+
+  function senderAvatar(msg: GroupChatMessage, size: number) {
+    const sender = senderOf(msg);
+    return sender.isUser
+      ? <UserAvatar profile={profile} size={size} />
+      : <ParticipantAvatar participant={sender.avatar} size={size} />;
+  }
+
+  function jumpToMessage(id: string) {
+    const node = listRef.current?.querySelector<HTMLElement>(`[data-message-id="${id}"]`);
+    if (!node) return;
+    node.scrollIntoView({ block: "center", behavior: "smooth" });
+    node.classList.add("flash");
+    setTimeout(() => node.classList.remove("flash"), 1200);
+  }
+
+  function startReply(msg: GroupChatMessage) {
+    setReplyTo(msg);
+    const sender = senderOf(msg);
+    if (!sender.isUser && sender.participant && isParticipantActive(sender.participant)) {
+      setSelectedTags((prev) => (prev.includes(sender.participant!.id) ? prev : [...prev, sender.participant!.id]));
+    }
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }
+
   return (
     <section className="group-chat" aria-label="Group Chat">
       <header className="group-chat-head">
+        <span className="member-stack gc-head-members" aria-hidden="true">
+          <UserAvatar profile={profile} size={28} />
+          {activeParticipants.slice(0, 4).map((participant) => (
+            <ParticipantAvatar key={participant.id} participant={participant} size={28} />
+          ))}
+        </span>
         <div className="group-chat-title">
           <h1>{snapshot?.room.title || "Group Chat"}</h1>
           <span className="quiet">
             {activeParticipants.length}{" "}
-            {activeParticipants.length === 1 ? "active agent" : "active agents"}
-            {snapshot &&
-              ` · ${snapshot.room.consecutive_agent_turns}/${snapshot.room.max_consecutive_agent_turns} agent turns`}
+            {activeParticipants.length === 1 ? "agent" : "agents"}
           </span>
         </div>
         <button
@@ -545,6 +646,11 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
             onClick={() => {
               setDraft(pendingOutbox.content);
               setSelectedTags(pendingOutbox.handoff_to_participant_ids);
+              setReplyTo(
+                pendingOutbox.reply_to_message_id
+                  ? messagesById.get(pendingOutbox.reply_to_message_id) ?? null
+                  : null,
+              );
               setPendingOutbox(null);
               try {
                 sessionStorage.removeItem(OUTBOX_KEY);
@@ -599,65 +705,101 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
                 </p>
               </div>
             ) : (
-              messages.map((msg) => {
-                const isUser = msg.sender_kind === "user";
-                const isKadan = msg.sender_kind === "kadan_agent";
-                const senderParticipant = msg.participant_id
-                  ? participantsById.get(msg.participant_id)
-                  : null;
+              groupChatRows(messages).map(({ message: msg, startsBlock, dayLabel }) => {
+                const { isUser, isKadan, avatar, name, seed } = senderOf(msg);
+                const repliedTo = msg.reply_to_message_id ? messagesById.get(msg.reply_to_message_id) : null;
                 const handoffTargets = msg.handoff_to_participant_ids.map((id) => {
                   const target = participantsById.get(id);
                   return target ? `@${target.handle}` : "@agent";
                 });
                 return (
-                  <article
-                    key={msg.id}
-                    className={`gc-message ${isUser ? "is-user" : isKadan ? "is-kadan" : "is-external"}`}
-                  >
-                    <header className="gc-message-head">
-                      <span className="gc-sender">
-                        {isKadan ? (
-                          <span className="gc-avatar" aria-hidden="true">
-                            <Pet sheet={petSheet} state="idle" size={22} />
-                          </span>
-                        ) : !isUser ? (
-                          <span className="gc-avatar gc-avatar-ext" aria-hidden="true">
-                            <Bot size={14} />
-                          </span>
-                        ) : null}
-                        <strong>{isUser ? "You" : msg.sender_name}</strong>
-                        {senderParticipant && (
-                          <span className="gc-handle">@{senderParticipant.handle}</span>
-                        )}
-                        {!isUser && (
-                          <span className={`gc-role-badge ${isKadan ? "kadan" : "external"}`}>
-                            {isKadan ? "Kadan" : "External"}
-                          </span>
-                        )}
-                      </span>
-                      <time className="gc-time" dateTime={msg.created_at}>
-                        {formatMessageTime(msg.created_at)}
-                      </time>
-                    </header>
-                    <div className="gc-message-content">
-                      <Markdown>{msg.content}</Markdown>
-                    </div>
-                    {(handoffTargets.length > 0 || msg.handoff_suppressed) && (
-                      <footer className="gc-message-foot">
-                        {handoffTargets.length > 0 && (
-                          <span className="gc-handoff-chip">
-                            {isUser ? "Tagged " : "Handed off to "}
-                            {handoffTargets.join(", ")}
-                          </span>
-                        )}
-                        {msg.handoff_suppressed && (
-                          <span className="gc-handoff-chip suppressed">
-                            Handoff paused (agent turn limit reached)
-                          </span>
-                        )}
-                      </footer>
+                  <div key={msg.id} className="gc-row">
+                    {dayLabel && (
+                      <div className="gc-day" role="separator">
+                        <span>{dayLabel}</span>
+                      </div>
                     )}
-                  </article>
+                    <article
+                      className={`gc-message ${startsBlock ? "starts-block" : "continues"} ${isUser ? "is-user" : isKadan ? "is-kadan" : "is-external"}`}
+                      style={{ "--avatar-h": agentHue(seed) } as CSSProperties}
+                      aria-label={`${name} at ${formatMessageTime(msg.created_at)}`}
+                      data-message-id={msg.id}
+                    >
+                      {msg.reply_to_message_id && (
+                        <button
+                          type="button"
+                          className="gc-reply-ref"
+                          disabled={!repliedTo}
+                          onClick={() => repliedTo && jumpToMessage(repliedTo.id)}
+                        >
+                          {repliedTo ? (
+                            <>
+                              {senderAvatar(repliedTo, 16)}
+                              <strong>{senderOf(repliedTo).name}</strong>
+                              <span>{messageSnippet(repliedTo.content)}</span>
+                            </>
+                          ) : (
+                            <span>Replying to an earlier message</span>
+                          )}
+                        </button>
+                      )}
+                      <div className="gc-actions">
+                        <button type="button" className="icon" aria-label={`Reply to ${name}`} title="Reply"
+                          onClick={() => startReply(msg)}>
+                          <CornerUpLeft size={15} />
+                        </button>
+                      </div>
+                      <div className="gc-gutter">
+                        {startsBlock ? (
+                          isUser ? (
+                            <button type="button" className="gc-avatar-button" aria-label="Edit your profile"
+                              onClick={onEditProfile}>
+                              <UserAvatar profile={profile} size={40} />
+                            </button>
+                          ) : (
+                            <ParticipantAvatar participant={avatar} size={40} />
+                          )
+                        ) : (
+                          <time className="gc-hover-time" dateTime={msg.created_at} title={formatFullTime(msg.created_at)}>
+                            {formatMessageTime(msg.created_at)}
+                          </time>
+                        )}
+                      </div>
+                      <div className="gc-body">
+                        {startsBlock && (
+                          <header className="gc-message-head">
+                            <strong className="gc-name">{name}</strong>
+                            {!isUser && (
+                              <span className={`gc-role-badge ${isKadan ? "kadan" : "external"}`}>
+                                {isKadan ? "Kadan" : "External"}
+                              </span>
+                            )}
+                            <time className="gc-time" dateTime={msg.created_at} title={formatFullTime(msg.created_at)}>
+                              {formatMessageTime(msg.created_at)}
+                            </time>
+                          </header>
+                        )}
+                        <div className="gc-message-content">
+                          <Markdown mentions={mentionHandles}>{msg.content}</Markdown>
+                        </div>
+                        {(handoffTargets.length > 0 || msg.handoff_suppressed) && (
+                          <footer className="gc-message-foot">
+                            {handoffTargets.length > 0 && (
+                              <span className="gc-handoff-chip">
+                                {isUser ? "Tagged " : "Handed off to "}
+                                {handoffTargets.join(", ")}
+                              </span>
+                            )}
+                            {msg.handoff_suppressed && (
+                              <span className="gc-handoff-chip suppressed">
+                                Handoff paused (agent turn limit reached)
+                              </span>
+                            )}
+                          </footer>
+                        )}
+                      </div>
+                    </article>
+                  </div>
                 );
               })
             )}
@@ -679,11 +821,32 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
           )}
 
           <div className="gc-composer-wrap">
+            {kadanParticipant && kadanReplying && (
+              <div className="gc-replying" role="status">
+                <ParticipantAvatar participant={kadanParticipant} size={20} state="running" />
+                <span>
+                  <strong>{kadanParticipant.display_name}</strong> is replying
+                </span>
+                <span className="gc-replying-dots" aria-hidden="true"><i /><i /><i /></span>
+              </div>
+            )}
+            {replyTo && (
+              <div className="gc-replying-to">
+                <CornerUpLeft size={14} aria-hidden="true" />
+                <span className="gc-replying-to-text">
+                  Replying to <strong>{senderOf(replyTo).name}</strong>
+                  <span className="quiet"> {messageSnippet(replyTo.content, 60)}</span>
+                </span>
+                <button type="button" className="icon" aria-label="Cancel reply" onClick={() => setReplyTo(null)}>
+                  <X size={14} />
+                </button>
+              </div>
+            )}
             {activeParticipants.length > 0 && (
-              <div className="gc-tag-bar" aria-label="Tag an agent to reply">
+              <div className="gc-tag-bar" aria-label="Ask an agent to reply">
                 <span className="quiet gc-tag-label">
                   <AtSign size={13} aria-hidden="true" />
-                  Wake:
+                  Ask to reply:
                 </span>
                 {activeParticipants.map((participant) => {
                   const selected = effectiveTags.includes(participant.id);
@@ -695,6 +858,7 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
                       aria-pressed={selected}
                       onClick={() => toggleParticipantChip(participant)}
                     >
+                      <ParticipantAvatar participant={participant} size={18} />
                       <span>{participant.display_name}</span>
                       <small>@{participant.handle}</small>
                     </button>
@@ -715,6 +879,7 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
                         selectMention(candidate);
                       }}
                     >
+                      <ParticipantAvatar participant={candidate} size={22} />
                       <strong>{candidate.display_name}</strong>
                       <span className="quiet">@{candidate.handle}</span>
                     </button>
@@ -764,6 +929,11 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
                       return;
                     }
                   }
+                  if (event.key === "Escape" && replyTo) {
+                    event.preventDefault();
+                    setReplyTo(null);
+                    return;
+                  }
                   if (
                     event.key === "Enter" &&
                     !event.shiftKey &&
@@ -776,11 +946,21 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
               />
               <div className="composer-bar">
                 <span className="quiet gc-composer-hint">
-                  {effectiveTags.length > 0
-                    ? `Will wake ${effectiveTags
+                  {effectiveTags.length > 0 ? (
+                    <>
+                      <span className="member-stack" aria-hidden="true">
+                        {effectiveTags.map((id) => {
+                          const target = participantsById.get(id);
+                          return target ? <ParticipantAvatar key={id} participant={target} size={18} /> : null;
+                        })}
+                      </span>
+                      {`${effectiveTags
                         .map((id) => participantsById.get(id)?.display_name || "agent")
-                        .join(", ")}`
-                    : "No agent tagged — posts to the room without waking anyone."}
+                        .join(", ")} will be asked to reply`}
+                    </>
+                  ) : (
+                    "No one tagged. Your message is posted without asking anyone to reply."
+                  )}
                 </span>
                 <button
                   type="submit"
@@ -808,108 +988,6 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
                 <X size={16} />
               </button>
             </header>
-
-            {snapshot?.mcp_url && (
-              <div className="gc-connection-box">
-                <h3>Connect ChatGPT</h3>
-                <p className="quiet">
-                  Download the plugin package and upload it in ChatGPT Plugins, or paste this
-                  address when adding a custom plugin. ChatGPT will open Kadan in your browser so
-                  you can pick or name the agent.
-                </p>
-                <a
-                  className={`gc-plugin-download${downloadingPlugin ? " is-busy" : ""}`}
-                  href="/kadan/api/group-chat/chatgpt-plugin.zip"
-                  download="kadan-group-chat-plugin.zip"
-                  aria-disabled={downloadingPlugin || undefined}
-                  onClick={(event) => void handleDownloadPlugin(event)}
-                >
-                  <Download size={14} aria-hidden="true" />
-                  {downloadingPlugin ? "Saving plugin…" : "Download ChatGPT plugin"}
-                </a>
-                {pluginDownloadNotice && (
-                  <p className="quiet gc-download-status" role="status">
-                    {pluginDownloadNotice}
-                  </p>
-                )}
-                <span className="field-hint">Group Chat address</span>
-                <div className="gc-copy-row">
-                  <code>{snapshot.mcp_url}</code>
-                  <button
-                    type="button"
-                    className="icon"
-                    aria-label="Copy Group Chat address"
-                    onClick={() => void copyText(snapshot.mcp_url, "url")}
-                  >
-                    {copiedField === "url" ? <Check size={14} /> : <Copy size={14} />}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {credential && (
-              <div className="gc-credential-card" role="status">
-                <div className="gc-credential-head">
-                  <strong>
-                    {credential.rotated
-                      ? `New token for ${credential.participantName}`
-                      : `Connect ${credential.participantName} (@${credential.handle})`}
-                  </strong>
-                  <button
-                    type="button"
-                    className="icon"
-                    aria-label="Dismiss token card"
-                    onClick={() => setCredential(null)}
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-                <p className="quiet">
-                  Copy this bearer token into your external agent now. For safety, it will not be
-                  shown again.
-                </p>
-                <div className="gc-copy-row">
-                  <code>{credential.bearerToken}</code>
-                  <button
-                    type="button"
-                    className="icon"
-                    aria-label="Copy bearer token"
-                    onClick={() => void copyText(credential.bearerToken, "token")}
-                  >
-                    {copiedField === "token" ? <Check size={14} /> : <Copy size={14} />}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <form className="gc-add-form" onSubmit={(e) => void handleAddExternalAgent(e)}>
-              <h3>Add external agent</h3>
-              <label>
-                Display name
-                <input
-                  type="text"
-                  placeholder="e.g. Dot"
-                  maxLength={200}
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  required
-                />
-              </label>
-              <label>
-                Short role description (optional)
-                <input
-                  type="text"
-                  placeholder="e.g. Research & coding teammate"
-                  maxLength={500}
-                  value={newDescription}
-                  onChange={(e) => setNewDescription(e.target.value)}
-                />
-              </label>
-              <button type="submit" className="primary" disabled={!newName.trim() || managing}>
-                <Plus size={15} />
-                Create agent token
-              </button>
-            </form>
 
             <div className="gc-participants-list">
               <h3>In this room</h3>
@@ -964,7 +1042,8 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
                     ) : (
                       <>
                         <div className="gc-participant-top">
-                          <div>
+                          <ParticipantAvatar participant={participant} size={36} />
+                          <div className="gc-participant-name">
                             <strong>{participant.display_name}</strong>{" "}
                             <span className="quiet">@{participant.handle}</span>
                           </div>
@@ -979,8 +1058,20 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
                             {formatLastSeen(participant.last_seen_at)}
                           </p>
                         )}
+                        {!isExternal && (
+                          <div className="gc-participant-actions">
+                            <button type="button" onClick={onEditAgentPet}>
+                              <Palette size={13} />
+                              Edit pet
+                            </button>
+                          </div>
+                        )}
                         {isExternal && !isRevoked && (
                           <div className="gc-participant-actions">
+                            <button type="button" disabled={managing} onClick={() => setPetFor(participant)}>
+                              <Palette size={13} />
+                              Edit pet
+                            </button>
                             <button
                               type="button"
                               disabled={managing}
@@ -1016,12 +1107,12 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
                                 void handleUpdateParticipant(
                                   participant,
                                   { rotate_token: true },
-                                  `Rotated token for ${participant.display_name}. Copy the new token now.`,
+                                  `Made a new connection key for ${participant.display_name}. Copy it now.`,
                                 )
                               }
                             >
                               <KeyRound size={13} />
-                              Rotate token
+                              New connection key
                             </button>
                             {confirmRevokeId === participant.id ? (
                               <button
@@ -1058,9 +1149,122 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
                 );
               })}
             </div>
+
+            {snapshot?.mcp_url && (
+              <div className="gc-connection-box">
+                <h3>Connect ChatGPT</h3>
+                <p className="quiet">
+                  Download the plugin package and upload it in ChatGPT Plugins, or paste this
+                  address when adding a custom plugin. ChatGPT will open Kadan in your browser so
+                  you can pick or name the agent.
+                </p>
+                <a
+                  className={`gc-plugin-download${downloadingPlugin ? " is-busy" : ""}`}
+                  href="/kadan/api/group-chat/chatgpt-plugin.zip"
+                  download="kadan-group-chat-plugin.zip"
+                  aria-disabled={downloadingPlugin || undefined}
+                  onClick={(event) => void handleDownloadPlugin(event)}
+                >
+                  <Download size={14} aria-hidden="true" />
+                  {downloadingPlugin ? "Saving plugin…" : "Download ChatGPT plugin"}
+                </a>
+                {pluginDownloadNotice && (
+                  <p className="quiet gc-download-status" role="status">
+                    {pluginDownloadNotice}
+                  </p>
+                )}
+                <span className="field-hint">Group Chat address</span>
+                <div className="gc-copy-row">
+                  <code>{snapshot.mcp_url}</code>
+                  <button
+                    type="button"
+                    className="icon"
+                    aria-label="Copy Group Chat address"
+                    onClick={() => void copyText(snapshot.mcp_url, "url")}
+                  >
+                    {copiedField === "url" ? <Check size={14} /> : <Copy size={14} />}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {credential && (
+              <div className="gc-credential-card" role="status">
+                <div className="gc-credential-head">
+                  <strong>
+                    {credential.rotated
+                      ? `New token for ${credential.participantName}`
+                      : `Connect ${credential.participantName} (@${credential.handle})`}
+                  </strong>
+                  <button
+                    type="button"
+                    className="icon"
+                    aria-label="Dismiss connection key"
+                    onClick={() => setCredential(null)}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+                <p className="quiet">
+                  Copy this connection key into your external agent now. For safety, it will not be
+                  shown again.
+                </p>
+                <div className="gc-copy-row">
+                  <code>{credential.bearerToken}</code>
+                  <button
+                    type="button"
+                    className="icon"
+                    aria-label="Copy connection key"
+                    onClick={() => void copyText(credential.bearerToken, "token")}
+                  >
+                    {copiedField === "token" ? <Check size={14} /> : <Copy size={14} />}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <form className="gc-add-form" onSubmit={(e) => void handleAddExternalAgent(e)}>
+              <h3>Add external agent</h3>
+              <label>
+                Display name
+                <input
+                  type="text"
+                  placeholder="e.g. Dot"
+                  maxLength={200}
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  required
+                />
+              </label>
+              <label>
+                Short role description (optional)
+                <input
+                  type="text"
+                  placeholder="e.g. Research & coding teammate"
+                  maxLength={500}
+                  value={newDescription}
+                  onChange={(e) => setNewDescription(e.target.value)}
+                />
+              </label>
+              <button type="submit" className="primary" disabled={!newName.trim() || managing}>
+                <Plus size={15} />
+                Create connection key
+              </button>
+            </form>
+
           </aside>
         )}
       </div>
+      {petFor && (
+        <PetEditor
+          agentKey={agentKey}
+          agentName={petFor.display_name}
+          selected={petForJob}
+          onSelect={(petId) => selectParticipantPet(petFor, petId)}
+          onRefreshSelection={() => refresh(true)}
+          onClose={() => setPetFor(null)}
+        />
+      )}
     </section>
   );
 }

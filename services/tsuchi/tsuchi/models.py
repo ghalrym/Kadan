@@ -1375,6 +1375,42 @@ class GroupChatRoomUpdate(Model):
         return value.strip()
 
 
+class PetRef(Model):
+    """A ready pet in an agent's pet library, borrowed by a person or another agent."""
+
+    agent_key: AgentKey
+    pet_id: UUID
+
+
+class UserProfile(Model):
+    display_name: Title = "You"
+    pet: PetRef | None = None
+    version: int = Field(default=0, ge=0)
+    updated_at: datetime | None = None
+
+
+class UserProfileUpdate(Model):
+    display_name: Title | None = None
+    pet: PetRef | None = None
+    clear_pet: bool = False
+    expected_version: int = Field(ge=0)
+
+    @field_validator("display_name")
+    @classmethod
+    def nonblank_display_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("Name cannot be blank")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def one_pet_change(self) -> Self:
+        if self.pet is not None and self.clear_pet:
+            raise ValueError("Choose a pet or clear it, not both")
+        return self
+
+
 class GroupChatParticipant(Model):
     """Persisted participant record. Bearer token hashes are never exposed here."""
 
@@ -1389,6 +1425,7 @@ class GroupChatParticipant(Model):
     revoked_at: datetime | None = None
     last_seen_at: datetime | None = None
     cursor_seq: int = Field(default=0, ge=0)
+    pet: PetRef | None = None
     version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
@@ -1438,6 +1475,8 @@ class GroupChatParticipantUpdate(Model):
     enabled: bool | None = None
     token_hash: str | None = Field(default=None, min_length=32, max_length=128)
     revoke: bool = False
+    pet: PetRef | None = None
+    clear_pet: bool = False
     expected_version: int = Field(ge=1)
 
     @field_validator("display_name")
@@ -1453,6 +1492,12 @@ class GroupChatParticipantUpdate(Model):
     @classmethod
     def trim_update_description(cls, value: str | None) -> str | None:
         return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def one_pet_change(self) -> Self:
+        if self.pet is not None and self.clear_pet:
+            raise ValueError("Choose a pet or clear it, not both")
+        return self
 
 
 class GroupChatParticipantTouch(Model):
