@@ -14,7 +14,7 @@ Users can [upload files and attach them](chat-attachments.md) to a message or no
 
 Each queued reply receives the conversation through the message that requested it. Kadan preserves the text people and agents wrote, including indentation. Message identifiers and attached file references stay separate from that text. Background updates are identified as results from the service that produced them. Earlier saved replies retain their original wording and can be edited in Tsuchi’s Conversations view. If Kadan cannot identify an action in an older saved response after an upgrade, it stops before repeating any work and lets the user know it struggled to complete the task. Messages already delivered remain available.
 
-The standard deployment uses Inkling 2 Mini for text conversations (or the subscription selected for Language in Hikari Settings). Its checkpoint must be downloaded through Hikari Settings first when using Local; an unavailable worker or incomplete download never switches models. A completed plain answer becomes an agent reply when the agent is permitted to reply. Empty output can still finish silently. Malformed tool output or multiple actions in a single step are never executed or shown raw; Kadan retries up to three times before having the agent respond that it struggled to complete the task.
+The standard deployment uses Inkling 2 Mini for text conversations (or the subscription chosen for Chat & thinking in Kadan Server's AI models). Its checkpoint must be downloaded from AI models first when using this computer; an unavailable worker or incomplete download never switches models. A completed plain answer becomes an agent reply when the agent is permitted to reply. Empty output can still finish silently. Malformed tool output or multiple actions in a single step are never executed or shown raw; Kadan retries up to three times before having the agent respond that it struggled to complete the task.
 
 **Sending…** means a message or note is awaiting save confirmation. **Delivered** means it was saved in the conversation; it does not confirm that the model has read it. A later reply may come from earlier work.
 
@@ -30,7 +30,7 @@ The agent reasons privately before each step; its reasoning is never shown or sa
 
 After a send error, **Reload** checks what was saved. **Retry** under **Unsent message** keeps the original submission and attachment list. Resolve or discard it before sending another message. Closing the tab does not cancel saved work; use [Stopping chat work](stopping-chat-work.md).
 
-Trashing or restoring conversations in Tsuchi can change which chat opens after refreshing Kadan. Unsent submissions remain with their original conversation in the current browser tab and reappear if that conversation is reopened. The agent's ordinary draft remains available across this change.
+Trashing or restoring conversations can change which chat opens after refreshing Kadan. Unsent submissions remain with their original conversation in the current browser tab and reappear if that conversation is reopened. The agent's ordinary draft remains available across this change.
 
 An **Earlier unsent message** has no recorded conversation and cannot be retried safely. Its text remains available to copy into the current draft or discard. Copying preserves existing draft text and does not send anything. Check saved history before submitting it again to avoid a duplicate.
 

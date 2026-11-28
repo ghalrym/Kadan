@@ -8,6 +8,6 @@ Queued work uses the latest saved persona when it begins. Running or resumed wor
 
 A failed save must be reported. Conflicting edits require loading the latest saved version for comparison rather than silently replacing newer changes. After an interrupted save, the agent checks the saved persona instead of automatically repeating the write. Stopping work does not undo a save already in progress.
 
-The agent's persona is a normal persona record in Tsuchi, where users can also inspect its revision history. If it is trashed, new text responses and calls report the problem until it is restored; Kadan does not silently choose another persona.
+The agent's persona is a normal persona record in Tsuchi. Users can see and restore its earlier versions in Kadan Server's [Your agent → Persona](../kadan-server/your-agent.md). If it is trashed, new text responses and calls report the problem until it is restored; Kadan does not silently choose another persona.
 
 A persona adds instructions; it does not change the selected model or clear saved conversation history. All instructions remain subject to the model's context and ability to follow them. Unsaved editor drafts can be lost if the page reloads or the editor is dismissed. See [Tsuchi personas](../tsuchi/personas.md) for storage controls and [Persona instructions](../../architecture/kadan/personas.md) for the persistence and response contract.

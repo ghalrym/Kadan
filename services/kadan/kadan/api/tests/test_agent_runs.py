@@ -1049,9 +1049,9 @@ def test_generate_image_without_downloaded_model_returns_user_instructions(
             download_state="not_downloaded",
             message=(
                 "Image generation is not set up yet because the image model has not been "
-                "downloaded. Tell the user to open Kadan Server, go to Hikari → Settings, "
-                "and either download the local image model (FLUX.2 Klein 4B) or sign in "
-                "to Codex and switch Images to ChatGPT."
+                "downloaded. Tell the user to open Kadan Server, go to AI models, "
+                "and either download Images or sign in to ChatGPT under "
+                "'Use a subscription instead' and switch Images to ChatGPT."
             ),
         )
 
@@ -1059,7 +1059,7 @@ def test_generate_image_without_downloaded_model_returns_user_instructions(
     boundary.controller.inference = Commands(
         command("generate_image", prompt="A little blue bird"),
         send(
-            content="Please open Kadan Server and download FLUX.2 Klein 4B in Hikari Settings.",
+            content="Please open Kadan Server and download Images in AI models.",
             end_run=True,
         ),
     )
@@ -1070,7 +1070,7 @@ def test_generate_image_without_downloaded_model_returns_user_instructions(
     assert result["available"] is False
     assert result["status"] == "model_required"
     assert "Kadan Server" in result["user_instructions"]
-    assert "Hikari → Settings" in result["user_instructions"]
+    assert "AI models" in result["user_instructions"]
     assert len(boundary.deliveries) == 1
 
 

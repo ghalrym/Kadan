@@ -272,7 +272,7 @@ test("SettingsPage renders compact Coding assistants list without external sign-
         user_code: null,
         needs_code: false,
         account_label: null,
-        message: "Download Inkling 2 Mini in Kadan Server → Hikari → Settings.",
+        message: "Download Chat & thinking in Kadan Server → AI models.",
       },
     },
   ];
@@ -310,7 +310,7 @@ test("SettingsPage renders compact Coding assistants list without external sign-
   assert.ok(fullText.includes("Coding assistants"));
   assert.ok(fullText.includes("Inkling"));
   assert.ok(fullText.includes("Download needed"));
-  assert.ok(fullText.includes("Hikari → Settings"));
+  assert.ok(fullText.includes("Kadan Server → AI models"));
   assert.ok(fullText.includes("Check"));
   assert.ok(!fullText.includes("Sign in"));
   assert.ok(!fullText.includes("Sign out"));

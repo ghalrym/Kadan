@@ -1,10 +1,10 @@
 # Service status
 
-Kadan shows connection status for its connected **Kadan Server** in the bottom of the sidebar and above the chat composer when something needs attention. Managing storage (Tsuchi) and local models or subscriptions (Hikari) lives in the **Kadan Server** app; the standalone Kadan client does not link directly to Tsuchi or Hikari pages. The indicators refresh periodically and can lag a change. Loading and connection failures must remain distinguishable from readiness.
+Kadan shows connection status for its connected **Kadan Server** in the bottom of the sidebar and above the chat composer when something needs attention. Managing the agent's stored data, local models and subscriptions lives in [Kadan Server](../kadan-server/overview.md); the standalone Kadan client does not link directly to Tsuchi or Hikari pages. The indicators refresh periodically and can lag a change. Loading and connection failures must remain distinguishable from readiness.
 
 Storage availability means Kadan Server can reach Tsuchi. If storage is unavailable, Kadan cannot reliably load agents or confirm new saved messages. An error must not be presented as an empty collection or a successful save.
 
-Language inference can require a user-approved model download or attention to an unavailable worker in **Kadan Server → Hikari → Settings**. Language readiness does not mean the model is already loaded or that speech, images and other inference types are ready. A later request can still wait or fail.
+Language inference can require a user-approved model download or attention to an unavailable worker in **Kadan Server → AI models**. Language readiness does not mean the model is already loaded or that speech, images and other inference types are ready. A later request can still wait or fail.
 
 When the language model needs downloading, Kadan shows a plain status notice above the composer directing the user to **Kadan Server** and keeps the composer available for notes. Replies become available after Kadan observes the completed checkpoint or active subscription in Kadan Server.
 

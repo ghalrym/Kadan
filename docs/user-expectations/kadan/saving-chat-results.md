@@ -6,6 +6,6 @@ One document is saved per reply. Saving again returns that document with any lat
 
 While saving, confirmation waits for storage. A failure retains the entered title while the form stays mounted and reports that saving was not confirmed. **Retry save** checks or creates the same document, so a lost response does not create a second copy or overwrite edits. Navigating away or reloading can lose the form's title; reopening the reply and saving again still uses the same document identity.
 
-The source conversation and reply must still exist in the same agent's active chat records, including when retrying. A saved document in Trash must be restored in Tsuchi before saving that reply again; Kadan does not silently recreate it. Trashing or changing the source does not remove an already saved document.
+The source conversation and reply must still exist in the same agent's active chat records, including when retrying. A saved document in Trash must be restored from Kadan Server's [Your agent → Trash](../kadan-server/your-agent.md) before saving that reply again; Kadan does not silently recreate it. Trashing or changing the source does not remove an already saved document.
 
 Saving does not schedule work, retain every reply automatically, add the document to future response context or guarantee recall. See [Tsuchi Spaces](../tsuchi/spaces.md) and [revisions](../tsuchi/revisions.md).

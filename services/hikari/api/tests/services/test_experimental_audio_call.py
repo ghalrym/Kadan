@@ -26,7 +26,7 @@ class AudioModelsTests(unittest.TestCase):
         models = CallModels.selected(status)
         self.assertEqual(models.audio, "lfm3-audio-2b-bf16")
         status.models[0].status = "not_downloaded"
-        with self.assertRaisesRegex(InferenceFailure, "license"):
+        with self.assertRaisesRegex(InferenceFailure, "AI models"):
             CallModels.selected(status)
 
     def test_audio_task_requires_the_matching_input_and_disallows_tool_history(self):

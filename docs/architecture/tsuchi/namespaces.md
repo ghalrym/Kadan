@@ -13,4 +13,4 @@ Tsuchi scopes resources, revisions, search entries, assets, runs, image jobs, pe
 
 Because blob removal runs only after SQLite commits, a failed or rolled-back transaction leaves files on disk intact. Global `mcp_servers`, `mcp_oauth_states`, `runners` rows and all other agents' records and files remain untouched. Deleting an agent frees its key immediately for fresh creation (including Kadan's default-agent auto-bootstrap).
 
-See the user expectations for [agent namespaces](../../user-expectations/tsuchi/namespaces.md).
+Kadan shows one agent at a time; Kadan Server's [Your agent](../../user-expectations/kadan-server/your-agent.md) covers what users see of its stored content.

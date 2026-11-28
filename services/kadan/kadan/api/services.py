@@ -363,7 +363,7 @@ class LocalServices:
                 return InferenceState(
                     state="ready",
                     model_id=None,
-                    message=f"Language uses your {providers.capabilities.language.title()} subscription in Hikari.",
+                    message=f"Chat uses your {'ChatGPT' if providers.capabilities.language == 'codex' else providers.capabilities.language.title()} subscription.",
                 )
             catalog = HikariModels.model_validate(
                 await self.json_request("Hikari", "GET", "/v1/models")
@@ -390,7 +390,7 @@ class LocalServices:
                     model_id=model.id
                     if model is not None
                     else catalog.selected_model_id,
-                    message="The Inkling 2 Mini language worker is unavailable. Check Hikari Settings.",
+                    message="Chat isn’t running on Kadan Server right now. Check AI models in Kadan Server.",
                 )
             return InferenceState(
                 state="ready" if model.status == "complete" else "model_required",
@@ -400,7 +400,7 @@ class LocalServices:
                 message=(
                     "Inkling 2 Mini is downloaded. Hikari loads it when chat starts."
                     if model.status == "complete"
-                    else "Inkling 2 Mini requires a user-approved download in Hikari Settings before chat."
+                    else "Download Chat & thinking in Kadan Server → AI models before chatting."
                 ),
             )
         except (ServiceError, ValidationError) as error:
@@ -420,7 +420,7 @@ class LocalServices:
                 return InferenceState(
                     state="ready",
                     model_id=None,
-                    message="Image generation uses ChatGPT through your Codex subscription in Hikari.",
+                    message="Image generation uses your ChatGPT subscription.",
                 )
             catalog = HikariModels.model_validate(
                 await self.json_request("Hikari", "GET", "/v1/models")
@@ -439,7 +439,7 @@ class LocalServices:
                     model_id=model.id if model is not None else None,
                     message=(
                         "Image generation is currently unavailable. Tell the user to open "
-                        "Kadan Server and check Hikari → Settings."
+                        "Kadan Server and check AI models."
                     ),
                 )
             if model.status == "complete":
@@ -457,7 +457,7 @@ class LocalServices:
                     message=(
                         "The local image model (FLUX.2 Klein 4B) is currently downloading. "
                         "Tell the user to check download progress in Kadan Server under "
-                        "Hikari → Settings and try again once it finishes."
+                        "AI models and try again once it finishes."
                     ),
                 )
             return InferenceState(
@@ -466,9 +466,9 @@ class LocalServices:
                 download_state=model.status,
                 message=(
                     "Image generation is not set up yet because the image model has not been "
-                    "downloaded. Tell the user to open Kadan Server, go to Hikari → Settings, "
-                    "and either download the local image model (FLUX.2 Klein 4B) or sign in "
-                    "to Codex and switch Images to ChatGPT."
+                    "downloaded. Tell the user to open Kadan Server, go to AI models, "
+                    "and either download Images or sign in to ChatGPT under "
+                    "'Use a subscription instead' and switch Images to ChatGPT."
                 ),
             )
         except (ServiceError, ValidationError):
@@ -476,7 +476,7 @@ class LocalServices:
                 state="unavailable",
                 message=(
                     "Could not reach Hikari to check image generation. Tell the user to make "
-                    "sure Kadan Server is running and check Hikari → Settings."
+                    "sure Kadan Server is running and check AI models."
                 ),
             )
 

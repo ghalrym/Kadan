@@ -177,7 +177,7 @@ def test_subscription_language_is_ready_without_local_download(provider):
     status = run(boundary, lambda service: service.inference_status())
     assert status.state == "ready"
     assert status.model_id is None
-    assert provider.title() in status.message
+    assert {"claude": "Claude", "codex": "ChatGPT"}[provider] in status.message
     assert boundary.requests == [("GET", "/v1/subscriptions")]
 
 
@@ -328,7 +328,7 @@ def test_active_inkling_requires_its_own_downloaded_worker(
             ],
             "unavailable",
             None,
-            "Hikari → Settings",
+            "AI models",
         ),
     ],
 )

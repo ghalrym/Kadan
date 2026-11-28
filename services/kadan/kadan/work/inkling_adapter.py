@@ -207,7 +207,7 @@ def _friendly_hikari_error(status_code: int, detail: str) -> str:
     ):
         return (
             "The standard Inkling 2 Mini model is not downloaded yet. "
-            "Open Kadan Server, go to Hikari → Settings, and download Inkling 2 Mini to continue."
+            "Open Kadan Server, go to AI models, and download Chat & thinking to continue."
         )
     if "context" in lower and (
         "limit" in lower or "exceed" in lower or "fit" in lower or "too long" in lower
@@ -225,7 +225,7 @@ def _friendly_hikari_error(status_code: int, detail: str) -> str:
     ):
         return (
             "Not enough GPU or system memory is available to run Inkling 2 Mini right now. "
-            "Wait for other local AI tasks to finish or lower the context window in Hikari Settings."
+            "Wait for other local AI tasks to finish, then try again."
         )
     if status_code in (502, 503, 504):
         return (
@@ -1282,7 +1282,7 @@ class InklingHarnessAdapter(HarnessAdapter):
             auth = HarnessAuthStatus(
                 status="unavailable",
                 login_method="local",
-                message="Download Inkling 2 Mini in Kadan Server → Hikari → Settings.",
+                message="Download Chat & thinking in Kadan Server → AI models.",
             )
         elif ckpt.status == "complete":
             auth = HarnessAuthStatus(
@@ -1301,7 +1301,7 @@ class InklingHarnessAdapter(HarnessAdapter):
             auth = HarnessAuthStatus(
                 status="unavailable",
                 login_method="local",
-                message="Download Inkling 2 Mini in Kadan Server → Hikari → Settings.",
+                message="Download Chat & thinking in Kadan Server → AI models.",
             )
 
         return HarnessAvailability(

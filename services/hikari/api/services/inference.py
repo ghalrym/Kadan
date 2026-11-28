@@ -150,7 +150,7 @@ class InferenceService:
             error = "The language worker is unavailable."
         elif checkpoint.status != "complete":
             error = (
-                "Download the language checkpoint in Hikari Settings before inference."
+                "Download Chat & thinking in Kadan Server → AI models first."
             )
         elif any(not worker.residency_known for worker in workers):
             error = "Language-model cleanup is unconfirmed."

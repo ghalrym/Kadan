@@ -15,7 +15,7 @@ Replies saved with **Save to Space** in chat become pages, and pages the agent w
 
 **Your items** shows the top level of Space; opening a folder shows what it holds, with a path back to the top. **All**, **Pages**, **Slides**, **Images** and **Files** filter by type across every folder, and search matches item names across every folder. **Pinned** collects pinned items, and **Recents** lists recently changed items. Items can be shown as a list or a grid; the choice is remembered in this browser.
 
-Space shows what Kadan last loaded. Changes made in Tsuchi or by the agent appear after choosing refresh or reopening Space. A failed load is reported with **Retry** and is never shown as an empty Space.
+Space shows what Kadan last loaded. Changes made by the agent or in Kadan Server appear after choosing refresh or reopening Space. A failed load is reported with **Retry** and is never shown as an empty Space.
 
 ## Creating and changing items
 

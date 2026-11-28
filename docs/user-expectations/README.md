@@ -5,8 +5,9 @@ These pages are the canonical product expectations for Kadan and its supporting 
 | Area | Start here |
 | --- | --- |
 | Kadan | [Agents, chats, Space, plugins and memory](kadan/overview.md) |
+| Kadan Server | [Home, AI models, your agent, activity and settings](kadan-server/overview.md) |
 | Hikari | [Models, inference, media and voice](hikari/overview.md) |
-| Tsuchi | [Storage, editing, files, history and recovery](tsuchi/overview.md) |
+| Tsuchi | [Storage, files, history and recovery](tsuchi/overview.md) |
 | Shared | [Installation](install-and-use.md), [security and operator responsibility](security.md), [performance tracing](tracing.md) |
 
 Current feature pages describe behavior present on master. Model-directed actions remain subject to the model choosing and using its tools; available tools do not guarantee task completion. [Open and stacked proposals](proposals.md) preserve future direction separately and do not promise current functionality.

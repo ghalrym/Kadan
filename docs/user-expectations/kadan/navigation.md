@@ -18,7 +18,7 @@ From top to bottom, the sidebar offers:
 - At the bottom, your name and pet open [Your profile](profile.md).
 - Below your profile, **Server settings** (in the standalone Kadan app) shows the connected server address and connection status and lets you switch servers, alongside a refresh button that reloads server status, the agent and its chats. Tsuchi and Hikari management live in **Kadan Server**, not inside the Kadan client app.
 
-Lists in the sidebar reflect what Kadan last loaded. Changes made on Tsuchi's pages appear after returning to Kadan or refreshing.
+Lists in the sidebar reflect what Kadan last loaded. Changes made in Kadan Server appear after returning to Kadan or refreshing.
 
 ## Agent card
 

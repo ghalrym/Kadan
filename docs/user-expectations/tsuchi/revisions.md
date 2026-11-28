@@ -1,8 +1,8 @@
 # Revisions
 
-Tsuchi keeps saved revision history for personas, memories, Spaces, slide decks and conversations. Open a saved resource's **History** tab to inspect earlier snapshots. History records saved states; it cannot recover text that was never saved.
+Tsuchi keeps saved revision history for personas, memories, Spaces, slide decks and conversations. In Kadan Server, [Your agent → Persona](../kadan-server/your-agent.md) lists earlier versions of the persona. History records saved states; it cannot recover text that was never saved.
 
-**Restore this version** applies an earlier snapshot as a new revision. It keeps the intervening history rather than erasing it. The restored content replaces the current editable contents, so users should save any draft they want to keep before restoring.
+**Restore** applies an earlier snapshot as a new revision. It keeps the intervening history rather than erasing it. The restored content replaces the current editable contents, so users should save any draft they want to keep before restoring.
 
 Restoration must reject conflicting edits and invalid links. An earlier snapshot can refer to a parent or attachment now in trash; restore those dependencies before trying again. A resource in trash must itself be restored before its contents can be revised. Errors must remain visible without claiming that restoration succeeded.
 

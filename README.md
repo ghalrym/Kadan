@@ -3,15 +3,16 @@
 Kadan is the local agent application and the primary place to work with your agents.
 It ships with two supporting services in this repository: Hikari provides
 inference, and Tsuchi stores agent memory, documents, files and conversations.
-One web app serves all three: Kadan is the home page, and Tsuchi's and Hikari's
-pages for inspecting and operating those services open inside it.
+One web app serves Kadan at its home page and Kadan Server's management pages
+(AI models, the agent's stored data, activity and settings) under `/server`.
 
 | Service | Responsibility | Local interface |
 | --- | --- | --- |
 | Kadan | Agent conversations and actions | <http://127.0.0.1:8630> |
-| Tsuchi | Durable per-agent storage, search and history | <http://127.0.0.1:8630/tsuchi> |
-| Hikari | Chat, decisions, images, speech and transcription | <http://127.0.0.1:8630/hikari> |
-| Frontend | The single web app for all three services | <http://127.0.0.1:8630> |
+| Kadan Server pages | AI models, the agent's stored data, activity and settings | <http://127.0.0.1:8630/server> |
+| Tsuchi | Durable per-agent storage, search and history | API at `/tsuchi` |
+| Hikari | Chat, decisions, images, speech and transcription | API at `/hikari` |
+| Frontend | The single web app for Kadan and Kadan Server's pages | <http://127.0.0.1:8630> |
 | API | One application serving all three APIs under `/kadan`, `/tsuchi` and `/hikari` | <http://127.0.0.1:8000> |
 
 [Start all services with Docker](#docker-compose). Kadan owns agent decisions;
@@ -75,12 +76,11 @@ and Hikari APIs, each under its own prefix:
 | `hikari-postgres`, `hikari-migrate` | Hikari's database and its one-shot migration |
 | `hikari-worker-*` | Hikari's inference workers |
 
-The supporting pages are [Tsuchi](http://127.0.0.1:8630/tsuchi),
-[Hikari Settings](http://127.0.0.1:8630/hikari/settings), and
-[Hikari API documentation](http://127.0.0.1:8000/hikari/docs). Kadan's and
-Tsuchi's references are at `/kadan/docs` and `/tsuchi/docs` on the same port.
-Select/download the required checkpoints in Hikari Settings before asking an agent
-to generate a response. Startup does not generate content or load a model.
+Manage models and the agent's stored data in [Kadan Server](http://127.0.0.1:8630/server).
+API references are at [`/hikari/docs`](http://127.0.0.1:8000/hikari/docs), `/kadan/docs`
+and `/tsuchi/docs` on the API port. Download the required models in Kadan Server's
+**AI models** before asking an agent to generate a response. Startup does not
+generate content or load a model.
 
 All published ports bind to `0.0.0.0`. This is a single-owner prototype;
 namespace keys are storage selectors, not credentials. Operators are responsible

@@ -14,4 +14,4 @@ Calls retain up to twelve recent whole messages only for that connection. The co
 
 During a call, its audio worker participates in Hikari's normal physical memory admission and cleanup. This does not promise residency, concurrent inference or sufficient memory for every request. Ending, disconnection or error restores ordinary inference priority and idle expiry.
 
-Standalone [Whisper transcription](transcription.md), optional S1 formatting and [Qwen text to speech](text-to-speech.md) remain available through their existing APIs and playgrounds. Their models and settings are independent of calling. Hikari has no dedicated live-call playground UI; [Kadan voice calls](../kadan/voice-calls.md) provide the browser controls.
+Standalone [Whisper transcription](transcription.md), optional S1 formatting and [Qwen text to speech](text-to-speech.md) remain available through their existing APIs. Their models and settings are independent of calling. Hikari has no dedicated live-call playground UI; [Kadan voice calls](../kadan/voice-calls.md) provide the browser controls.

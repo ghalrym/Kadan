@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 import { scopeSectionCss } from './config/scopeSectionCss.ts'
 
-/** One development server for Kadan, Tsuchi and Hikari pages.
+/** One development server for Kadan and Kadan Server pages.
  * API_URL is the combined API, which serves each service under its own prefix.
  * This does not configure production routing.
  */
@@ -13,7 +13,7 @@ export default defineConfig({
   plugins: [react()],
   css: {
     postcss: {
-      plugins: [scopeSectionCss(path.resolve(import.meta.dirname, 'src'), ['kadan', 'tsuchi', 'hikari'])],
+      plugins: [scopeSectionCss(path.resolve(import.meta.dirname, 'src'), ['kadan'])],
     },
   },
   server: {

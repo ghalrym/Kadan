@@ -1,8 +1,8 @@
 # Trash
 
-Tsuchi lets users move saved resources and files to trash for the selected agent. Trashed items leave the ordinary active lists and appear in **Trash**, where users can open them for inspection. Restore an item before editing it.
+Kadan, Kadan Server and the agent can move saved resources and files to trash. Trashed items leave the ordinary active lists and appear in Kadan Server's [Your agent → Trash](../kadan-server/your-agent.md). Restore an item before editing it.
 
-Trash retains content, revision history and file bytes. It does not reclaim storage, and there is no permanent-delete or empty-trash action in the current interface. Restarting the service does not clear trash.
+Trash retains content, revision history and file bytes. It does not reclaim storage, and there is no permanent-delete or empty-trash action. Restarting the service does not clear trash.
 
 A Space with active children, or a folder holding active items or files, cannot be trashed until those items are moved or trashed. A file or image used by active content must first be unlinked. These conflicts produce errors; trash does not silently remove the dependencies. Conflicting changes must also be reported.
 

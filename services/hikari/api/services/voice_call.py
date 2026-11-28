@@ -38,7 +38,7 @@ class CallModels(BaseModel):
             )
         if model.status != "complete":
             raise InferenceFailure(
-                "Review the LFM3-Audio license and download its checkpoint in Hikari before calling.",
+                "Download Voice calls in Kadan Server → AI models before calling.",
                 422,
             )
         return cls(audio=model.id)

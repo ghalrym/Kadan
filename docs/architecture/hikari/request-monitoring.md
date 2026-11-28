@@ -1,6 +1,6 @@
 # Request telemetry
 
-Hikari observes generation HTTP handlers separately from worker execution. See the user expectations for [request monitoring](../../user-expectations/hikari/request-monitoring.md).
+Hikari observes generation HTTP handlers separately from worker execution. Kadan Server's [Activity](../../user-expectations/kadan-server/activity.md) presents these records.
 
 Completed HTTP observations are process-local and capped at 1,000. Restart clears them. The UI initially shows 25 rows per page; filtering and searching retained IDs, endpoints or summaries reset pagination. Details hold structural summaries rather than original content or credentials. Monitoring reads do not count as generation requests.
 

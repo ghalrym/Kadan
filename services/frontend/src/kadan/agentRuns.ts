@@ -14,10 +14,10 @@ export function currentResponseOutcome(conversation: Resource, runs: AgentRun[])
 export function responseProgress(runs: AgentRun[], hikari: Status["hikari"] | undefined): string | null {
   if (!runs.some(activeRun)) return null;
   if (hikari?.state === "model_required" && hikari.download_state === "downloading")
-    return "Hikari is downloading the language model…";
+    return "Kadan Server is downloading the chat model…";
   if (!runs.some((run) => run.status === "running")) return "Response queued…";
   if (hikari?.state === "ready" && hikari.model_state === "loading")
-    return "Hikari is loading the language model…";
+    return "Getting the chat model ready…";
   return "Waiting for response…";
 }
 

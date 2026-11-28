@@ -41,7 +41,7 @@ test("queued work is distinguishable from a running response", () => {
 
 test("downloading is shown only for a reported active language model download", () => {
   const runs = [{ status: "running" }];
-  assert.equal(responseProgress(runs, { state: "model_required", download_state: "downloading" }), "Hikari is downloading the language model…");
+  assert.equal(responseProgress(runs, { state: "model_required", download_state: "downloading" }), "Kadan Server is downloading the chat model…");
   for (const download_state of [undefined, null, "not_downloaded", "cancelling", "cancelled", "failed", "complete"]) {
     assert.equal(responseProgress(runs, { state: "model_required", download_state }), "Waiting for response…");
   }
@@ -50,7 +50,7 @@ test("downloading is shown only for a reported active language model download", 
 
 test("loading clears without treating a resident model as proof of prompt processing", () => {
   const runs = [{ status: "running" }];
-  assert.equal(responseProgress(runs, { state: "ready", model_state: "loading" }), "Hikari is loading the language model…");
+  assert.equal(responseProgress(runs, { state: "ready", model_state: "loading" }), "Getting the chat model ready…");
   for (const model_state of [undefined, null, "unloaded", "ready", "offloaded", "unloading", "error"]) {
     assert.equal(responseProgress(runs, { state: "ready", model_state }), "Waiting for response…");
   }

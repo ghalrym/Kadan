@@ -14,6 +14,6 @@ The default LFM3 reply includes text and one complete buffered audio segment. Pl
 
 Only bounded recent whole messages are retained for the current connection. If the retained prompt cannot fit the model, the call reports an error rather than cropping individual messages. Reconnecting starts a new call. Cancellation waits for confirmed executor cleanup and removes temporary utterance files before acknowledging completion; it cannot undo audio already heard.
 
-Hikari's standalone Whisper transcription, including Kadan's existing composer dictation, and its Qwen text-to-speech playground remain separate capabilities. Calls do not add MP3 transcription tools to agents.
+Hikari's standalone Whisper transcription, including Kadan's existing composer dictation, and its Qwen text to speech remain separate capabilities. Calls do not add MP3 transcription tools to agents.
 
 See [Hikari live voice calls](../hikari/voice-calls.md) for client playback acknowledgements and [Voice input](voice-input.md) for composer dictation.

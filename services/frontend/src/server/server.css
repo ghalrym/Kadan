@@ -1,0 +1,847 @@
+/* Kadan Server: the client's design system plus a few server-only pieces.
+ * Rules hang off :root .srv-app so they win over the client's base element styles. */
+
+:root .srv-app .srv-sidebar {
+  width: 248px;
+}
+:root .srv-app .srv-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 6px;
+}
+:root .srv-app .srv-nav-link {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  min-height: 38px;
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+}
+:root .srv-app .srv-nav-link:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+:root .srv-app .srv-nav-link.selected {
+  background: var(--raised);
+  color: var(--text);
+}
+:root .srv-app .srv-nav-link svg {
+  flex-shrink: 0;
+}
+:root .srv-app .srv-nav-agent {
+  padding-left: 6px;
+}
+:root .srv-app .srv-open-kadan {
+  margin-top: auto;
+}
+
+:root .srv-app .srv-main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  background: var(--bg);
+}
+:root .srv-app .srv-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 32px 32px 64px;
+}
+:root .srv-app .srv-page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+:root .srv-app .srv-page-head h1 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+:root .srv-app .srv-page-head p {
+  margin: 6px 0 0;
+  max-width: 60ch;
+  color: var(--muted);
+}
+:root .srv-app .srv-page-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+:root .srv-app .srv-loading,
+:root .srv-app .srv-empty {
+  margin: 0;
+  padding: 24px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r);
+  color: var(--muted);
+  text-align: center;
+}
+:root .srv-app .srv-banner {
+  border-radius: var(--r);
+}
+:root .srv-app .srv-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+:root .srv-app .srv-spacer {
+  flex: 1;
+}
+
+/* Cards */
+:root .srv-app .srv-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+:root .srv-app .srv-card-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+:root .srv-app .srv-card-head p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+:root .srv-app .srv-card-head-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+:root .srv-app .srv-two {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 18px;
+}
+
+/* Status */
+:root .srv-app .srv-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+:root .srv-app .srv-pill i {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+:root .srv-app .srv-pill.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+:root .srv-app .srv-pill.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+:root .srv-app .srv-pill.error { color: var(--error); background: color-mix(in srgb, var(--error) 12%, transparent); }
+:root .srv-app .srv-pill.busy { color: var(--accent); background: var(--accent-soft); }
+:root .srv-app .srv-pill.busy i { animation: srv-pulse 1.4s ease-in-out infinite; }
+@keyframes srv-pulse {
+  50% { opacity: 0.3; }
+}
+
+:root .srv-app .srv-hero {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 20px;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+:root .srv-app .srv-hero h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 650;
+}
+:root .srv-app .srv-hero p {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+:root .srv-app .srv-hero-dot {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: var(--muted);
+}
+:root .srv-app .srv-hero.ok { border-color: color-mix(in srgb, var(--ok) 35%, var(--line)); }
+:root .srv-app .srv-hero.ok .srv-hero-dot { background: var(--ok); box-shadow: 0 0 0 5px color-mix(in srgb, var(--ok) 16%, transparent); }
+:root .srv-app .srv-hero.warn { border-color: color-mix(in srgb, var(--warn) 35%, var(--line)); }
+:root .srv-app .srv-hero.warn .srv-hero-dot { background: var(--warn); box-shadow: 0 0 0 5px color-mix(in srgb, var(--warn) 16%, transparent); }
+:root .srv-app .srv-hero.error { border-color: color-mix(in srgb, var(--error) 35%, var(--line)); }
+:root .srv-app .srv-hero.error .srv-hero-dot { background: var(--error); box-shadow: 0 0 0 5px color-mix(in srgb, var(--error) 16%, transparent); }
+:root .srv-app .srv-hero.busy .srv-hero-dot { background: var(--accent); animation: srv-pulse 1.4s ease-in-out infinite; }
+
+/* Copyable addresses */
+:root .srv-app .srv-copy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+:root .srv-app .srv-copy code {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+:root .srv-app .srv-link-button {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 8px;
+  text-decoration: none;
+}
+
+/* Abilities on Home */
+:root .srv-app .srv-ability-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+:root .srv-app .srv-ability {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--bg);
+}
+:root .srv-app .srv-ability-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+:root .srv-app .srv-ability p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+:root .srv-app .srv-ability-action {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+/* Memory meters */
+:root .srv-app .srv-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+:root .srv-app .srv-meter-text {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+:root .srv-app .srv-meter-text span:last-child {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+:root .srv-app .srv-meter-bar {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--raised);
+}
+:root .srv-app .srv-meter-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+/* Agent card on Home */
+:root .srv-app .srv-agent-card {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 16px;
+  text-align: left;
+  color: var(--text);
+}
+:root .srv-app .srv-agent-card:hover:not(:disabled) {
+  background: var(--raised);
+}
+:root .srv-app .srv-agent-card-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+:root .srv-app .srv-agent-card-text strong {
+  font-size: 17px;
+}
+:root .srv-app .srv-agent-card-text span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+/* AI models */
+:root .srv-app .srv-model-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+:root .srv-app .srv-model {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+:root .srv-app .srv-model:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+:root .srv-app .srv-model-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+:root .srv-app .srv-model-text span {
+  color: var(--muted);
+  font-size: 13px;
+}
+:root .srv-app .srv-model-text small {
+  color: var(--faint);
+  font-size: 12px;
+}
+:root .srv-app .srv-progress,
+:root .srv-app .srv-model-note {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+:root .srv-app .srv-progress {
+  width: 100%;
+  height: 6px;
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--raised);
+}
+:root .srv-app .srv-progress::-webkit-progress-bar { background: var(--raised); }
+:root .srv-app .srv-progress::-webkit-progress-value { background: var(--accent); border-radius: 999px; }
+:root .srv-app .srv-progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
+
+:root .srv-app .srv-sub-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+:root .srv-app .srv-sub-row > div:first-child {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 220px;
+}
+:root .srv-app .srv-sub-row span {
+  color: var(--muted);
+  font-size: 13px;
+}
+:root .srv-app .srv-segments {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+}
+:root .srv-app .srv-segments button {
+  min-height: 30px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+}
+:root .srv-app .srv-segments button.selected {
+  background: var(--raised);
+  color: var(--text);
+}
+:root .srv-app .srv-accounts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 14px 0 0;
+  border-top: 1px solid var(--line);
+  list-style: none;
+}
+:root .srv-app .srv-account-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+:root .srv-app .srv-account-row strong {
+  flex: 1;
+}
+:root .srv-app .srv-signin {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 14px;
+  border-radius: var(--r);
+  background: var(--bg);
+}
+:root .srv-app .srv-signin ol {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding-left: 18px;
+}
+:root .srv-app .srv-code {
+  font-family: var(--mono);
+  letter-spacing: 0.08em;
+}
+
+:root .srv-app .srv-advanced summary {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+}
+:root .srv-app .srv-advanced summary::-webkit-details-marker {
+  display: none;
+}
+:root .srv-app .srv-advanced summary span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+:root .srv-app .srv-advanced summary small {
+  color: var(--muted);
+  font-size: 13px;
+}
+:root .srv-app .srv-advanced summary::after {
+  content: "›";
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 20px;
+  transition: transform 160ms var(--out);
+}
+:root .srv-app .srv-advanced[open] summary::after {
+  transform: rotate(90deg);
+}
+:root .srv-app .srv-advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-top: 16px;
+}
+:root .srv-app .srv-choice {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+:root .srv-app .srv-choice legend {
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+:root .srv-app .srv-choice label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  background: var(--bg);
+  cursor: pointer;
+}
+:root .srv-app .srv-choice label.selected {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+:root .srv-app .srv-choice input {
+  margin-top: 3px;
+  accent-color: var(--accent-strong);
+}
+:root .srv-app .srv-choice label span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+:root .srv-app .srv-choice small {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+:root .srv-app .srv-dialog {
+  width: min(520px, calc(100% - 32px));
+}
+:root .srv-app .srv-dialog h2 {
+  margin: 0 0 8px;
+}
+:root .srv-app .srv-license {
+  margin: 10px 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+:root .srv-app .srv-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+/* Your agent */
+:root .srv-app .srv-agent-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+:root .srv-app .srv-agent-head h1 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 650;
+}
+:root .srv-app .srv-agent-head p {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+:root .srv-app .srv-tabs,
+:root .srv-app .srv-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--line);
+}
+:root .srv-app .srv-tabs button,
+:root .srv-app .srv-filters button {
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  background: none;
+  color: var(--muted);
+  font-weight: 500;
+  box-shadow: inset 0 -2px 0 transparent;
+}
+:root .srv-app .srv-tabs button.selected,
+:root .srv-app .srv-filters button.selected {
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+:root .srv-app .srv-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--faint);
+}
+:root .srv-app .srv-search input {
+  flex: 1;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+:root .srv-app .srv-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  list-style: none;
+}
+:root .srv-app .srv-list > li + li {
+  border-top: 1px solid var(--line);
+}
+:root .srv-app .srv-list button:not(.button) {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  padding: 12px 16px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--text);
+  text-align: left;
+}
+:root .srv-app .srv-list button:not(.button):hover,
+:root .srv-app .srv-list button.selected {
+  background: var(--raised);
+}
+:root .srv-app .srv-list button span,
+:root .srv-app .srv-trash-row span {
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+:root .srv-app .srv-list small {
+  color: var(--faint);
+  font-size: 12px;
+  font-weight: 400;
+}
+:root .srv-app .srv-trash-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+}
+:root .srv-app .srv-trash-row > div {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+:root .srv-app .srv-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 600;
+}
+:root .srv-app .srv-editor textarea {
+  min-height: 160px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.55;
+}
+:root .srv-app .srv-editor-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+:root .srv-app .srv-versions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+:root .srv-app .srv-version-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+:root .srv-app .srv-version-row > span {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+:root .srv-app .srv-version-row small {
+  color: var(--faint);
+}
+:root .srv-app .srv-version-preview {
+  margin-top: 8px;
+  padding: 12px 14px;
+  border-radius: var(--r);
+  background: var(--bg);
+  font-size: 13.5px;
+}
+:root .srv-app .srv-earlier {
+  align-self: center;
+}
+:root .srv-app .srv-history {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+:root .srv-app .srv-history li {
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+:root .srv-app .srv-history li.from-you {
+  background: var(--raised);
+}
+:root .srv-app .srv-history header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+:root .srv-app .srv-history time {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+/* Activity */
+:root .srv-app .srv-activity {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  list-style: none;
+}
+:root .srv-app .srv-activity > li + li {
+  border-top: 1px solid var(--line);
+}
+:root .srv-app .srv-activity-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 16px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--text);
+  text-align: left;
+}
+:root .srv-app .srv-activity-row:hover {
+  background: var(--raised);
+}
+:root .srv-app .srv-activity-row time,
+:root .srv-app .srv-activity-time {
+  color: var(--muted);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+:root .srv-app .srv-request-details {
+  padding: 4px 16px 16px;
+  background: var(--raised);
+}
+:root .srv-app .srv-request-details dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px 16px;
+  margin: 0 0 8px;
+}
+:root .srv-app .srv-request-details dt {
+  color: var(--faint);
+  font-size: 12px;
+}
+:root .srv-app .srv-request-details dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+:root .srv-app .srv-request-details h3 {
+  margin: 10px 0 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+:root .srv-app .srv-request-details pre {
+  max-height: 200px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+:root .srv-app .srv-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (max-width: 760px) {
+  :root .app.srv-app {
+    flex-direction: column;
+  }
+  :root .srv-app .srv-sidebar {
+    width: 100%;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  :root .srv-app .srv-nav {
+    flex-direction: row;
+    overflow-x: auto;
+  }
+  :root .srv-app .srv-nav-link {
+    width: auto;
+    white-space: nowrap;
+  }
+  :root .srv-app .srv-open-kadan {
+    display: none;
+  }
+  :root .srv-app .srv-page {
+    padding: 20px 16px 48px;
+  }
+  :root .srv-app .srv-page-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  :root .srv-app .srv-activity-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  :root .srv-app .srv-activity-row time,
+  :root .srv-app .srv-activity-time {
+    display: none;
+  }
+}

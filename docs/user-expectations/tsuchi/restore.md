@@ -1,6 +1,6 @@
 # Restore
 
-Tsuchi lets users open an item in **Trash** and choose **Restore** to return it to the selected agent's active collection. Restoration retains the item's identity and saved contents. It does not create a separate copy or move content to another agent.
+Kadan Server's [Your agent → Trash](../kadan-server/your-agent.md) lets users choose **Restore** to return an item to the agent's active collection. Restoration retains the item's identity and saved contents. It does not create a separate copy or move content to another agent.
 
 A resource's parent Space or folder and required attachments must be active before it can be restored. A file whose folder is missing or still in trash is restored to the top level. Restore parents and files first, then their dependent resources. Restoration does not automatically restore a whole hierarchy or silently discard unavailable links.
 

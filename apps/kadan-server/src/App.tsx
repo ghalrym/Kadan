@@ -4,7 +4,6 @@ import {
   Check,
   Copy,
   Cpu,
-  Database,
   Download,
   ExternalLink,
   FolderOpen,
@@ -40,14 +39,14 @@ import type {
   UpdateStatus,
 } from "./types";
 
-type Tab = "overview" | "hikari" | "tsuchi" | "logs";
+type Tab = "server" | "computer" | "logs";
 
 function formatGb(mb: number): string {
   return `${(mb / 1024).toFixed(1)} GB`;
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTab] = useState<Tab>("server");
   const [config, setConfig] = useState<ServerConfig | null>(null);
   const [draft, setDraft] = useState<ServerConfig | null>(null);
   const [status, setStatus] = useState<ServerStatusSnapshot | null>(null);
@@ -234,17 +233,13 @@ export default function App() {
         </div>
 
         <nav className="tabs" aria-label="Server views">
-          <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>
-            <Server size={15} />
-            Overview
-          </button>
-          <button className={tab === "hikari" ? "active" : ""} onClick={() => setTab("hikari")}>
+          <button className={tab === "server" ? "active" : ""} onClick={() => setTab("server")}>
             <Sparkles size={15} />
-            Hikari
+            Kadan Server
           </button>
-          <button className={tab === "tsuchi" ? "active" : ""} onClick={() => setTab("tsuchi")}>
-            <Database size={15} />
-            Tsuchi
+          <button className={tab === "computer" ? "active" : ""} onClick={() => setTab("computer")}>
+            <Server size={15} />
+            This computer
           </button>
           <button className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")}>
             <ScrollText size={15} />
@@ -280,51 +275,30 @@ export default function App() {
         </div>
       )}
 
-      {tab === "hikari" && (
+      {tab === "server" && (
         <main className="embedded-pane">
           {apiReady && status ? (
-            <iframe
-              title="Hikari"
-              src={status.hikari_local_url}
-              className="embedded-frame"
-            />
+            <iframe title="Kadan Server" src={`${localHostUrl}/server`} className="embedded-frame" />
           ) : (
             <div className="empty-state">
               <Sparkles size={32} />
-              <h2>Hikari is not running yet</h2>
-              <p>Start Kadan Server to manage models, downloads, and inference queues here.</p>
-              <button className="btn primary" disabled={busy} onClick={() => void handleStart()}>
-                <Play size={14} />
-                Start Server
-              </button>
+              <h2>{status?.running ? "Kadan Server is starting…" : "Kadan Server is stopped"}</h2>
+              <p>
+                {status?.running
+                  ? "This takes a few seconds. Your AI models, agent and activity will show up here."
+                  : "Start it to manage AI models, see what your agent remembers and follow its activity."}
+              </p>
+              {!status?.running && (
+                <button className="btn primary" disabled={busy} onClick={() => void handleStart()}>
+                  <Play size={14} />
+                  Start Server
+                </button>
+              )}
             </div>
           )}
         </main>
       )}
-
-      {tab === "tsuchi" && (
-        <main className="embedded-pane">
-          {apiReady && status ? (
-            <iframe
-              title="Tsuchi"
-              src={status.tsuchi_local_url}
-              className="embedded-frame"
-            />
-          ) : (
-            <div className="empty-state">
-              <Database size={32} />
-              <h2>Tsuchi is not running yet</h2>
-              <p>Start Kadan Server to inspect and edit agent memory, documents, and files.</p>
-              <button className="btn primary" disabled={busy} onClick={() => void handleStart()}>
-                <Play size={14} />
-                Start Server
-              </button>
-            </div>
-          )}
-        </main>
-      )}
-
-      {tab === "overview" && (
+      {tab === "computer" && (
         <main className="content">
           <section className="card">
             <div className="card-head">
@@ -479,8 +453,8 @@ export default function App() {
                   <Settings size={16} /> Server Settings
                 </h2>
                 <p>
-                  Model downloads, licenses, and AI preferences are managed in the{" "}
-                  <strong>Hikari</strong> tab.
+                  AI models are managed in the <strong>Kadan Server</strong> tab, under{" "}
+                  <strong>AI models</strong>.
                 </p>
               </div>
               <div className="form-grid">

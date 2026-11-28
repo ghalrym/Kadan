@@ -94,7 +94,7 @@ const STARTUP_STAGES = {
   audio: { status: "Starting audio…", error: "Browser audio did not start within 20 seconds. Click Call to try again." },
   microphone: { status: "Waiting for microphone…", error: "Microphone access timed out. Check the browser microphone prompt and selected input, then try again." },
   capture: { status: "Preparing microphone…", error: "Microphone setup timed out. Start a new call to try again." },
-  server: { status: "Connecting to call…", error: "Call connection timed out. Check Kadan and Hikari, then try again." },
+  server: { status: "Connecting to call…", error: "Call connection timed out. Check that Kadan Server is running, then try again." },
 };
 
 export class VoiceCallSession {

@@ -2,7 +2,7 @@
 
 Kadan delivers two standalone Tauri v2 desktop applications built as versioned GitHub Release artifacts (`.github/workflows/release-apps.yml`) with zero Docker or external Postgres dependency:
 
-1. **Kadan Server** (`apps/kadan-server/`) — Hosts the full combined backend stack on a single port and embeds the Hikari and Tsuchi management interfaces in a system-tray desktop app.
+1. **Kadan Server** (`apps/kadan-server/`) — Hosts the full combined backend stack on a single port in a system-tray desktop app. Its **Kadan Server** tab embeds the web app's `/server` pages (served by the combined stack, so they update with the services) beside native **This computer** and **Logs** tabs that need the supervisor's Tauri commands.
 2. **Kadan** (`apps/kadan-desktop/`) — Lightweight native client wrapping the unified `services/frontend/` UI with runtime server host configuration.
 
 ## Kadan Server (`apps/kadan-server/`)

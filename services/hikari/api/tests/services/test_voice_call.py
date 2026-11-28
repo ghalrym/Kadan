@@ -50,7 +50,7 @@ class CallModelTests(unittest.TestCase):
                 status = snapshot()
                 status.models[0].status = state
                 status.models[0].inference_available = available
-                message = "license.*download" if available else "worker is unavailable"
+                message = "Download Voice calls" if available else "worker is unavailable"
                 with self.assertRaisesRegex(InferenceFailure, message):
                     CallModels.selected(status)
 

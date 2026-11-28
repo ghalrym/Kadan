@@ -956,7 +956,7 @@ async def test_inkling_availability_states_and_interrupt_during_pending_question
         assert avail.installed is True
         assert avail.auth.status == "unavailable"
         assert avail.auth.login_method == "local"
-        assert "Hikari → Settings" in avail.auth.message
+        assert "AI models" in avail.auth.message
         assert "HIKARI_LLM" not in avail.auth.message  # non-technical UI copy
 
     # 2. Interrupt during pending ask_user exits cleanly with terminal_status="interrupted".
