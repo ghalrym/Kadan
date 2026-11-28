@@ -395,7 +395,9 @@ __global__ void sdpa_qwen3_fp32_kernel(
 
     const std::size_t kv_base = h_kv * S * kD;
     const std::size_t k_limit =
-        active_count <= 0 ? 0 : std::min<std::size_t>(S, std::size_t(active_count));
+        active_count <= 0
+            ? 0
+            : (S < std::size_t(active_count) ? S : std::size_t(active_count));
 
     for (std::size_t k_start = 0; k_start < k_limit; k_start += kBK) {
         // Cooperatively load kBK rows of K and V (kBK * 128 floats = 2048 floats; 128 threads -> 16 each).
@@ -414,7 +416,8 @@ __global__ void sdpa_qwen3_fp32_kernel(
         __syncthreads();
 
         if (q_row < S) {
-            const int tile_end = int(std::min<std::size_t>(kBK, k_limit - k_start));
+            const std::size_t rem = k_limit - k_start;
+            const int tile_end = int(std::size_t(kBK) < rem ? std::size_t(kBK) : rem);
             for (int j = 0; j < tile_end; ++j) {
                 const std::size_t k_row = k_start + std::size_t(j);
                 if (k_row > q_row)
@@ -633,7 +636,8 @@ __global__ void sdpa_flux2_bf16_kernel(
         __syncthreads();
 
         if (q_row < S) {
-            const int tile_end = int(std::min<std::size_t>(kBK, S - k_start));
+            const std::size_t rem = S - k_start;
+            const int tile_end = int(std::size_t(kBK) < rem ? std::size_t(kBK) : rem);
             for (int j = 0; j < tile_end; ++j) {
                 float dot = q_reg[0] * __bfloat162float(k_smem[j][lane * 4 + 0])
                             + q_reg[1] * __bfloat162float(k_smem[j][lane * 4 + 1])
@@ -936,7 +940,8 @@ __global__ void vae_sdpa_fp32_kernel(
         __syncthreads();
 
         if (valid_q) {
-            const int tile_end = int(std::min<std::size_t>(kBK, points - k_start));
+            const std::size_t rem = points - k_start;
+            const int tile_end = int(std::size_t(kBK) < rem ? std::size_t(kBK) : rem);
             for (int j = 0; j < tile_end; ++j) {
                 float dot = 0.0f;
                 const float* kr = &k_smem[j][lane * kPerLane];

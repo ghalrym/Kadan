@@ -784,7 +784,5 @@ public:
     }
 };
 
-inline HostTensor cpu_float(const Tensor& x) {
-    return gpu::cpu_float(x);
-}
+using gpu::cpu_float;
 }  // namespace kadan::image::detail

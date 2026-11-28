@@ -205,6 +205,8 @@ ConvWeights transpose_conv(const Vec& raw, std::size_t channels) {
     ConvWeights out;
     for (std::size_t k = 0; k < n_conv; ++k)
         out.tap[k].resize(channels);
+    if (raw.size() < channels * n_conv)
+        return out;
     for (std::size_t c = 0; c < channels; ++c)
         for (std::size_t k = 0; k < n_conv; ++k)
             out.tap[k][c] = raw[c * n_conv + k];

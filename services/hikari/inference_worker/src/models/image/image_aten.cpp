@@ -197,7 +197,7 @@ HostTensor denoise_batch(
         noise = latent.clone();
         gpu::mix_source_noise_fp32(latent, source, noise, times.sigma[0]);
         if (!request.mask.empty()) {
-            std::vector<float> mask_host(std::size_t(target_tokens));
+            std::vector<float> mask_host(static_cast<std::size_t>(target_tokens), 0.0f);
             for (std::int64_t y = 0; y < h; ++y) {
                 stop(cancel);
                 for (std::int64_t x = 0; x < w; ++x) {
