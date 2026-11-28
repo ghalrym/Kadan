@@ -50,3 +50,33 @@ test("the agent card shows Call as disabled Coming soon, then Rename, Persona, E
   assert.equal(tree.props.children.length, 3);
   assert.equal(tree.props.children[2].props.className, "agent-card-note");
 });
+
+test("the agent card supports external agents with only Edit pet and a custom note", () => {
+  const jsx = (type, props) => ({ type, props });
+  const modules = {
+    react: { useEffect() {}, useLayoutEffect() {}, useRef: current => ({ current }), useState: initial => [initial, () => {}] },
+    "react/jsx-runtime": { jsx, jsxs: jsx },
+    "lucide-react": {},
+    "./Pet": { default: "Pet" },
+    "./api": {},
+  };
+  const exports = {};
+  runInNewContext(source, { exports, require: name => modules[name] });
+  const pets = [];
+  const tree = exports.default({
+    agentName: "Dot",
+    sheet: null,
+    mood: "idle",
+    presence: "Connected · just now",
+    onClose() {},
+    showCall: false,
+    onEditPet: () => pets.push("pet"),
+    note: "Coding teammate",
+  });
+  const actions = tree.props.children.find(child => child.props?.className === "agent-card-actions");
+  const buttons = [actions.props.children].flat().filter(child => child.type === "button");
+  assert.deepEqual(buttons.map(button => button.props.children[1]), ["Edit pet"]);
+  buttons[0].props.onClick();
+  assert.deepEqual(pets, ["pet"]);
+  assert.equal(tree.props.children[2].props.children, "Coding teammate");
+});

@@ -12,12 +12,14 @@ interface Props {
   mood: PetState;
   presence: string;
   onClose: () => void;
-  personaDisabled: boolean;
-  onEditPersona: () => void;
-  onEditPet: () => void;
-  agentDisabled: boolean;
-  onRename: () => void;
-  onDelete: () => void;
+  showCall?: boolean;
+  personaDisabled?: boolean;
+  onEditPersona?: () => void;
+  onEditPet?: () => void;
+  agentDisabled?: boolean;
+  onRename?: () => void;
+  onDelete?: () => void;
+  note?: string | null;
 }
 
 /** The agent's contact card, opened from its pet: presence, calling, renaming, persona and pet editing, and deletion. */
@@ -27,12 +29,14 @@ export default function AgentCard({
   mood,
   presence,
   onClose,
-  personaDisabled,
+  showCall = true,
+  personaDisabled = false,
   onEditPersona,
   onEditPet,
-  agentDisabled,
+  agentDisabled = false,
   onRename,
   onDelete,
+  note,
 }: Props) {
   const card = useRef<HTMLDivElement>(null);
 
@@ -76,35 +80,52 @@ export default function AgentCard({
         </div>
       </header>
       <div className="agent-card-actions">
-        <span className="agent-card-coming-soon" title="Coming soon" data-tooltip="Coming soon">
-          <button type="button" disabled aria-label="Call (Coming soon)">
-            <Phone size={18} />
-            Call
-          </button>
-        </span>
-        <button disabled={agentDisabled} title={`Rename ${agentName}`} onClick={() => onRename()}>
-          <Pencil size={18} />
-          Rename
-        </button>
-        <button
-          disabled={personaDisabled}
-          title={`Edit ${agentName}’s persona`}
-          onClick={() => onEditPersona()}
-        >
-          <UserRound size={18} />
-          Persona
-        </button>
-        <button title={`Edit ${agentName}’s pet`} onClick={() => onEditPet()}>
-          <Palette size={18} />
-          Edit pet
-        </button>
-        <hr className="agent-card-divider" />
-        <button className="danger-button" disabled={agentDisabled} title={`Delete ${agentName}`} onClick={() => onDelete()}>
-          <Trash2 size={18} />
-          Delete agent
-        </button>
+        {[
+          showCall ? (
+            <span key="call" className="agent-card-coming-soon" title="Coming soon" data-tooltip="Coming soon">
+              <button type="button" disabled aria-label="Call (Coming soon)">
+                <Phone size={18} />
+                Call
+              </button>
+            </span>
+          ) : null,
+          onRename ? (
+            <button key="rename" disabled={agentDisabled} title={`Rename ${agentName}`} onClick={() => onRename()}>
+              <Pencil size={18} />
+              Rename
+            </button>
+          ) : null,
+          onEditPersona ? (
+            <button
+              key="persona"
+              disabled={personaDisabled}
+              title={`Edit ${agentName}’s persona`}
+              onClick={() => onEditPersona()}
+            >
+              <UserRound size={18} />
+              Persona
+            </button>
+          ) : null,
+          onEditPet ? (
+            <button key="pet" title={`Edit ${agentName}’s pet`} onClick={() => onEditPet()}>
+              <Palette size={18} />
+              Edit pet
+            </button>
+          ) : null,
+          onDelete ? <hr key="divider" className="agent-card-divider" /> : null,
+          onDelete ? (
+            <button key="delete" className="danger-button" disabled={agentDisabled} title={`Delete ${agentName}`} onClick={() => onDelete()}>
+              <Trash2 size={18} />
+              Delete agent
+            </button>
+          ) : null,
+        ].filter(Boolean)}
       </div>
-      <p className="agent-card-note">To see what {agentName} remembers, open Memories in Kadan Server.</p>
+      {note !== null && (
+        <p className="agent-card-note">
+          {note ?? `To see what ${agentName} remembers, open Memories in Kadan Server.`}
+        </p>
+      )}
     </div>
   );
 }

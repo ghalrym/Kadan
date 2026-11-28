@@ -45,7 +45,7 @@ const mocks = {
   "./community": moduleUrl("export const useProfile = () => ({ profile: { display_name: 'You', pet: null, version: 0 }, setProfile() {}, reload: async () => {} }); export const useGroupChatSummary = () => ({ summary: null, unread: false, onSnapshot() {} }); export const useChatUnread = () => false; export const useNavPreviews = () => ({ recentSpace: [], plugins: [] }); export const useDirectChats = () => ({ chats: [], loaded: true, unread: new Set(), onSnapshot() {} });"),
   "./profile": moduleUrl("export const saveProfile = async () => ({});"),
   "./work": moduleUrl("export const listWorkThreads = async () => []; export const organizeWorkThread = async () => null; export const parseWorkHash = () => null;"),
-  ...Object.fromEntries(["Chat", "GroupChat", "PetEditor", "PersonaEditor", "RenameAgent", "DeleteAgent", "Plugins", "Sidebar", "SpaceLibrary", "ConfirmDialog", "SettingsPage", "WorkThreadView", "ProfileDialog"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
+  ...Object.fromEntries(["Chat", "DirectChat", "GroupChat", "PetEditor", "PersonaEditor", "RenameAgent", "DeleteAgent", "Plugins", "Sidebar", "SpaceLibrary", "ConfirmDialog", "SettingsPage", "WorkThreadView", "ProfileDialog"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
   "./ServerSettings": moduleUrl("export default 'ServerSettings'; export const runLocationLabel = (config) => config.mode === 'connect' ? config.active_host : 'This computer';"),
 };
 const loader = registerHooks({

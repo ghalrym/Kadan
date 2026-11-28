@@ -12,6 +12,7 @@ import { latestConversation } from "./agentRuns";
 import { pickConversation } from "./conversations";
 import type { Agent, ConversationSummary, PetJob, Resource, Status } from "./types";
 import Chat from "./Chat";
+import DirectChat from "./DirectChat";
 import GroupChat from "./GroupChat";
 import Pet, { agentPet } from "./Pet";
 import { agentHue } from "./pet";
@@ -548,10 +549,13 @@ export default function App() {
             </button>
           </div>
         ) : page.name === "direct" ? (
-          <GroupChat key={page.participantId} directParticipantId={page.participantId}
-            agentKey={key} agentName={agent?.name || key} status={status} profile={profile}
-            onSnapshot={directChats.onSnapshot} onEditProfile={() => setEditingProfile(true)}
-            onEditAgentPet={() => setEditingPet(true)} />
+          <DirectChat
+            key={page.participantId}
+            participantId={page.participantId}
+            agentKey={key}
+            status={status}
+            onSnapshot={directChats.onSnapshot}
+          />
         ) : page.name === "group-chat" ? (
           <GroupChat agentKey={key} agentName={agent?.name || key} status={status} profile={profile}
             onSnapshot={groupChat.onSnapshot} onEditProfile={() => setEditingProfile(true)}
