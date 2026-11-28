@@ -59,6 +59,8 @@ interface Props {
   onSnapshot?: (snapshot: GroupChatSnapshot) => void;
   onEditProfile: () => void;
   onEditAgentPet: () => void;
+  /** Set for a private 1-on-1 chat with this external agent instead of the shared room. */
+  directParticipantId?: string;
 }
 
 const DRAFT_KEY = "kadan:group-chat:draft";
@@ -81,9 +83,9 @@ interface OneTimeCredential {
   rotated: boolean;
 }
 
-function readPendingOutbox(): PendingGroupChatMessage | null {
+function readPendingOutbox(key: string): PendingGroupChatMessage | null {
   try {
-    const raw = sessionStorage.getItem(OUTBOX_KEY);
+    const raw = sessionStorage.getItem(key);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<PendingGroupChatMessage>;
     if (
@@ -126,7 +128,13 @@ export default function GroupChat({
   onSnapshot,
   onEditProfile,
   onEditAgentPet,
+  directParticipantId,
 }: Props) {
+  const direct = !!directParticipantId;
+  const storageScope = direct ? `:direct:${directParticipantId}` : "";
+  const draftKey = DRAFT_KEY + storageScope;
+  const outboxKey = OUTBOX_KEY + storageScope;
+  const basePath = direct ? `/group-chat/direct/${encodeURIComponent(directParticipantId)}` : "/group-chat";
   const petSheet = useAgentPet(agentKey);
   const [snapshot, setSnapshot] = useState<GroupChatSnapshot | null>(null);
   const [messages, setMessages] = useState<GroupChatMessage[]>([]);
@@ -139,14 +147,14 @@ export default function GroupChat({
 
   const [draft, setDraft] = useState(() => {
     try {
-      return sessionStorage.getItem(DRAFT_KEY) || "";
+      return sessionStorage.getItem(draftKey) || "";
     } catch {
       return "";
     }
   });
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [pendingOutbox, setPendingOutbox] = useState<PendingGroupChatMessage | null>(() =>
-    readPendingOutbox(),
+    readPendingOutbox(outboxKey),
   );
   const [sending, setSending] = useState(false);
 
@@ -183,16 +191,22 @@ export default function GroupChat({
   const participantsById = new Map(participants.map((item) => [item.id, item]));
   const messagesById = new Map(messages.map((item) => [item.id, item]));
   const mentionHandles = new Set(participants.map((item) => item.handle.toLowerCase()));
-  const kadanParticipant = participants.find((item) => item.kind === "kadan_agent" && isParticipantActive(item));
-  const kadanReplying = !!kadanParticipant && isAwaitingReply(messages, kadanParticipant.id);
+  const directAgent = direct ? participantsById.get(directParticipantId) ?? null : null;
+  // In a private chat the agent always replies; in the room only Kadan's agent is tracked.
+  const replier = direct
+    ? directAgent && isParticipantActive(directAgent) ? directAgent : undefined
+    : participants.find((item) => item.kind === "kadan_agent" && isParticipantActive(item));
+  const replierReplying = !!replier && isAwaitingReply(messages, replier.id);
 
-  const mentionCandidates = mention
+  const mentionCandidates = mention && !direct
     ? filterMentionCandidates(participants, mention.query)
     : [];
   const safeMentionIndex =
     mentionCandidates.length > 0 ? mentionIndex % mentionCandidates.length : 0;
 
-  const effectiveTags = resolveTaggedParticipantIds(draft, selectedTags, participants);
+  const effectiveTags = direct
+    ? [directParticipantId]
+    : resolveTaggedParticipantIds(draft, selectedTags, participants);
   const capBanner = snapshot ? turnCapNotice(snapshot.room) : null;
 
   const scrollToLatest = useCallback(() => {
@@ -218,7 +232,7 @@ export default function GroupChat({
       if (!current) return null;
       if (next.messages.some((m) => m.client_request_id === current.client_request_id)) {
         try {
-          sessionStorage.removeItem(OUTBOX_KEY);
+          sessionStorage.removeItem(outboxKey);
         } catch {
           // Ignore storage error.
         }
@@ -232,7 +246,7 @@ export default function GroupChat({
     async (silent = false) => {
       if (!silent) setLoading(true);
       try {
-        const next = await api<GroupChatSnapshot>("/group-chat?limit=100");
+        const next = await api<GroupChatSnapshot>(`${basePath}?limit=100`);
         if (!activeRef.current) return;
         mergeLatestSnapshot(next);
         setError("");
@@ -244,7 +258,7 @@ export default function GroupChat({
         if (activeRef.current && !silent) setLoading(false);
       }
     },
-    [mergeLatestSnapshot],
+    [mergeLatestSnapshot, basePath],
   );
 
   useEffect(() => {
@@ -259,8 +273,8 @@ export default function GroupChat({
 
   useEffect(() => {
     try {
-      if (draft) sessionStorage.setItem(DRAFT_KEY, draft);
-      else sessionStorage.removeItem(DRAFT_KEY);
+      if (draft) sessionStorage.setItem(draftKey, draft);
+      else sessionStorage.removeItem(draftKey);
     } catch {
       // Ignore storage error.
     }
@@ -283,7 +297,7 @@ export default function GroupChat({
     try {
       const oldestSeq = messages[0].seq;
       const older = await api<GroupChatSnapshot>(
-        `/group-chat?before_seq=${oldestSeq}&limit=50`,
+        `${basePath}?before_seq=${oldestSeq}&limit=50`,
       );
       if (!activeRef.current) return;
       setHasOlder(older.has_more);
@@ -339,13 +353,13 @@ export default function GroupChat({
     setError("");
     setPendingOutbox(payload);
     try {
-      sessionStorage.setItem(OUTBOX_KEY, JSON.stringify(payload));
+      sessionStorage.setItem(outboxKey, JSON.stringify(payload));
     } catch {
       // Ignore storage error.
     }
     try {
       const result = await api<GroupChatUserMessageResponse>(
-        "/group-chat/messages",
+        `${basePath}/messages`,
         {
           content: payload.content,
           handoff_to_participant_ids: payload.handoff_to_participant_ids,
@@ -356,7 +370,7 @@ export default function GroupChat({
       );
       if (!activeRef.current) return;
       try {
-        sessionStorage.removeItem(OUTBOX_KEY);
+        sessionStorage.removeItem(outboxKey);
       } catch {
         // Ignore storage error.
       }
@@ -584,7 +598,26 @@ export default function GroupChat({
   }
 
   return (
-    <section className="group-chat" aria-label="Group Chat">
+    <section className="group-chat" aria-label={direct ? `Chat with ${directAgent?.display_name ?? "agent"}` : "Group Chat"}>
+      {direct ? (
+        <header className="group-chat-head">
+          {directAgent && <ParticipantAvatar participant={directAgent} size={32} />}
+          <div className="group-chat-title">
+            <h1>{directAgent?.display_name ?? "Private chat"}</h1>
+            {directAgent && (
+              <span className="quiet">
+                {participantStatusBadge(directAgent).label} · {formatLastSeen(directAgent.last_seen_at)}
+              </span>
+            )}
+          </div>
+          {directAgent && directAgent.revoked_at === null && (
+            <button type="button" onClick={() => setPetFor(directAgent)}>
+              <Palette size={16} />
+              Edit pet
+            </button>
+          )}
+        </header>
+      ) : (
       <header className="group-chat-head">
         <span className="member-stack gc-head-members" aria-hidden="true">
           <UserAvatar profile={profile} size={28} />
@@ -609,6 +642,7 @@ export default function GroupChat({
           Participants & Connections
         </button>
       </header>
+      )}
 
       {error && (
         <div className="banner" role="alert">
@@ -653,7 +687,7 @@ export default function GroupChat({
               );
               setPendingOutbox(null);
               try {
-                sessionStorage.removeItem(OUTBOX_KEY);
+                sessionStorage.removeItem(outboxKey);
               } catch {
                 // Ignore storage error.
               }
@@ -693,7 +727,16 @@ export default function GroupChat({
 
             {loading && !messages.length ? (
               <div className="group-chat-empty" role="status">
-                Loading Group Chat…
+                {direct ? "Loading chat…" : "Loading Group Chat…"}
+              </div>
+            ) : !messages.length && direct ? (
+              <div className="group-chat-empty">
+                {directAgent && <ParticipantAvatar participant={directAgent} size={72} state="waving" />}
+                <h2>Your private chat with {directAgent?.display_name ?? "this agent"}</h2>
+                <p className="quiet">
+                  Only you and {directAgent?.display_name ?? "this agent"} can see this chat. Every
+                  message you send here asks {directAgent?.display_name ?? "it"} to reply.
+                </p>
               </div>
             ) : !messages.length ? (
               <div className="group-chat-empty">
@@ -821,11 +864,11 @@ export default function GroupChat({
           )}
 
           <div className="gc-composer-wrap">
-            {kadanParticipant && kadanReplying && (
+            {replier && replierReplying && (
               <div className="gc-replying" role="status">
-                <ParticipantAvatar participant={kadanParticipant} size={20} state="running" />
+                <ParticipantAvatar participant={replier} size={20} state="running" />
                 <span>
-                  <strong>{kadanParticipant.display_name}</strong> is replying
+                  <strong>{replier.display_name}</strong> is replying
                 </span>
                 <span className="gc-replying-dots" aria-hidden="true"><i /><i /><i /></span>
               </div>
@@ -842,7 +885,7 @@ export default function GroupChat({
                 </button>
               </div>
             )}
-            {activeParticipants.length > 0 && (
+            {!direct && activeParticipants.length > 0 && (
               <div className="gc-tag-bar" aria-label="Ask an agent to reply">
                 <span className="quiet gc-tag-label">
                   <AtSign size={13} aria-hidden="true" />
@@ -898,7 +941,11 @@ export default function GroupChat({
                 rows={1}
                 maxLength={16000}
                 disabled={!storageReady || sending}
-                placeholder="Write a message… use @ to tag an agent or click a chip above"
+                placeholder={
+                  direct
+                    ? `Message ${directAgent?.display_name ?? "this agent"}`
+                    : "Write a message… use @ to tag an agent or click a chip above"
+                }
                 value={draft}
                 onChange={(event) =>
                   updateDraft(event.target.value, event.target.selectionStart ?? undefined)

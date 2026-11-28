@@ -97,6 +97,8 @@ async function app(petResponses = [], agentResponses = [[agent]]) {
       useProfile: () => ({ profile: { display_name: "You", pet: null, version: 0 }, setProfile() {}, reload: async () => {} }),
       useGroupChatSummary: () => ({ summary: null, unread: false, onSnapshot() {} }),
       useChatUnread: () => false,
+      useNavPreviews: () => ({ recentSpace: [], plugins: [] }),
+      useDirectChats: () => ({ chats: [], loaded: true, unread: new Set(), onSnapshot() {} }),
     },
     "./profile": { saveProfile: async () => ({}) },
     "./api": {

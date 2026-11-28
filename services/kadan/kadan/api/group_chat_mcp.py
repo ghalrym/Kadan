@@ -181,18 +181,36 @@ GROUP_CHAT_MCP_TOOLS: list[dict[str, Any]] = [
     },
 ]
 
+ROOM_ARGUMENT: dict[str, Any] = {
+    "type": "string",
+    "enum": ["group", "direct"],
+    "default": "group",
+    "description": (
+        '"group" (default) is the shared Group Chat room. "direct" is your private '
+        "1-on-1 chat with the user; every user message there asks you to reply."
+    ),
+}
+for _tool in GROUP_CHAT_MCP_TOOLS:
+    _tool["inputSchema"]["properties"]["room"] = ROOM_ARGUMENT
+
 GROUP_CHAT_MCP_EVENTS: list[dict[str, Any]] = [
     {
         "name": EVENT_TURN_REQUESTED,
         "description": (
             "Fired when this participant is explicitly tagged by the user or handed "
-            "the turn by another agent in Group Chat (and the room has not hit its turn cap)."
+            "the turn by another agent in Group Chat (and the room has not hit its turn cap), "
+            "and for every user message in this participant's direct chat with the user."
         ),
         "payloadSchema": {
             "type": "object",
             "properties": {
                 "room_id": {"type": "string"},
                 "room_title": {"type": "string"},
+                "room_kind": {
+                    "type": "string",
+                    "enum": ["group", "direct"],
+                    "description": 'Reply with room "direct" when this is "direct".',
+                },
                 "seq": {"type": "integer"},
                 "message": {
                     "type": "object",
@@ -368,7 +386,9 @@ class GroupChatMcpHandler:
                     "instructions": (
                         "You are connected to Kadan Group Chat. Use group_chat_read_messages "
                         "to catch up, group_chat_send_message to reply (pass handoff_to only "
-                        "to hand the turn to another agent), and events/subscribe for push wake-ups."
+                        "to hand the turn to another agent), and events/subscribe for push wake-ups. "
+                        'You also have a private chat with the user: pass room "direct" to read and '
+                        'reply there, and answer in the room each wake-up names in room_kind.'
                     ),
                 },
             )
@@ -427,7 +447,7 @@ class GroupChatMcpHandler:
         """Dispatch a Group Chat MCP tool call for either an external or Kadan participant."""
         try:
             if name == "group_chat_list_participants":
-                return await self.list_participants(participant), False
+                return await self.list_participants(participant, arguments), False
             if name == "group_chat_read_messages":
                 return await self.read_messages(participant, arguments), False
             if name == "group_chat_send_message":
@@ -441,11 +461,44 @@ class GroupChatMcpHandler:
                 payload["turn_cap_reached"] = True
             return payload, True
 
+    async def _room(
+        self, participant: GroupChatParticipant, arguments: dict[str, Any]
+    ) -> GroupChatRoom:
+        """The shared room by default, or the participant's private chat with the user."""
+        requested = arguments.get("room", "group")
+        if requested in (None, "group"):
+            return await self.services.group_chat.get_room(participant.room_id)
+        if requested != "direct":
+            raise ServiceError(
+                'room must be "group" or "direct".', 422, "invalid_arguments"
+            )
+        if participant.kind != "external_agent":
+            raise ServiceError(
+                "Only external agents have a direct chat with the user.",
+                422,
+                "invalid_arguments",
+            )
+        return await self.services.group_chat.direct_room(participant.id)
+
+    async def _touch(
+        self, participant: GroupChatParticipant, room: GroupChatRoom, seq: int | None
+    ) -> None:
+        """Record activity; only the shared room advances the participant's read cursor."""
+        try:
+            await self.services.group_chat.touch_participant(
+                participant.room_id,
+                participant.id,
+                last_seen_at=datetime.now(UTC),
+                cursor_seq=seq if room.id == participant.room_id else None,
+            )
+        except ServiceError:
+            pass
+
     async def list_participants(
-        self, participant: GroupChatParticipant
+        self, participant: GroupChatParticipant, arguments: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        room = await self.services.group_chat.get_room(participant.room_id)
-        participants = await self.services.group_chat.list_participants(room.id)
+        room = await self._room(participant, arguments or {})
+        participants = await self.services.group_chat.room_roster(room)
         entries: list[dict[str, Any]] = [
             {
                 "id": None,
@@ -475,6 +528,7 @@ class GroupChatMcpHandler:
         return {
             "room_id": str(room.id),
             "room_title": room.title,
+            "room": room.kind,
             "participants": entries,
         }
 
@@ -555,32 +609,25 @@ class GroupChatMcpHandler:
                 "limit must be an integer between 1 and 100.", 422, "invalid_arguments"
             )
 
+        room = await self._room(participant, arguments)
         page = await self.services.group_chat.list_messages(
-            participant.room_id,
+            room.id,
             after_seq=after_seq,
             before_seq=before_seq,
             limit=limit,
         )
-        roster = await self.services.group_chat.list_participants(participant.room_id)
+        roster = await self.services.group_chat.room_roster(room)
         by_id = {item.id: item for item in roster}
         formatted = [
             self.format_message(msg, participant=participant, participants_by_id=by_id)
             for msg in page.messages
         ]
         if page.messages:
-            max_seq = max(msg.seq for msg in page.messages)
-            try:
-                await self.services.group_chat.touch_participant(
-                    participant.room_id,
-                    participant.id,
-                    last_seen_at=datetime.now(UTC),
-                    cursor_seq=max_seq,
-                )
-            except ServiceError:
-                pass
+            await self._touch(participant, room, max(msg.seq for msg in page.messages))
         return {
             "room_id": str(page.room.id),
             "room_title": page.room.title,
+            "room": page.room.kind,
             "messages": formatted,
             "latest_seq": page.latest_seq,
             "has_more": page.has_more,
@@ -680,12 +727,13 @@ class GroupChatMcpHandler:
                 "client_request_id must be a string.", 422, "invalid_arguments"
             )
 
-        roster = await self.services.group_chat.list_participants(participant.room_id)
+        room = await self._room(participant, arguments)
+        roster = await self.services.group_chat.room_roster(room)
         targets = self._resolve_handoff_targets(
             arguments.get("handoff_to"), sender=participant, roster=roster
         )
         result = await self.services.group_chat.create_message(
-            participant.room_id,
+            room.id,
             sender_kind=participant.kind,
             participant_id=participant.id,
             sender_name=participant.display_name,
@@ -694,15 +742,7 @@ class GroupChatMcpHandler:
             reply_to_message_id=reply_to_id,
             client_request_id=client_request_id,
         )
-        try:
-            await self.services.group_chat.touch_participant(
-                participant.room_id,
-                participant.id,
-                last_seen_at=datetime.now(UTC),
-                cursor_seq=result.message.seq,
-            )
-        except ServiceError:
-            pass
+        await self._touch(participant, room, result.message.seq)
 
         by_id = {item.id: item for item in roster}
         effective_handoff = [
@@ -723,6 +763,7 @@ class GroupChatMcpHandler:
             "id": str(result.message.id),
             "seq": result.message.seq,
             "room_id": str(result.room.id),
+            "room": result.room.kind,
             "sender_kind": result.message.sender_kind,
             "sender_name": result.message.sender_name,
             "handoff_to": effective_handoff,
@@ -734,9 +775,15 @@ class GroupChatMcpHandler:
     async def wait_for_messages(
         self, participant: GroupChatParticipant, arguments: dict[str, Any]
     ) -> dict[str, Any]:
+        room = await self._room(participant, arguments)
         after_seq = arguments.get("after_seq")
-        if after_seq is None:
+        if after_seq is None and room.id == participant.room_id:
             after_seq = participant.cursor_seq
+        elif after_seq is None:
+            # Direct rooms keep no cursor, so waiting starts from the newest message.
+            after_seq = (
+                await self.services.group_chat.list_messages(room.id, limit=1)
+            ).latest_seq
         if (
             isinstance(after_seq, bool)
             or not isinstance(after_seq, int)
@@ -777,7 +824,7 @@ class GroupChatMcpHandler:
             deadline = time.monotonic() + timeout
             while True:
                 page = await self.services.group_chat.list_messages(
-                    participant.room_id, after_seq=after_seq, limit=limit
+                    room.id, after_seq=after_seq, limit=limit
                 )
                 at_cap = (
                     page.room.consecutive_agent_turns
@@ -802,9 +849,7 @@ class GroupChatMcpHandler:
                         trigger_seq = page.messages[-1].seq
 
                 if matched:
-                    roster = await self.services.group_chat.list_participants(
-                        participant.room_id
-                    )
+                    roster = await self.services.group_chat.room_roster(room)
                     by_id = {item.id: item for item in roster}
                     formatted = [
                         self.format_message(
@@ -812,19 +857,13 @@ class GroupChatMcpHandler:
                         )
                         for msg in page.messages
                     ]
-                    max_seq = max(msg.seq for msg in page.messages)
-                    try:
-                        await self.services.group_chat.touch_participant(
-                            participant.room_id,
-                            participant.id,
-                            last_seen_at=datetime.now(UTC),
-                            cursor_seq=max_seq,
-                        )
-                    except ServiceError:
-                        pass
+                    await self._touch(
+                        participant, room, max(msg.seq for msg in page.messages)
+                    )
                     return {
                         "room_id": str(page.room.id),
                         "room_title": page.room.title,
+                        "room": page.room.kind,
                         "messages": formatted,
                         "latest_seq": page.latest_seq,
                         "trigger_seq": trigger_seq,
@@ -838,6 +877,7 @@ class GroupChatMcpHandler:
                     return {
                         "room_id": str(page.room.id),
                         "room_title": page.room.title,
+                        "room": page.room.kind,
                         "messages": [],
                         "latest_seq": page.latest_seq,
                         "trigger_seq": None,

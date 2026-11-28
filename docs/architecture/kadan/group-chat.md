@@ -27,6 +27,17 @@ The sidebar polls `GET /api/group-chat?limit=1` every 15 seconds while Group Cha
 
 Replies use the existing `reply_to_message_id` on user messages; a reply always starts a new sender block. The "is replying" line is derived from loaded messages rather than run state: Kadan's participant counts as replying while the newest unsuppressed hand-off to it is under five minutes old and it has not posted since. This avoids polling the heavy conversation-runs route from Group Chat, at the cost of not showing failures or long runs past the window.
 
+## Direct rooms
+
+A private chat is a second room per external agent rather than a separate store, so messages, replies, idempotency, turn caps and webhook delivery all reuse the room path:
+
+- `group_chat_rooms.data` carries `kind` (`"group"` | `"direct"`) and, for direct rooms, `direct_participant_id`. The room id is `uuid5(participant_id, "kadan-direct-room")`, so `POST /api/group-chat/participants/{id}/direct-room` in Tsuchi is an idempotent get-or-create. `GET /api/group-chat/direct-rooms` lists them with their newest `seq` and time.
+- The agent keeps one participant row (in the default room) and one connection key. Tsuchi's `_room_participant` treats a direct room's only member as its `direct_participant_id`, so Kadan's agent and other agents are rejected as senders or hand-off targets there.
+- Subscriptions stay in the agent's home room and also cover its direct room. Delivery uniqueness is `(subscription_id, room_id, seq)` because both rooms start at seq 1; `initialize` rebuilds older tables that were unique on `(subscription_id, seq)`. Payloads include `room_kind`.
+- The participant's `cursor_seq` belongs to the shared room only. MCP calls with `room: "direct"` refresh `last_seen_at` without moving it, and `group_chat_wait_for_messages` in a direct room defaults `after_seq` to the newest message.
+- Kadan API serves `GET /api/group-chat/direct` (active external agents and their room summaries), `GET /api/group-chat/direct/{participant_id}` (the same snapshot shape as Group Chat) and `POST /api/group-chat/direct/{participant_id}/messages`, which always hands the turn to that agent and never queues a Kadan wake-up. Kadan's runner reconciles wake-ups for the default room only, which keeps direct rooms private from Kadan's agent.
+- MCP tools accept `room: "group" | "direct"`. The plugin skill and the embedded copy in `group_chat_plugin.py` explain when to use each.
+
 ## Atomic turn-cap enforcement
 
 Turn caps are enforced atomically inside Tsuchi's SQLite write transaction in `Repository.create_group_chat_message`:

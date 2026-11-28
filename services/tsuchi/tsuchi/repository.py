@@ -28,6 +28,7 @@ from .models import (
     ExportManifest,
     ExportRevision,
     GroupChatDeliveryStatus,
+    GroupChatDirectRoomSummary,
     GroupChatEventSubscription,
     GroupChatEventSubscriptionInput,
     GroupChatEventSubscriptionUpdate,
@@ -303,7 +304,7 @@ class Repository:
                     next_attempt_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     data TEXT NOT NULL,
-                    UNIQUE(subscription_id, seq)
+                    UNIQUE(subscription_id, room_id, seq)
                 );
                 CREATE INDEX IF NOT EXISTS group_chat_deliveries_pending
                     ON group_chat_webhook_deliveries(status, next_attempt_at);
@@ -385,6 +386,7 @@ class Repository:
             """)
             # Serialize the additive migration for existing storage volumes.
             db.execute("BEGIN IMMEDIATE")
+            self._migrate_delivery_uniqueness(db)
             columns = {row[1] for row in db.execute("PRAGMA table_info(agents)")}
             if "selected_pet_id" not in columns:
                 db.execute("ALTER TABLE agents ADD COLUMN selected_pet_id TEXT")
@@ -2920,6 +2922,47 @@ class Repository:
     # ---- Group Chat durable storage ----
 
     @staticmethod
+    def _migrate_delivery_uniqueness(db: sqlite3.Connection) -> None:
+        """One subscription now receives deliveries from several rooms whose seqs overlap."""
+        row = db.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'group_chat_webhook_deliveries'"
+        ).fetchone()
+        if not row or "UNIQUE(subscription_id, seq)" not in row[0]:
+            return
+        db.execute(
+            row[0]
+            .replace("group_chat_webhook_deliveries", "group_chat_webhook_deliveries_next", 1)
+            .replace("UNIQUE(subscription_id, seq)", "UNIQUE(subscription_id, room_id, seq)")
+        )
+        db.execute(
+            "INSERT INTO group_chat_webhook_deliveries_next SELECT * FROM group_chat_webhook_deliveries"
+        )
+        db.execute("DROP TABLE group_chat_webhook_deliveries")
+        db.execute(
+            "ALTER TABLE group_chat_webhook_deliveries_next RENAME TO group_chat_webhook_deliveries"
+        )
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS group_chat_deliveries_pending "
+            "ON group_chat_webhook_deliveries(status, next_attempt_at)"
+        )
+
+    @classmethod
+    def _room_participant(
+        cls, db: sqlite3.Connection, room: GroupChatRoom, participant_id: UUID
+    ) -> GroupChatParticipant:
+        """Group rooms hold their own participants; a direct room holds its one external agent."""
+        if room.kind != "direct":
+            return cls._group_chat_participant(db, room.id, participant_id)
+        if participant_id != room.direct_participant_id:
+            raise StorageError("Group chat participant not found", 404)
+        row = db.execute(
+            "SELECT data FROM group_chat_participants WHERE id = ?", (str(participant_id),)
+        ).fetchone()
+        if not row:
+            raise StorageError("Group chat participant not found", 404)
+        return GroupChatParticipant.model_validate_json(row[0])
+
+    @staticmethod
     def _group_chat_room(db: sqlite3.Connection, room_id: UUID) -> GroupChatRoom:
         row = db.execute(
             "SELECT data FROM group_chat_rooms WHERE id = ?", (str(room_id),)
@@ -3047,6 +3090,54 @@ class Repository:
             )
             self._save_group_chat_room(db, room)
             return room
+
+    def get_or_create_direct_group_chat_room(self, participant_id: UUID) -> GroupChatRoom:
+        with self.connect(write=True) as db:
+            row = db.execute(
+                "SELECT data FROM group_chat_participants WHERE id = ?", (str(participant_id),)
+            ).fetchone()
+            if not row:
+                raise StorageError("Group chat participant not found", 404)
+            participant = GroupChatParticipant.model_validate_json(row[0])
+            if participant.kind != "external_agent":
+                raise StorageError("Only external agents have direct chats", 409)
+            room_id = uuid5(participant_id, "kadan-direct-room")
+            existing = db.execute(
+                "SELECT data FROM group_chat_rooms WHERE id = ?", (str(room_id),)
+            ).fetchone()
+            if existing:
+                return GroupChatRoom.model_validate_json(existing[0])
+            if participant.revoked_at is not None:
+                raise StorageError("This agent's access has been revoked", 409)
+            now = utc_now()
+            room = GroupChatRoom(
+                id=room_id,
+                title=participant.display_name,
+                kind="direct",
+                direct_participant_id=participant_id,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            self._save_group_chat_room(db, room)
+            return room
+
+    def list_direct_group_chat_rooms(self) -> list[GroupChatDirectRoomSummary]:
+        with self.connect() as db:
+            rows = db.execute(
+                """SELECT r.data, MAX(m.seq), MAX(m.created_at) FROM group_chat_rooms r
+                LEFT JOIN group_chat_messages m ON m.room_id = r.id
+                WHERE json_extract(r.data, '$.kind') = 'direct'
+                GROUP BY r.id"""
+            ).fetchall()
+            return [
+                GroupChatDirectRoomSummary(
+                    room=GroupChatRoom.model_validate_json(data),
+                    latest_seq=latest or 0,
+                    last_message_at=last_at,
+                )
+                for data, latest, last_at in rows
+            ]
 
     def get_group_chat_room(self, room_id: UUID) -> GroupChatRoom:
         with self.connect() as db:
@@ -3480,8 +3571,8 @@ class Repository:
             sender_participant: GroupChatParticipant | None = None
             if value.sender_kind != "user":
                 assert value.participant_id is not None
-                sender_participant = self._group_chat_participant(
-                    db, room_id, value.participant_id
+                sender_participant = self._room_participant(
+                    db, room, value.participant_id
                 )
                 if sender_participant.kind != value.sender_kind:
                     raise StorageError(
@@ -3525,8 +3616,10 @@ class Repository:
                     422,
                     code="self_handoff_not_allowed",
                 )
+            targets_by_id: dict[UUID, GroupChatParticipant] = {}
             for target_id in requested_handoff:
-                target = self._group_chat_participant(db, room_id, target_id)
+                target = self._room_participant(db, room, target_id)
+                targets_by_id[target_id] = target
                 if target.revoked_at is not None or not target.enabled:
                     raise StorageError(
                         f"Participant '@{target.handle}' is not active",
@@ -3617,17 +3710,22 @@ class Repository:
                     for item in recent_messages
                 ]
                 for target_id in effective_handoff:
+                    # Subscriptions live in the agent's home room and also cover its direct room.
+                    home_room_id = targets_by_id[target_id].room_id
                     sub_rows = db.execute(
                         "SELECT data FROM group_chat_event_subscriptions "
                         "WHERE room_id = ? AND participant_id = ? AND event_name = 'group_chat.turn_requested' AND status = 'active'",
-                        (str(room_id), str(target_id)),
+                        (str(home_room_id), str(target_id)),
                     ).fetchall()
                     for sub_row in sub_rows:
                         sub = GroupChatEventSubscription.model_validate_json(sub_row[0])
                         if sub.expires_at <= now:
                             continue
                         room_filter = sub.filters.get("room_id")
-                        if room_filter is not None and str(room_filter) != str(room_id):
+                        if room_filter is not None and str(room_filter) not in {
+                            str(room_id),
+                            str(home_room_id),
+                        }:
                             continue
                         event_id = uuid5(sub.id, f"group-chat:{room_id}:{seq}")
                         delivery = GroupChatWebhookDelivery(
@@ -3640,6 +3738,7 @@ class Repository:
                             payload={
                                 "room_id": str(room_id),
                                 "room_title": updated_room.title,
+                                "room_kind": updated_room.kind,
                                 "seq": seq,
                                 "message": {
                                     "id": str(message.id),

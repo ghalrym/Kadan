@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { agentPath, api } from "./api";
-import type { GroupChatParticipant, GroupChatSnapshot } from "./groupChat";
+import { sortDirectChats, type GroupChatDirectChat, type GroupChatParticipant, type GroupChatSnapshot } from "./groupChat";
 import { DEFAULT_PROFILE, type UserProfile } from "./profile";
-import type { ConversationSummary } from "./types";
+import type { McpServer } from "./integrations";
+import { recentItems } from "./spaceItems";
+import type { ConversationSummary, SpaceItem } from "./types";
 
 const READ_KEY = "kadan:group-chat:read-seq";
 const SUMMARY_POLL_MS = 15000;
@@ -140,4 +142,106 @@ export function useChatUnread(agentKey: string, chatId: string | null, shownCoun
   }, [agentKey, chatId, viewing]);
 
   return !viewing && seen !== null && latest !== null && latest > seen;
+}
+
+export interface NavPreviews {
+  recentSpace: SpaceItem[];
+  plugins: McpServer[];
+}
+
+/** Recent Space items and installed plugins for the sidebar, refreshed after leaving those pages. */
+export function useNavPreviews(agentKey: string, pageName: string): NavPreviews {
+  const [recentSpace, setRecentSpace] = useState<SpaceItem[]>([]);
+  const [plugins, setPlugins] = useState<McpServer[]>([]);
+  const onSpace = pageName === "space";
+  const onPlugins = pageName === "plugins";
+  useEffect(() => {
+    if (!agentKey || onSpace) return;
+    let alive = true;
+    api<SpaceItem[]>(`${agentPath(agentKey)}/space/items`)
+      .then((items) => { if (alive) setRecentSpace(recentItems(items, 3)); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [agentKey, onSpace]);
+  useEffect(() => {
+    if (!agentKey || onPlugins) return;
+    let alive = true;
+    api<McpServer[]>("/mcp/servers")
+      .then((servers) => { if (alive) setPlugins(servers); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [agentKey, onPlugins]);
+  return { recentSpace, plugins };
+}
+
+const DIRECT_SEEN_KEY = "kadan:direct:seen:";
+
+function readDirectSeen(): Record<string, number> {
+  const seen: Record<string, number> = {};
+  try {
+    for (let index = 0; index < localStorage.length; index++) {
+      const key = localStorage.key(index);
+      if (key?.startsWith(DIRECT_SEEN_KEY)) seen[key.slice(DIRECT_SEEN_KEY.length)] = Number(localStorage.getItem(key)) || 0;
+    }
+  } catch {
+    // Unread dots may reappear after a reload; nothing else depends on them.
+  }
+  return seen;
+}
+
+/** Private chats with each active external agent, newest first, with unread state. */
+export function useDirectChats(enabled: boolean, viewingId: string | null) {
+  const [chats, setChats] = useState<GroupChatDirectChat[]>([]);
+  const [seen, setSeen] = useState<Record<string, number>>(readDirectSeen);
+  const [loaded, setLoaded] = useState(false);
+
+  const markSeen = useCallback((participantId: string, seq: number) => {
+    setSeen((current) => {
+      if ((current[participantId] ?? 0) >= seq) return current;
+      try {
+        localStorage.setItem(DIRECT_SEEN_KEY + participantId, String(seq));
+      } catch {
+        // See readDirectSeen.
+      }
+      return { ...current, [participantId]: seq };
+    });
+  }, []);
+
+  const refresh = useCallback(async () => {
+    try {
+      setChats(sortDirectChats(await api<GroupChatDirectChat[]>("/group-chat/direct")));
+      setLoaded(true);
+    } catch {
+      // Keep the last list until the server answers again.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) return;
+    void refresh();
+    const timer = setInterval(() => void refresh(), SUMMARY_POLL_MS);
+    return () => clearInterval(timer);
+  }, [enabled, refresh]);
+
+  /** The open private chat reports each snapshot it shows, which marks it read. */
+  const onSnapshot = useCallback((snapshot: GroupChatSnapshot) => {
+    const participantId = snapshot.room.direct_participant_id;
+    if (!participantId) return;
+    markSeen(participantId, snapshot.latest_seq);
+    setChats((current) => {
+      const index = current.findIndex((chat) => chat.participant.id === participantId);
+      if (index < 0 || current[index].latest_seq === snapshot.latest_seq) return current;
+      const last = snapshot.messages[snapshot.messages.length - 1];
+      const next = [...current];
+      next[index] = { ...next[index], latest_seq: snapshot.latest_seq, last_message_at: last?.created_at ?? null };
+      return sortDirectChats(next);
+    });
+  }, [markSeen]);
+
+  const unread = new Set(
+    chats
+      .filter((chat) => chat.participant.id !== viewingId && chat.latest_seq > (seen[chat.participant.id] ?? 0))
+      .map((chat) => chat.participant.id),
+  );
+  return { chats, loaded, unread, onSnapshot };
 }

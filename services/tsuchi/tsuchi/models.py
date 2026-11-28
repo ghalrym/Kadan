@@ -1346,11 +1346,15 @@ GroupChatSenderKind = Literal["user", "kadan_agent", "external_agent"]
 GroupChatEventName = Literal["group_chat.turn_requested"]
 GroupChatSubscriptionStatus = Literal["active", "expired", "failed", "revoked"]
 GroupChatDeliveryStatus = Literal["pending", "delivered", "failed", "dropped"]
+GroupChatRoomKind = Literal["group", "direct"]
 
 
 class GroupChatRoom(Model):
     id: UUID
     title: Title = "Group Chat"
+    kind: GroupChatRoomKind = "group"
+    # A direct room is the private chat between the user and this external agent.
+    direct_participant_id: UUID | None = None
     consecutive_agent_turns: int = Field(default=0, ge=0)
     max_consecutive_agent_turns: int = Field(
         default=DEFAULT_MAX_CONSECUTIVE_AGENT_TURNS, ge=1, le=100
@@ -1358,6 +1362,12 @@ class GroupChatRoom(Model):
     version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
+
+
+class GroupChatDirectRoomSummary(Model):
+    room: GroupChatRoom
+    latest_seq: int = Field(default=0, ge=0)
+    last_message_at: datetime | None = None
 
 
 class GroupChatRoomUpdate(Model):

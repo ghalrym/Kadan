@@ -616,21 +616,57 @@ svg {
     inset 0 0 0 1px hsl(var(--avatar-h) 85% 72% / 0.38),
     0 0 0 2px var(--panel);
 }
-.member-stack .pet-avatar + .pet-avatar {
-  margin-left: -7px;
-}
-.panel-nav .group-chat-link {
+.panel-nav .rich-nav-link {
   gap: 10px;
   padding: 4px 10px 4px 6px;
   min-height: 40px;
 }
-.group-chat-link .member-stack {
+.rich-nav-link .member-stack {
   min-width: 30px;
 }
-.group-chat-link-name {
+.rich-nav-name {
   flex: 1;
   min-width: 0;
   text-align: left;
+}
+.nav-tile {
+  --tile-h: 252;
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: var(--tile-size);
+  height: var(--tile-size);
+  overflow: hidden;
+  border-radius: calc(var(--tile-size) * 0.3);
+  background: linear-gradient(145deg, hsl(var(--tile-h) 80% 66% / 0.3), hsl(var(--tile-h) 80% 50% / 0.12));
+  box-shadow: inset 0 0 0 1px hsl(var(--tile-h) 85% 72% / 0.4);
+  color: hsl(var(--tile-h) 90% 80%);
+}
+.nav-tile.has-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.member-stack .nav-tile,
+.member-stack .plugin-icon {
+  box-shadow:
+    inset 0 0 0 1px hsl(var(--tile-h, var(--plugin-h)) 85% 72% / 0.4),
+    0 0 0 2px var(--panel);
+}
+.member-stack .plugin-icon {
+  border-radius: 7px;
+  font-size: 11px;
+}
+.member-stack .plugin-icon:only-child {
+  border-radius: 9px;
+  font-size: 14px;
+}
+.member-stack > * + * {
+  margin-left: -7px;
+}
+.unread-dot.warn {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 18%, transparent);
 }
 .member-count {
   color: var(--faint);

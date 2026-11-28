@@ -14,6 +14,8 @@ export type GroupChatPushStatus =
 export interface GroupChatRoom {
   id: string;
   title: string;
+  kind?: "group" | "direct";
+  direct_participant_id?: string | null;
   consecutive_agent_turns: number;
   max_consecutive_agent_turns: number;
   version: number;
@@ -65,6 +67,24 @@ export interface GroupChatSnapshot {
   has_more: boolean;
   turn_cap_reached: boolean;
   mcp_url: string;
+}
+
+/** The private chat with one external agent, as listed in the sidebar. */
+export interface GroupChatDirectChat {
+  participant: GroupChatParticipant;
+  room_id: string | null;
+  latest_seq: number;
+  last_message_at: string | null;
+}
+
+/** Most recently active private chats first; chats with no messages follow by name. */
+export function sortDirectChats(chats: GroupChatDirectChat[]): GroupChatDirectChat[] {
+  return [...chats].sort((a, b) => {
+    if (a.last_message_at && b.last_message_at) return b.last_message_at.localeCompare(a.last_message_at);
+    if (a.last_message_at) return -1;
+    if (b.last_message_at) return 1;
+    return a.participant.display_name.localeCompare(b.participant.display_name);
+  });
 }
 
 export interface GroupChatCreateParticipantResponse {

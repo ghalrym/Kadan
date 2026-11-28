@@ -22,6 +22,7 @@ GroupChatSenderKind = Literal["user", "kadan_agent", "external_agent"]
 GroupChatEventName = Literal["group_chat.turn_requested"]
 GroupChatSubscriptionStatus = Literal["active", "expired", "failed", "revoked"]
 GroupChatDeliveryStatus = Literal["pending", "delivered", "failed", "dropped"]
+GroupChatRoomKind = Literal["group", "direct"]
 GroupChatPushStatus = Literal[
     "built_in", "active", "idle", "paused", "revoked", "expired", "error"
 ]
@@ -30,6 +31,8 @@ GroupChatPushStatus = Literal[
 class GroupChatRoom(BaseModel):
     id: UUID
     title: str
+    kind: GroupChatRoomKind = "group"
+    direct_participant_id: UUID | None = None
     consecutive_agent_turns: int = Field(default=0, ge=0)
     max_consecutive_agent_turns: int = Field(default=6, ge=1, le=100)
     version: int = Field(ge=1)
@@ -146,6 +149,23 @@ class GroupChatParticipantPublic(BaseModel):
     push_status: GroupChatPushStatus
     push_status_detail: str
     active_subscriptions: int = Field(default=0, ge=0)
+
+
+class GroupChatDirectRoomSummary(BaseModel):
+    """Tsuchi's view of a direct room and its newest message."""
+
+    room: GroupChatRoom
+    latest_seq: int = Field(default=0, ge=0)
+    last_message_at: datetime | None = None
+
+
+class GroupChatDirectChat(BaseModel):
+    """A sidebar entry for the private chat with one external agent."""
+
+    participant: GroupChatParticipantPublic
+    room_id: UUID | None = None
+    latest_seq: int = Field(default=0, ge=0)
+    last_message_at: datetime | None = None
 
 
 class GroupChatRoomSnapshot(BaseModel):

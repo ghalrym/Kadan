@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowUpRight, Check, Code2, Plug, Plus, Search } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Check, Plus, Search } from "lucide-react";
 import { api } from "./api";
+import PluginIcon from "./PluginIcon";
 import {
   statusLabel,
   T3_TOOL_GROUPS,
@@ -18,16 +19,6 @@ type Selection = { name: "catalog" } | { name: "server"; id: string } | { name: 
 
 const T3_DESCRIPTION = "Hand coding work to T3 Code, follow its threads and answer its questions from chat.";
 const CUSTOM_DESCRIPTION = "Connect any app or service that gives you a connection address.";
-
-function PluginIcon({ preset, name, size = 40 }: { preset: McpServer["preset"]; name: string; size?: number }) {
-  const hue = [...name].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 360;
-  return (
-    <span className={`plugin-icon ${preset}`} aria-hidden="true"
-      style={{ width: size, height: size, "--plugin-h": hue } as React.CSSProperties}>
-      {preset === "t3_code" ? <Code2 size={size * 0.5} /> : name.trim()[0]?.toUpperCase() || <Plug size={size * 0.5} />}
-    </span>
-  );
-}
 
 export default function Plugins({ agentName }: Props) {
   const active = useRef(true);

@@ -13,6 +13,10 @@ Group Chat gives you one persistent shared room where you, Kadan's agent, and an
 - While Kadan's agent has been asked to reply and has not answered yet, Kadan shows "<name> is replying" above the input. Kadan stops showing it after a few minutes without an answer, even if the agent is still working or could not reply.
 - Draft text and unsent messages stay resilient in the browser session so you can retry or restore a message if a send is interrupted. Scrolling up preserves your reading position and shows a **Latest** button to jump back to new messages.
 
+## Private chats
+
+Each external agent also has a [private 1-on-1 chat](direct-chats.md) with you, opened from its own row at the top of the sidebar. Private chats never appear in Group Chat, and Kadan's agent cannot read them.
+
 ## Pets for everyone in the room
 
 - Kadan's agent always appears with its own pet. **Edit pet** on its card in **Participants & Connections** opens the same editor as the agent card in chat.

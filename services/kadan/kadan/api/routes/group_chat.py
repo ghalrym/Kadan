@@ -7,11 +7,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, Query, Request, Response
 
+from ..config import ServiceError
 from ..group_chat_oauth import group_chat_mcp_url as _group_chat_mcp_url
 from ..group_chat_plugin import build_chatgpt_plugin_zip
 from ..pydantic_models.group_chat import (
     GroupChatCreateExternalParticipantRequest,
     GroupChatCreateExternalParticipantResponse,
+    GroupChatDirectChat,
     GroupChatRoom,
     GroupChatRoomSnapshot,
     GroupChatRoomUpdateRequest,
@@ -168,4 +170,114 @@ async def update_group_chat_participant(
         participant=public,
         bearer_token=raw_token,
         mcp_url=_group_chat_mcp_url(request) if raw_token else None,
+    )
+
+
+async def _direct_participant(services, room_id: UUID, participant_id: UUID):
+    public = next(
+        (
+            item
+            for item in await services.group_chat.list_public_participants(room_id)
+            if item.id == participant_id
+        ),
+        None,
+    )
+    if public is None or public.kind != "external_agent":
+        raise ServiceError("This agent was not found in Group Chat.", 404, "not_found")
+    return public
+
+
+@router.get("/direct", response_model=list[GroupChatDirectChat])
+async def list_direct_chats(request: Request) -> list[GroupChatDirectChat]:
+    """Every active external agent, with its private chat's newest message if one exists."""
+    services = request.app.state.services
+    room = await services.group_chat.default_room()
+    participants = await services.group_chat.list_public_participants(room.id)
+    rooms = {
+        item.room.direct_participant_id: item
+        for item in await services.group_chat.list_direct_rooms()
+    }
+    chats = []
+    for participant in participants:
+        if (
+            participant.kind != "external_agent"
+            or not participant.enabled
+            or participant.revoked_at is not None
+        ):
+            continue
+        summary = rooms.get(participant.id)
+        chats.append(
+            GroupChatDirectChat(
+                participant=participant,
+                room_id=summary.room.id if summary else None,
+                latest_seq=summary.latest_seq if summary else 0,
+                last_message_at=summary.last_message_at if summary else None,
+            )
+        )
+    return chats
+
+
+@router.get("/direct/{participant_id}", response_model=GroupChatRoomSnapshot)
+async def get_direct_chat(
+    request: Request,
+    participant_id: UUID,
+    after_seq: Annotated[int | None, Query(ge=0)] = None,
+    before_seq: Annotated[int | None, Query(ge=1)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+) -> GroupChatRoomSnapshot:
+    services = request.app.state.services
+    home = await services.group_chat.default_room()
+    public = await _direct_participant(services, home.id, participant_id)
+    room = await services.group_chat.direct_room(participant_id)
+    page = await services.group_chat.list_messages(
+        room.id, after_seq=after_seq, before_seq=before_seq, limit=limit
+    )
+    return GroupChatRoomSnapshot(
+        room=page.room,
+        participants=[public],
+        messages=page.messages,
+        latest_seq=page.latest_seq,
+        has_more=page.has_more,
+        turn_cap_reached=page.room.consecutive_agent_turns
+        >= page.room.max_consecutive_agent_turns,
+        mcp_url=_group_chat_mcp_url(request),
+    )
+
+
+@router.post(
+    "/direct/{participant_id}/messages",
+    response_model=GroupChatUserMessageResponse,
+    status_code=201,
+)
+async def post_direct_chat_message(
+    request: Request, participant_id: UUID, payload: GroupChatUserMessageRequest
+) -> GroupChatUserMessageResponse:
+    """Every message in a private chat asks its agent to reply."""
+    services = request.app.state.services
+    home = await services.group_chat.default_room()
+    public = await _direct_participant(services, home.id, participant_id)
+    if not public.enabled or public.revoked_at is not None:
+        raise ServiceError(
+            f"{public.display_name} is paused or removed, so it can't reply right now.",
+            409,
+            "participant_inactive",
+        )
+    room = await services.group_chat.direct_room(participant_id)
+    result = await services.group_chat.create_message(
+        room.id,
+        sender_kind="user",
+        sender_name=await _user_display_name(services),
+        content=payload.content,
+        handoff_to_participant_ids=[participant_id],
+        reply_to_message_id=payload.reply_to_message_id,
+        client_request_id=payload.client_request_id,
+        trigger_kadan_wake=False,
+    )
+    return GroupChatUserMessageResponse(
+        message=result.message,
+        room=result.room,
+        effective_handoff_to_participant_ids=result.effective_handoff_to_participant_ids,
+        turn_cap_reached=result.turn_cap_reached,
+        handoff_suppressed=result.handoff_suppressed,
+        idempotent_replay=result.idempotent_replay,
     )

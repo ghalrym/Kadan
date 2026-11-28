@@ -14,6 +14,7 @@ from .config import ServiceError
 from .pydantic_models.agent_runs import AgentRun
 from .pydantic_models.group_chat import (
     GroupChatDeliveryStatus,
+    GroupChatDirectRoomSummary,
     GroupChatEventSubscription,
     GroupChatMessagesPage,
     GroupChatMessageWriteResult,
@@ -173,6 +174,30 @@ class GroupChatClient:
             "Tsuchi", "PUT", f"/api/group-chat/rooms/{room_id}", json=body
         )
         return GroupChatRoom.model_validate(data)
+
+    async def direct_room(self, participant_id: UUID) -> GroupChatRoom:
+        """The private room between the user and one external agent, created on first use."""
+        data = await self.services.json_request(
+            "Tsuchi", "POST", f"/api/group-chat/participants/{participant_id}/direct-room"
+        )
+        return GroupChatRoom.model_validate(data)
+
+    async def list_direct_rooms(self) -> list[GroupChatDirectRoomSummary]:
+        rows = await self.services.json_request(
+            "Tsuchi", "GET", "/api/group-chat/direct-rooms"
+        )
+        return [GroupChatDirectRoomSummary.model_validate(row) for row in rows]
+
+    async def room_roster(self, room: GroupChatRoom) -> list[GroupChatParticipant]:
+        """Who can post in a room: its own participants, or a direct room's one agent."""
+        if room.kind != "direct":
+            return await self.list_participants(room.id)
+        home = await self.default_room()
+        return [
+            item
+            for item in await self.list_participants(home.id)
+            if item.id == room.direct_participant_id
+        ]
 
     async def list_participants(self, room_id: UUID) -> list[GroupChatParticipant]:
         rows = await self.services.json_request(

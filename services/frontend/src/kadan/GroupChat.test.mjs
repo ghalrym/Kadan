@@ -510,3 +510,36 @@ test("replying shows the quoted message, a reply bar, highlighted mentions and t
 
   assert.ok(all.some(node => node.props?.["aria-label"] === "Reply to Dot"));
 });
+
+test("sortDirectChats puts the most recent private chats first, then the rest by name", () => {
+  const { sortDirectChats } = loadHelpers();
+  const chat = (name, last_message_at = null) => ({ participant: { display_name: name }, last_message_at });
+  assert.deepEqual(
+    plain(sortDirectChats([chat("Zed"), chat("Ann"), chat("Old", "2026-11-26T10:00:00Z"), chat("New", "2026-11-27T10:00:00Z")]))
+      .map(item => item.participant.display_name),
+    ["New", "Old", "Ann", "Zed"],
+  );
+});
+
+test("a private chat shows only its agent, always asks it to reply, and hides room controls", () => {
+  const now = new Date().toISOString();
+  const snapshot = {
+    room: { id: "dm", title: "Dot", kind: "direct", direct_participant_id: "p-dot", consecutive_agent_turns: 0, max_consecutive_agent_turns: 6, version: 1, created_at: now, updated_at: now },
+    participants: [SAMPLE_PARTICIPANTS[1]], messages: [], latest_seq: 0, has_more: false,
+    turn_cap_reached: false, mcp_url: "https://kadan.local/kadan/mcp/group-chat",
+  };
+  const stateValues = [];
+  stateValues[0] = snapshot;
+  stateValues[3] = false;
+  const tree = renderGroupChat({ stateValues, props: { directParticipantId: "p-dot" } });
+  const all = elements(tree);
+  const text = textOf(tree);
+
+  assert.equal(tree.props["aria-label"], "Chat with Dot");
+  assert.ok(text.includes("Your private chat with Dot"));
+  assert.ok(text.includes("Dot will be asked to reply"));
+  assert.equal(all.some(node => node.props?.className === "gc-tag-bar"), false);
+  assert.equal(text.includes("Participants & Connections"), false);
+  assert.equal(all.find(node => node.type === "textarea").props.placeholder, "Message Dot");
+  assert.ok(all.some(node => node.type === "button" && textOf(node) === "Edit pet"));
+});

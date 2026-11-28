@@ -28,7 +28,7 @@ import WorkThreadView from "./WorkThreadView";
 import { listWorkThreads, organizeWorkThread, parseWorkHash, type WorkThread } from "./work";
 import { PetContext, usePetRefJob } from "./PetContext";
 import ProfileDialog from "./ProfileDialog";
-import { useChatUnread, useGroupChatSummary, useProfile } from "./community";
+import { useChatUnread, useDirectChats, useGroupChatSummary, useNavPreviews, useProfile } from "./community";
 import { saveProfile } from "./profile";
 
 /** Animate a view change, letting the agent's pet glide between layouts. */
@@ -82,6 +82,15 @@ export default function App() {
   const [editingUserPet, setEditingUserPet] = useState(false);
   const userPetJob = usePetRefJob(profile.pet);
   const groupChat = useGroupChatSummary(!!agent, page.name === "group-chat");
+  const navPreviews = useNavPreviews(key, page.name);
+  const directChats = useDirectChats(!!agent, page.name === "direct" ? page.participantId : null);
+  const openDirectId = page.name === "direct" ? page.participantId : null;
+  useEffect(() => {
+    // A removed or paused agent's private chat closes back to the main chat.
+    if (openDirectId && directChats.loaded && !directChats.chats.some((chat) => chat.participant.id === openDirectId)) {
+      setPage({ name: "chat" });
+    }
+  }, [openDirectId, directChats.loaded, directChats.chats]);
   const chatId = selection?.owner === key ? selection.id : null;
   const chatUnread = useChatUnread(
     key,
@@ -417,6 +426,15 @@ export default function App() {
           groupChat={groupChat.summary}
           groupChatUnread={groupChat.unread}
           chatUnread={chatUnread}
+          navPreviews={navPreviews}
+          directChats={directChats.chats}
+          directUnread={directChats.unread}
+          onOpenDirect={(participantId) => {
+            if (typeof window !== "undefined" && window.location?.hash?.startsWith("#work/")) {
+              window.history?.replaceState?.(null, "", window.location.pathname + window.location.search);
+            }
+            show({ name: "direct", participantId });
+          }}
           page={page}
           status={status}
           loading={loading}
@@ -529,6 +547,11 @@ export default function App() {
               Retry
             </button>
           </div>
+        ) : page.name === "direct" ? (
+          <GroupChat key={page.participantId} directParticipantId={page.participantId}
+            agentKey={key} agentName={agent?.name || key} status={status} profile={profile}
+            onSnapshot={directChats.onSnapshot} onEditProfile={() => setEditingProfile(true)}
+            onEditAgentPet={() => setEditingPet(true)} />
         ) : page.name === "group-chat" ? (
           <GroupChat agentKey={key} agentName={agent?.name || key} status={status} profile={profile}
             onSnapshot={groupChat.onSnapshot} onEditProfile={() => setEditingProfile(true)}

@@ -42,6 +42,8 @@ function renderSidebar(overrides = {}, stateOverrides = []) {
     "lucide-react": new Proxy({}, { get: (_, name) => String(name) }),
     "./Pet": { default: "Pet" },
     "./PetAvatar": { ParticipantAvatar: "ParticipantAvatar", UserAvatar: "UserAvatar" },
+    "./NavTile": { NavTile: "NavTile", SpaceItemTile: "SpaceItemTile" },
+    "./PluginIcon": { default: "PluginIcon" },
     "./PetContext": { useAgentPet: () => null },
     "./groupChat": { isParticipantActive: p => p.enabled && p.revoked_at === null },
     "./ProviderIcon": { default: "ProviderIcon" },
@@ -59,6 +61,10 @@ function renderSidebar(overrides = {}, stateOverrides = []) {
     groupChat: null,
     groupChatUnread: false,
     chatUnread: false,
+    navPreviews: { recentSpace: [], plugins: [] },
+    directChats: [],
+    directUnread: new Set(),
+    onOpenDirect() {},
     page: { name: "chat" },
     status: {
       tsuchi: { state: "ready", message: "Connected" },
@@ -278,4 +284,49 @@ test("Group Chat row stacks member pets, counts the rest, flags unread messages,
 
   nodes.find(node => node.props?.className === "profile-link").props.onClick();
   assert.equal(profiles.length, 1);
+});
+
+test("Space and Plugins rows preview recent items and installed plugins, with fallbacks and a trouble dot", () => {
+  const empty = elements(renderSidebar());
+  const row = (nodes, label) => nodes.find(node => node.type === "button" && node.props?.className?.includes("rich-nav-link") && textOf(node).startsWith(label));
+  assert.equal(elements(row(empty, "Space")).filter(node => node.type === "NavTile").length, 1);
+  assert.equal(elements(row(empty, "Plugins")).filter(node => node.type === "NavTile").length, 1);
+
+  const server = (id, status = "connected") => ({ id, preset: "custom", name: id, enabled: true, status });
+  const nodes = elements(renderSidebar({
+    navPreviews: {
+      recentSpace: [{ id: "a", type: "image" }, { id: "b", type: "page" }],
+      plugins: [server("one"), server("two"), server("three", "error"), server("four")],
+    },
+  }));
+  const space = row(nodes, "Space");
+  assert.deepEqual(elements(space).filter(node => node.type === "SpaceItemTile").map(node => [node.props.item.id, node.props.size]), [["a", 22], ["b", 22]]);
+  const lone = elements(renderSidebar({ navPreviews: { recentSpace: [{ id: "c", type: "page" }], plugins: [server("solo")] } }));
+  assert.equal(elements(row(lone, "Space")).find(node => node.type === "SpaceItemTile").props.size, 30);
+  assert.equal(elements(row(lone, "Plugins")).find(node => node.type === "PluginIcon").props.size, 30);
+  assert.equal(elements(space).some(node => node.type === "NavTile"), false);
+  const plugins = row(nodes, "Plugins");
+  assert.equal(elements(plugins).filter(node => node.type === "PluginIcon").length, 3);
+  assert.ok(textOf(plugins).includes("+1"));
+  assert.ok(elements(plugins).some(node => node.props?.className === "unread-dot warn"));
+});
+
+test("private chats with external agents come first, open on click and show unread dots", () => {
+  const opened = [];
+  const chat = (id, name) => ({ participant: { id, handle: id, display_name: name, kind: "external_agent", pet: null }, room_id: null, latest_seq: 0, last_message_at: null });
+  const nodes = elements(renderSidebar({
+    page: { name: "direct", participantId: "sol" },
+    directChats: [chat("dot", "Dot"), chat("sol", "Sol")],
+    directUnread: new Set(["dot"]),
+    onOpenDirect: id => opened.push(id),
+  }));
+  const nav = nodes.find(node => node.type === "nav");
+  const buttons = elements(nav).filter(node => node.type === "button");
+  assert.deepEqual(buttons.map(textOf), ["Dot", "Sol", "Mi", "Group Chat", "Space", "Plugins"]);
+  assert.ok(elements(buttons[0]).some(node => node.props?.className === "unread-dot"));
+  assert.equal(elements(buttons[1]).some(node => node.props?.className === "unread-dot"), false);
+  assert.ok(buttons[1].props.className.includes("selected"));
+  assert.equal(buttons[2].props.className.includes("selected"), false);
+  buttons[0].props.onClick();
+  assert.deepEqual(opened, ["dot"]);
 });

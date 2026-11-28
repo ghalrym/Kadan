@@ -72,11 +72,15 @@ def test_initialize_adds_persona_pointer_only_when_missing(
         columns.append("persona_id")
     user_version = Mock()
     user_version.fetchone.return_value = (1,)
+    current_schema = Mock()
+    current_schema.fetchone.return_value = None
     db.execute.side_effect = lambda sql: (
         [(index, name) for index, name in enumerate(columns)]
         if sql == "PRAGMA table_info(agents)"
         else user_version
         if sql == "PRAGMA user_version"
+        else current_schema
+        if sql.startswith("SELECT sql FROM sqlite_master")
         else None
     )
     monkeypatch.setattr("tsuchi.repository.sqlite3.connect", Mock(return_value=db))

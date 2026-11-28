@@ -25,6 +25,7 @@ from .models import (
     ConversationMemoryStateUpdate,
     ConversationTaskPage,
     GroupChatDeliveryStatus,
+    GroupChatDirectRoomSummary,
     GroupChatEventSubscription,
     GroupChatEventSubscriptionInput,
     GroupChatEventSubscriptionUpdate,
@@ -765,6 +766,19 @@ def create_router(repository: Repository, files: FileStorage) -> APIRouter:
     @router.get("/group-chat/rooms/default", response_model=GroupChatRoom)
     def default_group_chat_room():
         return repository.get_or_create_default_group_chat_room()
+
+    @router.get(
+        "/group-chat/direct-rooms", response_model=list[GroupChatDirectRoomSummary]
+    )
+    def list_direct_group_chat_rooms():
+        return repository.list_direct_group_chat_rooms()
+
+    @router.post(
+        "/group-chat/participants/{participant_id}/direct-room",
+        response_model=GroupChatRoom,
+    )
+    def direct_group_chat_room(participant_id: UUID):
+        return repository.get_or_create_direct_group_chat_room(participant_id)
 
     @router.get("/group-chat/rooms/{room_id}", response_model=GroupChatRoom)
     def get_group_chat_room(room_id: UUID):

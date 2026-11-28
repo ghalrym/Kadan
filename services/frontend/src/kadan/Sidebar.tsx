@@ -13,10 +13,12 @@ import {
   SquarePen,
   X,
 } from "lucide-react";
-import type { GroupChatSummary } from "./community";
-import { isParticipantActive } from "./groupChat";
+import type { GroupChatSummary, NavPreviews } from "./community";
+import { isParticipantActive, type GroupChatDirectChat } from "./groupChat";
 import Pet from "./Pet";
+import { NavTile, SpaceItemTile } from "./NavTile";
 import { ParticipantAvatar, UserAvatar } from "./PetAvatar";
+import PluginIcon from "./PluginIcon";
 import type { UserProfile } from "./profile";
 import { useAgentPet } from "./PetContext";
 import ProviderIcon from "./ProviderIcon";
@@ -39,6 +41,7 @@ import {
 export type Page =
   | { name: "chat" }
   | { name: "group-chat" }
+  | { name: "direct"; participantId: string }
   | { name: "space" }
   | { name: "plugins" }
   | { name: "settings" }
@@ -80,6 +83,9 @@ function bySnoozeAsc(a: WorkThread, b: WorkThread): number {
 /** Avatars shown on the Group Chat row before the rest are counted. */
 const STACK = 3;
 
+/** A lone preview fills the row's full tile; several shrink so they can overlap. */
+const stackSize = (count: number) => (count > 1 ? 22 : 30);
+
 interface Props {
   agent: Agent | null;
   profile: UserProfile;
@@ -87,6 +93,10 @@ interface Props {
   groupChat: GroupChatSummary | null;
   groupChatUnread: boolean;
   chatUnread: boolean;
+  navPreviews: NavPreviews;
+  directChats: GroupChatDirectChat[];
+  directUnread: Set<string>;
+  onOpenDirect: (participantId: string) => void;
   page: Page;
   status: Status | null;
   loading: boolean;
@@ -109,6 +119,8 @@ export default function Sidebar(props: Props) {
   const { agent, page, status, loading, disabled } = props;
   const sheet = useAgentPet(agent?.key ?? "");
   const key = agent?.key ?? "";
+  const { recentSpace, plugins } = props.navPreviews;
+  const pluginTrouble = plugins.some((server) => server.enabled && server.status === "error");
   // Until Group Chat answers, the agent is the only other member worth showing.
   const groupMembers = props.groupChat
     ? props.groupChat.participants.filter(isParticipantActive)
@@ -356,6 +368,19 @@ export default function Sidebar(props: Props) {
         </button>
       </header>
       <nav className="panel-nav" aria-label="Views">
+        {props.directChats.map(({ participant }) => {
+          const current = page.name === "direct" && page.participantId === participant.id;
+          return (
+            <button key={participant.id} className={`agent-link direct-link ${current ? "selected" : ""}`}
+              aria-current={current ? "page" : undefined} onClick={() => props.onOpenDirect(participant.id)}>
+              <ParticipantAvatar participant={participant} size={30} />
+              <span className="agent-link-name">{participant.display_name}</span>
+              {props.directUnread.has(participant.id) && (
+                <span className="unread-dot" role="status" aria-label={`New messages from ${participant.display_name}`} />
+              )}
+            </button>
+          );
+        })}
         {agent && (
           <button className={`agent-link ${page.name === "chat" ? "selected" : ""}`} disabled={!key}
             aria-current={page.name === "chat" ? "page" : undefined} onClick={() => props.onPage("chat")}>
@@ -366,7 +391,7 @@ export default function Sidebar(props: Props) {
             {props.chatUnread && <span className="unread-dot" role="status" aria-label="New messages" />}
           </button>
         )}
-        <button className={`group-chat-link ${page.name === "group-chat" ? "selected" : ""}`} disabled={!key}
+        <button className={`rich-nav-link group-chat-link ${page.name === "group-chat" ? "selected" : ""}`} disabled={!key}
           aria-current={page.name === "group-chat" ? "page" : undefined} onClick={() => props.onPage("group-chat")}>
           <span className="member-stack" aria-hidden="true">
             <UserAvatar profile={props.profile} size={22} />
@@ -374,7 +399,7 @@ export default function Sidebar(props: Props) {
               <ParticipantAvatar key={member.handle} participant={member} size={22} />
             ))}
           </span>
-          <span className="group-chat-link-name">Group Chat</span>
+          <span className="rich-nav-name">Group Chat</span>
           {groupMembers.length > STACK - 1 && (
             <span className="member-count" title={`${groupMembers.length + 1} members`}>
               +{groupMembers.length - (STACK - 1)}
@@ -382,15 +407,31 @@ export default function Sidebar(props: Props) {
           )}
           {props.groupChatUnread && <span className="unread-dot" role="status" aria-label="New messages" />}
         </button>
-        <button className={page.name === "space" ? "selected" : ""} disabled={!key}
+        <button className={`rich-nav-link ${page.name === "space" ? "selected" : ""}`} disabled={!key}
           aria-current={page.name === "space" ? "page" : undefined} onClick={() => props.onPage("space")}>
-          <LayoutGrid size={15} />
-          Space
+          <span className="member-stack" aria-hidden="true">
+            {recentSpace.length ? recentSpace.map((item) => (
+              <SpaceItemTile key={item.id} agentKey={key} item={item} size={stackSize(recentSpace.length)} />
+            )) : (
+              <NavTile hue={174}><LayoutGrid size={16} /></NavTile>
+            )}
+          </span>
+          <span className="rich-nav-name">Space</span>
         </button>
-        <button className={page.name === "plugins" ? "selected" : ""} disabled={!key}
+        <button className={`rich-nav-link ${page.name === "plugins" ? "selected" : ""}`} disabled={!key}
           aria-current={page.name === "plugins" ? "page" : undefined} onClick={() => props.onPage("plugins")}>
-          <Puzzle size={15} />
-          Plugins
+          <span className="member-stack" aria-hidden="true">
+            {plugins.length ? plugins.slice(0, STACK).map((server) => (
+              <PluginIcon key={server.id} preset={server.preset} name={server.name} size={stackSize(plugins.length)} />
+            )) : (
+              <NavTile hue={38}><Puzzle size={16} /></NavTile>
+            )}
+          </span>
+          <span className="rich-nav-name">Plugins</span>
+          {plugins.length > STACK && <span className="member-count">+{plugins.length - STACK}</span>}
+          {pluginTrouble && (
+            <span className="unread-dot warn" role="status" aria-label="A plugin needs attention" title="A plugin needs attention" />
+          )}
         </button>
       </nav>
 
