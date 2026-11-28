@@ -107,6 +107,14 @@ export interface DesktopFolderPickResult {
   supported: boolean;
 }
 
+export interface DesktopSaveDownloadResult {
+  saved: boolean;
+  cancelled: boolean;
+  path: string | null;
+  filename: string | null;
+  supported: boolean;
+}
+
 export async function pickDesktopFolder(): Promise<DesktopFolderPickResult> {
   if (!isDesktopApp()) {
     return { path: null, cancelled: false, supported: false };
@@ -116,6 +124,25 @@ export async function pickDesktopFolder(): Promise<DesktopFolderPickResult> {
     return { path: null, cancelled: false, supported: false };
   }
   return (await response.json()) as DesktopFolderPickResult;
+}
+
+export async function saveDesktopDownload(
+  url: string,
+  filename?: string,
+): Promise<DesktopSaveDownloadResult> {
+  if (!isDesktopApp()) {
+    return { saved: false, cancelled: false, path: null, filename: null, supported: false };
+  }
+  const response = await fetch("/__kadan_desktop__/save-download", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, filename }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail || "Could not save file.");
+  }
+  return (await response.json()) as DesktopSaveDownloadResult;
 }
 
 export async function testDesktopServerConnection(

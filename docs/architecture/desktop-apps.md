@@ -29,7 +29,7 @@ Because all inference engines (including Inkling 2 Mini and LFM3 Audio) are pure
 `apps/kadan-desktop/` wraps the built `services/frontend/dist` assets behind an embedded Rust loopback reverse proxy (`axum` + `reqwest` + `tokio-tungstenite`) bound to `127.0.0.1:<ephemeral>`:
 
 - Injects `window.__KADAN_DESKTOP__ = true` into `index.html`, activating the **Server settings** dialog (`services/frontend/src/kadan/ServerSettings.tsx`) in the sidebar without adding Tauri packages to the web build.
-- Exposes local control endpoints `/__kadan_desktop__/config` (`GET`/`PUT`) and `/__kadan_desktop__/test` (`POST`) backed by `servers.json` in the OS config directory.
+- Exposes local control endpoints `/__kadan_desktop__/config` (`GET`/`PUT`), `/__kadan_desktop__/test` (`POST`), `/__kadan_desktop__/pick-folder` (`POST`), and `/__kadan_desktop__/save-download` (`POST`) backed by `servers.json` in the OS config directory and native OS file/folder dialogs.
 - Relays `/kadan/*`, `/tsuchi/*`, and `/hikari/*` (REST, SSE streams, uploads/downloads, and WebSockets such as voice calls) to the active configured `Kadan Server` host URL.
 - **Why loopback proxying matters:** Serving the UI from `http://127.0.0.1` keeps WebView in a secure context even when connecting to a LAN `Kadan Server` over plain `http://192.168.x.x:8000`, ensuring `getUserMedia` (microphone) and `AudioWorklet` continue working for voice input and voice calls without CORS or mixed-content errors.
 

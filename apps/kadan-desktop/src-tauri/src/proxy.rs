@@ -64,6 +64,7 @@ pub async fn start_loopback_proxy(
         .route("/__kadan_desktop__/config", get(get_config).put(put_config))
         .route("/__kadan_desktop__/test", post(test_connection))
         .route("/__kadan_desktop__/pick-folder", post(pick_folder))
+        .route("/__kadan_desktop__/save-download", post(save_download))
         .route("/__kadan_desktop__/updates", get(check_desktop_updates))
         .route("/__kadan_desktop__/updates/install", post(install_desktop_update))
         .route("/kadan/api/work/{*path}", any(proxy_local_work))
@@ -330,6 +331,352 @@ async fn pick_folder() -> Response {
         )
             .into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct SaveDownloadRequest {
+    url: String,
+    filename: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SaveDownloadResponse {
+    saved: bool,
+    cancelled: bool,
+    path: Option<String>,
+    filename: Option<String>,
+    supported: bool,
+}
+
+fn is_valid_relative_download_url(url: &str) -> bool {
+    url.starts_with('/')
+        && !url.starts_with("//")
+        && !url.contains('\r')
+        && !url.contains('\n')
+        && !url.contains('\0')
+}
+
+fn sanitize_download_filename(raw: Option<&str>, url: &str) -> String {
+    let from_url = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .rsplit('/')
+        .find(|segment| !segment.is_empty());
+    let candidate = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or(from_url)
+        .unwrap_or("download");
+    let leaf = candidate
+        .rsplit(['/', '\\'])
+        .find(|segment| !segment.is_empty())
+        .unwrap_or("download");
+    let cleaned: String = leaf
+        .chars()
+        .filter(|ch| !ch.is_control() && !matches!(ch, '/' | '\\' | '\0'))
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.');
+    if trimmed.is_empty() {
+        "download".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn extract_content_disposition_filename(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    let value = headers
+        .get(reqwest::header::CONTENT_DISPOSITION)?
+        .to_str()
+        .ok()?;
+    for part in value.split(';').skip(1) {
+        let trimmed = part.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("filename=") {
+            let offset = trimmed.len() - rest.len();
+            let raw = trimmed[offset..].trim().trim_matches('"');
+            if !raw.is_empty() {
+                return Some(raw.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn default_download_dir() -> PathBuf {
+    if let Some(dirs) = directories::UserDirs::new() {
+        if let Some(downloads) = dirs.download_dir() {
+            return downloads.to_path_buf();
+        }
+        return dirs.home_dir().to_path_buf();
+    }
+    std::env::temp_dir()
+}
+
+fn unique_destination_path(dir: &Path, filename: &str) -> PathBuf {
+    let mut candidate = dir.join(filename);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let path = Path::new(filename);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(filename);
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    let mut counter = 1u32;
+    while candidate.exists() {
+        candidate = dir.join(format!("{stem} ({counter}){ext}"));
+        counter += 1;
+    }
+    candidate
+}
+
+fn run_native_save_dialog(default_path: PathBuf) -> Option<Result<Option<PathBuf>, String>> {
+    #[cfg(target_os = "linux")]
+    {
+        let filename_arg = format!("--filename={}", default_path.to_string_lossy());
+        let path_str = default_path.to_string_lossy().to_string();
+        let candidates: [(&str, Vec<&str>); 2] = [
+            (
+                "zenity",
+                vec![
+                    "--file-selection",
+                    "--save",
+                    "--title=Save file",
+                    &filename_arg,
+                ],
+            ),
+            (
+                "kdialog",
+                vec!["--getsavefilename", &path_str, "--title", "Save file"],
+            ),
+        ];
+        for (bin, args) in candidates {
+            match std::process::Command::new(bin).args(args).output() {
+                Ok(out) if out.status.success() => {
+                    let chosen = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    return Some(Ok(if chosen.is_empty() {
+                        None
+                    } else {
+                        Some(PathBuf::from(chosen))
+                    }));
+                }
+                Ok(_) => return Some(Ok(None)),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Some(Err(err.to_string())),
+            }
+        }
+        None
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let default_dir = default_path
+            .parent()
+            .unwrap_or_else(|| Path::new("/"))
+            .to_string_lossy()
+            .to_string();
+        let default_name = default_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("download")
+            .to_string();
+        match std::process::Command::new("osascript")
+            .args([
+                "-e",
+                "on run argv\nreturn POSIX path of (choose file name with prompt \"Save file\" default location (POSIX file (item 1 of argv)) default name (item 2 of argv))\nend run",
+                "--",
+                &default_dir,
+                &default_name,
+            ])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                let chosen = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                Some(Ok(if chosen.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(chosen))
+                }))
+            }
+            Ok(_) => Some(Ok(None)),
+            Err(err) => Some(Err(err.to_string())),
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let default_dir = default_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_string_lossy()
+            .to_string();
+        let default_name = default_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("download")
+            .to_string();
+        let script = "Add-Type -AssemblyName System.Windows.Forms; \
+            $d = New-Object System.Windows.Forms.SaveFileDialog; \
+            $d.Title = 'Save file'; \
+            $d.InitialDirectory = $env:KADAN_SAVE_DIR; \
+            $d.FileName = $env:KADAN_SAVE_NAME; \
+            $d.OverwritePrompt = $true; \
+            if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.FileName }";
+        match std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", script])
+            .env("KADAN_SAVE_DIR", default_dir)
+            .env("KADAN_SAVE_NAME", default_name)
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                let chosen = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                Some(Ok(if chosen.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(chosen))
+                }))
+            }
+            Ok(_) => Some(Ok(None)),
+            Err(err) => Some(Err(err.to_string())),
+        }
+    }
+}
+
+async fn save_download(
+    State(state): State<ProxyState>,
+    Json(payload): Json<SaveDownloadRequest>,
+) -> Response {
+    if !is_valid_relative_download_url(&payload.url) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({ "detail": "Invalid download address." })),
+        )
+            .into_response();
+    }
+
+    let active_host = state.config.read().unwrap().active_host.clone();
+    let upstream = build_upstream_url(&active_host, &payload.url, false);
+    let resp = match state.client.get(&upstream).send().await {
+        Ok(resp) => resp,
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "detail": format!("Cannot reach Kadan Server at {active_host}. Open Server settings to check the host address."),
+                    "code": "server_unreachable"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    if !resp.status().is_success() {
+        let code = resp.status().as_u16();
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({
+                "detail": format!("Could not download file from Kadan Server (HTTP {code}).")
+            })),
+        )
+            .into_response();
+    }
+
+    let header_name = extract_content_disposition_filename(resp.headers());
+    let filename = sanitize_download_filename(
+        payload.filename.as_deref().or(header_name.as_deref()),
+        &payload.url,
+    );
+    let bytes = match resp.bytes().await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "detail": "Download was interrupted. Try again."
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let default_dir = default_download_dir();
+    let default_path = default_dir.join(&filename);
+    let dialog_result =
+        tokio::task::spawn_blocking(move || run_native_save_dialog(default_path)).await;
+
+    let (destination, supported) = match dialog_result {
+        Ok(Some(Ok(Some(chosen)))) => (chosen, true),
+        Ok(Some(Ok(None))) => {
+            return Json(SaveDownloadResponse {
+                saved: false,
+                cancelled: true,
+                path: None,
+                filename: None,
+                supported: true,
+            })
+            .into_response();
+        }
+        Ok(None) => (unique_destination_path(&default_dir, &filename), false),
+        Ok(Some(Err(detail))) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "detail": format!("Could not open save dialog: {detail}")
+                })),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "detail": format!("Could not open save dialog: {err}")
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    if let Some(parent) = destination.parent() {
+        if let Err(err) = tokio::fs::create_dir_all(parent).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "detail": format!("Could not save file: {err}")
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    if let Err(err) = tokio::fs::write(&destination, &bytes).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "detail": format!("Could not save file: {err}")
+            })),
+        )
+            .into_response();
+    }
+
+    let saved_name = destination
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(ToOwned::to_owned)
+        .unwrap_or(filename);
+    Json(SaveDownloadResponse {
+        saved: true,
+        cancelled: false,
+        path: Some(destination.to_string_lossy().to_string()),
+        filename: Some(saved_name),
+        supported,
+    })
+    .into_response()
 }
 
 async fn check_desktop_updates() -> Response {
@@ -644,6 +991,48 @@ mod tests {
         let html = "<!doctype html><html><head><title>Kadan</title></head><body></body></html>";
         let out = inject_desktop_flag(html.to_string());
         assert!(out.contains("<head><script>window.__KADAN_DESKTOP__ = true;</script><title>"));
+    }
+
+    #[test]
+    fn validates_relative_download_urls_and_sanitizes_filenames() {
+        assert!(is_valid_relative_download_url(
+            "/kadan/api/group-chat/chatgpt-plugin.zip"
+        ));
+        assert!(!is_valid_relative_download_url("https://example.com/a.zip"));
+        assert!(!is_valid_relative_download_url("//example.com/a.zip"));
+        assert!(!is_valid_relative_download_url("/kadan\r\n/evil"));
+
+        assert_eq!(
+            sanitize_download_filename(
+                Some("../evil/kadan-group-chat-plugin.zip"),
+                "/kadan/api/group-chat/chatgpt-plugin.zip"
+            ),
+            "kadan-group-chat-plugin.zip"
+        );
+        assert_eq!(
+            sanitize_download_filename(None, "/kadan/api/group-chat/chatgpt-plugin.zip?v=1"),
+            "chatgpt-plugin.zip"
+        );
+        assert_eq!(sanitize_download_filename(Some("..."), "/"), "download");
+    }
+
+    #[test]
+    fn unique_destination_path_avoids_overwriting_existing_files() {
+        let tmp = std::env::temp_dir().join(format!(
+            "kadan-desktop-unique-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let first = unique_destination_path(&tmp, "kadan-group-chat-plugin.zip");
+        assert_eq!(first, tmp.join("kadan-group-chat-plugin.zip"));
+        std::fs::write(&first, b"one").unwrap();
+
+        let second = unique_destination_path(&tmp, "kadan-group-chat-plugin.zip");
+        assert_eq!(second, tmp.join("kadan-group-chat-plugin (1).zip"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[tokio::test]

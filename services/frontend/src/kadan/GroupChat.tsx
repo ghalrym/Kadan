@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
 import {
   AlertTriangle,
   ArrowDown,
@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "./api";
+import { isDesktopApp, saveDesktopDownload } from "./desktop";
 import {
   applyMention,
   filterMentionCandidates,
@@ -140,6 +141,8 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+  const [downloadingPlugin, setDownloadingPlugin] = useState(false);
+  const [pluginDownloadNotice, setPluginDownloadNotice] = useState("");
 
   const activeRef = useRef(true);
   const storageReady = status?.tsuchi.state !== "unavailable";
@@ -448,6 +451,38 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
       }, 2000);
     } catch {
       setError("Could not copy to clipboard. Select and copy the text manually.");
+    }
+  }
+
+  async function handleDownloadPlugin(event: MouseEvent<HTMLAnchorElement>) {
+    if (!isDesktopApp()) return;
+    event.preventDefault();
+    if (downloadingPlugin) return;
+    setDownloadingPlugin(true);
+    setPluginDownloadNotice("");
+    setError("");
+    try {
+      const result = await saveDesktopDownload(
+        "/kadan/api/group-chat/chatgpt-plugin.zip",
+        "kadan-group-chat-plugin.zip",
+      );
+      if (!activeRef.current) return;
+      if (result.saved) {
+        const savedName = result.filename || "kadan-group-chat-plugin.zip";
+        const message = result.supported
+          ? `Saved ${savedName}. Upload it in ChatGPT Plugins to connect.`
+          : `Saved ${savedName} to your Downloads folder. Upload it in ChatGPT Plugins to connect.`;
+        setPluginDownloadNotice(message);
+        setNotice(message);
+      }
+    } catch (e) {
+      if (activeRef.current) {
+        setError(
+          (e as Error).message || "Could not download the ChatGPT plugin. Try again.",
+        );
+      }
+    } finally {
+      if (activeRef.current) setDownloadingPlugin(false);
     }
   }
 
@@ -783,13 +818,20 @@ export default function GroupChat({ agentKey, agentName, status }: Props) {
                   you can pick or name the agent.
                 </p>
                 <a
-                  className="gc-plugin-download"
+                  className={`gc-plugin-download${downloadingPlugin ? " is-busy" : ""}`}
                   href="/kadan/api/group-chat/chatgpt-plugin.zip"
                   download="kadan-group-chat-plugin.zip"
+                  aria-disabled={downloadingPlugin || undefined}
+                  onClick={(event) => void handleDownloadPlugin(event)}
                 >
                   <Download size={14} aria-hidden="true" />
-                  Download ChatGPT plugin
+                  {downloadingPlugin ? "Saving plugin…" : "Download ChatGPT plugin"}
                 </a>
+                {pluginDownloadNotice && (
+                  <p className="quiet gc-download-status" role="status">
+                    {pluginDownloadNotice}
+                  </p>
+                )}
                 <span className="field-hint">Group Chat address</span>
                 <div className="gc-copy-row">
                   <code>{snapshot.mcp_url}</code>

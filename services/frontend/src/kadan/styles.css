@@ -5293,6 +5293,14 @@ dialog.persona-modal {
 .gc-plugin-download:hover {
   filter: brightness(1.06);
 }
+.gc-plugin-download.is-busy {
+  opacity: 0.7;
+  pointer-events: none;
+}
+.gc-download-status {
+  margin: 0;
+  color: var(--ok);
+}
 .gc-participant-card.is-revoked {
   opacity: 0.6;
 }

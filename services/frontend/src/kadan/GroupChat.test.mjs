@@ -28,7 +28,7 @@ function textOf(node) {
   return [node.props?.children].flat(Infinity).map(textOf).join("");
 }
 
-function renderGroupChat({ stateValues = [], props = {} } = {}) {
+function renderGroupChat({ stateValues = [], props = {}, desktop } = {}) {
   const jsx = (type, p) => ({ type, props: p });
   const helpers = loadHelpers();
   let stateIdx = 0;
@@ -55,6 +55,16 @@ function renderGroupChat({ stateValues = [], props = {} } = {}) {
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
     "lucide-react": new Proxy({}, { get: (_, name) => String(name) }),
     "./api": { api: async () => ({}) },
+    "./desktop": desktop ?? {
+      isDesktopApp: () => false,
+      saveDesktopDownload: async () => ({
+        saved: false,
+        cancelled: false,
+        path: null,
+        filename: null,
+        supported: false,
+      }),
+    },
     "./groupChat": helpers,
     "./Markdown": { default: ({ children }) => ({ type: "Markdown", props: { children } }) },
     "./Pet": { default: "Pet" },
@@ -310,4 +320,88 @@ test("GroupChat renders messages, handoff chips, turn-cap notice, and Participan
   assert.ok(drawerText.includes("Create agent token"));
   assert.ok(drawerText.includes("Rotate token"));
   assert.ok(drawerText.includes("Revoke"));
+});
+
+test("Download ChatGPT plugin uses desktop Save dialog in Kadan Desktop and native link in browsers", async () => {
+  const snapshot = {
+    room: {
+      id: "room-1",
+      title: "Group Chat",
+      consecutive_agent_turns: 0,
+      max_consecutive_agent_turns: 6,
+      version: 1,
+      created_at: "2026-11-27T12:00:00Z",
+      updated_at: "2026-11-27T12:00:00Z",
+    },
+    participants: SAMPLE_PARTICIPANTS,
+    messages: [],
+    latest_seq: 0,
+    has_more: false,
+    turn_cap_reached: false,
+    mcp_url: "https://kadan.local/kadan/mcp/group-chat",
+  };
+  const stateValues = [];
+  stateValues[0] = snapshot;
+  stateValues[1] = [];
+  stateValues[3] = false;
+  stateValues[7] = true; // drawerOpen
+
+  const calls = [];
+  const desktopTree = renderGroupChat({
+    stateValues,
+    desktop: {
+      isDesktopApp: () => true,
+      saveDesktopDownload: async (url, filename) => {
+        calls.push({ url, filename });
+        return {
+          saved: true,
+          cancelled: false,
+          path: "/tmp/kadan-group-chat-plugin.zip",
+          filename: "kadan-group-chat-plugin.zip",
+          supported: true,
+        };
+      },
+    },
+  });
+  const desktopLink = elements(desktopTree).find(
+    node => node.type === "a" && node.props?.href === "/kadan/api/group-chat/chatgpt-plugin.zip",
+  );
+  assert.ok(desktopLink);
+  let prevented = false;
+  desktopLink.props.onClick({
+    preventDefault() {
+      prevented = true;
+    },
+  });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(prevented, true);
+  assert.deepEqual(calls, [
+    {
+      url: "/kadan/api/group-chat/chatgpt-plugin.zip",
+      filename: "kadan-group-chat-plugin.zip",
+    },
+  ]);
+
+  const browserCalls = [];
+  const browserTree = renderGroupChat({
+    stateValues,
+    desktop: {
+      isDesktopApp: () => false,
+      saveDesktopDownload: async (url, filename) => {
+        browserCalls.push({ url, filename });
+        return { saved: false, cancelled: false, path: null, filename: null, supported: false };
+      },
+    },
+  });
+  const browserLink = elements(browserTree).find(
+    node => node.type === "a" && node.props?.href === "/kadan/api/group-chat/chatgpt-plugin.zip",
+  );
+  let browserPrevented = false;
+  browserLink.props.onClick({
+    preventDefault() {
+      browserPrevented = true;
+    },
+  });
+  assert.equal(browserPrevented, false);
+  assert.equal(browserCalls.length, 0);
 });
