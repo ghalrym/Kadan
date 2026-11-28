@@ -7,6 +7,7 @@ import {
   RefreshCw,
   Server,
   Trash2,
+  ExternalLink,
 } from "lucide-react";
 import FolderPickerDialog from "./FolderPickerDialog";
 import ProviderIcon from "./ProviderIcon";
@@ -390,23 +391,32 @@ export default function SettingsPage({
           )}
         </section>
 
-        {desktopMode && onOpenServerSettings && (
-          <section className="page-card settings-card" aria-labelledby="server-title">
-            <header className="settings-section-head">
-              <h2 id="server-title">Kadan Server</h2>
-            </header>
+        <section className="page-card settings-card" aria-labelledby="server-title">
+          <header className="settings-section-head">
+            <h2 id="server-title">Kadan Server</h2>
+          </header>
+          {desktopMode && onOpenServerSettings && (
             <div className="settings-row">
               <div className="settings-row-main">
                 <span className={`dot ${serverDot}`} aria-hidden="true" />
-                <code>{desktopHost || "Not configured"}</code>
+                <span>Runs on <strong>{desktopHost || "this computer"}</strong></span>
               </div>
               <button className="button" onClick={onOpenServerSettings}>
                 <Server size={14} />
-                Change server
+                Change
               </button>
             </div>
-          </section>
-        )}
+          )}
+          <div className="settings-row">
+            <div className="settings-row-main">
+              <span>AI models, what your agent remembers, activity and server settings.</span>
+            </div>
+            <a className="button" href="/server">
+              <ExternalLink size={14} />
+              Open Kadan Server
+            </a>
+          </div>
+        </section>
       </div>
 
       {folderDialogOpen && (

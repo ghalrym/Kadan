@@ -1,4 +1,4 @@
-"""Unit tests for Kadan Desktop local Work sidecar server."""
+"""Unit tests for the Kadan app's local Work sidecar server."""
 
 from __future__ import annotations
 

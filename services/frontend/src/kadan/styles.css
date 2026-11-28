@@ -3343,6 +3343,48 @@ dialog.server-settings {
   margin: 0;
   font-size: 13px;
 }
+.run-mode {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.run-mode label {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  background: var(--bg);
+  cursor: pointer;
+  font-weight: 400;
+}
+.run-mode label.selected {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.run-mode input {
+  margin-top: 3px;
+  accent-color: var(--accent-strong);
+}
+.run-mode svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--muted);
+}
+.run-mode span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.run-mode small {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
 .saved-servers {
   display: flex;
   flex-direction: column;

@@ -16,7 +16,7 @@ From top to bottom, the sidebar offers:
 - Both previews refresh when Kadan starts and after you leave those pages.
 - **Work** lists native [Work](work.md) coding threads the way T3 Code does: active threads first, then collapsible **Working**, **Snoozed**, and **Settled** shelves with counts at the bottom of the list.
 - At the bottom, your name and pet open [Your profile](profile.md).
-- Below your profile, **Server settings** (in the standalone Kadan app) shows the connected server address and connection status and lets you switch servers, alongside a refresh button that reloads server status, the agent and its chats. Tsuchi and Hikari management live in **Kadan Server**, not inside the Kadan client app.
+- Below your profile, **Settings** shows where Kadan runs (**This computer** or another computer's address) and its connection status, alongside a refresh button that reloads server status, the agent and its chats. Tsuchi and Hikari management live in **Kadan Server**, not inside the Kadan client app.
 
 Lists in the sidebar reflect what Kadan last loaded. Changes made in Kadan Server appear after returning to Kadan or refreshing.
 

@@ -1,44 +1,51 @@
-# Desktop Applications: Kadan Server & Kadan
+# Desktop application: Kadan
 
-Kadan delivers two standalone Tauri v2 desktop applications built as versioned GitHub Release artifacts (`.github/workflows/release-apps.yml`) with zero Docker or external Postgres dependency:
+Kadan ships as one Tauri v2 desktop app (`apps/kadan/`), built as versioned GitHub Release artifacts by `.github/workflows/release-apps.yml` with no Docker or external Postgres dependency. The same app either runs Kadan's services on its own computer or connects to another computer running them. It replaced the separate Kadan Server and Kadan Desktop apps; see [Install and use](../user-expectations/install-and-use.md) for what people see.
 
-1. **Kadan Server** (`apps/kadan-server/`) — Hosts the full combined backend stack on a single port in a system-tray desktop app. Its **Kadan Server** tab embeds the web app's `/server` pages (served by the combined stack, so they update with the services) beside native **This computer** and **Logs** tabs that need the supervisor's Tauri commands.
-2. **Kadan** (`apps/kadan-desktop/`) — Lightweight native client wrapping the unified `services/frontend/` UI with runtime server host configuration.
+## Two modes, one proxy
 
-## Kadan Server (`apps/kadan-server/`)
+`config.rs` stores a `mode` beside the saved servers in the client's `servers.json`:
 
-### Process Supervision
-`src-tauri/src/supervisor.rs` manages three service groups in dependency order with health checks, isolated restarts, graceful teardown on quit, and ring-buffered per-service logs:
+- **`host`** ("This computer"): the app supervises the combined stack itself and every request goes to `http://127.0.0.1:<server_port>`.
+- **`connect`** ("Another computer"): nothing heavy starts, and requests go to the chosen `active_host`.
 
-1. **`api`** (`uvicorn combined.main:app` in `services/api/`) — Serves `/tsuchi`, `/hikari` (SQLite via `HIKARI_DATABASE_URL=sqlite:///<data_dir>/hikari.db`, WAL mode, automatic Alembic migrations via `HIKARI_AUTO_MIGRATE=true`), `/kadan`, and the built unified SPA (`KADAN_FRONTEND_DIR`) on a single configured port (default `8000`).
-2. **`runner`** (`python -m kadan.runner`) — Executes LangGraph conversation turns and image/pet queues against the local combined API.
-3. **`worker`** (native C++20/CUDA `kadan-worker` binary) — Inspects compiled workloads via `kadan-worker --list-workloads` and launches one isolated worker process per supported capability (`llm` Inkling 2 Mini for language, vision, and single-pass decisions, `lfm3_audio`, `formatting`, `speech`, `tts`, `image`; skipping GPU-only workloads on CPU-only machines). All workers connect to `ws://127.0.0.1:<port>/hikari/v1/workers` and share `<data_dir>/models` and Hikari's physical RAM/VRAM ledger. Hikari owns all model downloads, licenses, and provider settings; Kadan Server exposes only host/network/data-folder settings inside its **Overview** tab.
+Settings saved before the merge have no `mode`. A client pointed at a loopback address hosts; one pointed elsewhere keeps connecting. A computer that only ran Kadan Server had no client settings, so it gets the default, `host`. Its server settings (`server-config.json` under the old Kadan Server config directory) and data folder are reused unchanged, so existing installs keep their data.
 
-### Bundling
-Because all inference engines (including Inkling 2 Mini and LFM3 Audio) are pure C++20/CUDA, the Python APIs require only lightweight packages (`fastapi`, `uvicorn`, `sqlalchemy`, `alembic`, `httpx`, `langgraph`, `Pillow`). `scripts/bundle-kadan-server.sh` (Linux/macOS) and `scripts/bundle-kadan-server.ps1` (Windows) stage:
-- A standalone relocatable Python `venv`
-- Minimal Python service sources (`api`, `tracing`, `tsuchi`, `hikari/api`, `kadan`)
-- Built unified static frontend (`web/`)
-- The installed `kadan-worker` runtime (`bin/kadan-worker`, `libexec/kadan-worker`, `lib/`, `share/kadan/`)
+Both modes share the embedded loopback reverse proxy (`proxy.rs`, `axum` + `reqwest` + `tokio-tungstenite`, bound to `127.0.0.1:<ephemeral>`). It serves the built `services/frontend/dist`, injects `window.__KADAN_DESKTOP__ = true`, and relays `/kadan/*`, `/tsuchi/*` and `/hikari/*` (REST, SSE, uploads, downloads and WebSockets) to `ProxyState::upstream()`, which resolves the mode on every request. Serving from `http://127.0.0.1` keeps the webview in a secure context even when the other computer is plain `http://192.168.x.x`, so microphone capture and `AudioWorklet` work for voice input and calls.
 
-### Hikari SQLite Support
-`services/hikari/api/database.py` honors `HIKARI_DATABASE_URL` when set (enabling SQLite WAL mode and foreign keys) while preserving `POSTGRES_*` configuration for existing Postgres deployments. ORM columns (`orm_models/base.py`) use SQLAlchemy `.with_variant(...)` so PostgreSQL keeps native `JSONB`/`ARRAY` and SQLite uses portable `JSON`.
+Changing the mode through `PUT /__kadan_desktop__/config` starts or stops the local services immediately and repoints the local Work sidecar, so no restart is needed.
 
-## Kadan Desktop (`apps/kadan-desktop/`)
+## Hosting: supervising Kadan's services
 
-`apps/kadan-desktop/` wraps the built `services/frontend/dist` assets behind an embedded Rust loopback reverse proxy (`axum` + `reqwest` + `tokio-tungstenite`) bound to `127.0.0.1:<ephemeral>`:
+`supervisor.rs` manages three service groups in dependency order, with health checks, isolated restarts, teardown on quit and ring-buffered per-service logs:
 
-- Injects `window.__KADAN_DESKTOP__ = true` into `index.html`, activating the **Server settings** dialog (`services/frontend/src/kadan/ServerSettings.tsx`) in the sidebar without adding Tauri packages to the web build.
-- Exposes local control endpoints `/__kadan_desktop__/config` (`GET`/`PUT`), `/__kadan_desktop__/test` (`POST`), `/__kadan_desktop__/pick-folder` (`POST`), and `/__kadan_desktop__/save-download` (`POST`) backed by `servers.json` in the OS config directory and native OS file/folder dialogs.
-- Relays `/kadan/*`, `/tsuchi/*`, and `/hikari/*` (REST, SSE streams, uploads/downloads, and WebSockets such as voice calls) to the active configured `Kadan Server` host URL.
-- **Why loopback proxying matters:** Serving the UI from `http://127.0.0.1` keeps WebView in a secure context even when connecting to a LAN `Kadan Server` over plain `http://192.168.x.x:8000`, ensuring `getUserMedia` (microphone) and `AudioWorklet` continue working for voice input and voice calls without CORS or mixed-content errors.
+1. **`api`** (`uvicorn combined.main:app` in `services/api/`): serves `/tsuchi`, `/hikari` (SQLite via `HIKARI_DATABASE_URL=sqlite:///<data_dir>/hikari.db`, WAL mode, automatic Alembic migrations) and `/kadan` on one port (default `8000`).
+2. **`runner`** (`python -m kadan.runner`): runs conversation turns and image and pet queues against the local API.
+3. **`worker`** (native C++20/CUDA `kadan-worker`): lists its compiled workloads and launches one process per supported capability, skipping GPU-only workloads on computers without a GPU. Workers connect to `ws://127.0.0.1:<port>/hikari/v1/workers` and share `<data_dir>/models` and Hikari's memory ledger.
 
-## Self-Updating & Agent Update Tools
+The web pages control hosting through native endpoints on the same proxy, which keeps every flow in the web UI: `GET /__kadan_desktop__/host` (mode, service status, settings, hardware), `PUT /__kadan_desktop__/host/settings` (network access, port, data folder, start with the app, launch at login through `tauri-plugin-autostart`), `POST …/host/start`, `…/host/stop`, `…/host/restart` and `GET …/host/logs`. Kadan Server's [Settings](../user-expectations/kadan-server/settings.md) page shows them only inside the app.
 
-`.github/workflows/release-apps.yml` stamps the computed release version into both apps' `tauri.conf.json` and `Cargo.toml`, archives macOS `.app.tar.gz` bundles alongside `.dmg`, and publishes a `release-manifest.json` with SHA-256 checksums for every release artifact.
+While hosting, closing the window hides it and the tray icon (`tray.rs`: **Open Kadan**, **Quit Kadan**) keeps Kadan reachable; quitting stops the services. In `connect` mode, closing the window quits.
 
-- **Kadan Server (`src/updater.rs`, `src/control.rs`):** Runs a per-launch Bearer-authenticated loopback control server (`127.0.0.1:<ephemeral>`) passed to `api` and `runner` via `KADAN_SERVER_CONTROL_URL`, `KADAN_SERVER_CONTROL_TOKEN`, and `KADAN_APP_VERSION`. It checks GitHub Releases, downloads and SHA-256-verifies staged installers into `<data_dir>/updates/staging/`, gracefully stops supervised children before replacing and relaunching (Linux AppImage atomic swap, Windows NSIS silent `/S` + relaunch script, macOS `.app.tar.gz` swap), and tracks connected Kadan Desktop clients.
-- **Kadan Desktop (`src/updater.rs`, `src/proxy.rs`):** Attaches `X-Kadan-Desktop-Version` and `X-Kadan-Desktop-Can-Update` headers to proxied API requests and exposes `/__kadan_desktop__/updates` and `/__kadan_desktop__/updates/install`. When Kadan Server records a pending desktop update, the frontend in Kadan Desktop acknowledges it and triggers the local desktop self-updater.
-- **Two-phase agent update flow (`services/kadan/kadan/runner/tools/updates.py`):** `check_app_update` inspects server and connected desktop update availability. `install_app_update` stages and verifies the download first, delivers the agent's restart announcement to Tsuchi, durably completes the run (`end_run=True`), and triggers `/updates/apply` strictly after the run save completes—preventing restart replay loops or mid-inference kills. On replay after a crash, `install_app_update` refuses to re-run and directs the agent to call `check_app_update`.
+## Bundling
 
-See [Install and use](../user-expectations/install-and-use.md) for the user-facing expectations.
+Because the inference engines are native C++, the Python services need only light packages. `scripts/bundle-kadan-runtime.sh` (Linux and macOS) and `scripts/bundle-kadan-runtime.ps1` (Windows) stage `apps/kadan/src-tauri/resources/runtime/`:
+
+- a relocatable Python `venv`
+- the Python service sources (`api`, `tracing`, `tsuchi`, `hikari/api`, `kadan`)
+- the built web app (`web/`)
+- the installed `kadan-worker` runtime (`bin/`, `libexec/`, `lib/`, `share/kadan/`)
+
+The release job bundles that runtime into every Linux and Windows installer, so one download can host or connect. The app is larger for people who only connect; that is accepted for now. The local Work sidecar (`work_sidecar.rs`) also finds its Python and services in that runtime. During development, `supervisor.rs` and `work_sidecar.rs` fall back to the repository's `.venv` and `services/`.
+
+### Hikari SQLite support
+
+`services/hikari/api/database.py` honors `HIKARI_DATABASE_URL` when set (enabling SQLite WAL mode and foreign keys) while keeping `POSTGRES_*` configuration for Postgres deployments. ORM columns use SQLAlchemy `.with_variant(...)` so PostgreSQL keeps native `JSONB`/`ARRAY` and SQLite uses portable `JSON`.
+
+## Updates
+
+The release workflow stamps the version into `apps/kadan`, archives macOS `.app.tar.gz` bundles beside `.dmg`, and publishes `release-manifest.json` with SHA-256 checksums under one app key, `kadan`.
+
+- **Hosting (`host_updater.rs`, `control.rs`):** a per-launch, bearer-authenticated loopback control server is passed to `api` and `runner` as `KADAN_SERVER_CONTROL_URL` and `KADAN_SERVER_CONTROL_TOKEN`. It checks GitHub Releases, downloads and verifies the `Kadan` installer into `<data_dir>/updates/staging/`, stops the supervised services, replaces the app (Linux AppImage swap, Windows NSIS silent install and relaunch, macOS `.app.tar.gz` swap), and tracks Kadan apps connected to it so they update too.
+- **Connected apps (`updater.rs`):** only in `connect` mode does the proxy send `X-Kadan-Desktop-Version` and `X-Kadan-Desktop-Can-Update`, so a hosting app never counts itself as a remote client. When the computer it connects to records a pending update, the web app acknowledges it and runs the local self-updater.
+- **Agent update flow (`services/kadan/kadan/runner/tools/updates.py`):** `check_app_update` inspects availability for this computer and connected apps. `install_app_update` stages and verifies first, delivers the agent's restart announcement, completes the run, and only then triggers `/updates/apply`, so a restart cannot replay mid-inference.

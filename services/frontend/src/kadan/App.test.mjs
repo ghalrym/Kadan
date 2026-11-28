@@ -72,7 +72,7 @@ async function app(petResponses = [], agentResponses = [[agent]]) {
     "./Sidebar": { default: "Sidebar" },
     "./SpaceLibrary": { default: "SpaceLibrary" },
     "./ConfirmDialog": { default: "ConfirmDialog" },
-    "./ServerSettings": { default: "ServerSettings" },
+    "./ServerSettings": { default: "ServerSettings", runLocationLabel: (config) => config.mode === "connect" ? config.active_host : "This computer" },
     "./SettingsPage": { default: "SettingsPage" },
     "./WorkThreadView": { default: "WorkThreadView" },
     "./work": {

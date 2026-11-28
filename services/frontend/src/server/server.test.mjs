@@ -63,3 +63,21 @@ test("Activity and memory labels avoid technical terms", () => {
   assert.equal(home.meterLabel("GPU 0 memory used"), "Graphics card 1 memory");
   assert.equal(home.meterLabel("System RAM used"), "Computer memory");
 });
+
+test("This computer summarizes Kadan's services in one line", () => {
+  const stub = new Proxy({}, { get: () => () => null });
+  const page = load("./ThisComputer.tsx", { react: { useState: (v) => [v, () => {}], useEffect() {}, useCallback: (f) => f }, "react/jsx-runtime": stub, "lucide-react": stub, "../kadan/desktop": stub, "./common": stub });
+  const status = (running, ...phases) => ({ running, services: phases.map((phase) => ({ phase })) });
+  assert.equal(page.hostSummary(status(true, "running", "running", "running")).label, "Running on this computer");
+  assert.equal(page.hostSummary(status(true, "running", "starting", "stopped")).label, "Starting…");
+  assert.equal(page.hostSummary(status(false, "stopped", "stopped", "stopped")).label, "Stopped");
+  assert.equal(page.hostSummary(status(true, "running", "error", "running")).tone, "error");
+});
+
+test("Kadan names where it runs in plain words", () => {
+  const stub = new Proxy({}, { get: () => () => null });
+  const settings = load("../kadan/ServerSettings.tsx", { react: stub, "react/jsx-runtime": stub, "lucide-react": stub, "./desktop": stub });
+  assert.equal(settings.runLocationLabel({ mode: "host", active_host: "http://10.0.0.2:8000" }), "This computer");
+  assert.equal(settings.runLocationLabel({ mode: "connect", active_host: "http://10.0.0.2:8000" }), "http://10.0.0.2:8000");
+  assert.equal(settings.runLocationLabel({ active_host: "http://10.0.0.2:8000" }), "This computer");
+});

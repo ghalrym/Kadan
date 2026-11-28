@@ -1,6 +1,6 @@
-"""Local Desktop Work sidecar server & WorkRunner for Kadan Desktop.
+"""Local Work sidecar server & WorkRunner for the Kadan desktop app.
 
-Runs on the user's desktop computer (spawned by `kadan-desktop`) so that:
+Runs on the user's computer (spawned by the `kadan` app) so that:
 - Project folder browsing and validation inspect the user's local computer.
 - Coding harnesses (Codex, Claude Code, Antigravity, Grok, and Inkling tool loops)
   execute locally on the user's computer against their local folders and CLI sign-ins.
@@ -92,7 +92,7 @@ def create_desktop_work_app(
             if owns_client:
                 await client.aclose()
 
-    app = FastAPI(title="Kadan Desktop Work", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Kadan Work", version="0.1.0", lifespan=lifespan)
 
     @app.exception_handler(ServiceError)
     async def service_error(request: Request, error: ServiceError):
@@ -143,7 +143,7 @@ def create_desktop_work_app(
 
 def main() -> None:
     _ensure_cli_paths_in_env()
-    parser = argparse.ArgumentParser(description="Kadan Desktop local Work sidecar")
+    parser = argparse.ArgumentParser(description="Kadan local Work sidecar")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument(
         "--port", type=int, default=int(os.environ.get("KADAN_WORK_PORT", "8645"))

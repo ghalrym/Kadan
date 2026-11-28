@@ -22,7 +22,7 @@ import DeleteAgent from "./DeleteAgent";
 import Plugins from "./Plugins";
 import Sidebar, { type Page } from "./Sidebar";
 import SpaceLibrary from "./SpaceLibrary";
-import ServerSettings from "./ServerSettings";
+import ServerSettings, { runLocationLabel } from "./ServerSettings";
 import SettingsPage from "./SettingsPage";
 import WorkThreadView from "./WorkThreadView";
 import { listWorkThreads, organizeWorkThread, parseWorkHash, type WorkThread } from "./work";
@@ -168,7 +168,7 @@ export default function App() {
   useEffect(() => {
     if (!desktopMode) return;
     void getDesktopServerConfig()
-      .then((cfg) => setDesktopHost(cfg.active_host))
+      .then((cfg) => setDesktopHost(runLocationLabel(cfg)))
       .catch(() => {});
   }, [desktopMode]);
 

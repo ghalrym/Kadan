@@ -4,7 +4,8 @@ import type { MetricsResponse } from "../hikari/api/generated/types.gen";
 import PetAvatar from "../kadan/PetAvatar";
 import { useAgentPet } from "../kadan/PetContext";
 import { overallStatus, STATE_LABEL, STATE_TONE, toAbility } from "./abilities";
-import { formatBytes, serverAddress, storagePath, usePoll, type Agent, type Status } from "./api";
+import { useServerAddress } from "./address";
+import { formatBytes, storagePath, usePoll, type Agent, type Status } from "./api";
 import { CopyField, Meter, PageHeader, StatusPill } from "./common";
 import { useModels } from "./useModels";
 
@@ -46,6 +47,7 @@ function AgentCard({ agent }: { agent: Agent }) {
 
 export default function HomePage({ agent }: { agent: Agent | null }) {
   const navigate = useNavigate();
+  const address = useServerAddress();
   const status = usePoll<Status>("/kadan/api/status", 5000);
   const metrics = usePoll<MetricsResponse>("/hikari/v1/metrics", 5000);
   const models = useModels();
@@ -68,9 +70,9 @@ export default function HomePage({ agent }: { agent: Agent | null }) {
       <section className="srv-card">
         <header className="srv-card-head">
           <h2>Connect Kadan</h2>
-          <p>In the Kadan app, open <strong>Settings</strong> and paste this address.</p>
+          <p>To use this Kadan from another computer, open Kadan there and paste this address under <strong>Settings → Kadan Server → Change</strong>.</p>
         </header>
-        <CopyField value={serverAddress()} label="server address" />
+        {address && <CopyField value={address} label="server address" />}
       </section>
 
       <section className="srv-card">

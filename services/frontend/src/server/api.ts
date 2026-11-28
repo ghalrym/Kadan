@@ -115,5 +115,3 @@ export function formatWhen(value: string): string {
   return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
-/** The address other devices use to reach this server. */
-export const serverAddress = () => (typeof window === "undefined" ? "" : window.location.origin);

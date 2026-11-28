@@ -19,7 +19,7 @@ The **Search** box at the top of the sidebar filters every bucket by thread titl
 
 Click the **New thread** button (pencil) at the top of the sidebar to open a new coding thread directly—no title or setup form required. The page asks "What should we build in *project*?" with the composer below it. Choose a project folder and model right there and send your first message; Kadan automatically names the thread from your prompt.
 
-- **Projects:** The project picker under the composer lists your saved folders. Choose **Add folder…** (opening your computer's native folder picker in Kadan Desktop) or **Manage projects**, or manage saved folders under **Settings → Projects**. Removing a project removes its saved threads from Kadan while leaving your folder on disk untouched.
+- **Projects:** The project picker under the composer lists your saved folders. Choose **Add folder…** (opening your computer's native folder picker in the Kadan app) or **Manage projects**, or manage saved folders under **Settings → Projects**. Removing a project removes its saved threads from Kadan while leaving your folder on disk untouched.
 - **Model picker:** The model button in the composer opens a picker laid out like T3 Code's:
   - A column of coding assistant icons on the left, with **Favorites** at the top. Assistants that are not ready are dimmed; selecting one explains what is needed and offers **Open settings**.
   - A searchable model list in the middle showing the models currently reported by each connected coding assistant (rather than a static list). Search covers every assistant. Star a model to add it to **Favorites** (remembered on that browser). The first nine models can be picked with **Ctrl+1**–**Ctrl+9**, and the arrow keys and **Enter** work too.

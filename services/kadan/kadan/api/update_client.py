@@ -275,7 +275,7 @@ class UpdateClient:
                 server_staged=False,
                 desktop_update_available=True,
                 message=(
-                    f"Ready to update Kadan Desktop to {check.latest_version}. "
+                    f"Ready to update the connected Kadan app to {check.latest_version}. "
                     "This server deployment itself must be updated manually."
                 ),
             )
@@ -322,7 +322,7 @@ class UpdateClient:
                 server_restarting=False,
                 desktop_update_requested=True,
                 pending_desktop_update=pending,
-                message=f"Requested Kadan Desktop to update to {target} and restart.",
+                message=f"Asked the connected Kadan app to update to {target} and restart.",
             )
         raise ServiceError(
             "Automatic server updates require running the Kadan Server desktop app.",

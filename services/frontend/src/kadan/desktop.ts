@@ -4,7 +4,12 @@ export interface SavedServer {
   host: string;
 }
 
+/** "host": Kadan runs its services on this computer. "connect": it uses another computer's. */
+export type RunMode = "host" | "connect";
+
 export interface DesktopServerConfig {
+  mode?: RunMode | null;
+  /** The other computer to use in "connect" mode. */
   active_host: string;
   saved_servers: SavedServer[];
 }
@@ -162,3 +167,75 @@ export async function testDesktopServerConnection(
   }
   return (await response.json()) as ServerTestResult;
 }
+
+/** Kadan's services on this computer, when the app hosts them. */
+export interface HostService {
+  id: "api" | "runner" | "worker";
+  label: string;
+  phase: "stopped" | "starting" | "running" | "error";
+  message: string;
+}
+
+export interface HostSettings {
+  bind_all_interfaces: boolean;
+  server_port: number;
+  worker_token: string;
+  data_dir: string;
+  auto_start_server: boolean;
+  launch_at_login: boolean;
+}
+
+export interface HostStatus {
+  mode: RunMode;
+  status: {
+    running: boolean;
+    services: HostService[];
+    server_local_url: string;
+    worker_binary_found: boolean;
+    python_runtime_found: boolean;
+  };
+  settings: HostSettings;
+  hardware: {
+    hostname: string;
+    lan_ip: string | null;
+    cpu_cores: number;
+    total_ram_mb: number;
+    available_ram_mb: number;
+    gpus: { name: string; total_vram_mb: number; free_vram_mb: number }[];
+  };
+}
+
+export interface HostLogEntry {
+  timestamp: number;
+  service: string;
+  line: string;
+}
+
+async function hostRequest<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`/__kadan_desktop__/host${path}`, {
+      method,
+      cache: "no-store",
+      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    throw new Error("Kadan’s app isn’t responding. Close and reopen Kadan.");
+  }
+  if (!response.ok) {
+    const detail = await response.json().catch(() => null);
+    throw new Error(detail?.detail || "Kadan couldn’t do that. Try again.");
+  }
+  return (await response.json()) as T;
+}
+
+export const getHostStatus = () => hostRequest<HostStatus>("");
+export const startHost = () => hostRequest<HostStatus["status"]>("/start", "POST");
+export const stopHost = () => hostRequest<HostStatus["status"]>("/stop", "POST");
+export const restartHostService = (service: HostService["id"]) =>
+  hostRequest<HostStatus["status"]>("/restart", "POST", { service });
+export const getHostLogs = (service?: string) =>
+  hostRequest<HostLogEntry[]>(`/logs${service ? `?service=${encodeURIComponent(service)}` : ""}`);
+export const saveHostSettings = (settings: HostSettings, restart: boolean) =>
+  hostRequest<HostSettings>("/settings", "PUT", { settings, restart });

@@ -1,13 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, Plug, Plus, Trash2, XCircle } from "lucide-react";
+import { CheckCircle2, Laptop, Plug, Server, Trash2, XCircle } from "lucide-react";
 import {
   getDesktopServerConfig,
   saveDesktopServerConfig,
   testDesktopServerConnection,
   type DesktopServerConfig,
+  type RunMode,
   type SavedServer,
   type ServerTestResult,
 } from "./desktop";
+
+/** What the sidebar shows for where Kadan runs. */
+export function runLocationLabel(config: Pick<DesktopServerConfig, "mode" | "active_host">): string {
+  return config.mode === "connect" ? config.active_host : "This computer";
+}
 
 interface Props {
   onConnected: (host: string) => void;
@@ -17,7 +23,8 @@ interface Props {
 export default function ServerSettings({ onConnected, onClose }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [config, setConfig] = useState<DesktopServerConfig | null>(null);
-  const [host, setHost] = useState("http://127.0.0.1:8000");
+  const [mode, setMode] = useState<RunMode>("host");
+  const [host, setHost] = useState("");
   const [label, setLabel] = useState("");
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -30,7 +37,8 @@ export default function ServerSettings({ onConnected, onClose }: Props) {
       try {
         const loaded = await getDesktopServerConfig();
         setConfig(loaded);
-        setHost(loaded.active_host);
+        setMode(loaded.mode ?? "host");
+        setHost(loaded.mode === "connect" ? loaded.active_host : "");
       } catch (err) {
         setError((err as Error).message);
       }
@@ -55,9 +63,27 @@ export default function ServerSettings({ onConnected, onClose }: Props) {
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
+    if (mode === "host") {
+      setSaving(true);
+      setError("");
+      try {
+        const saved = await saveDesktopServerConfig({
+          mode: "host",
+          active_host: config?.active_host ?? "http://127.0.0.1:8000",
+          saved_servers: config?.saved_servers ?? [],
+        });
+        onConnected(runLocationLabel(saved));
+        onClose();
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
     const trimmed = host.trim().replace(/\/+$/, "");
     if (!trimmed) {
-      setError("Enter a server address like http://127.0.0.1:8000.");
+      setError("Enter the address shown in Kadan on the other computer, like http://192.168.1.50:8000.");
       return;
     }
     setSaving(true);
@@ -76,12 +102,13 @@ export default function ServerSettings({ onConnected, onClose }: Props) {
             },
           ];
       const saved = await saveDesktopServerConfig({
+        mode: "connect",
         active_host: trimmed,
         saved_servers: nextSaved,
       });
       setConfig(saved);
       setLabel("");
-      onConnected(saved.active_host);
+      onConnected(runLocationLabel(saved));
       onClose();
     } catch (err) {
       setError((err as Error).message);
@@ -95,6 +122,7 @@ export default function ServerSettings({ onConnected, onClose }: Props) {
     const nextSaved = config.saved_servers.filter((s) => s.id !== id);
     try {
       const saved = await saveDesktopServerConfig({
+        mode: config.mode,
         active_host: config.active_host,
         saved_servers: nextSaved,
       });
@@ -115,11 +143,30 @@ export default function ServerSettings({ onConnected, onClose }: Props) {
       }}
     >
       <form onSubmit={save}>
-        <h2 id="server-settings-title">Kadan Server Connection</h2>
+        <h2 id="server-settings-title">Where Kadan runs</h2>
+        <fieldset className="run-mode" disabled={saving}>
+          <legend className="sr-only">Where Kadan runs</legend>
+          <label className={mode === "host" ? "selected" : ""}>
+            <input type="radio" name="run-mode" checked={mode === "host"} onChange={() => setMode("host")} />
+            <Laptop size={18} aria-hidden="true" />
+            <span>
+              <strong>This computer</strong>
+              <small>Kadan runs here, including its AI models. Best if this computer has a good graphics card.</small>
+            </span>
+          </label>
+          <label className={mode === "connect" ? "selected" : ""}>
+            <input type="radio" name="run-mode" checked={mode === "connect"} onChange={() => setMode("connect")} />
+            <Server size={18} aria-hidden="true" />
+            <span>
+              <strong>Another computer</strong>
+              <small>Use Kadan running on another computer, like a home server. This computer does no heavy work.</small>
+            </span>
+          </label>
+        </fieldset>
+        {mode === "connect" && (<>
         <p className="field-hint">
-          Enter the host address shown in Kadan Server (for example{" "}
-          <code>http://127.0.0.1:8000</code> on this computer or{" "}
-          <code>http://192.168.1.50:8000</code> on your network).
+          On the other computer, open Kadan Server → Settings and copy its address (for example{" "}
+          <code>http://192.168.1.50:8000</code>).
         </p>
 
         <label>
@@ -127,7 +174,7 @@ export default function ServerSettings({ onConnected, onClose }: Props) {
           <input
             autoFocus
             required
-            placeholder="http://127.0.0.1:8000"
+            placeholder="http://192.168.1.50:8000"
             value={host}
             disabled={saving}
             onChange={(event) => {
@@ -200,22 +247,30 @@ export default function ServerSettings({ onConnected, onClose }: Props) {
           </div>
         )}
 
+        </>)}
+        {mode === "host" && error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+
         <div className="form-actions">
-          <button
-            type="button"
-            disabled={testing || saving || !host.trim()}
-            onClick={() => void runTest()}
-          >
-            <Plug size={15} />
-            {testing ? "Testing…" : "Test connection"}
-          </button>
+          {mode === "connect" && (
+            <button
+              type="button"
+              disabled={testing || saving || !host.trim()}
+              onClick={() => void runTest()}
+            >
+              <Plug size={15} />
+              {testing ? "Testing…" : "Test connection"}
+            </button>
+          )}
           <span style={{ flex: 1 }} />
           <button type="button" disabled={saving} onClick={onClose}>
             Cancel
           </button>
-          <button className="primary" disabled={saving || !host.trim()}>
-            <Plus size={15} />
-            {saving ? "Connecting…" : "Connect"}
+          <button className="primary" disabled={saving || (mode === "connect" && !host.trim())}>
+            {saving ? "Saving…" : mode === "host" ? "Run Kadan here" : "Connect"}
           </button>
         </div>
       </form>

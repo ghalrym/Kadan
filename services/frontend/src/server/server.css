@@ -845,3 +845,34 @@
     display: none;
   }
 }
+
+:root .srv-app .srv-folder {
+  display: flex;
+  gap: 8px;
+}
+:root .srv-app .srv-folder input {
+  flex: 1;
+  min-width: 0;
+}
+:root .srv-app .srv-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+:root .srv-app .srv-logs {
+  max-height: 360px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+:root .srv-app .srv-editor label.srv-check {
+  flex-direction: row;
+  font-weight: 400;
+}

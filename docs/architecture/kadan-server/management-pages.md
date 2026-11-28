@@ -9,10 +9,10 @@ The pages are a section of the main web app (`services/frontend/src/server/`), r
 Serving them from the combined stack rather than from the Tauri bundle has three effects:
 
 - **Same origin.** The pages call `/kadan/api`, `/tsuchi/api` and `/hikari/v1` directly. The combined API has no CORS setup, and the Tauri webview's origin would otherwise need one.
-- **Updates ship with the services.** Refreshing `services/` and `services/frontend/dist` on a server updates the pages without rebuilding the Rust `kadan-server` binary.
+- **Updates ship with the web app.** Rebuilding `services/frontend/dist` updates the pages without rebuilding the Rust app.
 - **Browsers work too.** Anyone who can reach the server can open `/server`, which keeps every management flow available in the web UI.
 
-The Tauri window (`apps/kadan-server/src/App.tsx`) shows `${localHostUrl}/server` in an iframe on its **Kadan Server** tab once the `api` service is running. Things that need the supervisor's Tauri commands stay native: start and stop, **This computer** (config, service restarts, hardware, updates) and **Logs**. The pages hide **Open Kadan** when `window.self !== window.top`, since navigating the iframe to the client would trap it.
+In the Kadan app the pages are served by its loopback proxy like the rest of the web app. Hosting controls that need the app itself (start, stop, service restarts, settings, logs) come from the proxy's `/__kadan_desktop__/host` endpoints and appear on Settings only when `window.__KADAN_DESKTOP__` is set; see [Desktop application](../desktop-apps.md). Because the page's own origin is the private proxy there, `address.ts` builds the address to share from the hosting computer's network address and port, or the connected computer's address.
 
 ## Styling
 
