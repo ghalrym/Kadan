@@ -691,7 +691,8 @@ def test_mcp_events_list_subscribe_challenge_and_unsubscribe():
             ).digest()
         ).decode("ascii")
         assert request.headers["webhook-signature"] == expected
-        assert request.headers["x-mcp-subscription-id"] == body["subscriptionId"]
+        assert UUID(request.headers["x-mcp-subscription-id"])
+        assert body == {"type": "verification", "challenge": body["challenge"]}
         return httpx.Response(200, json={"challenge": body["challenge"]})
 
     async def scenario():
@@ -829,16 +830,42 @@ def test_mcp_events_subscribe_refresh_reuses_id_and_unsubscribe_contract():
             handler = GroupChatMcpHandler(services)
             participant = await services.group_chat.authenticate_token(dot_token)
 
-            # events/list advertises `arguments` schema matching events/subscribe.
+            # server/discover is not implemented (returns -32601 so Streamable HTTP clients fall back to initialize).
+            _, discovered = await handler.handle_jsonrpc(
+                participant,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "openai-mcp-discover",
+                    "method": "server/discover",
+                },
+            )
+            assert discovered is not None and "error" in discovered
+            assert discovered["error"]["code"] == -32601
+
+            # initialize negotiates Streamable HTTP protocol versions and advertises events.
+            _, init_2025 = await handler.handle_jsonrpc(
+                participant,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 0,
+                    "method": "initialize",
+                    "params": {"protocolVersion": "2025-11-25"},
+                },
+            )
+            assert init_2025 is not None and "result" in init_2025
+            assert init_2025["result"]["protocolVersion"] == "2025-11-25"
+
+            # events/list advertises SEP-3415 inputSchema, payloadSchema, and webhook delivery.
             _, listed = await handler.handle_jsonrpc(
                 participant, {"jsonrpc": "2.0", "id": 1, "method": "events/list"}
             )
             assert listed is not None
             event_spec = listed["result"]["events"][0]
-            assert "arguments" in event_spec
-            assert "room_id" in event_spec["arguments"]["properties"]
+            assert event_spec["delivery"] == ["webhook"]
+            assert "room_id" in event_spec["inputSchema"]["properties"]
+            assert "message" in event_spec["payloadSchema"]["properties"]
 
-            # 1. Initial subscribe with `arguments` returns `id` and `refreshBefore`.
+            # 1. Initial subscribe with `arguments`, `delivery`, and `ttlMs` returns SEP-3415 fields.
             _, sub1 = await handler.handle_jsonrpc(
                 participant,
                 {
@@ -848,17 +875,27 @@ def test_mcp_events_subscribe_refresh_reuses_id_and_unsubscribe_contract():
                     "params": {
                         "name": "group_chat.turn_requested",
                         "arguments": {"room_id": str(tsuchi.room_id)},
-                        "webhook": {
+                        "delivery": {
+                            "type": "webhook",
                             "url": "https://dot.example/events",
                             "secret": signing_secret,
                         },
-                        "ttlSeconds": 600,
+                        "ttlMs": 600_000,
                     },
                 },
             )
             assert sub1 is not None and "result" in sub1
             r1 = sub1["result"]
-            assert set(r1) == {"id", "event", "status", "refreshBefore"}
+            assert set(r1) == {
+                "id",
+                "event",
+                "status",
+                "refreshBefore",
+                "cursor",
+                "truncated",
+            }
+            assert r1["cursor"] is None
+            assert r1["truncated"] is False
             first_id = r1["id"]
             first_refresh = datetime.fromisoformat(r1["refreshBefore"])
             assert first_refresh > datetime.now(UTC)

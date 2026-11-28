@@ -30,6 +30,9 @@ if TYPE_CHECKING:
     from .services import LocalServices
 
 MCP_EVENTS_PROTOCOL_VERSION = "2026-07-28"
+SUPPORTED_MCP_PROTOCOL_VERSIONS = frozenset(
+    {"2025-03-26", "2025-06-18", "2025-11-25", MCP_EVENTS_PROTOCOL_VERSION}
+)
 EVENT_TURN_REQUESTED = "group_chat.turn_requested"
 DEFAULT_SUBSCRIPTION_TTL_SECONDS = 3600
 MIN_SUBSCRIPTION_TTL_SECONDS = 60
@@ -185,7 +188,7 @@ GROUP_CHAT_MCP_EVENTS: list[dict[str, Any]] = [
             "Fired when this participant is explicitly tagged by the user or handed "
             "the turn by another agent in Group Chat (and the room has not hit its turn cap)."
         ),
-        "schema": {
+        "payloadSchema": {
             "type": "object",
             "properties": {
                 "room_id": {"type": "string"},
@@ -212,7 +215,7 @@ GROUP_CHAT_MCP_EVENTS: list[dict[str, Any]] = [
                 "turn_cap_reached": {"type": "boolean"},
             },
         },
-        "arguments": {
+        "inputSchema": {
             "type": "object",
             "properties": {
                 "room_id": {
@@ -222,12 +225,7 @@ GROUP_CHAT_MCP_EVENTS: list[dict[str, Any]] = [
             },
             "additionalProperties": False,
         },
-        "delivery": {
-            "webhook": {
-                "supported": True,
-                "signing": "standard-webhooks-hmac-sha256",
-            }
-        },
+        "delivery": ["webhook"],
     }
 ]
 
@@ -348,10 +346,17 @@ class GroupChatMcpHandler:
             return 202, None
 
         if method == "initialize":
+            requested_version = params.get("protocolVersion")
+            negotiated_version = (
+                requested_version
+                if isinstance(requested_version, str)
+                and requested_version in SUPPORTED_MCP_PROTOCOL_VERSIONS
+                else MCP_EVENTS_PROTOCOL_VERSION
+            )
             return 200, self._rpc_result(
                 req_id,
                 {
-                    "protocolVersion": MCP_EVENTS_PROTOCOL_VERSION,
+                    "protocolVersion": negotiated_version,
                     "capabilities": {
                         "tools": {},
                         "events": {},
@@ -909,14 +914,28 @@ class GroupChatMcpHandler:
                 "invalid_filter",
             )
 
-        ttl_raw = (
-            params.get("ttlSeconds")
-            or params.get("ttl")
-            or params.get("ttl_seconds")
-            or DEFAULT_SUBSCRIPTION_TTL_SECONDS
-        )
-        if isinstance(ttl_raw, bool) or not isinstance(ttl_raw, (int, float)):
-            raise ServiceError("ttlSeconds must be a number.", 422, "invalid_arguments")
+        if "ttlMs" in params and params["ttlMs"] is not None:
+            ttl_ms = params["ttlMs"]
+            if (
+                isinstance(ttl_ms, bool)
+                or not isinstance(ttl_ms, (int, float))
+                or ttl_ms <= 0
+            ):
+                raise ServiceError(
+                    "ttlMs must be a positive number.", 422, "invalid_arguments"
+                )
+            ttl_raw: int | float = ttl_ms / 1000.0
+        else:
+            ttl_raw = (
+                params.get("ttlSeconds")
+                or params.get("ttl")
+                or params.get("ttl_seconds")
+                or DEFAULT_SUBSCRIPTION_TTL_SECONDS
+            )
+            if isinstance(ttl_raw, bool) or not isinstance(ttl_raw, (int, float)):
+                raise ServiceError(
+                    "ttlSeconds must be a number.", 422, "invalid_arguments"
+                )
         ttl_seconds = max(
             MIN_SUBSCRIPTION_TTL_SECONDS,
             min(MAX_SUBSCRIPTION_TTL_SECONDS, int(ttl_raw)),
@@ -941,7 +960,6 @@ class GroupChatMcpHandler:
             subscription_id=subscription_id,
             callback_url=callback_url,
             signing_secret=signing_secret_raw,
-            event_name=event_name,
         )
 
         now = datetime.now(UTC)
@@ -963,6 +981,8 @@ class GroupChatMcpHandler:
             "event": saved.event_name,
             "status": saved.status,
             "refreshBefore": refresh_before.isoformat(),
+            "cursor": None,
+            "truncated": False,
         }
 
     async def _verify_webhook_challenge(
@@ -971,17 +991,14 @@ class GroupChatMcpHandler:
         subscription_id: UUID,
         callback_url: str,
         signing_secret: str,
-        event_name: str,
     ) -> None:
         challenge = secrets.token_urlsafe(24)
         event_id = str(uuid4())
         timestamp = int(time.time())
         body_bytes = json.dumps(
             {
-                "type": "mcp.events.challenge",
+                "type": "verification",
                 "challenge": challenge,
-                "subscriptionId": str(subscription_id),
-                "event": event_name,
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -1026,7 +1043,9 @@ class GroupChatMcpHandler:
                 echoed = parsed["challenge"]
         except ValueError:
             echoed = response.text.strip()
-        if echoed != challenge:
+        if echoed is None or not secrets.compare_digest(
+            echoed.encode("utf-8"), challenge.encode("utf-8")
+        ):
             raise ServiceError(
                 "Webhook callback did not return the expected verification challenge.",
                 422,

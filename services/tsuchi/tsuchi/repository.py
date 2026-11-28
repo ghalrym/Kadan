@@ -2,7 +2,7 @@ import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from itertools import islice
 from pathlib import Path
 from typing import Literal
@@ -3919,8 +3919,13 @@ class Repository:
                 clauses.append("status = ?")
                 params.append(status)
             if due_before is not None:
+                due_utc = (
+                    due_before.replace(tzinfo=UTC)
+                    if due_before.tzinfo is None
+                    else due_before.astimezone(UTC)
+                )
                 clauses.append("next_attempt_at <= ?")
-                params.append(due_before.astimezone(UTC).isoformat())
+                params.append(due_utc.isoformat())
             if room_id is not None:
                 clauses.append("room_id = ?")
                 params.append(str(room_id))

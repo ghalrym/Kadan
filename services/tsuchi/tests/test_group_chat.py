@@ -390,11 +390,25 @@ def test_atomic_turn_cap_enforcement_suppression_and_user_reset(client):
     assert user_reset.json()["turn_cap_reached"] is False
     assert len(user_reset.json()["enqueued_delivery_ids"]) == 1
 
-    # Verify webhook deliveries exist for seq 1 and seq 3 (NOT seq 2), and delivery updates advance last_delivered_seq.
+    # Verify webhook deliveries exist for seq 1 and seq 3 (NOT seq 2), `due_before` filtering works,
+    # and delivery updates advance last_delivered_seq.
     deliveries = client.get(
-        "/api/group-chat/webhook-deliveries", params={"status": "pending"}
+        "/api/group-chat/webhook-deliveries",
+        params={
+            "status": "pending",
+            "due_before": (datetime.now(UTC) + timedelta(minutes=1)).isoformat(),
+        },
     ).json()
     assert [d["seq"] for d in deliveries] == [1, 3]
+    past_deliveries = client.get(
+        "/api/group-chat/webhook-deliveries",
+        params={
+            "status": "pending",
+            "due_before": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+        },
+    )
+    assert past_deliveries.status_code == 200
+    assert past_deliveries.json() == []
     first_delivery = deliveries[0]
     done = client.put(
         f"/api/group-chat/webhook-deliveries/{first_delivery['id']}",
