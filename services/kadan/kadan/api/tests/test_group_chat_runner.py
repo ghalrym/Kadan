@@ -1043,3 +1043,89 @@ def test_group_chat_cursor_advances_only_through_included_page_and_reconciles_ov
             assert len(state["event_runs"]) == 2
 
     asyncio.run(scenario())
+
+
+def test_direct_room_webhook_is_delivered_to_its_agent_without_revoking_the_subscription():
+    _, whsec = _signed_secret()
+    home_id = UUID("00000000-0000-0000-0000-000000000001")
+    dot_id = uuid4()
+    direct_id = uuid5(dot_id, "kadan-direct-room")
+    sub_id = uuid4()
+    delivery_id = uuid4()
+    now = datetime(2026, 11, 27, 16, 0, 0, tzinfo=UTC)
+    stamp = now.isoformat()
+
+    def room(room_id: UUID, **extra: Any) -> dict[str, Any]:
+        return {
+            "id": str(room_id), "title": "Room", "consecutive_agent_turns": 0,
+            "max_consecutive_agent_turns": 6, "version": 1, "created_at": stamp,
+            "updated_at": stamp, **extra,
+        }
+
+    rooms = {
+        str(home_id): room(home_id),
+        str(direct_id): room(direct_id, kind="direct", direct_participant_id=str(dot_id)),
+    }
+    dot = {
+        "id": str(dot_id), "room_id": str(home_id), "handle": "dot", "display_name": "Dot",
+        "kind": "external_agent", "agent_key": None, "description": "", "enabled": True,
+        "revoked_at": None, "last_seen_at": None, "cursor_seq": 0, "version": 1,
+        "created_at": stamp, "updated_at": stamp,
+    }
+    subscription = {
+        "id": str(sub_id), "room_id": str(home_id), "participant_id": str(dot_id),
+        "event_name": "group_chat.turn_requested", "filters": {"room_id": str(home_id)},
+        "callback_url": "https://dot.example/webhook", "signing_secret": whsec,
+        "status": "active", "expires_at": (now + timedelta(hours=1)).isoformat(),
+        "last_delivered_seq": 0, "last_error": None, "version": 1,
+        "created_at": stamp, "updated_at": stamp,
+    }
+    delivery = {
+        "id": str(delivery_id), "subscription_id": str(sub_id), "room_id": str(direct_id),
+        "participant_id": str(dot_id), "seq": 1, "message_id": str(uuid4()),
+        "payload": {"room_id": str(direct_id), "room_kind": "direct", "seq": 1,
+                    "message": {"content": "Just us"}},
+        "attempts": 0, "next_attempt_at": stamp, "status": "pending", "last_error": None,
+        "version": 1, "created_at": stamp, "updated_at": stamp,
+    }
+    sent: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host != "tsuchi.test":
+            sent.append(json.loads(request.content))
+            return httpx.Response(200)
+        path = request.url.path
+        if path == "/api/group-chat/webhook-deliveries":
+            return httpx.Response(200, json=[delivery] if delivery["status"] == "pending" else [])
+        if path == f"/api/group-chat/subscriptions/{sub_id}":
+            if request.method == "PUT":
+                body = json.loads(request.content)
+                subscription.update({k: v for k, v in body.items() if k in {"status", "last_error"}})
+                subscription["version"] += 1
+            return httpx.Response(200, json=subscription)
+        if path == "/api/group-chat/rooms/default":
+            return httpx.Response(200, json=rooms[str(home_id)])
+        if path == f"/api/group-chat/rooms/{home_id}/participants":
+            return httpx.Response(200, json=[dot])
+        if path == f"/api/group-chat/rooms/{direct_id}/participants":
+            return httpx.Response(200, json=[])
+        if path.startswith("/api/group-chat/rooms/"):
+            return httpx.Response(200, json=rooms[path.rsplit("/", 1)[-1]])
+        if path == f"/api/group-chat/webhook-deliveries/{delivery_id}":
+            body = json.loads(request.content)
+            delivery.update({k: body.get(k) for k in ("status", "attempts", "last_error")})
+            delivery["version"] += 1
+            return httpx.Response(200, json=delivery)
+        return httpx.Response(404)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            services = LocalServices(
+                client, Settings(tsuchi_url="http://tsuchi.test", hikari_url="http://hikari.test")
+            )
+            await GroupChatWebhookEvents(services).dispatch_pending_webhooks(now=now)
+
+    asyncio.run(scenario())
+    assert delivery["status"] == "delivered"
+    assert subscription["status"] == "active"
+    assert sent and sent[0]["data"]["room_kind"] == "direct"

@@ -166,7 +166,8 @@ class GroupChatWebhookEvents:
         room = rooms_cache[delivery.room_id]
 
         if delivery.room_id not in participants_cache:
-            roster = await self.services.group_chat.list_participants(delivery.room_id)
+            # A direct room's only member lives in the shared room's roster.
+            roster = await self.services.group_chat.room_roster(room)
             participants_cache[delivery.room_id] = {item.id: item for item in roster}
         participant = participants_cache[delivery.room_id].get(delivery.participant_id)
         if (
