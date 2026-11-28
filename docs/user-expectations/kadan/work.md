@@ -22,7 +22,7 @@ Click the **New thread** button (pencil) at the top of the sidebar to open a new
 - **Projects:** The project picker under the composer lists your saved folders. Choose **Add folder…** (opening your computer's native folder picker in Kadan Desktop) or **Manage projects**, or manage saved folders under **Settings → Projects**. Removing a project removes its saved threads from Kadan while leaving your folder on disk untouched.
 - **Model picker:** The model button in the composer opens a picker laid out like T3 Code's:
   - A column of coding assistant icons on the left, with **Favorites** at the top. Assistants that are not ready are dimmed; selecting one explains what is needed and offers **Open settings**.
-  - A searchable model list in the middle. Search covers every assistant. Star a model to add it to **Favorites** (remembered on that browser). The first nine models can be picked with **Ctrl+1**–**Ctrl+9**, and the arrow keys and **Enter** work too.
+  - A searchable model list in the middle showing the models currently reported by each connected coding assistant (rather than a static list). Search covers every assistant. Star a model to add it to **Favorites** (remembered on that browser). The first nine models can be picked with **Ctrl+1**–**Ctrl+9**, and the arrow keys and **Enter** work too.
   - A **Reasoning** column on the right listing the levels that model supports (for example Low, Medium, High), with the default level labelled. Choosing a level selects that model with that level. Models without reasoning levels say so.
   - A footer showing whether the assistant is ready, with **Manage assistants**.
 

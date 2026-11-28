@@ -568,3 +568,45 @@ test("ModelPicker search spans every assistant", () => {
   assert.equal(items.length, 1);
   assert.ok(textOf(items[0]).includes("Grok 4"));
 });
+
+test("ModelPicker omits placeholder rows when an unavailable assistant has no models and labels ultra effort", () => {
+  const harnesses = [
+    {
+      id: "codex",
+      display_name: "Codex",
+      installed: true,
+      default_model: "gpt-6.2-sol",
+      models: [{ id: "gpt-6.2-sol", label: "GPT-6.2-Sol", options: { effort: ["low", "ultra"] } }],
+      auth: { status: "ready", login_method: "device_code", message: "" },
+    },
+    {
+      id: "antigravity",
+      display_name: "Antigravity",
+      installed: true,
+      default_model: null,
+      models: [],
+      auth: { status: "sign_in_required", login_method: "api_key", message: "Paste your Google AI key." },
+    },
+  ];
+  const unreadyTree = loadModelPicker([true, "antigravity", "", 0, new Set(), null]).default({
+    harnesses,
+    harnessId: "codex",
+    modelId: "gpt-6.2-sol",
+    options: { effort: "ultra" },
+    onChange() {},
+    onOpenSettings() {},
+  });
+  assert.ok(textOf(unreadyTree).includes("Antigravity isn't ready yet."));
+  assert.equal(elements(unreadyTree).filter(n => n.props?.role === "option").length, 0);
+  assert.ok(!textOf(unreadyTree).includes("No models found"));
+
+  const readyTree = loadModelPicker([true, "codex", "", 0, new Set(), null]).default({
+    harnesses,
+    harnessId: "codex",
+    modelId: "gpt-6.2-sol",
+    options: { effort: "ultra" },
+    onChange() {},
+  });
+  const levels = elements(readyTree).filter(n => n.props?.className === "model-picker-effort-item");
+  assert.deepEqual(levels.map(n => textOf(n)), ["LowDefault", "Ultra"]);
+});

@@ -13,8 +13,11 @@ To add a new harness:
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
@@ -67,6 +70,57 @@ class HarnessModelInfo:
     label: str
     description: str = ""
     options: dict[str, list[str]] = field(default_factory=dict)
+
+
+def fingerprint_secret(value: str | None) -> str:
+    """Return a short non-reversible digest for cache keying without storing credentials."""
+    if not value:
+        return ""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+class ModelCatalogCache:
+    """Per-adapter TTL cache with in-flight coalescing for live harness model discovery."""
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: float = 300.0,
+        error_ttl_seconds: float = 15.0,
+    ):
+        self._ttl_seconds = ttl_seconds
+        self._error_ttl_seconds = error_ttl_seconds
+        self._lock = asyncio.Lock()
+        self._key: str | None = None
+        self._expires_at: float = 0.0
+        self._models: list[HarnessModelInfo] = []
+        self._default_model: str | None = None
+
+    def invalidate(self) -> None:
+        self._key = None
+        self._expires_at = 0.0
+        self._models = []
+        self._default_model = None
+
+    async def get_or_load(
+        self,
+        key: str,
+        loader: Callable[[], Awaitable[tuple[list[HarnessModelInfo], str | None]]],
+    ) -> tuple[list[HarnessModelInfo], str | None]:
+        now = time.monotonic()
+        if self._key == key and now < self._expires_at:
+            return list(self._models), self._default_model
+        async with self._lock:
+            now = time.monotonic()
+            if self._key == key and now < self._expires_at:
+                return list(self._models), self._default_model
+            models, default_model = await loader()
+            ttl = self._ttl_seconds if models else self._error_ttl_seconds
+            self._key = key
+            self._models = list(models)
+            self._default_model = default_model
+            self._expires_at = time.monotonic() + ttl
+            return list(self._models), self._default_model
 
 
 @dataclass

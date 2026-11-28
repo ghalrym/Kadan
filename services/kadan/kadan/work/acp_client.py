@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import re
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from pathlib import Path
@@ -16,14 +18,285 @@ from typing import Any
 
 from .contract import (
     HarnessError,
+    HarnessModelInfo,
     HarnessSession,
     NormalizedEvent,
     SessionConfig,
 )
 from .stdio_jsonrpc import JsonRpcStdioClient, ProcessFactory, StdioProcess
 
+logger = logging.getLogger(__name__)
+
 ACP_V2_VERSION = 2
 ACP_V1_VERSION = 1
+
+_EFFORT_KEY_RE = re.compile(r"effort|reasoning|thought", re.IGNORECASE)
+
+
+def _flatten_acp_config_values(raw_options: Any) -> list[dict[str, Any]]:
+    """Flatten ACP v2 `configOptions[].options`, which may be flat or grouped."""
+    if not isinstance(raw_options, list):
+        return []
+    flat: list[dict[str, Any]] = []
+    for item in raw_options:
+        if not isinstance(item, dict):
+            continue
+        nested = item.get("options")
+        if isinstance(nested, list):
+            for sub in nested:
+                if isinstance(sub, dict):
+                    flat.append(sub)
+        else:
+            flat.append(item)
+    return flat
+
+
+def _extract_model_efforts(entry: dict[str, Any]) -> list[str]:
+    for key in ("supportedEffortLevels", "effortLevels", "reasoningEfforts"):
+        raw = entry.get(key)
+        if isinstance(raw, list):
+            levels: list[str] = []
+            for item in raw:
+                val = (
+                    item.get("value") or item.get("reasoningEffort") or item.get("id")
+                    if isinstance(item, dict)
+                    else item
+                )
+                if isinstance(val, str) and val.strip() and val.strip() not in levels:
+                    levels.append(val.strip())
+            if levels:
+                return levels
+    return []
+
+
+def parse_acp_models(
+    init_res: dict[str, Any] | None,
+    session_res: dict[str, Any] | None,
+) -> tuple[list[HarnessModelInfo], str | None]:
+    """Extract selectable models and reasoning levels from ACP `initialize`/`session/new` responses."""
+    session = session_res if isinstance(session_res, dict) else {}
+    init = init_res if isinstance(init_res, dict) else {}
+
+    config_options = (
+        session.get("configOptions")
+        if isinstance(session.get("configOptions"), list)
+        else []
+    )
+
+    shared_efforts: list[str] = []
+    for opt in config_options:
+        if not isinstance(opt, dict):
+            continue
+        cat = str(opt.get("category") or "")
+        opt_id = str(opt.get("id") or "")
+        if _EFFORT_KEY_RE.search(cat) or _EFFORT_KEY_RE.search(opt_id):
+            for choice in _flatten_acp_config_values(opt.get("options")):
+                val = str(choice.get("value") or choice.get("id") or "").strip()
+                if val and val not in shared_efforts:
+                    shared_efforts.append(val)
+            if shared_efforts:
+                break
+
+    models: list[HarnessModelInfo] = []
+    seen: set[str] = set()
+    default_model: str | None = None
+
+    def _add_model(
+        model_id: str,
+        label: str,
+        description: str,
+        efforts: list[str],
+    ) -> None:
+        mid = model_id.strip()
+        if not mid or mid in seen:
+            return
+        seen.add(mid)
+        opts = {"effort": efforts} if efforts else {}
+        models.append(
+            HarnessModelInfo(
+                id=mid,
+                label=label.strip() or mid,
+                description=description.strip(),
+                options=opts,
+            )
+        )
+
+    # 1. Standard ACP `models: { currentModelId, availableModels: [...] }`.
+    models_block = session.get("models")
+    if isinstance(models_block, dict):
+        cur = models_block.get("currentModelId") or models_block.get("current_model_id")
+        if isinstance(cur, str) and cur.strip():
+            default_model = cur.strip()
+        avail = (
+            models_block.get("availableModels")
+            or models_block.get("available_models")
+            or models_block.get("models")
+        )
+        if isinstance(avail, list):
+            for entry in avail:
+                if not isinstance(entry, dict):
+                    continue
+                mid = str(
+                    entry.get("modelId")
+                    or entry.get("model_id")
+                    or entry.get("id")
+                    or ""
+                )
+                label = str(
+                    entry.get("name")
+                    or entry.get("displayName")
+                    or entry.get("label")
+                    or mid
+                )
+                desc = str(entry.get("description") or "")
+                efforts = _extract_model_efforts(entry) or list(shared_efforts)
+                _add_model(mid, label, desc, efforts)
+
+    # 2. ACP v2 `configOptions` with `category == "model"` or `id == "model"`.
+    if not models:
+        for opt in config_options:
+            if not isinstance(opt, dict):
+                continue
+            cat = str(opt.get("category") or "").lower()
+            opt_id = str(opt.get("id") or "").lower()
+            if cat != "model" and opt_id != "model":
+                continue
+            cur = opt.get("currentValue") or opt.get("current_value")
+            if isinstance(cur, str) and cur.strip():
+                default_model = cur.strip()
+            for choice in _flatten_acp_config_values(opt.get("options")):
+                mid = str(choice.get("value") or choice.get("id") or "")
+                label = str(choice.get("name") or choice.get("label") or mid)
+                desc = str(choice.get("description") or "")
+                efforts = _extract_model_efforts(choice) or list(shared_efforts)
+                _add_model(mid, label, desc, efforts)
+            if models:
+                break
+
+    # 3. Fallback: `initialize` result `models`.
+    if not models:
+        init_models = init.get("models")
+        raw_list: list[Any] = []
+        if isinstance(init_models, dict):
+            cur = init_models.get("currentModelId") or init_models.get("defaultModel")
+            if isinstance(cur, str) and cur.strip():
+                default_model = cur.strip()
+            cand = (
+                init_models.get("availableModels")
+                or init_models.get("models")
+                or init_models.get("data")
+            )
+            if isinstance(cand, list):
+                raw_list = cand
+        elif isinstance(init_models, list):
+            raw_list = init_models
+        for entry in raw_list:
+            if isinstance(entry, str):
+                _add_model(entry, entry, "", list(shared_efforts))
+            elif isinstance(entry, dict):
+                mid = str(
+                    entry.get("modelId") or entry.get("id") or entry.get("model") or ""
+                )
+                label = str(
+                    entry.get("name")
+                    or entry.get("displayName")
+                    or entry.get("label")
+                    or mid
+                )
+                desc = str(entry.get("description") or "")
+                efforts = _extract_model_efforts(entry) or list(shared_efforts)
+                _add_model(mid, label, desc, efforts)
+
+    if default_model and default_model not in seen:
+        default_model = models[0].id if models else None
+    elif not default_model and models:
+        default_model = models[0].id
+
+    return models, default_model
+
+
+async def discover_acp_models(
+    command: list[str],
+    *,
+    display_name: str,
+    env_extra: dict[str, str] | None = None,
+    cwd: str | None = None,
+    process_factory: ProcessFactory | None = None,
+    timeout: float = 15.0,
+) -> tuple[list[HarnessModelInfo], str | None]:
+    """Probe an ACP server via `initialize` + `session/new` to discover live models."""
+    work_dir = cwd or os.getcwd()
+    env = dict(os.environ)
+    if env_extra:
+        env.update(env_extra)
+    rpc: JsonRpcStdioClient | None = None
+    session_id: str | None = None
+    try:
+        if process_factory is not None:
+            transport = await process_factory(command, work_dir, env)
+        else:
+            transport = await StdioProcess.spawn(
+                command,
+                cwd=work_dir,
+                env=env,
+                not_found_message=f"{display_name} is not installed on this computer.",
+            )
+        rpc = JsonRpcStdioClient(transport, include_jsonrpc=True)
+        rpc.start()
+
+        client_info = {"name": "kadan", "title": "Kadan Work", "version": "1.0"}
+        try:
+            init_res = await rpc.request(
+                "initialize",
+                {
+                    "protocolVersion": ACP_V2_VERSION,
+                    "clientInfo": client_info,
+                    "clientCapabilities": {},
+                },
+                timeout=timeout,
+            )
+        except HarnessError:
+            init_res = await rpc.request(
+                "initialize",
+                {
+                    "protocolVersion": ACP_V1_VERSION,
+                    "clientInfo": client_info,
+                    "clientCapabilities": {},
+                },
+                timeout=timeout,
+            )
+
+        session_res: dict[str, Any] = {}
+        try:
+            created = await rpc.request(
+                "session/new",
+                {"cwd": work_dir, "mcpServers": []},
+                timeout=timeout,
+            )
+            if isinstance(created, dict):
+                session_res = created
+                sid = created.get("sessionId")
+                if isinstance(sid, str) and sid:
+                    session_id = sid
+        except HarnessError as exc:
+            logger.debug("%s ACP session/new model probe failed: %s", display_name, exc)
+
+        return parse_acp_models(
+            init_res if isinstance(init_res, dict) else {},
+            session_res,
+        )
+    except (HarnessError, TimeoutError, OSError) as exc:
+        logger.warning("%s ACP model discovery failed: %s", display_name, exc)
+        return [], None
+    finally:
+        if rpc is not None:
+            if session_id:
+                with suppress(Exception):
+                    await rpc.request(
+                        "session/close", {"sessionId": session_id}, timeout=2.0
+                    )
+            with suppress(Exception):
+                await rpc.close()
 
 
 def _extract_text_content(content: Any) -> str:

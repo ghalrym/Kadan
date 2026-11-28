@@ -8,7 +8,9 @@ and `--resume` session continuity.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import shutil
 from collections.abc import AsyncIterator
@@ -25,33 +27,79 @@ from .contract import (
     HarnessError,
     HarnessModelInfo,
     HarnessSession,
+    ModelCatalogCache,
     NormalizedEvent,
     SessionConfig,
+    fingerprint_secret,
 )
 from .stdio_jsonrpc import ProcessFactory, StdioProcess
 
 if TYPE_CHECKING:
     from ..api.services import LocalServices
 
-CLAUDE_MODELS: list[HarnessModelInfo] = [
-    HarnessModelInfo(
-        id="claude-sonnet-4-6",
-        label="Claude Sonnet 4.6",
-        description="Balanced speed and coding accuracy for everyday work.",
-        options={"effort": ["low", "medium", "high"]},
-    ),
-    HarnessModelInfo(
-        id="claude-opus-4-6",
-        label="Claude Opus 4.6",
-        description="Deepest reasoning for complex refactors and architecture.",
-        options={"effort": ["medium", "high"]},
-    ),
-    HarnessModelInfo(
-        id="claude-haiku-4-5",
-        label="Claude Haiku 4.5",
-        description="Fast responses for quick fixes and lookups.",
-    ),
-]
+logger = logging.getLogger(__name__)
+
+
+def _parse_claude_models(
+    entries: list[dict[str, Any]],
+) -> tuple[list[HarnessModelInfo], str | None]:
+    """Normalize Claude Code `initialize` `models` entries into `HarnessModelInfo`."""
+    valid_entries = [e for e in entries if isinstance(e, dict)]
+    default_resolved: str | None = None
+    non_default_resolved: set[str] = set()
+
+    for entry in valid_entries:
+        val = str(entry.get("value") or "").strip()
+        resolved = str(entry.get("resolvedModel") or "").strip()
+        if val == "default" and resolved:
+            default_resolved = resolved
+        elif val != "default" and resolved:
+            non_default_resolved.add(resolved)
+
+    models: list[HarnessModelInfo] = []
+    seen: set[str] = set()
+
+    for entry in valid_entries:
+        val = str(entry.get("value") or "").strip()
+        resolved = str(entry.get("resolvedModel") or "").strip()
+        # Skip the synthetic "default" alias when a concrete entry for the same model exists.
+        if val == "default" and resolved and resolved in non_default_resolved:
+            continue
+        model_id = resolved or val
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+
+        label = str(entry.get("displayName") or model_id).strip() or model_id
+        description = str(entry.get("description") or "").strip()
+
+        efforts: list[str] = []
+        raw_efforts = entry.get("supportedEffortLevels")
+        if isinstance(raw_efforts, list):
+            for level in raw_efforts:
+                if (
+                    isinstance(level, str)
+                    and level.strip()
+                    and level.strip() not in efforts
+                ):
+                    efforts.append(level.strip())
+
+        options = {"effort": efforts} if efforts else {}
+        models.append(
+            HarnessModelInfo(
+                id=model_id,
+                label=label,
+                description=description,
+                options=options,
+            )
+        )
+
+    default_model: str | None = None
+    if default_resolved and default_resolved in seen:
+        default_model = default_resolved
+    elif models:
+        default_model = models[0].id
+    return models, default_model
 
 
 def _find_claude_binary() -> str | None:
@@ -123,6 +171,9 @@ class ClaudeHarnessSession(HarnessSession):
         ]
         if self.config.model:
             cmd.extend(["--model", self.config.model])
+        effort = self.config.model_options.get("effort")
+        if isinstance(effort, str) and effort:
+            cmd.extend(["--effort", effort])
         if self._session_id:
             cmd.extend(["--resume", self._session_id])
         return cmd, env
@@ -435,6 +486,7 @@ class ClaudeHarnessAdapter(HarnessAdapter):
 
     def __init__(self, *, process_factory: ProcessFactory | None = None):
         self._process_factory = process_factory
+        self._model_cache = ModelCatalogCache()
 
     async def _stored_credential(
         self, services: LocalServices
@@ -451,6 +503,74 @@ class ClaudeHarnessAdapter(HarnessAdapter):
                 cfg.get("account_label") or "Claude subscription",
             )
         return None, None
+
+    async def _discover_models(
+        self, binary: str, credential: str | None
+    ) -> tuple[list[HarnessModelInfo], str | None]:
+        env = dict(os.environ)
+        if credential:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = credential
+            env.pop("ANTHROPIC_API_KEY", None)
+        cmd = [
+            binary,
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-prompt-tool",
+            "stdio",
+        ]
+        transport: StdioProcess | None = None
+        try:
+            if self._process_factory is not None:
+                transport = await self._process_factory(cmd, os.getcwd(), env)
+            else:
+                transport = await StdioProcess.spawn(
+                    cmd,
+                    cwd=os.getcwd(),
+                    env=env,
+                    not_found_message="Claude Code is not installed on this computer.",
+                )
+            req_id = "kadan-init-models"
+            await transport.write_json(
+                {
+                    "type": "control_request",
+                    "request_id": req_id,
+                    "request": {"subtype": "initialize"},
+                }
+            )
+
+            async def _read_init_models() -> tuple[list[HarnessModelInfo], str | None]:
+                for _ in range(30):
+                    frame = await transport.read_json()
+                    if frame is None:
+                        return [], None
+                    if frame.get("type") != "control_response":
+                        continue
+                    outer = frame.get("response")
+                    if not isinstance(outer, dict):
+                        continue
+                    if outer.get("request_id") not in {req_id, None}:
+                        continue
+                    inner = outer.get("response")
+                    raw_models = (
+                        inner.get("models") if isinstance(inner, dict) else None
+                    )
+                    if isinstance(raw_models, list):
+                        return _parse_claude_models(raw_models)
+                    return [], None
+                return [], None
+
+            return await asyncio.wait_for(_read_init_models(), timeout=15.0)
+        except (HarnessError, TimeoutError, OSError) as exc:
+            logger.warning("Claude Code model discovery failed: %s", exc)
+            return [], None
+        finally:
+            if transport is not None:
+                with suppress(Exception):
+                    await transport.close()
 
     async def check_availability(self, services: LocalServices) -> HarnessAvailability:
         binary = _find_claude_binary()
@@ -490,6 +610,16 @@ class ClaudeHarnessAdapter(HarnessAdapter):
                 needs_code=True,
                 message="Sign in to connect.",
             )
+
+        models: list[HarnessModelInfo] = []
+        default_model: str | None = None
+        if binary and auth.status == "ready":
+            cache_key = f"{binary}:{fingerprint_secret(cred)}"
+            models, default_model = await self._model_cache.get_or_load(
+                cache_key,
+                lambda: self._discover_models(binary, cred),
+            )
+
         return HarnessAvailability(
             harness_id=self.harness_id,
             display_name=self.display_name,
@@ -497,8 +627,8 @@ class ClaudeHarnessAdapter(HarnessAdapter):
             installed=binary is not None,
             binary_path=binary,
             auth=auth,
-            models=CLAUDE_MODELS,
-            default_model=CLAUDE_MODELS[0].id,
+            models=models,
+            default_model=default_model,
             supports_steer=False,
             supports_resume=True,
             supports_approvals=True,
@@ -511,6 +641,7 @@ class ClaudeHarnessAdapter(HarnessAdapter):
         binary = _find_claude_binary()
         if not binary:
             raise HarnessError("Claude Code is not installed on this server.")
+        self._model_cache.invalidate()
         return await cli_logins.start("claude", binary, services)
 
     async def sign_in_status(self, services: LocalServices) -> HarnessAuthStatus:
@@ -525,10 +656,12 @@ class ClaudeHarnessAdapter(HarnessAdapter):
         code = str(payload.get("code") or "").strip()
         if not code:
             raise HarnessError("Paste the sign-in code from Claude's page.")
+        self._model_cache.invalidate()
         return await cli_logins.submit_code("claude", code)
 
     async def sign_out(self, services: LocalServices) -> HarnessAuthStatus:
         await cli_logins.cancel("claude")
+        self._model_cache.invalidate()
         with suppress(ServiceError):
             await services.json_request(
                 "Tsuchi", "DELETE", "/api/work/harnesses/claude"

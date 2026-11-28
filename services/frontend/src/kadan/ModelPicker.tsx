@@ -14,6 +14,7 @@ const EFFORT_LABELS: Record<string, string> = {
   high: "High",
   xhigh: "Extra High",
   max: "Max",
+  ultra: "Ultra",
 };
 
 function effortLabel(level: string): string {
@@ -33,9 +34,9 @@ function defaultEffort(levels: string[]): string | null {
 }
 
 function harnessModels(harness: WorkHarness): WorkHarnessModel[] {
-  return harness.models.length > 0
-    ? harness.models
-    : [{ id: harness.default_model ?? "", label: harness.display_name, description: "", options: {} }];
+  if (harness.models.length > 0) return harness.models;
+  if (harness.auth.status !== "ready") return [];
+  return [{ id: harness.default_model ?? "", label: harness.display_name, description: "", options: {} }];
 }
 
 function modelKey(harnessId: string, modelId: string | null | undefined): string {
@@ -331,9 +332,11 @@ export default function ModelPicker({
                   </div>
                 )}
                 {items.length === 0 ? (
-                  <p className="model-picker-empty">
-                    {!searching && rail === FAVORITES_RAIL ? "No favorites yet" : "No models found"}
-                  </p>
+                  !searching && railHarness && railHarness.auth.status !== "ready" ? null : (
+                    <p className="model-picker-empty">
+                      {!searching && rail === FAVORITES_RAIL ? "No favorites yet" : "No models found"}
+                    </p>
+                  )
                 ) : (
                   items.map((item, index) => {
                     const selected = item.key === currentKey;

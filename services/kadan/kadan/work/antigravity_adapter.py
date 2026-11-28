@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 import os
+import re
 import shutil
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..api.config import ServiceError
-from .acp_client import AcpHarnessSession
+from .acp_client import AcpHarnessSession, discover_acp_models
 from .contract import (
     HarnessAdapter,
     HarnessAuthStatus,
@@ -17,26 +21,113 @@ from .contract import (
     HarnessError,
     HarnessModelInfo,
     HarnessSession,
+    ModelCatalogCache,
     SessionConfig,
+    fingerprint_secret,
 )
 from .stdio_jsonrpc import ProcessFactory
 
 if TYPE_CHECKING:
     from ..api.services import LocalServices
 
-ANTIGRAVITY_MODELS: list[HarnessModelInfo] = [
-    HarnessModelInfo(
-        id="gemini-2.5-pro",
-        label="Gemini 2.5 Pro",
-        description="High-accuracy coding and multi-file reasoning.",
-        options={"effort": ["low", "medium", "high"]},
-    ),
-    HarnessModelInfo(
-        id="gemini-2.5-flash",
-        label="Gemini 2.5 Flash",
-        description="Fast turnaround for routine edits and questions.",
-    ),
-]
+logger = logging.getLogger(__name__)
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_MODEL_BULLET_RE = re.compile(r"^\s*[-*•]\s+(\S+)(?:\s+(.*))?$")
+
+
+def _parse_agy_models_output(
+    text: str,
+) -> tuple[list[HarnessModelInfo], str | None]:
+    """Parse `agy models` stdout (JSON or plain text list) into `HarnessModelInfo`."""
+    cleaned = _ANSI_RE.sub("", text).strip()
+    if not cleaned:
+        return [], None
+
+    if cleaned.startswith(("{", "[")):
+        with suppress(json.JSONDecodeError):
+            parsed = json.loads(cleaned)
+            raw_list = (
+                parsed
+                if isinstance(parsed, list)
+                else (
+                    parsed.get("models")
+                    or parsed.get("availableModels")
+                    or parsed.get("data")
+                    or []
+                )
+                if isinstance(parsed, dict)
+                else []
+            )
+            models: list[HarnessModelInfo] = []
+            seen: set[str] = set()
+            default_model: str | None = (
+                str(parsed.get("defaultModel") or parsed.get("default") or "").strip()
+                or None
+                if isinstance(parsed, dict)
+                else None
+            )
+            for item in raw_list:
+                if isinstance(item, str) and item.strip() and item.strip() not in seen:
+                    seen.add(item.strip())
+                    models.append(HarnessModelInfo(id=item.strip(), label=item.strip()))
+                elif isinstance(item, dict):
+                    mid = str(
+                        item.get("id") or item.get("modelId") or item.get("model") or ""
+                    ).strip()
+                    if not mid or mid in seen:
+                        continue
+                    seen.add(mid)
+                    label = str(
+                        item.get("displayName") or item.get("name") or mid
+                    ).strip()
+                    desc = str(item.get("description") or "").strip()
+                    models.append(
+                        HarnessModelInfo(id=mid, label=label or mid, description=desc)
+                    )
+                    if item.get("isDefault") is True and default_model is None:
+                        default_model = mid
+            if models:
+                return models, (
+                    default_model if default_model in seen else models[0].id
+                )
+
+    models = []
+    seen = set()
+    default_model = None
+    for raw_line in cleaned.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.lower().startswith("default model:"):
+            cand = line.split(":", 1)[1].strip()
+            if cand:
+                default_model = cand
+            continue
+        match = _MODEL_BULLET_RE.match(raw_line)
+        if not match:
+            continue
+        mid = match.group(1).strip()
+        rest = (match.group(2) or "").strip()
+        is_def = "(default)" in rest.lower() or raw_line.lstrip().startswith("*")
+        rest_clean = re.sub(r"\(default\)", "", rest, flags=re.IGNORECASE).strip(" -—:")
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        models.append(
+            HarnessModelInfo(
+                id=mid,
+                label=rest_clean or mid,
+            )
+        )
+        if is_def and default_model is None:
+            default_model = mid
+
+    if default_model and default_model not in seen:
+        default_model = models[0].id if models else None
+    elif not default_model and models:
+        default_model = models[0].id
+    return models, default_model
 
 
 def find_antigravity_command() -> list[str] | None:
@@ -66,7 +157,7 @@ def find_antigravity_binary() -> str | None:
     return cmd[0] if cmd else None
 
 
-def _has_local_antigravity_auth() -> bool:
+def _has_local_antigravity_auth(binary: str | None = None) -> bool:
     if os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"):
         return True
     for candidate in (
@@ -76,7 +167,11 @@ def _has_local_antigravity_auth() -> bool:
         if candidate.is_file():
             return True
     t3_root = Path.home() / ".t3" / "userdata" / "providers" / "antigravity"
-    return bool(t3_root.is_dir() and any(t3_root.iterdir()))
+    if binary and t3_root.is_dir():
+        with suppress(OSError, ValueError):
+            if Path(binary).resolve().is_relative_to(t3_root.resolve()):
+                return any(t3_root.iterdir())
+    return False
 
 
 class AntigravityHarnessAdapter(HarnessAdapter):
@@ -88,6 +183,7 @@ class AntigravityHarnessAdapter(HarnessAdapter):
 
     def __init__(self, *, process_factory: ProcessFactory | None = None):
         self._process_factory = process_factory
+        self._model_cache = ModelCatalogCache()
 
     async def _stored_credential(
         self, services: LocalServices
@@ -104,6 +200,49 @@ class AntigravityHarnessAdapter(HarnessAdapter):
                 cfg.get("account_label") or "Google Antigravity",
             )
         return None, None
+
+    async def _discover_models(
+        self, command: list[str], credential: str | None
+    ) -> tuple[list[HarnessModelInfo], str | None]:
+        env_extra: dict[str, str] = {}
+        if credential:
+            env_extra["GEMINI_API_KEY"] = credential
+            env_extra["GOOGLE_API_KEY"] = credential
+
+        models, default_model = await discover_acp_models(
+            command,
+            display_name=self.display_name,
+            env_extra=env_extra,
+            process_factory=self._process_factory,
+        )
+        if models or self._process_factory is not None:
+            return models, default_model
+
+        # Fallback: `agy models` subcommand when driving the `agy` CLI.
+        if Path(command[0]).name == "agy":
+            env = dict(os.environ)
+            env.update(env_extra)
+            proc: asyncio.subprocess.Process | None = None
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    command[0],
+                    "models",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+                if proc.returncode == 0:
+                    return _parse_agy_models_output(
+                        stdout.decode("utf-8", errors="replace")
+                    )
+            except (TimeoutError, OSError) as exc:
+                logger.warning("Antigravity CLI model discovery failed: %s", exc)
+            finally:
+                if proc is not None and proc.returncode is None:
+                    with suppress(ProcessLookupError):
+                        proc.kill()
+        return [], None
 
     async def check_availability(self, services: LocalServices) -> HarnessAvailability:
         command = find_antigravity_command()
@@ -122,7 +261,7 @@ class AntigravityHarnessAdapter(HarnessAdapter):
                 account_label=label,
                 message="Connected.",
             )
-        elif _has_local_antigravity_auth():
+        elif _has_local_antigravity_auth(binary):
             auth = HarnessAuthStatus(
                 status="ready",
                 login_method="browser",
@@ -137,6 +276,16 @@ class AntigravityHarnessAdapter(HarnessAdapter):
                 needs_code=True,
                 message="Paste your Google AI key.",
             )
+
+        models: list[HarnessModelInfo] = []
+        default_model: str | None = None
+        if command and auth.status == "ready":
+            cache_key = f"{' '.join(command)}:{fingerprint_secret(cred)}"
+            models, default_model = await self._model_cache.get_or_load(
+                cache_key,
+                lambda: self._discover_models(command, cred),
+            )
+
         return HarnessAvailability(
             harness_id=self.harness_id,
             display_name=self.display_name,
@@ -144,8 +293,8 @@ class AntigravityHarnessAdapter(HarnessAdapter):
             installed=binary is not None,
             binary_path=binary,
             auth=auth,
-            models=ANTIGRAVITY_MODELS,
-            default_model=ANTIGRAVITY_MODELS[0].id,
+            models=models,
+            default_model=default_model,
             supports_steer=False,
             supports_resume=True,
             supports_approvals=True,
@@ -181,6 +330,7 @@ class AntigravityHarnessAdapter(HarnessAdapter):
                 "metadata": {},
             },
         )
+        self._model_cache.invalidate()
         return HarnessAuthStatus(
             status="ready",
             login_method="api_key",
@@ -189,6 +339,7 @@ class AntigravityHarnessAdapter(HarnessAdapter):
         )
 
     async def sign_out(self, services: LocalServices) -> HarnessAuthStatus:
+        self._model_cache.invalidate()
         with suppress(ServiceError):
             await services.json_request(
                 "Tsuchi", "DELETE", "/api/work/harnesses/antigravity"

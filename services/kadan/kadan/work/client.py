@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -145,34 +146,35 @@ class WorkClient:
     # ── Harnesses ────────────────────────────────────────────────────────────
 
     async def list_harnesses(self) -> list[WorkHarnessPublic]:
-        results: list[WorkHarnessPublic] = []
-        for adapter in self.registry.list():
-            avail = await adapter.check_availability(self.services)
-            results.append(
-                WorkHarnessPublic(
-                    id=avail.harness_id,
-                    display_name=avail.display_name,
-                    description=avail.description,
-                    installed=avail.installed,
-                    auth=_public_auth(avail.auth),
-                    models=[
-                        WorkHarnessModelInfo(
-                            id=m.id,
-                            label=m.label,
-                            description=m.description,
-                            options=m.options,
-                        )
-                        for m in avail.models
-                    ],
-                    default_model=avail.default_model,
-                    supports_steer=avail.supports_steer,
-                    supports_resume=avail.supports_resume,
-                    supports_approvals=avail.supports_approvals,
-                    supports_questions=avail.supports_questions,
-                    supports_images=avail.supports_images,
-                )
+        adapters = self.registry.list()
+        availabilities = await asyncio.gather(
+            *(adapter.check_availability(self.services) for adapter in adapters)
+        )
+        return [
+            WorkHarnessPublic(
+                id=avail.harness_id,
+                display_name=avail.display_name,
+                description=avail.description,
+                installed=avail.installed,
+                auth=_public_auth(avail.auth),
+                models=[
+                    WorkHarnessModelInfo(
+                        id=m.id,
+                        label=m.label,
+                        description=m.description,
+                        options=m.options,
+                    )
+                    for m in avail.models
+                ],
+                default_model=avail.default_model,
+                supports_steer=avail.supports_steer,
+                supports_resume=avail.supports_resume,
+                supports_approvals=avail.supports_approvals,
+                supports_questions=avail.supports_questions,
+                supports_images=avail.supports_images,
             )
-        return results
+            for avail in availabilities
+        ]
 
     async def start_harness_sign_in(
         self, harness_id: str, payload: dict[str, Any] | None = None

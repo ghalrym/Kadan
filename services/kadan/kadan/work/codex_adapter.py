@@ -8,6 +8,7 @@ thread's local project folder.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -25,34 +26,67 @@ from .contract import (
     HarnessError,
     HarnessModelInfo,
     HarnessSession,
+    ModelCatalogCache,
     NormalizedEvent,
     SessionConfig,
+    fingerprint_secret,
 )
 from .stdio_jsonrpc import JsonRpcStdioClient, ProcessFactory, StdioProcess
 
 if TYPE_CHECKING:
     from ..api.services import LocalServices
 
-CODEX_MODELS: list[HarnessModelInfo] = [
-    HarnessModelInfo(
-        id="gpt-5.3-codex",
-        label="GPT-5.3 Codex",
-        description="Default coding model for multi-file edits and tests.",
-        options={"effort": ["low", "medium", "high", "xhigh"]},
-    ),
-    HarnessModelInfo(
-        id="gpt-5.2-codex",
-        label="GPT-5.2 Codex",
-        description="Fast coding model for focused edits.",
-        options={"effort": ["low", "medium", "high"]},
-    ),
-    HarnessModelInfo(
-        id="o3",
-        label="o3",
-        description="Deep reasoning model for tricky bugs and architecture.",
-        options={"effort": ["medium", "high"]},
-    ),
-]
+logger = logging.getLogger(__name__)
+
+
+def _parse_codex_models(
+    entries: list[dict[str, Any]],
+) -> tuple[list[HarnessModelInfo], str | None]:
+    """Normalize `codex app-server` `model/list` entries into `HarnessModelInfo`."""
+    visible = [
+        e for e in entries if isinstance(e, dict) and not bool(e.get("hidden", False))
+    ]
+    candidates = visible or [e for e in entries if isinstance(e, dict)]
+
+    models: list[HarnessModelInfo] = []
+    seen: set[str] = set()
+    default_model: str | None = None
+
+    for entry in candidates:
+        model_id = str(entry.get("id") or entry.get("model") or "").strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        label = str(entry.get("displayName") or model_id).strip() or model_id
+        description = str(entry.get("description") or "").strip()
+
+        efforts: list[str] = []
+        raw_efforts = entry.get("supportedReasoningEfforts")
+        if isinstance(raw_efforts, list):
+            for item in raw_efforts:
+                level = item.get("reasoningEffort") if isinstance(item, dict) else item
+                if (
+                    isinstance(level, str)
+                    and level.strip()
+                    and level.strip() not in efforts
+                ):
+                    efforts.append(level.strip())
+
+        options = {"effort": efforts} if efforts else {}
+        models.append(
+            HarnessModelInfo(
+                id=model_id,
+                label=label,
+                description=description,
+                options=options,
+            )
+        )
+        if entry.get("isDefault") is True and default_model is None:
+            default_model = model_id
+
+    if default_model is None and models:
+        default_model = models[0].id
+    return models, default_model
 
 
 def _find_codex_binary() -> str | None:
@@ -487,10 +521,11 @@ class CodexHarnessAdapter(HarnessAdapter):
 
     def __init__(self, *, process_factory: ProcessFactory | None = None):
         self._process_factory = process_factory
+        self._model_cache = ModelCatalogCache()
 
-    async def _stored_credential(
+    async def _stored_credential_with_source(
         self, services: LocalServices
-    ) -> tuple[str | None, str | None]:
+    ) -> tuple[str | None, str | None, bool]:
         try:
             cfg = await services.json_request(
                 "Tsuchi", "GET", "/api/work/harnesses/codex"
@@ -498,14 +533,97 @@ class CodexHarnessAdapter(HarnessAdapter):
         except ServiceError:
             cfg = None
         if isinstance(cfg, dict) and cfg.get("credential"):
-            return str(cfg["credential"]), cfg.get("account_label") or "ChatGPT Codex"
+            return (
+                str(cfg["credential"]),
+                cfg.get("account_label") or "ChatGPT Codex",
+                True,
+            )
         local = _local_codex_auth_path()
         if local is not None:
             with suppress(OSError):
                 text = local.read_text().strip()
                 if text:
-                    return text, "Local Codex sign-in"
-        return None, None
+                    return text, "Local Codex sign-in", False
+        return None, None, False
+
+    async def _stored_credential(
+        self, services: LocalServices
+    ) -> tuple[str | None, str | None]:
+        cred, label, _ = await self._stored_credential_with_source(services)
+        return cred, label
+
+    async def _discover_models(
+        self,
+        binary: str,
+        credential: str | None,
+        *,
+        use_temp_home: bool,
+    ) -> tuple[list[HarnessModelInfo], str | None]:
+        env = dict(os.environ)
+        temp_home: Path | None = None
+        rpc: JsonRpcStdioClient | None = None
+        try:
+            if credential and use_temp_home:
+                temp_home = Path(tempfile.mkdtemp(prefix="kadan-codex-models-"))
+                (temp_home / "auth.json").write_text(credential)
+                env["CODEX_HOME"] = str(temp_home)
+                env.pop("OPENAI_API_KEY", None)
+
+            cmd = [binary, "app-server", "--listen", "stdio://"]
+            if self._process_factory is not None:
+                transport = await self._process_factory(cmd, os.getcwd(), env)
+            else:
+                transport = await StdioProcess.spawn(
+                    cmd,
+                    cwd=os.getcwd(),
+                    env=env,
+                    not_found_message="Codex is not installed on this computer.",
+                )
+            rpc = JsonRpcStdioClient(transport, include_jsonrpc=False)
+            rpc.start()
+
+            await rpc.request(
+                "initialize",
+                {
+                    "clientInfo": {
+                        "name": "kadan",
+                        "title": "Kadan Work",
+                        "version": "1.0",
+                    },
+                    "capabilities": {"experimentalApi": True},
+                },
+                timeout=15.0,
+            )
+            await rpc.notify("initialized", {})
+
+            raw_entries: list[dict[str, Any]] = []
+            cursor: str | None = None
+            for _ in range(10):
+                params: dict[str, Any] = {}
+                if cursor:
+                    params["cursor"] = cursor
+                res = await rpc.request("model/list", params, timeout=15.0)
+                if not isinstance(res, dict):
+                    break
+                page = res.get("data")
+                if isinstance(page, list):
+                    raw_entries.extend(item for item in page if isinstance(item, dict))
+                next_cursor = res.get("nextCursor")
+                if isinstance(next_cursor, str) and next_cursor:
+                    cursor = next_cursor
+                else:
+                    break
+            return _parse_codex_models(raw_entries)
+        except (HarnessError, TimeoutError, OSError) as exc:
+            logger.warning("Codex model discovery failed: %s", exc)
+            return [], None
+        finally:
+            if rpc is not None:
+                with suppress(Exception):
+                    await rpc.close()
+            if temp_home is not None:
+                with suppress(OSError):
+                    shutil.rmtree(temp_home, ignore_errors=True)
 
     async def _hikari_codex_connected(self, services: LocalServices) -> bool:
         try:
@@ -525,7 +643,7 @@ class CodexHarnessAdapter(HarnessAdapter):
     async def check_availability(self, services: LocalServices) -> HarnessAvailability:
         binary = _find_codex_binary()
         in_flight = cli_logins.status("codex")
-        cred, label = await self._stored_credential(services)
+        cred, label, from_tsuchi = await self._stored_credential_with_source(services)
         if not binary:
             auth = HarnessAuthStatus(
                 status="unavailable",
@@ -551,6 +669,16 @@ class CodexHarnessAdapter(HarnessAdapter):
                 login_method="device_code",
                 message="Sign in to connect.",
             )
+
+        models: list[HarnessModelInfo] = []
+        default_model: str | None = None
+        if binary and auth.status == "ready":
+            cache_key = f"{binary}:{int(from_tsuchi)}:{fingerprint_secret(cred)}"
+            models, default_model = await self._model_cache.get_or_load(
+                cache_key,
+                lambda: self._discover_models(binary, cred, use_temp_home=from_tsuchi),
+            )
+
         return HarnessAvailability(
             harness_id=self.harness_id,
             display_name=self.display_name,
@@ -558,8 +686,8 @@ class CodexHarnessAdapter(HarnessAdapter):
             installed=binary is not None,
             binary_path=binary,
             auth=auth,
-            models=CODEX_MODELS,
-            default_model=CODEX_MODELS[0].id,
+            models=models,
+            default_model=default_model,
             supports_steer=True,
             supports_resume=True,
             supports_approvals=True,
@@ -572,6 +700,7 @@ class CodexHarnessAdapter(HarnessAdapter):
         binary = _find_codex_binary()
         if not binary:
             raise HarnessError("Codex is not installed on this server.")
+        self._model_cache.invalidate()
         return await cli_logins.start("codex", binary, services)
 
     async def sign_in_status(self, services: LocalServices) -> HarnessAuthStatus:
@@ -582,6 +711,7 @@ class CodexHarnessAdapter(HarnessAdapter):
 
     async def sign_out(self, services: LocalServices) -> HarnessAuthStatus:
         await cli_logins.cancel("codex")
+        self._model_cache.invalidate()
         with suppress(ServiceError):
             await services.json_request("Tsuchi", "DELETE", "/api/work/harnesses/codex")
         return HarnessAuthStatus(

@@ -9,12 +9,28 @@ from uuid import uuid4
 
 import pytest
 
-from kadan.work.acp_client import ACP_V1_VERSION, ACP_V2_VERSION, AcpHarnessSession
-from kadan.work.antigravity_adapter import AntigravityHarnessAdapter
-from kadan.work.claude_adapter import ClaudeHarnessSession
-from kadan.work.codex_adapter import CodexHarnessSession
-from kadan.work.contract import SessionConfig
-from kadan.work.grok_adapter import GrokHarnessAdapter
+from kadan.work.acp_client import (
+    ACP_V1_VERSION,
+    ACP_V2_VERSION,
+    AcpHarnessSession,
+    parse_acp_models,
+)
+from kadan.work.antigravity_adapter import (
+    AntigravityHarnessAdapter,
+    _parse_agy_models_output,
+)
+from kadan.work.claude_adapter import (
+    ClaudeHarnessAdapter,
+    ClaudeHarnessSession,
+    _parse_claude_models,
+)
+from kadan.work.codex_adapter import (
+    CodexHarnessAdapter,
+    CodexHarnessSession,
+    _parse_codex_models,
+)
+from kadan.work.contract import HarnessModelInfo, ModelCatalogCache, SessionConfig
+from kadan.work.grok_adapter import GrokHarnessAdapter, _parse_grok_models_output
 
 
 class FakeStdioTransport:
@@ -491,3 +507,362 @@ async def test_acp_falls_back_to_v1_and_loads_session_for_grok(tmp_path):
     assert "session/load" in seen_methods
     assert events[-1].kind == "turn_completed"
     assert events[-1].text == "Grok v1 reply"
+
+
+@pytest.mark.anyio
+async def test_claude_session_forwards_effort_flag(tmp_path):
+    captured_cmd: list[str] = []
+
+    def handle_write(frame: dict[str, Any], transport: FakeStdioTransport) -> None:
+        if frame.get("type") == "user":
+            transport.push(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "is_error": False,
+                    "result": "Done",
+                    "session_id": "claude-eff-1",
+                }
+            )
+
+    transport = FakeStdioTransport(handle_write)
+
+    async def factory(cmd, cwd, env):
+        captured_cmd.extend(cmd)
+        return transport
+
+    session = ClaudeHarnessSession(
+        SessionConfig(
+            thread_id=uuid4(),
+            working_dir=str(tmp_path),
+            model="claude-opus-5-5",
+            model_options={"effort": "xhigh"},
+        ),
+        binary="claude",
+        process_factory=factory,
+    )
+    events = [ev async for ev in session.start_turn("Hello")]
+    await session.close()
+    assert "--model" in captured_cmd
+    assert captured_cmd[captured_cmd.index("--model") + 1] == "claude-opus-5-5"
+    assert "--effort" in captured_cmd
+    assert captured_cmd[captured_cmd.index("--effort") + 1] == "xhigh"
+    assert events[-1].terminal_status == "completed"
+
+
+@pytest.mark.anyio
+async def test_codex_adapter_discovers_paginated_models_and_caches(monkeypatch):
+    spawn_count = 0
+
+    def handle_write(frame: dict[str, Any], transport: FakeStdioTransport) -> None:
+        method = frame.get("method")
+        req_id = frame.get("id")
+        if method == "initialize":
+            transport.push({"id": req_id, "result": {"userAgent": "codex"}})
+        elif method == "model/list":
+            cursor = (frame.get("params") or {}).get("cursor")
+            if not cursor:
+                transport.push(
+                    {
+                        "id": req_id,
+                        "result": {
+                            "data": [
+                                {
+                                    "id": "gpt-6.2-sol",
+                                    "displayName": "GPT-6.2-Sol",
+                                    "description": "Default model",
+                                    "hidden": False,
+                                    "isDefault": True,
+                                    "supportedReasoningEfforts": [
+                                        {"reasoningEffort": "low"},
+                                        {"reasoningEffort": "high"},
+                                        {"reasoningEffort": "ultra"},
+                                    ],
+                                },
+                                {
+                                    "id": "hidden-internal",
+                                    "displayName": "Hidden",
+                                    "hidden": True,
+                                },
+                            ],
+                            "nextCursor": "page-2",
+                        },
+                    }
+                )
+            else:
+                transport.push(
+                    {
+                        "id": req_id,
+                        "result": {
+                            "data": [
+                                {
+                                    "id": "gpt-6.2-astra",
+                                    "displayName": "GPT-6.2-Astra",
+                                    "description": "Most capable",
+                                    "hidden": False,
+                                    "isDefault": False,
+                                    "supportedReasoningEfforts": [
+                                        {"reasoningEffort": "medium"},
+                                        {"reasoningEffort": "max"},
+                                    ],
+                                }
+                            ],
+                            "nextCursor": None,
+                        },
+                    }
+                )
+
+    async def factory(cmd, cwd, env):
+        nonlocal spawn_count
+        spawn_count += 1
+        return FakeStdioTransport(handle_write)
+
+    class DummyServices:
+        async def json_request(self, service, method, path, **kwargs):
+            if method == "GET":
+                return {
+                    "credential": '{"access_token":"tok"}',
+                    "account_label": "Codex",
+                }
+            return {}
+
+    monkeypatch.setattr(
+        "kadan.work.codex_adapter._find_codex_binary", lambda: "/usr/bin/codex"
+    )
+    adapter = CodexHarnessAdapter(process_factory=factory)
+    first = await adapter.check_availability(DummyServices())  # type: ignore[arg-type]
+    second = await adapter.check_availability(DummyServices())  # type: ignore[arg-type]
+
+    assert spawn_count == 1
+    assert first.default_model == "gpt-6.2-sol"
+    assert [m.id for m in first.models] == ["gpt-6.2-sol", "gpt-6.2-astra"]
+    assert first.models[0].options == {"effort": ["low", "high", "ultra"]}
+    assert second.models == first.models
+
+    # Signing out invalidates the model cache.
+    await adapter.sign_out(DummyServices())  # type: ignore[arg-type]
+    await adapter.check_availability(DummyServices())  # type: ignore[arg-type]
+    assert spawn_count == 2
+
+
+@pytest.mark.anyio
+async def test_claude_adapter_discovers_models_via_initialize_and_dedupes_default(
+    monkeypatch,
+):
+    spawn_count = 0
+
+    def handle_write(frame: dict[str, Any], transport: FakeStdioTransport) -> None:
+        if (
+            frame.get("type") == "control_request"
+            and (frame.get("request") or {}).get("subtype") == "initialize"
+        ):
+            transport.push(
+                {
+                    "type": "control_response",
+                    "response": {
+                        "subtype": "success",
+                        "request_id": frame["request_id"],
+                        "response": {
+                            "models": [
+                                {
+                                    "value": "default",
+                                    "resolvedModel": "claude-opus-5-5",
+                                    "displayName": "Default (recommended)",
+                                    "description": "Opus 5.5",
+                                    "supportedEffortLevels": ["low", "high", "max"],
+                                },
+                                {
+                                    "value": "opus",
+                                    "resolvedModel": "claude-opus-5-5",
+                                    "displayName": "Opus 5.5",
+                                    "description": "Complex work",
+                                    "supportedEffortLevels": ["low", "high", "max"],
+                                },
+                                {
+                                    "value": "sonnet",
+                                    "resolvedModel": "claude-sonnet-5-5",
+                                    "displayName": "Sonnet 5.5",
+                                    "description": "Efficient",
+                                    "supportedEffortLevels": ["low", "medium"],
+                                },
+                                {
+                                    "value": "claude-haiku-4-5-20251001",
+                                    "resolvedModel": "claude-haiku-4-5-20251001",
+                                    "displayName": "Haiku 4.5",
+                                    "description": "Fast",
+                                },
+                            ]
+                        },
+                    },
+                }
+            )
+
+    async def factory(cmd, cwd, env):
+        nonlocal spawn_count
+        spawn_count += 1
+        return FakeStdioTransport(handle_write)
+
+    class DummyServices:
+        async def json_request(self, service, method, path, **kwargs):
+            if method == "GET":
+                return {"credential": "sk-ant-oat01-test", "account_label": "Claude"}
+            return {}
+
+    monkeypatch.setattr(
+        "kadan.work.claude_adapter._find_claude_binary", lambda: "/usr/bin/claude"
+    )
+    adapter = ClaudeHarnessAdapter(process_factory=factory)
+    avail = await adapter.check_availability(DummyServices())  # type: ignore[arg-type]
+
+    assert spawn_count == 1
+    assert avail.default_model == "claude-opus-5-5"
+    assert [m.id for m in avail.models] == [
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-4-5-20251001",
+    ]
+    assert [m.label for m in avail.models] == ["Opus 5.5", "Sonnet 5.5", "Haiku 4.5"]
+    assert avail.models[0].options == {"effort": ["low", "high", "max"]}
+    assert avail.models[2].options == {}
+
+
+@pytest.mark.anyio
+async def test_antigravity_adapter_discovers_acp_models_and_config_options(monkeypatch):
+    def handle_write(frame: dict[str, Any], transport: FakeStdioTransport) -> None:
+        method = frame.get("method")
+        req_id = frame.get("id")
+        if method == "initialize":
+            transport.push(
+                {"jsonrpc": "2.0", "id": req_id, "result": {"protocolVersion": 2}}
+            )
+        elif method == "session/new":
+            transport.push(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "sessionId": "probe-1",
+                        "configOptions": [
+                            {
+                                "id": "model",
+                                "category": "model",
+                                "currentValue": "gemini-4-neon",
+                                "options": [
+                                    {
+                                        "group": "Gemini",
+                                        "options": [
+                                            {
+                                                "value": "gemini-4-neon",
+                                                "name": "Gemini 4 Neon",
+                                                "description": "Flagship model",
+                                            },
+                                            {
+                                                "value": "gemini-4-flash",
+                                                "name": "Gemini 4 Flash",
+                                                "description": "Fast model",
+                                            },
+                                        ],
+                                    }
+                                ],
+                            },
+                            {
+                                "id": "thought_level",
+                                "category": "thought_level",
+                                "currentValue": "medium",
+                                "options": [
+                                    {"value": "low", "name": "Low"},
+                                    {"value": "medium", "name": "Medium"},
+                                    {"value": "high", "name": "High"},
+                                ],
+                            },
+                        ],
+                    },
+                }
+            )
+        elif method == "session/close":
+            transport.push({"jsonrpc": "2.0", "id": req_id, "result": {}})
+
+    async def factory(cmd, cwd, env):
+        return FakeStdioTransport(handle_write)
+
+    class DummyServices:
+        async def json_request(self, service, method, path, **kwargs):
+            return {"credential": "google-key", "account_label": "Google"}
+
+    monkeypatch.setattr(
+        "kadan.work.antigravity_adapter.find_antigravity_command",
+        lambda: ["/usr/bin/agy", "acp"],
+    )
+    adapter = AntigravityHarnessAdapter(process_factory=factory)
+    avail = await adapter.check_availability(DummyServices())  # type: ignore[arg-type]
+
+    assert avail.default_model == "gemini-4-neon"
+    assert [m.id for m in avail.models] == ["gemini-4-neon", "gemini-4-flash"]
+    assert avail.models[0].label == "Gemini 4 Neon"
+    assert avail.models[0].options == {"effort": ["low", "medium", "high"]}
+
+
+def test_model_parsers_for_acp_grok_and_agy():
+    acp_models, acp_default = parse_acp_models(
+        {},
+        {
+            "models": {
+                "currentModelId": "grok-4.6",
+                "availableModels": [
+                    {"modelId": "grok-4.6", "name": "Grok 4.6"},
+                    {"modelId": "grok-4.5", "name": "Grok 4.5"},
+                ],
+            }
+        },
+    )
+    assert acp_default == "grok-4.6"
+    assert [m.id for m in acp_models] == ["grok-4.6", "grok-4.5"]
+
+    grok_models, grok_default = _parse_grok_models_output(
+        "You are not authenticated.\n\nDefault model: grok-4.6\n\n"
+        "Available models:\n  * grok-4.6 (default)\n  - grok-4.5\n"
+    )
+    assert grok_default == "grok-4.6"
+    assert [(m.id, m.label) for m in grok_models] == [
+        ("grok-4.6", "Grok 4.6"),
+        ("grok-4.5", "Grok 4.5"),
+    ]
+
+    agy_models, agy_default = _parse_agy_models_output(
+        "Available models:\n  * gemini-4-neon (default)\n  - gemini-4-flash\n"
+    )
+    assert agy_default == "gemini-4-neon"
+    assert [m.id for m in agy_models] == ["gemini-4-neon", "gemini-4-flash"]
+
+    codex_models, codex_default = _parse_codex_models([])
+    assert codex_models == [] and codex_default is None
+    claude_models, claude_default = _parse_claude_models([])
+    assert claude_models == [] and claude_default is None
+
+
+@pytest.mark.anyio
+async def test_model_catalog_cache_coalesces_and_reloads_on_key_change():
+    cache = ModelCatalogCache(ttl_seconds=60.0, error_ttl_seconds=10.0)
+    calls = 0
+
+    async def loader():
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.01)
+        return [HarnessModelInfo(id=f"m-{calls}", label=f"Model {calls}")], f"m-{calls}"
+
+    r1, r2 = await asyncio.gather(
+        cache.get_or_load("k1", loader),
+        cache.get_or_load("k1", loader),
+    )
+    assert calls == 1
+    assert r1 == r2
+
+    r3 = await cache.get_or_load("k2", loader)
+    assert calls == 2
+    assert r3[1] == "m-2"
+
+    cache.invalidate()
+    r4 = await cache.get_or_load("k2", loader)
+    assert calls == 3
+    assert r4[1] == "m-3"
