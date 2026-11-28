@@ -1,6 +1,6 @@
 # Agent conversations
 
-Kadan opens directly into one ever-persistent chat thread with your agent — no setup form or hatch screen is required. On a fresh installation, the server automatically provisions a default **Kadan Agent** with the default avatar, a starter persona, and an opening greeting asking what you would like to name it. As you chat, the agent asks one natural question at a time to learn its name (renaming itself live in Kadan), your name (saved to memory), and its vibe, role, communication style, and appearance. Users can also [rename agents](renaming-agents.md) manually at any time, or permanently delete the agent and all its memories from the [Agent page](navigation.md) (after typing `<agent name> Delete`) to start fresh.
+Kadan opens directly into one ever-persistent chat thread with your agent — no setup form or hatch screen is required. On a fresh installation, the server automatically provisions a default **Kadan Agent** with the default avatar, a starter persona, and an opening greeting asking what you would like to name it. As you chat, the agent asks one natural question at a time to learn its name (renaming itself live in Kadan), your name (saved to memory), and its vibe, role, communication style, and appearance. Users can also [rename agents](renaming-agents.md) manually at any time, or permanently delete the agent and all its memories from the [agent card](navigation.md#agent-card) (after typing `<agent name> Delete`) to start fresh.
 
 ## Single persistent chat
 

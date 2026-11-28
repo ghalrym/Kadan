@@ -27,6 +27,8 @@ interface Props {
   onBusy: (value: boolean) => void;
   onEditPet: () => void;
   onEditPersona: () => void;
+  onRename: () => void;
+  onDeleteAgent: () => void;
   onAgentName?: (name: string) => void;
   blocked: boolean;
   refreshStatus: () => Promise<void>;
@@ -95,6 +97,8 @@ export default function Chat({
   onBusy,
   onEditPet,
   onEditPersona,
+  onRename,
+  onDeleteAgent,
   onAgentName,
   blocked,
   refreshStatus,
@@ -443,6 +447,19 @@ export default function Chat({
       onEditPersona={() => {
         setCard(false);
         onEditPersona();
+      }}
+      onEditPet={() => {
+        setCard(false);
+        onEditPet();
+      }}
+      agentDisabled={!ready.storage || blocked}
+      onRename={() => {
+        setCard(false);
+        onRename();
+      }}
+      onDelete={() => {
+        setCard(false);
+        onDeleteAgent();
       }}
     />
   );

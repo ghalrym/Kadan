@@ -19,11 +19,9 @@ import PetEditor from "./PetEditor";
 import PersonaEditor from "./PersonaEditor";
 import RenameAgent from "./RenameAgent";
 import DeleteAgent from "./DeleteAgent";
-import RunnerAssignment from "./RunnerAssignment";
 import Plugins from "./Plugins";
 import Sidebar, { type Page } from "./Sidebar";
 import SpaceLibrary from "./SpaceLibrary";
-import AgentPage from "./AgentPage";
 import ServerSettings from "./ServerSettings";
 import SettingsPage from "./SettingsPage";
 import WorkThreadView from "./WorkThreadView";
@@ -44,7 +42,6 @@ export default function App() {
   const [editingPet, setEditingPet] = useState(false);
   const [editingPersona, setEditingPersona] = useState(false);
   const [renaming, setRenaming] = useState(false);
-  const [assigningRunner, setAssigningRunner] = useState(false);
   const petSelectionRevision = useRef(0);
   const petReadRevision = useRef(0);
   const pendingPetSelection = useRef(0);
@@ -223,7 +220,6 @@ export default function App() {
         setEditingPersona(false);
         setRenaming(false);
         setDeletingAgent(false);
-        setAssigningRunner(false);
         setPage({ name: "chat" });
       }
       setAgent(first ?? null);
@@ -410,7 +406,6 @@ export default function App() {
               name === "group-chat" ||
               name === "space" ||
               name === "plugins" ||
-              name === "agent" ||
               name === "settings"
             ) {
               show({ name });
@@ -538,16 +533,6 @@ export default function App() {
           />
         ) : page.name === "plugins" ? (
           <Plugins agentName={agent?.name || key} />
-        ) : page.name === "agent" && agent ? (
-          <AgentPage
-            agent={agent}
-            disabled={disabled}
-            onEditPet={() => setEditingPet(true)}
-            onEditPersona={() => setEditingPersona(true)}
-            onRename={() => setRenaming(true)}
-            onRunner={() => setAssigningRunner(true)}
-            onDelete={() => setDeletingAgent(true)}
-          />
         ) : page.name === "space" ? (
           <SpaceLibrary key={key} agentKey={key} />
         ) : chain && resourceOwner === key && chain.id === selectedId ? (
@@ -562,6 +547,8 @@ export default function App() {
             onBusy={(value) => { if (agentKey.current === key) setBusy(value); }}
             onEditPet={() => setEditingPet(true)}
             onEditPersona={() => setEditingPersona(true)}
+            onRename={() => setRenaming(true)}
+            onDeleteAgent={() => setDeletingAgent(true)}
             onAgentName={(name) => setAgent((current) => current?.key === key && current.name !== name ? { ...current, name } : current)}
             blocked={loading}
             refreshStatus={refreshStatus}
@@ -599,13 +586,6 @@ export default function App() {
         }}
         onClose={() => {
           setDeletingAgent(false);
-          restoreFocus();
-        }}
-      />}
-      {assigningRunner && agent && <RunnerAssignment
-        agent={agent}
-        onClose={() => {
-          setAssigningRunner(false);
           restoreFocus();
         }}
       />}

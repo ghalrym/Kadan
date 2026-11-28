@@ -4,7 +4,7 @@ Tsuchi owns content, revisions, trash and file bytes. Kadan exposes separate rea
 
 Workspace documents retain Tsuchi's `space` (Markdown) and `deck` kinds. Memories retain `memory`; personas and conversations belong to neither collection. All records remain scoped by `agent_key`. Existing IDs, kinds, revisions, attachments and parent links are unchanged, with no migration or copying of content. In particular, an existing Memory's `parent_id` does not make it a Workspace document.
 
-Users browse and edit saved pages, slides and files in [Space](space.md), which has its own routes. The document read contract below remains because the composer's References picker searches documents and memories together. The Agent page reads Memories on open, search and explicit refresh rather than continuously synchronizing external edits; transient failures stay distinguishable from an empty list.
+Users browse and edit saved pages, slides and files in [Space](space.md), which has its own routes. The document read contract below remains because the composer's References picker searches documents and memories together.
 
 ## Read contract
 
@@ -19,7 +19,7 @@ Tsuchi's resource list accepts repeated `kinds` query parameters, such as `kinds
 
 ## Ownership
 
-`api/pydantic_models/resources.py`, `api/routes/agents/workspace.py`, `api/routes/agents/memories.py` and `api/services.py` own Kadan's read boundary. Tsuchi's repository and resource routes own filtering and persistence. The References picker owns document and memory selection, and the Agent page owns the Memories view and corrections. Runner document tools create `space` records and use existing Space parent validation; runner memory tools manage `memory` records separately. The read routes do not start runner operations.
+`api/pydantic_models/resources.py`, `api/routes/agents/workspace.py`, `api/routes/agents/memories.py` and `api/services.py` own Kadan's read boundary. Tsuchi's repository and resource routes own filtering and persistence. The References picker owns document and memory selection. Runner document tools create `space` records and use existing Space parent validation; runner memory tools manage `memory` records separately. The read routes do not start runner operations.
 
 Resource search is lexical over stored titles, Markdown, tags and structured text. Asset search uses metadata, not extracted document text or transcribed audio. Failed reads must remain distinguishable from empty collections. Browsing does not modify runner context: current context preparation reads recent chat, automatically includes the agent's owned persona when present, and adds any distinct explicitly selected persona, without automatically retrieving displayed documents or Memories. Storage alone does not provide recall.
 

@@ -564,7 +564,7 @@ svg {
   padding-top: 8px;
   border-top: 1px solid var(--line);
 }
-.agent-link {
+.panel-nav .agent-link {
   gap: 10px;
   padding: 4px 10px 4px 6px;
   min-height: 40px;
@@ -1344,13 +1344,11 @@ dialog::backdrop {
   animation: fade 240ms var(--out);
 }
 .rename-agent,
-.delete-agent,
-.runner-assignment {
+.delete-agent {
   overflow-y: auto;
 }
 .rename-agent form,
-.delete-agent form,
-.runner-assignment form {
+.delete-agent form {
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -1360,13 +1358,8 @@ dialog::backdrop {
 .rename-agent .field-hint,
 .rename-agent .error,
 .delete-agent .field-hint,
-.delete-agent .error,
-.runner-assignment p,
-.runner-assignment dl {
+.delete-agent .error {
   margin: 0;
-}
-.danger-card {
-  border-color: color-mix(in srgb, var(--error) 28%, var(--line));
 }
 .danger-button {
   color: var(--error);
@@ -1385,17 +1378,6 @@ dialog::backdrop {
 }
 .danger-primary:hover:not(:disabled) {
   background: color-mix(in srgb, var(--error) 88%, #fff);
-}
-.runner-assignment dl {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 8px 16px;
-}
-.runner-assignment dt {
-  color: var(--muted);
-}
-.runner-assignment dd {
-  margin: 0;
 }
 .form-actions {
   display: flex;
@@ -1574,9 +1556,6 @@ dialog::backdrop {
   padding: 20px 22px;
   overflow-y: auto;
 }
-.memory-editor .persona-editor {
-  padding: 0;
-}
 .persona-editor textarea {
   flex: 1;
   min-height: 220px;
@@ -1703,7 +1682,6 @@ main > .banner {
   font-size: 13px;
 }
 .page-card > div > button,
-.agent-hero-actions button,
 .plugin-actions button,
 .plugin-actions .button {
   border: 1px solid var(--line-strong);
@@ -1712,7 +1690,6 @@ main > .banner {
   font-size: 13px;
 }
 .page-card > div > button:hover:not(:disabled),
-.agent-hero-actions button:hover:not(:disabled),
 .plugin-actions button:not(.primary):hover:not(:disabled) {
   background: var(--hover);
 }
@@ -1728,8 +1705,6 @@ button.danger:not(.primary) {
   background: #ffa59d;
 }
 
-
-.memory-list,
 .tool-list {
   list-style: none;
   margin: 0;
@@ -1737,36 +1712,8 @@ button.danger:not(.primary) {
   display: flex;
   flex-direction: column;
 }
-.memory-list li + li,
 .tool-list li + li {
   border-top: 1px solid var(--line);
-}
-.memory-list button {
-  width: 100%;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 10px;
-  border-radius: var(--r);
-}
-.memory-text {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.memory-text strong {
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.memory-text span {
-  color: var(--muted);
-  font-size: 13px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .confirm-dialog {
   width: min(520px, calc(100% - 32px));
@@ -2005,61 +1952,6 @@ button.danger:not(.primary) {
 }
 .plugin-form p {
   margin: -6px 0 0;
-}
-
-/* Agent page */
-.agent-hero {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding-bottom: 8px;
-  text-align: center;
-}
-.agent-hero-pet {
-  padding: 0;
-  border: 0;
-  background: none;
-  line-height: 0;
-}
-.agent-hero-pet:hover:not(:disabled) {
-  background: none;
-  transform: translateY(-2px);
-}
-.agent-hero-text {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-}
-.agent-hero-text code {
-  color: var(--faint);
-  font-size: 12px;
-}
-.agent-hero-actions {
-  display: flex;
-  gap: 8px;
-}
-.memory-list button > svg:first-child {
-  flex-shrink: 0;
-  color: var(--muted);
-}
-.memory-list button > svg:last-child {
-  flex-shrink: 0;
-  color: var(--faint);
-}
-.memory-tools {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.memory-tools .search-field {
-  flex: 1;
-}
-.memory-detail {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
 }
 
 /* Space: the library of pages, slides and files */
@@ -3173,6 +3065,18 @@ button.danger:not(.primary) {
 }
 .agent-card-actions button:hover {
   background: var(--hover);
+}
+.agent-card-divider {
+  width: 100%;
+  margin: 2px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+.agent-card-actions .danger-button {
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+}
+.agent-card-actions .danger-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--error) 18%, transparent);
 }
 /* Find opens in the pet's space so results stay readable in a narrow chat pane. */
 .conversation-find {
@@ -4954,7 +4858,6 @@ dialog.persona-modal {
   color: var(--error);
   border-color: var(--error);
 }
-
 
 /* Group Chat */
 .group-chat {

@@ -1,6 +1,6 @@
 # Personas
 
-Kadan gives each agent one saved persona: Markdown instructions describing how it should respond and work with the user. The agent can read and update its persona during chat, and users can edit it directly in Kadan using the **Persona** button on the agent's card (under **Call**) or on the [Agent page](navigation.md). Tsuchi stores the persona and its revision history.
+Kadan gives each agent one saved persona: Markdown instructions describing how it should respond and work with the user. The agent can read and update its persona during chat, and users can edit it directly in Kadan using the **Persona** button on the [agent card](navigation.md#agent-card). Tsuchi stores the persona and its revision history.
 
 A fresh agent starts with a starter persona containing six `TODO` prompts (its name, the user's name, vibe and tone, role, communication style, and appearance) plus brief onboarding guidance. As the user answers in chat, the agent renames itself once when given a name, gathers the remaining preferences before saving its finished persona and removing the onboarding section, and relies on background memory extraction after brief pauses to save durable facts such as the user's name (and fill remaining onboarding details if chat pauses). Later text responses and voice calls embody the character defined by the agent's name and saved persona. Asking for a change is not confirmation that it was saved. A persona guides behavior without guaranteeing that the model follows every instruction.
 

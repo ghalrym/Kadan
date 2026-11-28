@@ -43,7 +43,7 @@ const mocks = {
   "./pet": moduleUrl("export const agentHue = () => 0;"),
   "./PetContext": moduleUrl("export const PetContext = { Provider: 'Provider' }; export const useAgentPet = () => null;"),
   "./work": moduleUrl("export const listWorkThreads = async () => []; export const organizeWorkThread = async () => null; export const parseWorkHash = () => null;"),
-  ...Object.fromEntries(["Chat", "GroupChat", "PetEditor", "PersonaEditor", "RenameAgent", "DeleteAgent", "RunnerAssignment", "Plugins", "Sidebar", "SpaceLibrary", "ConfirmDialog", "AgentPage", "ServerSettings", "SettingsPage", "WorkThreadView"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
+  ...Object.fromEntries(["Chat", "GroupChat", "PetEditor", "PersonaEditor", "RenameAgent", "DeleteAgent", "Plugins", "Sidebar", "SpaceLibrary", "ConfirmDialog", "ServerSettings", "SettingsPage", "WorkThreadView"].map(name => [`./${name}`, moduleUrl(`export default '${name}';`)])),
 };
 const loader = registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -68,8 +68,8 @@ loader.deregister();
 
 const originals = new Map(["matchMedia", "document"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 // Slots follow App's useState calls; refs and effects do not consume these slots.
-const AGENT = 0, EDITING_PERSONA = 3, RENAMING = 4, ASSIGNING_RUNNER = 5, SELECTION = 6,
-  CHAIN = 7, PAGE = 8, LOADING = 13, BUSY = 14, RESOURCE_OWNER = 18;
+const AGENT = 0, EDITING_PERSONA = 3, RENAMING = 4, SELECTION = 5,
+  CHAIN = 6, PAGE = 7, LOADING = 12, BUSY = 13, RESOURCE_OWNER = 17;
 const original = { id: "original", agent_key: "agent", title: "New chat", version: 3, messages: [] };
 const replacement = { ...original, id: "replacement", version: 1 };
 const select = (conversation) => {
@@ -144,23 +144,6 @@ test("renaming updates the agent's name without replacing the conversation", () 
   assert.equal(updatedChat.props.agentName, "Renamed");
 });
 
-test("the agent page opens runner assignment, which closes again", () => {
-  state[LOADING] = false;
-  render();
-  find("Sidebar").props.onPage("agent");
-  render();
-  const page = find("AgentPage");
-  assert.equal(page.props.disabled, false);
-  page.props.onRunner();
-  render();
-  const assignment = find("RunnerAssignment");
-  assert.equal(assignment.props.agent.key, "agent");
-  assignment.props.onClose();
-  assert.equal(state[ASSIGNING_RUNNER], false);
-  render();
-  assert.equal(find("RunnerAssignment"), undefined);
-});
-
 test("agent self-rename callback updates the displayed agent name without remounting chat", () => {
   const first = chat();
   first.props.onAgentName("Mi");
@@ -193,7 +176,7 @@ test("Space opens the library for the current agent and returning keeps the chat
   assert.equal(chat().key, previous.key);
 });
 
-test("chat and the agent page open the single persona editor modal, which closes again", () => {
+test("chat opens the single persona editor modal, which closes again", () => {
   state[LOADING] = false;
   chat().props.onEditPersona();
   render();
@@ -206,12 +189,9 @@ test("chat and the agent page open the single persona editor modal, which closes
   assert.equal(find("PersonaEditor"), undefined);
 });
 
-test("agent page opens the delete-agent confirmation dialog, which closes again", () => {
+test("the chat agent card opens the delete-agent confirmation dialog, which closes again", () => {
   state[LOADING] = false;
-  render();
-  find("Sidebar").props.onPage("agent");
-  render();
-  find("AgentPage").props.onDelete();
+  chat().props.onDeleteAgent();
   render();
   const dialog = find("DeleteAgent");
   assert.equal(dialog.props.agent.key, "agent");
@@ -220,15 +200,3 @@ test("agent page opens the delete-agent confirmation dialog, which closes again"
   assert.equal(find("DeleteAgent"), undefined);
 });
 
-for (const slot of [LOADING, BUSY]) {
-  test(`rename is disabled while ${slot === LOADING ? "loading agents" : "busy"}`, () => {
-    state[LOADING] = false;
-    state[BUSY] = false;
-    state[PAGE] = { name: "agent" };
-    render();
-    assert.equal(find("AgentPage").props.disabled, false);
-    state[slot] = true;
-    render();
-    assert.equal(find("AgentPage").props.disabled, true);
-  });
-}

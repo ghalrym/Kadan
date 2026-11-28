@@ -23,6 +23,8 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 async function chat(initialRuns, initialConversation = chain, storedPending = null, callOptions = {}) {
   const slots = [], effects = [], timers = [], requests = [], callStarts = [], agentNames = [];
   let personaEdits = 0;
+  let renames = 0;
+  let deletes = 0;
   let callDisabled;
   const storage = callOptions.storage ?? new Map();
   if (storedPending) storage.set(outbox.chatStorageKeys("guide", initialConversation.id).pending, JSON.stringify(storedPending));
@@ -118,7 +120,7 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
     tree = exports.default({
       agentKey: "guide", agentName: "Guide", chain: selectedChain, status: null,
       entrance: "idle", onChange(value) { selectedChain = value; }, onBusy() {}, onEditPet() {},
-      onEditPersona() { personaEdits++; }, onAgentName(name) { agentNames.push(name); },
+      onEditPersona() { personaEdits++; }, onRename() { renames++; }, onDeleteAgent() { deletes++; }, onAgentName(name) { agentNames.push(name); },
       blocked: false, refreshStatus: async () => {},
     });
     effects.splice(0).forEach(effect => effect());
@@ -133,6 +135,8 @@ async function chat(initialRuns, initialConversation = chain, storedPending = nu
   return {
     render, requests, storage, attachments, callStarts, timerDelays, agentNames,
     personaEdits: () => personaEdits,
+    renames: () => renames,
+    deletes: () => deletes,
     callDisabled: () => callDisabled,
     streamingMessages: () => elements()
       .filter(node => node.type === "article" && typeof node.props?.className === "string" && node.props.className.includes("streaming"))
@@ -391,7 +395,7 @@ test("only saved assistant replies with text offer saving in the current agent a
   assert.equal(controls[0].message, reply);
 });
 
-test("agent card offers Call and Persona actions with no Activity panel", async () => {
+test("agent card offers Call, Rename, Persona and Delete agent actions with no Activity panel", async () => {
   const view = await chat([], chain, null, { ready: { storage: true, chat: false } });
   const card = view.card();
   assert.equal(card.callDisabled, false);
@@ -403,14 +407,20 @@ test("agent card offers Call and Persona actions with no Activity panel", async 
   assert.deepEqual(view.callStarts, [[]]);
   card.onEditPersona();
   assert.equal(view.personaEdits(), 1);
+  assert.equal(card.agentDisabled, false);
+  card.onRename();
+  assert.equal(view.renames(), 1);
+  card.onDelete();
+  assert.equal(view.deletes(), 1);
 });
 
-test("Call and Persona both need Tsuchi storage", async () => {
+test("Call, Persona, Rename and Delete agent need Tsuchi storage", async () => {
   const view = await chat([], chain, null, { ready: { storage: false, chat: false } });
   const card = view.card();
   assert.equal(card.callDisabled, true);
   assert.equal(view.callDisabled(), true);
   assert.equal(card.personaDisabled, true);
+  assert.equal(card.agentDisabled, true);
   assert.match(card.callTitle, /storage.*persona/);
 });
 

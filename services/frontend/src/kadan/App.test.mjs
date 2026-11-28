@@ -68,12 +68,10 @@ async function app(petResponses = [], agentResponses = [[agent]]) {
     "./GroupChat": { default: "GroupChat" },
     "./RenameAgent": { default: "RenameAgent" },
     "./DeleteAgent": { default: "DeleteAgent" },
-    "./RunnerAssignment": { default: "RunnerAssignment" },
     "./Plugins": { default: "Plugins" },
     "./Sidebar": { default: "Sidebar" },
     "./SpaceLibrary": { default: "SpaceLibrary" },
     "./ConfirmDialog": { default: "ConfirmDialog" },
-    "./AgentPage": { default: "AgentPage" },
     "./ServerSettings": { default: "ServerSettings" },
     "./SettingsPage": { default: "SettingsPage" },
     "./WorkThreadView": { default: "WorkThreadView" },
@@ -146,7 +144,7 @@ async function app(petResponses = [], agentResponses = [[agent]]) {
   return { render, findAll, requests };
 }
 
-test("the sidebar moves between chat, Plugins and the agent page", async () => {
+test("the sidebar moves between chat and Plugins", async () => {
   const view = await app();
   const sidebar = () => view.findAll(node => node.type === "Sidebar")[0];
   const count = type => view.findAll(node => node.type === type).length;
@@ -156,19 +154,13 @@ test("the sidebar moves between chat, Plugins and the agent page", async () => {
   view.render();
   assert.equal(count("Plugins"), 1);
   assert.equal(count("Chat"), 0);
-  sidebar().props.onPage("agent");
-  view.render();
-  assert.equal(count("AgentPage"), 1);
-  view.findAll(node => node.type === "AgentPage")[0].props.onEditPet();
-  view.render();
-  assert.equal(count("PetEditor"), 1);
   sidebar().props.onPage("chat");
   view.render();
   assert.equal(count("Chat"), 1);
-  assert.equal(count("AgentPage"), 0);
+  assert.equal(count("Plugins"), 0);
 });
 
-test("chat and agent page open the single persona editor without listing a persona library", async () => {
+test("chat opens the single persona editor without listing a persona library", async () => {
   const view = await app();
   assert.deepEqual(view.requests.filter(request => request.kind), []);
   const chat = view.findAll(node => node.type === "Chat")[0];

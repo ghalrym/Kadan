@@ -1,6 +1,6 @@
 # Pets
 
-Kadan lets users create or import an animated pet for each agent. Every agent starts with Kadan's shipped default animated pet, which supports all animations and cursor-following look directions. Open **Edit pet** on the [Agent page](navigation.md), or under the pet on an empty chat, to browse candidates and preview their animations and look directions. Creating or importing a candidate does not change the current pet. **Use pet** selects it for the agent identity, home and chat; **Use default pet** returns to Kadan's default pet.
+Kadan lets users create or import an animated pet for each agent. Every agent starts with Kadan's shipped default animated pet, which supports all animations and cursor-following look directions. Open **Edit pet** on the [agent card](navigation.md#agent-card) that opens when you click the pet in chat, or under the pet on an empty chat, to browse candidates and preview their animations and look directions. Creating or importing a candidate does not change the current pet. **Use pet** selects it for the agent identity, home and chat; **Use default pet** returns to Kadan's default pet.
 
 If Kadan cannot load the selected pet, it reports the failure and offers **Retry** to load it again. The default pet remains visible until the selected pet is available.
 

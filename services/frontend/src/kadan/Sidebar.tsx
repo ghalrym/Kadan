@@ -6,7 +6,6 @@ import {
   ChevronDown,
   LayoutGrid,
   Loader2,
-  MessageSquare,
   Puzzle,
   RefreshCw,
   Search,
@@ -39,7 +38,6 @@ export type Page =
   | { name: "group-chat" }
   | { name: "space" }
   | { name: "plugins" }
-  | { name: "agent" }
   | { name: "settings" }
   | { name: "work-new" }
   | { name: "work-thread"; threadId: string };
@@ -312,6 +310,15 @@ export default function Sidebar(props: Props) {
 
   return (
     <>
+      <div className="panel-head">
+        <span className="brand">
+          <span className="logo" aria-hidden="true"><i /><i /><i /><i /></span>
+          Kadan
+        </span>
+        <button className="icon mobile-only" aria-label="Close navigation" ref={props.closeRef} onClick={props.onClose}>
+          <X size={18} />
+        </button>
+      </div>
       <header className="panel-head">
         <label className="sidebar-search">
           <Search size={15} aria-hidden="true" />
@@ -332,16 +339,18 @@ export default function Sidebar(props: Props) {
         >
           <SquarePen size={17} />
         </button>
-        <button className="icon mobile-only" aria-label="Close navigation" ref={props.closeRef} onClick={props.onClose}>
-          <X size={18} />
-        </button>
       </header>
       <nav className="panel-nav" aria-label="Views">
-        <button className={page.name === "chat" ? "selected" : ""} disabled={!key}
-          aria-current={page.name === "chat" ? "page" : undefined} onClick={() => props.onPage("chat")}>
-          <MessageSquare size={15} />
-          Chat
-        </button>
+        {agent && (
+          <button className={`agent-link ${page.name === "chat" ? "selected" : ""}`} disabled={!key}
+            aria-current={page.name === "chat" ? "page" : undefined} onClick={() => props.onPage("chat")}>
+            <span className="agent-link-pet" aria-hidden="true">
+              <Pet sheet={sheet} state="idle" size={28} />
+            </span>
+            <span className="agent-link-name">{agent.name}</span>
+            <span className="agent-link-hint">Agent</span>
+          </button>
+        )}
         <button className={page.name === "group-chat" ? "selected" : ""} disabled={!key}
           aria-current={page.name === "group-chat" ? "page" : undefined} onClick={() => props.onPage("group-chat")}>
           <Users size={15} />
@@ -377,16 +386,6 @@ export default function Sidebar(props: Props) {
       </section>
 
       <footer className="panel-foot">
-        {agent && (
-          <button className={`agent-link ${page.name === "agent" ? "selected" : ""}`}
-            aria-current={page.name === "agent" ? "page" : undefined} onClick={() => props.onPage("agent")}>
-            <span className="agent-link-pet" aria-hidden="true">
-              <Pet sheet={sheet} state="idle" size={28} />
-            </span>
-            <span className="agent-link-name">{agent.name}</span>
-            <span className="agent-link-hint">Agent</span>
-          </button>
-        )}
         <div className="sidebar-server-row">
           <button
             className={`server-settings-trigger ${page.name === "settings" ? "selected" : ""}`}

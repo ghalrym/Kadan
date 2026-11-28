@@ -6,7 +6,7 @@ Saved work can continue after the browser closes. A queued message does not prom
 
 | Feature | What to expect |
 | --- | --- |
-| [Navigation and the Agent page](navigation.md) | Move between Chat, Group Chat, Space, Plugins, Work threads and the agent's own settings from the sidebar. |
+| [Navigation and the agent card](navigation.md) | Move between Chat, Group Chat, Space, Plugins and Work threads from the sidebar, and manage the agent from its card in chat. |
 | [Work threads and coding assistants](work.md) | Run, supervise and organize native coding threads across Codex, Claude Code, Antigravity and Grok directly in chosen project folders with four sidebar buckets. |
 | [Agent conversations](agent-conversations.md) | Hatch agents, start, rename, move and delete chats, and return to saved history within bounded response context. |
 | [Group Chat](group-chat.md) | Coordinate with Kadan's agent and connected external agents in a shared room with explicit tagging, handoffs, and a consecutive turn limit. |
@@ -15,7 +15,7 @@ Saved work can continue after the browser closes. A queued message does not prom
 | [Finding chat text](finding-chat-text.md) | Find literal text in the saved conversation. |
 | [Conversation history](conversation-history.md) | Let the agent search and read older delivered chat within explicit limits. |
 | [Renaming agents](renaming-agents.md) | Change a display name while preserving identity and saved work. |
-| [Agent memory](memories.md) | Let agents maintain memories while users inspect saved records. |
+| [Agent memory](memories.md) | Let agents maintain their own memories. |
 | [Chat attachments](chat-attachments.md) | Upload files, attach them to messages or notes and recover uncertain submissions. |
 | [Saving chat notes](saving-chat-notes.md) | Save text without requesting a reply, including when inference is unavailable. |
 | [Forgetting memories](forgetting-memories.md) | Ask an agent to move an outdated memory to recoverable trash. |
@@ -30,6 +30,6 @@ Saved work can continue after the browser closes. A queued message does not prom
 | [Voice calls](voice-calls.md) | Have a separate spoken conversation with interruption and playback controls. |
 | [File delivery](file-delivery.md) | Let agents find stored files and share their download links. |
 | [Service status](service-status.md) | Distinguish storage access, inference readiness and model setup needs. |
-| [Runner availability](runner-availability.md) | Inspect and manage runner assignments, with capacity and recovery limits. |
+| [Runner availability](runner-availability.md) | How runner assignments, capacity and recovery affect when conversation work starts. |
 
 See [Install and use](../install-and-use.md), [Security and operator responsibility](../security.md) and [Performance tracing](../tracing.md) for shared expectations. [Tsuchi](../tsuchi/overview.md) covers storage management, and [Hikari](../hikari/overview.md) covers direct inference.

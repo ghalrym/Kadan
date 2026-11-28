@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { Phone, UserRound } from "lucide-react";
+import { Palette, Pencil, Phone, Trash2, UserRound } from "lucide-react";
 import Pet from "./Pet";
 import type { PetSheet, PetState } from "./pet";
 
@@ -17,9 +17,13 @@ interface Props {
   onCall: () => void;
   personaDisabled: boolean;
   onEditPersona: () => void;
+  onEditPet: () => void;
+  agentDisabled: boolean;
+  onRename: () => void;
+  onDelete: () => void;
 }
 
-/** The agent's contact card, opened from its pet: presence, calling and persona editing. */
+/** The agent's contact card, opened from its pet: presence, calling, renaming, persona and pet editing, and deletion. */
 export default function AgentCard({
   agentName,
   sheet,
@@ -31,6 +35,10 @@ export default function AgentCard({
   onCall,
   personaDisabled,
   onEditPersona,
+  onEditPet,
+  agentDisabled,
+  onRename,
+  onDelete,
 }: Props) {
   const card = useRef<HTMLDivElement>(null);
 
@@ -78,6 +86,10 @@ export default function AgentCard({
           <Phone size={18} />
           Call
         </button>
+        <button disabled={agentDisabled} title={`Rename ${agentName}`} onClick={() => onRename()}>
+          <Pencil size={18} />
+          Rename
+        </button>
         <button
           disabled={personaDisabled}
           title={`Edit ${agentName}’s persona`}
@@ -85,6 +97,15 @@ export default function AgentCard({
         >
           <UserRound size={18} />
           Persona
+        </button>
+        <button title={`Edit ${agentName}’s pet`} onClick={() => onEditPet()}>
+          <Palette size={18} />
+          Edit pet
+        </button>
+        <hr className="agent-card-divider" />
+        <button className="danger-button" disabled={agentDisabled} title={`Delete ${agentName}`} onClick={() => onDelete()}>
+          <Trash2 size={18} />
+          Delete agent
         </button>
       </div>
     </div>

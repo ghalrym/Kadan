@@ -80,7 +80,7 @@ function textOf(node) {
   return [node.props?.children].flat(Infinity).map(textOf).join("");
 }
 
-test("sidebar shows single Chat navigation without multi-chat controls or Tsuchi/Hikari links", () => {
+test("sidebar opens chat from the agent row at the top of navigation, without multi-chat controls or Tsuchi/Hikari links", () => {
   const pages = [];
   const tree = renderSidebar({ onPage: name => pages.push(name) });
   const nodes = elements(tree);
@@ -88,15 +88,19 @@ test("sidebar shows single Chat navigation without multi-chat controls or Tsuchi
   const nav = nodes.find(node => node.type === "nav");
   const navLabels = elements(nav)
     .filter(node => node.type === "button")
-    .map(node => [node.props.children].flat(Infinity).filter(item => typeof item === "string").join(""));
-  assert.deepEqual(navLabels, ["Chat", "Group Chat", "Space", "Plugins"]);
-  elements(nav).find(node => node.type === "button").props.onClick();
+    .map(textOf);
+  assert.deepEqual(navLabels, ["MiAgent", "Group Chat", "Space", "Plugins"]);
+  const agentRow = elements(nav).find(node => node.type === "button");
+  assert.ok(agentRow.props.className.includes("agent-link"));
+  assert.ok(agentRow.props.className.includes("selected"));
+  assert.equal(agentRow.props["aria-current"], "page");
+  agentRow.props.onClick();
   assert.deepEqual(pages, ["chat"]);
 
   const footer = nodes.find(node => node.type === "footer");
   const footerChildren = [footer.props.children].flat(Infinity).filter(Boolean);
-  assert.ok(footerChildren[0].props.className.includes("agent-link"));
-  const serverRow = footerChildren[1];
+  assert.equal(footerChildren.some(child => child.props?.className?.includes?.("agent-link")), false);
+  const serverRow = footerChildren[0];
   assert.equal(serverRow.props.className, "sidebar-server-row");
   const rowNodes = elements(serverRow);
   assert.ok(rowNodes.find(node => typeof node.props?.className === "string" && node.props.className.includes("server-settings-trigger")));
