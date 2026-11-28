@@ -32,6 +32,33 @@ export function imageStatus(job: ImageJob): string | null {
   }
 }
 
+function isAfter(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  if (Number.isFinite(ta) && Number.isFinite(tb)) return ta > tb;
+  return a > b;
+}
+
+export function visibleImageJobs(conversation: Resource, images: ImageJob[]): ImageJob[] {
+  const scoped = images.filter((job) => job.conversation_id === conversation.id);
+  const lastUser = conversation.messages.filter((message) => message.role === "user").at(-1);
+  return scoped.filter((job, index) => {
+    if (!imageStatus(job)) return false;
+    if (job.status !== "failed" && job.status !== "cancelled") return true;
+    const supersededByJob = scoped.some(
+      (other, otherIndex) =>
+        other.id !== job.id &&
+        (isAfter(other.created_at, job.created_at) ||
+          (other.created_at === job.created_at && otherIndex > index)),
+    );
+    if (supersededByJob) return false;
+    const settledAt = job.updated_at || job.created_at;
+    if (lastUser && isAfter(lastUser.created_at, settledAt)) return false;
+    return true;
+  });
+}
+
 export function isImageAsset(asset: Asset): boolean {
   return asset.is_image && asset.media_type.startsWith("image/");
 }

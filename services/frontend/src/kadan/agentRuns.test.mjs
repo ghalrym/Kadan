@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeRun, cancellableImage, currentResponseOutcome, imageStatus, isImageAsset, latestConversation, responseProgress } from "./agentRuns.ts";
+import { activeRun, cancellableImage, currentResponseOutcome, imageStatus, isImageAsset, latestConversation, responseProgress, visibleImageJobs } from "./agentRuns.ts";
 
 test("failed responses are never shown as chat outcomes; stopped responses remain historical after newer work", () => {
   const conversation = { id: "chat", messages: [] };
@@ -70,6 +70,75 @@ test("image failure and cancellation remain visible without offering another can
     assert.equal(cancellableImage({ status }), false);
   }
   for (const status of ["queued", "running"]) assert.equal(cancellableImage({ status }), true);
+});
+
+test("failed and cancelled image notices clear once newer image work starts or a later user message is sent", () => {
+  const baseChat = {
+    id: "chat",
+    messages: [{ id: "u1", role: "user", created_at: "2026-11-28T13:15:10Z" }],
+  };
+  const failed = {
+    id: "job-1",
+    conversation_id: "chat",
+    status: "failed",
+    error: "unsupported_dtype",
+    delivered_message_id: null,
+    created_at: "2026-11-28T13:15:21Z",
+    updated_at: "2026-11-28T13:15:22Z",
+  };
+  const cancelled = {
+    id: "job-c",
+    conversation_id: "chat",
+    status: "cancelled",
+    error: null,
+    delivered_message_id: null,
+    created_at: "2026-11-28T13:15:21Z",
+    updated_at: "2026-11-28T13:15:25Z",
+  };
+  const otherChatJob = { ...failed, id: "other", conversation_id: "other-chat" };
+
+  // Current failure/cancellation stays visible before newer work.
+  assert.deepEqual(visibleImageJobs(baseChat, [failed, otherChatJob]).map((j) => j.id), ["job-1"]);
+  assert.deepEqual(visibleImageJobs(baseChat, [cancelled]).map((j) => j.id), ["job-c"]);
+
+  // Cleared as soon as a newer image job is queued, running, or completed/delivered.
+  for (const nextStatus of ["queued", "running", "completed"]) {
+    const newer = {
+      id: "job-2",
+      conversation_id: "chat",
+      status: nextStatus,
+      error: null,
+      delivered_message_id: nextStatus === "completed" ? "msg-2" : null,
+      created_at: "2026-11-28T14:40:00Z",
+      updated_at: "2026-11-28T14:40:10Z",
+    };
+    const expected = nextStatus === "completed" ? [] : ["job-2"];
+    assert.deepEqual(visibleImageJobs(baseChat, [failed, newer]).map((j) => j.id), expected);
+    assert.deepEqual(visibleImageJobs(baseChat, [cancelled, newer]).map((j) => j.id), expected);
+  }
+
+  // Cleared once the user sends a later message after the failure/cancellation.
+  const laterChat = {
+    id: "chat",
+    messages: [
+      ...baseChat.messages,
+      { id: "u2", role: "user", created_at: "2026-11-28T14:00:00Z" },
+    ],
+  };
+  assert.deepEqual(visibleImageJobs(laterChat, [failed]), []);
+  assert.deepEqual(visibleImageJobs(laterChat, [cancelled]), []);
+
+  // A job that fails AFTER an earlier follow-up user message stays visible.
+  const lateFailure = { ...failed, updated_at: "2026-11-28T14:05:00Z" };
+  assert.deepEqual(visibleImageJobs(laterChat, [lateFailure]).map((j) => j.id), ["job-1"]);
+
+  // Active and undelivered jobs stay visible even alongside newer user messages.
+  const active = { ...failed, id: "job-active", status: "running", error: null };
+  const undelivered = { ...failed, id: "job-ready", status: "completed", error: null, delivered_message_id: null };
+  assert.deepEqual(
+    visibleImageJobs(laterChat, [active, undelivered]).map((j) => j.id),
+    ["job-active", "job-ready"],
+  );
 });
 
 test("attachments need both image metadata fields before rendering inline", () => {

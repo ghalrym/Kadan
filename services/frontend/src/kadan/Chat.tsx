@@ -10,7 +10,7 @@ import { useAgentPet } from "./PetContext";
 import { agentPath, api } from "./api";
 import type { PetState } from "./pet";
 import type { AgentRun, Asset, ImageJob, Message, Resource, RunSnapshot, Status } from "./types";
-import { activeRun, cancellableImage, currentResponseOutcome, imageStatus, isImageAsset, latestConversation, responseProgress } from "./agentRuns";
+import { activeRun, cancellableImage, currentResponseOutcome, imageStatus, isImageAsset, latestConversation, responseProgress, visibleImageJobs } from "./agentRuns";
 import { randomUuid } from "./uuid";
 import { ChatAttachments } from "./attachments";
 import { chatStorageKeys, confirmSend, copyPendingToDraft, discardUnassignedPending, queueSend, readPending, type PendingMessage } from "./outbox";
@@ -628,7 +628,7 @@ export default function Chat({
           {outcome && <p className="notice" role="status">
             Response stopped
           </p>}
-          {images.filter((job) => imageStatus(job)).map((job) => (
+          {visibleImageJobs(chain, images).map((job) => (
             <div className="image-job notice" key={job.id} role="status">
               <span>{imageStatus(job)}</span>
               {cancellableImage(job) && <button disabled={stopping} onClick={() => void cancelImage(job)}>Stop image</button>}
