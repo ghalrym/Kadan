@@ -12,6 +12,4 @@ Context preparation reads the agent record (`GET /api/agents/{key}`) and its own
 
 ## Voice calls
 
-The browser opens `/api/agents/{key}/calls` and sends `{type: "start"}`. Kadan requires this first message within 15 seconds and reads the agent record, canonical persona, and active Core Memories through `LocalServices.agent`, `LocalServices.agent_persona`, and `LocalServices.core_memories_snapshot`. The instruction snapshot uses a short spoken-conversation base plus the same natural character framing (`You are "{agent.name}"...`), saved persona, and Core Memories rather than the shared tool-bearing instruction file. Kadan rejects combined base + persona instructions above Hikari's 8,000-character limit before connecting to Hikari; the persona is never truncated, and Core Memories are trimmed to fit whatever space remains under 8,000 characters.
-
-Kadan sends the resolved `{type: "start", instruction: string}` upstream, then hands the socket to the existing bidirectional relay. Setup owns cleanup until this handoff, including a failed or cancelled initial send. The snapshot lives only in the call, without run persistence or persona writes. See the [voice call expectations](../../user-expectations/kadan/voice-calls.md) for caller behavior and limitations.
+Live voice calls are currently unavailable; the **Call** button on `AgentCard.tsx` is a disabled **Coming soon** placeholder. See [voice call expectations](../../user-expectations/kadan/voice-calls.md).

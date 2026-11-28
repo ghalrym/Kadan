@@ -67,7 +67,6 @@ function chat(chain, storageValues = {}) {
     "./Composer": { default: "Composer", readiness: () => ({ chat: true, storage: true }) },
     "./Pet": { default: "Pet", useMood: () => ["idle", reactToMood] },
     "./AgentCard": { default: "AgentCard" },
-    "./VoiceCallControl": { useVoiceCall: () => ({}) },
     "./presence": { activeLabel: () => "idle" },
     "./PetContext": { useAgentPet: () => null },
     "./api": { agentPath: key => `/agents/${key}`, api: () => new Promise(resolve => { resolveSnapshot = resolve; }) },

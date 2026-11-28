@@ -157,27 +157,31 @@
       ]
     },
     {
-      "id": "superwhisper-s1-mini",
-      "repo_id": "superwhisper/s1-mini",
-      "revision": "88f6b15896c73bbb13a3b596e0afe8ea0d5150b4",
-      "license": "s1-mini-license",
-      "estimated_bytes": 1514736392,
-      "kind": "formatting",
-      "display_name": "S1-mini by Superwhisper",
-      "short_name": "S1-mini",
+      "id": "qwen3-asr-1.7b",
+      "repo_id": "Qwen/Qwen3-ASR-1.7B",
+      "revision": "7278e1e70fe206f11671096ffdd38061171dd6e5",
+      "license": "apache-2.0",
+      "estimated_bytes": 4703051961,
+      "kind": "transcription",
+      "display_name": "Qwen3-ASR 1.7B",
+      "short_name": "Qwen3 ASR",
       "layout": "composite",
       "subfolder": "",
       "component_paths": [],
       "required_files": [
         "config.json",
         "generation_config.json",
-        "tokenizer.json",
-        "model.safetensors",
-        "LICENSE",
-        "NOTICE"
+        "preprocessor_config.json",
+        "chat_template.json",
+        "tokenizer_config.json",
+        "vocab.json",
+        "merges.txt",
+        "model.safetensors.index.json",
+        "model-00001-of-00002.safetensors",
+        "model-00002-of-00002.safetensors"
       ],
       "weight_paths": [],
-      "license_url": "https://huggingface.co/superwhisper/s1-mini/blob/88f6b15896c73bbb13a3b596e0afe8ea0d5150b4/LICENSE",
+      "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
       "license_notice": null,
       "inference_available": true,
       "asset_url": null,
@@ -185,324 +189,75 @@
       "manifest": [
         {
           "name": "config.json",
-          "size": 726,
-          "digest": "f5c3703b78ae2a478ae15b247e9f855e0ce2107b",
+          "size": 6194,
+          "digest": "2bc16c9d4ca08963715cfb94d879799b9adbd0e9",
           "algorithm": "git-sha1",
-          "url": "https://huggingface.co/superwhisper/s1-mini/resolve/88f6b15896c73bbb13a3b596e0afe8ea0d5150b4/config.json"
+          "url": "https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/config.json"
         },
         {
           "name": "generation_config.json",
-          "size": 181,
-          "digest": "82682d87f3a9bec29c675aa223b0d29efa1483f7",
+          "size": 142,
+          "digest": "7382a4d347c0a865b76bb1b8277f66a5ac312854",
           "algorithm": "git-sha1",
-          "url": "https://huggingface.co/superwhisper/s1-mini/resolve/88f6b15896c73bbb13a3b596e0afe8ea0d5150b4/generation_config.json"
+          "url": "https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/generation_config.json"
         },
         {
-          "name": "tokenizer.json",
-          "size": 11422654,
-          "digest": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+          "name": "preprocessor_config.json",
+          "size": 330,
+          "digest": "8f7f07346466d5d494ec0d4969d1c3d0190eed72",
+          "algorithm": "git-sha1",
+          "url": "https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/preprocessor_config.json"
+        },
+        {
+          "name": "chat_template.json",
+          "size": 1161,
+          "digest": "c44736493efd71ec96218cc626904698cdb13235",
+          "algorithm": "git-sha1",
+          "url": "https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/chat_template.json"
+        },
+        {
+          "name": "tokenizer_config.json",
+          "size": 12487,
+          "digest": "b93109843922a40c6654c5449d3bf95372267c66",
+          "algorithm": "git-sha1",
+          "url": "https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/tokenizer_config.json"
+        },
+        {
+          "name": "vocab.json",
+          "size": 2776833,
+          "digest": "4783fe10ac3adce15ac8f358ef5462739852c569",
+          "algorithm": "git-sha1",
+          "url": "https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/vocab.json"
+        },
+        {
+          "name": "merges.txt",
+          "size": 1671853,
+          "digest": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7",
+          "algorithm": "git-sha1",
+          "url": "https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/merges.txt"
+        },
+        {
+          "name": "model.safetensors.index.json",
+          "size": 64821,
+          "digest": "1048a4eb4f21fef9aea06d8568a784b2b5595689",
+          "algorithm": "git-sha1",
+          "url": "https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/model.safetensors.index.json"
+        },
+        {
+          "name": "model-00001-of-00002.safetensors",
+          "size": 4220320824,
+          "digest": "a4cd1f1a04d90b757dc7f7dd26254e69a013b19e80efe590a83c6a3bde8608d6",
           "algorithm": "sha256",
-          "url": "https://huggingface.co/superwhisper/s1-mini/resolve/88f6b15896c73bbb13a3b596e0afe8ea0d5150b4/tokenizer.json"
+          "url": "https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/model-00001-of-00002.safetensors"
         },
         {
-          "name": "model.safetensors",
-          "size": 1503300328,
-          "digest": "69d2057077ab4dc738aaaab75d2a8ffa141e3a09fb9d956198cfce46f381131a",
+          "name": "model-00002-of-00002.safetensors",
+          "size": 478200688,
+          "digest": "6e0b9d9e09e2e0238e7ef3cc8a484ab387e91b90f1900bedf88bc92d7929ccfc",
           "algorithm": "sha256",
-          "url": "https://huggingface.co/superwhisper/s1-mini/resolve/88f6b15896c73bbb13a3b596e0afe8ea0d5150b4/model.safetensors"
-        },
-        {
-          "name": "LICENSE",
-          "size": 12033,
-          "digest": "ec0371e837c48cb3f02116a32f2d5821c3e86485",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/superwhisper/s1-mini/resolve/88f6b15896c73bbb13a3b596e0afe8ea0d5150b4/LICENSE"
-        },
-        {
-          "name": "NOTICE",
-          "size": 470,
-          "digest": "758c88657c67261299d7cb3d69ae7a0d9da2616e",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/superwhisper/s1-mini/resolve/88f6b15896c73bbb13a3b596e0afe8ea0d5150b4/NOTICE"
+          "url": "https://huggingface.co/Qwen/Qwen3-ASR-1.7B/resolve/7278e1e70fe206f11671096ffdd38061171dd6e5/model-00002-of-00002.safetensors"
         }
       ]
-    },
-    {
-      "id": "whisper-base.en",
-      "repo_id": "openai/whisper",
-      "revision": "25a8566e1d0c1e2231d1c762132cd20e0f96a85d16145c3a00adf5d1ac670ead",
-      "license": "mit",
-      "estimated_bytes": 0,
-      "kind": "transcription",
-      "display_name": "Whisper base.en",
-      "short_name": "Whisper",
-      "layout": "single_file",
-      "subfolder": "",
-      "component_paths": [],
-      "required_files": [
-        "base.en.pt"
-      ],
-      "weight_paths": [],
-      "license_url": "https://github.com/openai/whisper/blob/main/LICENSE",
-      "license_notice": null,
-      "inference_available": true,
-      "asset_url": "https://openaipublic.azureedge.net/main/whisper/models/25a8566e1d0c1e2231d1c762132cd20e0f96a85d16145c3a00adf5d1ac670ead/base.en.pt",
-      "asset_name": "base.en.pt",
-      "manifest": []
-    },
-    {
-      "id": "whisper-base",
-      "repo_id": "openai/whisper",
-      "revision": "ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e",
-      "license": "mit",
-      "estimated_bytes": 0,
-      "kind": "transcription",
-      "display_name": "Whisper base",
-      "short_name": "Whisper",
-      "layout": "single_file",
-      "subfolder": "",
-      "component_paths": [],
-      "required_files": [
-        "base.pt"
-      ],
-      "weight_paths": [],
-      "license_url": "https://github.com/openai/whisper/blob/main/LICENSE",
-      "license_notice": null,
-      "inference_available": true,
-      "asset_url": "https://openaipublic.azureedge.net/main/whisper/models/ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e/base.pt",
-      "asset_name": "base.pt",
-      "manifest": []
-    },
-    {
-      "id": "whisper-large-v1",
-      "repo_id": "openai/whisper",
-      "revision": "e4b87e7e0bf463eb8e6956e646f1e277e901512310def2c24bf0e11bd3c28e9a",
-      "license": "mit",
-      "estimated_bytes": 0,
-      "kind": "transcription",
-      "display_name": "Whisper large-v1",
-      "short_name": "Whisper",
-      "layout": "single_file",
-      "subfolder": "",
-      "component_paths": [],
-      "required_files": [
-        "large-v1.pt"
-      ],
-      "weight_paths": [],
-      "license_url": "https://github.com/openai/whisper/blob/main/LICENSE",
-      "license_notice": null,
-      "inference_available": true,
-      "asset_url": "https://openaipublic.azureedge.net/main/whisper/models/e4b87e7e0bf463eb8e6956e646f1e277e901512310def2c24bf0e11bd3c28e9a/large-v1.pt",
-      "asset_name": "large-v1.pt",
-      "manifest": []
-    },
-    {
-      "id": "whisper-large-v2",
-      "repo_id": "openai/whisper",
-      "revision": "81f7c96c852ee8fc832187b0132e569d6c3065a3252ed18e56effd0b6a73e524",
-      "license": "mit",
-      "estimated_bytes": 0,
-      "kind": "transcription",
-      "display_name": "Whisper large-v2",
-      "short_name": "Whisper",
-      "layout": "single_file",
-      "subfolder": "",
-      "component_paths": [],
-      "required_files": [
-        "large-v2.pt"
-      ],
-      "weight_paths": [],
-      "license_url": "https://github.com/openai/whisper/blob/main/LICENSE",
-      "license_notice": null,
-      "inference_available": true,
-      "asset_url": "https://openaipublic.azureedge.net/main/whisper/models/81f7c96c852ee8fc832187b0132e569d6c3065a3252ed18e56effd0b6a73e524/large-v2.pt",
-      "asset_name": "large-v2.pt",
-      "manifest": []
-    },
-    {
-      "id": "whisper-large-v3-turbo",
-      "repo_id": "openai/whisper",
-      "revision": "aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a",
-      "license": "mit",
-      "estimated_bytes": 0,
-      "kind": "transcription",
-      "display_name": "Whisper large-v3-turbo",
-      "short_name": "Whisper",
-      "layout": "single_file",
-      "subfolder": "",
-      "component_paths": [],
-      "required_files": [
-        "large-v3-turbo.pt"
-      ],
-      "weight_paths": [],
-      "license_url": "https://github.com/openai/whisper/blob/main/LICENSE",
-      "license_notice": null,
-      "inference_available": true,
-      "asset_url": "https://openaipublic.azureedge.net/main/whisper/models/aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a/large-v3-turbo.pt",
-      "asset_name": "large-v3-turbo.pt",
-      "manifest": []
-    },
-    {
-      "id": "whisper-large-v3",
-      "repo_id": "openai/whisper",
-      "revision": "e5b1a55b89c1367dacf97e3e19bfd829a01529dbfdeefa8caeb59b3f1b81dadb",
-      "license": "mit",
-      "estimated_bytes": 0,
-      "kind": "transcription",
-      "display_name": "Whisper large-v3",
-      "short_name": "Whisper",
-      "layout": "single_file",
-      "subfolder": "",
-      "component_paths": [],
-      "required_files": [
-        "large-v3.pt"
-      ],
-      "weight_paths": [],
-      "license_url": "https://github.com/openai/whisper/blob/main/LICENSE",
-      "license_notice": null,
-      "inference_available": true,
-      "asset_url": "https://openaipublic.azureedge.net/main/whisper/models/e5b1a55b89c1367dacf97e3e19bfd829a01529dbfdeefa8caeb59b3f1b81dadb/large-v3.pt",
-      "asset_name": "large-v3.pt",
-      "manifest": []
-    },
-    {
-      "id": "whisper-medium.en",
-      "repo_id": "openai/whisper",
-      "revision": "d7440d1dc186f76616474e0ff0b3b6b879abc9d1a4926b7adfa41db2d497ab4f",
-      "license": "mit",
-      "estimated_bytes": 0,
-      "kind": "transcription",
-      "display_name": "Whisper medium.en",
-      "short_name": "Whisper",
-      "layout": "single_file",
-      "subfolder": "",
-      "component_paths": [],
-      "required_files": [
-        "medium.en.pt"
-      ],
-      "weight_paths": [],
-      "license_url": "https://github.com/openai/whisper/blob/main/LICENSE",
-      "license_notice": null,
-      "inference_available": true,
-      "asset_url": "https://openaipublic.azureedge.net/main/whisper/models/d7440d1dc186f76616474e0ff0b3b6b879abc9d1a4926b7adfa41db2d497ab4f/medium.en.pt",
-      "asset_name": "medium.en.pt",
-      "manifest": []
-    },
-    {
-      "id": "whisper-medium",
-      "repo_id": "openai/whisper",
-      "revision": "345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1",
-      "license": "mit",
-      "estimated_bytes": 0,
-      "runtime_weight_bytes": 3055431680,
-      "kind": "transcription",
-      "display_name": "Whisper medium",
-      "short_name": "Whisper",
-      "layout": "single_file",
-      "subfolder": "",
-      "component_paths": [],
-      "required_files": [
-        "medium.pt"
-      ],
-      "weight_paths": [],
-      "license_url": "https://github.com/openai/whisper/blob/main/LICENSE",
-      "license_notice": null,
-      "inference_available": true,
-      "asset_url": "https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt",
-      "asset_name": "medium.pt",
-      "manifest": []
-    },
-    {
-      "id": "whisper-small.en",
-      "repo_id": "openai/whisper",
-      "revision": "f953ad0fd29cacd07d5a9eda5624af0f6bcf2258be67c92b79389873d91e0872",
-      "license": "mit",
-      "estimated_bytes": 0,
-      "kind": "transcription",
-      "display_name": "Whisper small.en",
-      "short_name": "Whisper",
-      "layout": "single_file",
-      "subfolder": "",
-      "component_paths": [],
-      "required_files": [
-        "small.en.pt"
-      ],
-      "weight_paths": [],
-      "license_url": "https://github.com/openai/whisper/blob/main/LICENSE",
-      "license_notice": null,
-      "inference_available": true,
-      "asset_url": "https://openaipublic.azureedge.net/main/whisper/models/f953ad0fd29cacd07d5a9eda5624af0f6bcf2258be67c92b79389873d91e0872/small.en.pt",
-      "asset_name": "small.en.pt",
-      "manifest": []
-    },
-    {
-      "id": "whisper-small",
-      "repo_id": "openai/whisper",
-      "revision": "9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794",
-      "license": "mit",
-      "estimated_bytes": 0,
-      "kind": "transcription",
-      "display_name": "Whisper small",
-      "short_name": "Whisper",
-      "layout": "single_file",
-      "subfolder": "",
-      "component_paths": [],
-      "required_files": [
-        "small.pt"
-      ],
-      "weight_paths": [],
-      "license_url": "https://github.com/openai/whisper/blob/main/LICENSE",
-      "license_notice": null,
-      "inference_available": true,
-      "asset_url": "https://openaipublic.azureedge.net/main/whisper/models/9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794/small.pt",
-      "asset_name": "small.pt",
-      "manifest": []
-    },
-    {
-      "id": "whisper-tiny.en",
-      "repo_id": "openai/whisper",
-      "revision": "d3dd57d32accea0b295c96e26691aa14d8822fac7d9d27d5dc00b4ca2826dd03",
-      "license": "mit",
-      "estimated_bytes": 0,
-      "kind": "transcription",
-      "display_name": "Whisper tiny.en",
-      "short_name": "Whisper",
-      "layout": "single_file",
-      "subfolder": "",
-      "component_paths": [],
-      "required_files": [
-        "tiny.en.pt"
-      ],
-      "weight_paths": [],
-      "license_url": "https://github.com/openai/whisper/blob/main/LICENSE",
-      "license_notice": null,
-      "inference_available": true,
-      "asset_url": "https://openaipublic.azureedge.net/main/whisper/models/d3dd57d32accea0b295c96e26691aa14d8822fac7d9d27d5dc00b4ca2826dd03/tiny.en.pt",
-      "asset_name": "tiny.en.pt",
-      "manifest": []
-    },
-    {
-      "id": "whisper-tiny",
-      "repo_id": "openai/whisper",
-      "revision": "65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9",
-      "license": "mit",
-      "estimated_bytes": 0,
-      "kind": "transcription",
-      "display_name": "Whisper tiny",
-      "short_name": "Whisper",
-      "layout": "single_file",
-      "subfolder": "",
-      "component_paths": [],
-      "required_files": [
-        "tiny.pt"
-      ],
-      "weight_paths": [],
-      "license_url": "https://github.com/openai/whisper/blob/main/LICENSE",
-      "license_notice": null,
-      "inference_available": true,
-      "asset_url": "https://openaipublic.azureedge.net/main/whisper/models/65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9/tiny.pt",
-      "asset_name": "tiny.pt",
-      "manifest": []
     },
     {
       "id": "qwen-tts-1.7b-custom",
@@ -536,7 +291,7 @@
         "",
         "speech_tokenizer"
       ],
-      "license_url": null,
+      "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
       "license_notice": null,
       "inference_available": true,
       "asset_url": null,
@@ -583,197 +338,6 @@
       "asset_url": null,
       "asset_name": null,
       "manifest": []
-    },
-    {
-      "id": "lfm3-audio-2b-bf16",
-      "repo_id": "LiquidAI/LFM3-Audio-2B",
-      "revision": "9d49701c372d6011d900f6abb40c6b296fb706dd",
-      "license": "lfm1.0",
-      "estimated_bytes": 4170027447,
-      "kind": "audio",
-      "display_name": "LFM3 Audio 2B BF16",
-      "short_name": "LFM3 Audio",
-      "layout": "composite",
-      "subfolder": "",
-      "component_paths": [],
-      "required_files": [
-        "LICENSE",
-        "audio_tokenizer/config.json",
-        "audio_tokenizer/model.safetensors",
-        "chat_template.jinja",
-        "config.json",
-        "configuration_lfm3.py",
-        "configuration_lfm3_audio.py",
-        "configuration_liquid_codec.py",
-        "feature_extraction_lfm3_audio.py",
-        "generation_config.json",
-        "lfm3_conv.py",
-        "model.safetensors",
-        "modeling_lfm3.py",
-        "modeling_lfm3_audio.py",
-        "modeling_liquid_codec.py",
-        "preprocessor_config.json",
-        "processing_lfm3_audio.py",
-        "processor_config.json",
-        "special_tokens_map.json",
-        "tokenizer.json",
-        "tokenizer_config.json"
-      ],
-      "weight_paths": [],
-      "license_url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/blob/9d49701c372d6011d900f6abb40c6b296fb706dd/LICENSE",
-      "license_notice": "Review the LFM Open License v1.0 before downloading.",
-      "inference_available": true,
-      "asset_url": null,
-      "asset_name": null,
-      "manifest": [
-        {
-          "name": "LICENSE",
-          "size": 10574,
-          "digest": "25e731c697c4fe4c52ee654cedf7106a827748d2",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/LICENSE"
-        },
-        {
-          "name": "audio_tokenizer/config.json",
-          "size": 801,
-          "digest": "691025073d47c8e5de98b690c4c60e812eda14d0",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/audio_tokenizer/config.json"
-        },
-        {
-          "name": "audio_tokenizer/model.safetensors",
-          "size": 147143540,
-          "digest": "45984a872fdcf0b94cd0ec68822bbf26f0c6fcb580cfaba0f7fa3ee60355137f",
-          "algorithm": "sha256",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/audio_tokenizer/model.safetensors"
-        },
-        {
-          "name": "chat_template.jinja",
-          "size": 9328,
-          "digest": "79806ec0046e91f9f2a7b6757d0c926bbc5c6dd0",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/chat_template.jinja"
-        },
-        {
-          "name": "config.json",
-          "size": 6243,
-          "digest": "22b9c3aaff94eed8b487495fe0b8bb92945f8ffd",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/config.json"
-        },
-        {
-          "name": "configuration_lfm3.py",
-          "size": 6113,
-          "digest": "a3cc0e726e8f4656f8468df5c8445f26e6dc8464",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/configuration_lfm3.py"
-        },
-        {
-          "name": "configuration_lfm3_audio.py",
-          "size": 12973,
-          "digest": "2fae5add80420eb6bc84ec1d3f2f032668920ad7",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/configuration_lfm3_audio.py"
-        },
-        {
-          "name": "configuration_liquid_codec.py",
-          "size": 5401,
-          "digest": "30409c65b5713d70745a9dd8062bb8ca6bd0fde1",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/configuration_liquid_codec.py"
-        },
-        {
-          "name": "feature_extraction_lfm3_audio.py",
-          "size": 13394,
-          "digest": "9073a5327a2d70767fa2778267e7092c1eaa4969",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/feature_extraction_lfm3_audio.py"
-        },
-        {
-          "name": "generation_config.json",
-          "size": 382,
-          "digest": "74d095d2e6f1914d54ab47fbd152124a1f54fd35",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/generation_config.json"
-        },
-        {
-          "name": "lfm3_conv.py",
-          "size": 8532,
-          "digest": "a1b67afdb605452f5a99751862863d5460a1fa69",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/lfm3_conv.py"
-        },
-        {
-          "name": "model.safetensors",
-          "size": 4004729320,
-          "digest": "9abe5e402f163296e0988f94ad67f65dab61c723e260fea9374109b3775e28f7",
-          "algorithm": "sha256",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/model.safetensors"
-        },
-        {
-          "name": "modeling_lfm3.py",
-          "size": 42359,
-          "digest": "0ccffc7ed179c2e3aaa19ab93bba735abb1d124d",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/modeling_lfm3.py"
-        },
-        {
-          "name": "modeling_lfm3_audio.py",
-          "size": 91241,
-          "digest": "3d6e3410726ae2a26b519c94bffb695f28404dcc",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/modeling_lfm3_audio.py"
-        },
-        {
-          "name": "modeling_liquid_codec.py",
-          "size": 17884,
-          "digest": "2c77c3b953faae96073176fa0243dc17d7ac644d",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/modeling_liquid_codec.py"
-        },
-        {
-          "name": "preprocessor_config.json",
-          "size": 466,
-          "digest": "50b5a88b34970aa94c75628bc0079103ada9c90b",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/preprocessor_config.json"
-        },
-        {
-          "name": "processing_lfm3_audio.py",
-          "size": 18723,
-          "digest": "138d1b2573ab90dd29879156701cdde9e4f52ab5",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/processing_lfm3_audio.py"
-        },
-        {
-          "name": "processor_config.json",
-          "size": 773,
-          "digest": "5478f2b1bb2283f348b555ab0483e414af6ffa87",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/processor_config.json"
-        },
-        {
-          "name": "special_tokens_map.json",
-          "size": 92,
-          "digest": "5d871daaacbf26aaa9cb47c2935f30e797ee35a7",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/special_tokens_map.json"
-        },
-        {
-          "name": "tokenizer.json",
-          "size": 17908634,
-          "digest": "41927bd314d17d7d7fadb44e10cd0919f7b71528d7741596d8cbd15c6945ec44",
-          "algorithm": "sha256",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/tokenizer.json"
-        },
-        {
-          "name": "tokenizer_config.json",
-          "size": 674,
-          "digest": "a44ee8c5a658a4f7d04bc5605a52840a5e471acb",
-          "algorithm": "git-sha1",
-          "url": "https://huggingface.co/LiquidAI/LFM3-Audio-2B/resolve/9d49701c372d6011d900f6abb40c6b296fb706dd/tokenizer_config.json"
-        }
-      ]
     }
   ],
   "assets": [
@@ -801,7 +365,6 @@
     "tokenizer.json",
     "tokenizer.model",
     "tokenizer_config.json",
-    "video_preprocessor_config.json",
     "vocab.json"
   ]
 }

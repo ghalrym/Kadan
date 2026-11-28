@@ -116,8 +116,7 @@ static inline ProjectionResult project_source(
         shard.read_float_tensor(name, first, dst, cancel);
     };
     shard.check_unchanged();
-    if ((workload == Workload::image || workload == Workload::lfm3_llm
-         || workload == Workload::lfm3_vision || workload == Workload::lfm3_audio)
+    if ((workload == Workload::image || workload == Workload::speech)
         && compute && compute->supports_bf16_weights()
         && shard.tensor(name).dtype == Dtype::bf16) {
         auto raw_source = [&](std::size_t first, std::span<std::uint16_t> dst) {

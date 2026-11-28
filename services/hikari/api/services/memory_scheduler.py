@@ -19,9 +19,7 @@ PRIORITY = {
     "llm": 1,
     "tts": 2,
     "speech": 3,
-    "formatting": 3,
     "image": 4,
-    "lfm3_audio": 1,
 }
 TOP_PRIORITY = min(PRIORITY.values())
 

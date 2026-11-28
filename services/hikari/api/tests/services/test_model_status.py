@@ -334,7 +334,7 @@ class SettingsTaskTests(unittest.TestCase):
     def test_all_settings_tasks_round_trip(self):
         for body in (
             {"feature": "model_context", "model_id": "small", "context_limit": None},
-            {"feature": "whisper_formatting", "enabled": False},
+            {"feature": "llm_selection", "model_id": "inkling-2-mini-q8-0"},
         ):
             task = InferenceTask(operation="configure", input=body)
             self.assertEqual(

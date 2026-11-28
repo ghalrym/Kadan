@@ -1,8 +1,6 @@
 #include "kadan/preparation.hpp"
 
 #include <algorithm>
-#include <archive.h>
-#include <archive_entry.h>
 #include <array>
 #include <barrier>
 #include <bit>
@@ -19,7 +17,6 @@
 #include <unistd.h>
 
 #include "kadan/chat_prompt.hpp"
-#include "kadan/s1_mini_prompt.hpp"
 
 using namespace kadan::serving;
 
@@ -150,12 +147,12 @@ InferenceRequest request(
 void runtime_weight_requirement_units() {
     Directory tmp;
     const auto data = tmp.path / "data", root = tmp.path / "models";
-    auto whisper = entry("whisper-medium", Json::array());
-    whisper["kind"] = "transcription";
-    whisper["estimated_bytes"] = kadan::Bytes(0);
+    auto asr = entry("qwen3-asr-1.7b", Json::array());
+    asr["kind"] = "transcription";
+    asr["estimated_bytes"] = kadan::Bytes(0);
     constexpr kadan::Bytes gib = 1024ULL * 1024 * 1024;
     constexpr kadan::Bytes floor = 384ULL * 1024 * 1024 + 2 * gib;
-    constexpr kadan::Bytes runtime_bytes = 3055431680;
+    constexpr kadan::Bytes runtime_bytes = 4703051961ULL;
     unsigned transfers = 0;
     auto fetch = [&](
                      const auto&, const auto&, const auto&, bool, std::uint64_t
@@ -163,18 +160,19 @@ void runtime_weight_requirement_units() {
         ++transfers;
         throw RequestError("Memory requirements must not transfer a checkpoint");
     };
-    assert(!CatalogEntry::parse(whisper).runtime_weight_bytes);
+    assert(!CatalogEntry::parse(asr).runtime_weight_bytes);
     for (const Json& invalid :
          {Json(), Json(false), Json(0u), Json(-1), Json(1.5), Json("10")}) {
-        auto bad = whisper;
+        auto bad = asr;
         bad["runtime_weight_bytes"] = invalid;
         rejects([&] { CatalogEntry::parse(bad); });
     }
-    whisper["runtime_weight_bytes"] = runtime_bytes;
-    assert(CatalogEntry::parse(whisper).runtime_weight_bytes == runtime_bytes);
-    catalog(data, Json::array({whisper}));
+    asr["runtime_weight_bytes"] = runtime_bytes;
+    assert(CatalogEntry::parse(asr).runtime_weight_bytes == runtime_bytes);
+    catalog(data, Json::array({asr}));
     ModelStore declared(root, data, fetch);
-    const auto need = worker_requirement(kadan::Workload::speech, "medium", declared);
+    const auto need =
+        worker_requirement(kadan::Workload::speech, "qwen3-asr-1.7b", declared);
     assert(need["minimum"] == Json::array({gib, floor}));
     assert(need["preferred"] == Json::array({gib, floor + runtime_bytes}));
     assert(need["device_floor"] == floor);
@@ -185,41 +183,42 @@ void runtime_weight_requirement_units() {
     assert(!fs::exists(root) && transfers == 0);
 
     // Download estimates still control host policy and undeclared checkpoints.
-    whisper["estimated_bytes"] = kadan::Bytes(123);
-    catalog(data, Json::array({whisper}));
+    asr["estimated_bytes"] = kadan::Bytes(123);
+    catalog(data, Json::array({asr}));
     ModelStore host(root, data, fetch);
-    const auto host_need = worker_requirement(kadan::Workload::speech, "medium", host);
+    const auto host_need =
+        worker_requirement(kadan::Workload::speech, "qwen3-asr-1.7b", host);
     assert(host_need["preferred"] == Json::array({gib + 123, floor + runtime_bytes}));
-    whisper.erase("runtime_weight_bytes");
-    catalog(data, Json::array({whisper}));
+    asr.erase("runtime_weight_bytes");
+    catalog(data, Json::array({asr}));
     ModelStore legacy(root, data, fetch);
     assert(
-        worker_requirement(kadan::Workload::speech, "medium", legacy)["preferred"]
+        worker_requirement(kadan::Workload::speech, "qwen3-asr-1.7b", legacy)["preferred"]
         == Json::array({gib + 123, floor + 123})
     );
 
     const auto maximum = std::numeric_limits<kadan::Bytes>::max();
-    whisper["runtime_weight_bytes"] = maximum - floor;
-    catalog(data, Json::array({whisper}));
+    asr["runtime_weight_bytes"] = maximum - floor;
+    catalog(data, Json::array({asr}));
     ModelStore boundary(root, data, fetch);
     assert(
-        worker_requirement(kadan::Workload::speech, "medium", boundary)["preferred"][1]
+        worker_requirement(kadan::Workload::speech, "qwen3-asr-1.7b", boundary)["preferred"][1]
         == maximum
     );
     for (const auto too_large : {maximum - floor + 1, maximum}) {
-        whisper["runtime_weight_bytes"] = too_large;
-        catalog(data, Json::array({whisper}));
+        asr["runtime_weight_bytes"] = too_large;
+        catalog(data, Json::array({asr}));
         ModelStore overflow(root, data, fetch);
         rejects([&] {
-            worker_requirement(kadan::Workload::speech, "medium", overflow);
+            worker_requirement(kadan::Workload::speech, "qwen3-asr-1.7b", overflow);
         });
     }
-    whisper["runtime_weight_bytes"] = runtime_bytes;
-    whisper["estimated_bytes"] = maximum;
-    catalog(data, Json::array({whisper}));
+    asr["runtime_weight_bytes"] = runtime_bytes;
+    asr["estimated_bytes"] = maximum;
+    catalog(data, Json::array({asr}));
     ModelStore host_overflow(root, data, fetch);
     rejects([&] {
-        worker_requirement(kadan::Workload::speech, "medium", host_overflow);
+        worker_requirement(kadan::Workload::speech, "qwen3-asr-1.7b", host_overflow);
     });
 
     auto image = entry("flux.2-klein-4b", Json::array());
@@ -362,12 +361,9 @@ void pinned_catalog_units() {
         read_document(retired / "complete.json").at("revision") == "retired-revision"
     );
     write_document(tmp.path / "tier.json", {{"tier", "obsolete"}});
-    write_document(tmp.path / "whisper-selection.json", {{"model", "large-v3"}});
-    assert(store.whisper_selected() == "medium");
-    rejects([&] { store.whisper_model("large"); });
     assert(
         worker_requirement(kadan::Workload::speech, std::nullopt, store)["model"]
-        == "whisper-medium"
+        == "qwen3-asr-1.7b"
     );
     assert(
         worker_requirement(kadan::Workload::tts, std::nullopt, store)["model"]
@@ -375,28 +371,14 @@ void pinned_catalog_units() {
     );
     rejects([&] { worker_requirement(kadan::Workload::speech, "unknown", store); });
     assert(read_document(tmp.path / "tier.json").at("tier") == "obsolete");
-    assert(
-        read_document(tmp.path / "whisper-selection.json").at("model") == "large-v3"
-    );
     const auto speech_need =
-        worker_requirement(kadan::Workload::speech, "medium", store);
+        worker_requirement(kadan::Workload::speech, "qwen3-asr-1.7b", store);
     assert(speech_need["minimum"][1] == speech_need["device_floor"]);
-    const auto& medium = store.entry("whisper-medium");
-    assert(
-        medium.revision
-        == "345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1"
-    );
-    assert(medium.estimated_bytes == 0 && medium.runtime_weight_bytes == 3055431680ULL);
-    assert(speech_need["minimum"] == Json::array({1073741824ULL, 2550136832ULL}));
-    assert(speech_need["preferred"] == Json::array({1073741824ULL, 5605568512ULL}));
-
-    const auto& formatter = store.entry("superwhisper-s1-mini");
-    assert(
-        formatter.repo_id == "superwhisper/s1-mini" && formatter.kind == "formatting"
-    );
-    assert(formatter.revision == "88f6b15896c73bbb13a3b596e0afe8ea0d5150b4");
-    store.validate_files(formatter, formatter.manifest);
-    assert(store.allowed("LICENSE", formatter) && store.allowed("NOTICE", formatter));
+    const auto& asr = store.entry("qwen3-asr-1.7b");
+    assert(asr.repo_id == "Qwen/Qwen3-ASR-1.7B" && asr.kind == "transcription");
+    assert(asr.license == "apache-2.0");
+    assert(asr.revision == "7278e1e70fe206f11671096ffdd38061171dd6e5");
+    store.validate_files(asr, asr.manifest);
     const auto& speech = store.entry("qwen-tts-1.7b-custom");
     Json files = Json::array();
     for (const auto& name : speech.required_files) {
@@ -446,7 +428,6 @@ void shared_settings_units() {
                 const auto& model = models[index];
                 for (int repeat = 0; repeat < 10; ++repeat) {
                     worker.set_context(model, 4096 + index);
-                    worker.set_whisper_formatting(false);
                 }
                 _exit(0);
             } catch (const std::exception&) {
@@ -465,113 +446,22 @@ void shared_settings_units() {
         succeeded &= waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
     }
     assert(succeeded);
-    assert(store.whisper_selected() == "medium");
-    assert(!store.whisper_formatting());
     for (std::size_t index = 0; index < models.size(); ++index) {
         const auto& model = models[index];
         assert(store.context(model) == 4096 + index);
     }
 }
 
-void whisper_formatting_setting_units() {
-    Directory tmp;
-    ModelStore store(tmp.path, worker_data_directory());
-    assert(store.whisper_formatting());
-    for (const bool enabled : {false, true}) {
-        auto configuration = request(
-            "formatting",
-            {{"feature", "whisper_formatting"}, {"enabled", enabled}},
-            "configure"
-        );
-        prepare_input(
-            std::get<WhisperFormattingRequest>(configuration.input),
-            configuration,
-            store,
-            running
-        );
-        ModelStore reopened(tmp.path, worker_data_directory());
-        assert(reopened.whisper_formatting() == enabled);
-        assert(reopened.status().at("whisper_formatting") == enabled);
-        assert(reopened.whisper_selected() == "medium");
-    }
-    rejects([&] {
-        request("invalid", {{"feature", "whisper_formatting"}, {"enabled", true}});
-    });
-}
-
-void whisper_formatting_request_units() {
-    Directory tmp;
-    ModelStore store(tmp.path, worker_data_directory());
-    // Preparation checks file presence only; no model is loaded or executed.
-    const auto root = tmp.path / "whisper/medium";
-    for (const auto* file :
-         {"model.safetensors", "dimensions.txt", "assets/english.tokens"})
-        bytes(root / file, "");
-    for (const bool saved : {false, true}) {
-        store.set_whisper_formatting(saved);
-        for (const Json& override : {Json(), Json(false), Json(true)}) {
-            auto transcription = request(
-                "transcription",
-                {{"feature", "stt"},
-                 {"audio",
-                  "data:audio/"
-                  "wav;base64,"
-                  "UklGRiYAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQIAAAAAAA=="},
-                 {"formatting", override}}
-            );
-            auto& input = std::get<TranscriptionRequest>(transcription.input);
-            assert(input.formatting.has_value() == !override.is_null());
-            prepare_input(input, transcription, store, running);
-            const bool expected = override.is_null() ? saved : override.get<bool>();
-            assert(input.formatting == expected);
-            assert(transcription.model == "medium");
-            const auto result = present_transcription(transcription, "  Hello.  ");
-            assert(result.at("text") == "  Hello.  ");
-            assert(result.at("raw_text") == "  Hello.  ");
-            assert(
-                result.at("formatting_status") == (expected ? "requested" : "disabled")
-            );
-        }
-        auto omitted = request(
-            "omitted",
-            {{"feature", "stt"},
-             {"audio",
-              "data:audio/"
-              "wav;base64,"
-              "UklGRiYAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQIAAAAAAA=="}}
-        );
-        auto& input = std::get<TranscriptionRequest>(omitted.input);
-        prepare_input(input, omitted, store, running);
-        assert(input.formatting == saved);
-    }
-}
-
-void whisper_formatting_response_units() {
-    auto transcription = request(
-        "format", {{"feature", "stt"}, {"audio", "unused"}, {"formatting", true}}
-    );
-    transcription.model = "medium";
-    const std::string raw = "um send it on friday no thursday";
-    const auto result = present_transcription(transcription, raw);
-    assert(result.at("text") == raw && result.at("raw_text") == raw);
-    assert(result.at("formatting_status") == "requested");
-    assert(result.at("formatting_model").is_null());
-    const auto formatted =
-        request("formatting", {{"feature", "stt_formatting"}, {"text", raw}});
-    assert(formatted.workload == kadan::Workload::formatting);
-    assert(std::get<TranscriptionFormattingRequest>(formatted.input).text == raw);
-    const auto prompt = kadan::s1::prompt(raw);
-    assert(prompt.starts_with("<|im_start|>system\nYou are a text normalizer"));
-    assert(
-        prompt.find(
-            "[Styling: semi-formal] [Structure: prose] [Context: general]\n" + raw
-            + "<|im_end|>"
-        )
-        != std::string::npos
-    );
-    assert(prompt.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"));
-    rejects([] { kadan::s1::prompt(""); });
-    rejects([] { kadan::s1::prompt(std::string(32001, 'a')); });
+void transcription_response_units() {
+    auto transcription = request("asr", {{"feature", "stt"}, {"audio", "unused"}});
+    transcription.model = "qwen3-asr-1.7b";
+    const auto result =
+        present_transcription(transcription, "Hello, world.", "English");
+    assert(result.at("text") == "Hello, world.");
+    assert(result.at("language") == "English");
+    assert(result.at("model") == "qwen3-asr-1.7b");
+    const auto unknown_lang = present_transcription(transcription, "", std::nullopt);
+    assert(unknown_lang.at("language").is_null());
 }
 
 void checkpoint_catalog_units() {
@@ -2034,134 +1924,8 @@ void job_units() {
     assert(!fs::exists(jobs / "image"));
 }
 
-void write_archive(
-    const fs::path& path, const std::map<std::string, std::string>& entries
-) {
-    std::unique_ptr<struct archive, decltype(&archive_write_free)> archive(
-        archive_write_new(), archive_write_free
-    );
-    assert(archive_write_set_format_zip(archive.get()) == ARCHIVE_OK);
-    assert(archive_write_open_filename(archive.get(), path.c_str()) == ARCHIVE_OK);
-    for (const auto& [name, content] : entries) {
-        std::unique_ptr<struct archive_entry, decltype(&archive_entry_free)> item(
-            archive_entry_new(), archive_entry_free
-        );
-        archive_entry_set_pathname(item.get(), name.c_str());
-        archive_entry_set_size(item.get(), content.size());
-        archive_entry_set_filetype(item.get(), AE_IFREG);
-        archive_entry_set_perm(item.get(), 0600);
-        assert(archive_write_header(archive.get(), item.get()) == ARCHIVE_OK);
-        assert(
-            archive_write_data(archive.get(), content.data(), content.size())
-            == static_cast<la_ssize_t>(content.size())
-        );
-    }
-    assert(archive_write_close(archive.get()) == ARCHIVE_OK);
-}
-
-std::string pickle_string(std::string_view value) {
-    std::string result = "X";
-    for (unsigned i = 0; i < 4; ++i)
-        result += char(value.size() >> (8 * i));
-    result += value;
-    return result;
-}
-
-void whisper_conversion_units() {
-    Directory tmp;
-    std::string pickle = "\x80\x02}(";
-    pickle += pickle_string("dims") + "}(";
-    for (const auto* name :
-         {"n_mels",
-          "n_audio_ctx",
-          "n_audio_state",
-          "n_audio_head",
-          "n_audio_layer",
-          "n_vocab",
-          "n_text_ctx",
-          "n_text_state",
-          "n_text_head",
-          "n_text_layer"})
-        pickle += pickle_string(name) + "K\x02";
-    pickle += "u" + pickle_string("model_state_dict") + "ccollections\nOrderedDict\n)R";
-    pickle += pickle_string("test.weight") + "ctorch._utils\n_rebuild_tensor_v2\n(("
-              + pickle_string("storage") + "ctorch\nFloatStorage\n" + pickle_string("0")
-              + pickle_string("cpu") + "K\x04tQ";
-    pickle += std::string("K\0", 2)
-              + "K\x02K\x02\x86K\x01K\x02\x86\x89"
-                "ccollections\nOrderedDict\n)RtRsu.";
-    std::array<float, 4> values = {1, 2, 3, 4};
-    const std::string raw(reinterpret_cast<const char*>(values.data()), sizeof(values));
-    const auto source = tmp.path / "source.pt";
-    write_archive(source, {{"archive/data.pkl", pickle}, {"archive/data/0", raw}});
-    export_whisper(
-        source, file_digest(source, running), tmp.path / "converted", running
-    );
-    const auto bytes = read_bytes(tmp.path / "converted/model.safetensors", 4096);
-    std::uint64_t header_size = 0;
-    std::memcpy(&header_size, bytes.data(), 8);
-    const auto header = Json::parse(bytes.substr(8, header_size));
-    assert(header.at("test.weight").at("dtype") == "F32");
-    std::array<float, 4> result{};
-    std::memcpy(result.data(), bytes.data() + 8 + header_size, sizeof(result));
-    assert((result == std::array<float, 4>{1, 3, 2, 4}));
-    rejects([&] {
-        export_whisper(source, std::string(64, '0'), tmp.path / "invalid", running);
-    });
-    assert(!fs::exists(tmp.path / "invalid"));
-    write_archive(
-        source,
-        {{"archive/data.pkl",
-          "\x80\x02"
-          "cos\nsystem\n)R."}}
-    );
-    rejects([&] {
-        export_whisper(
-            source, file_digest(source, running), tmp.path / "unsafe", running
-        );
-    });
-    assert(!fs::exists(tmp.path / "unsafe"));
-}
-
 void tokenizer_asset_units() {
     Directory tmp;
-    for (const auto vocabulary : {51864u, 51865u, 51866u}) {
-        const auto destination = tmp.path / std::to_string(vocabulary);
-        export_whisper_assets(
-            vocabulary, worker_data_directory() / "assets", destination, running
-        );
-        const auto metadata = read_document(destination / "assets.json");
-        assert(metadata.at("vocabulary") == vocabulary);
-        assert(metadata.at("prompt").size() == (vocabulary == 51864 ? 2 : 4));
-        // Read the exported metadata, without constructing or running a model.
-        std::ifstream tokens(destination / "english.tokens", std::ios::binary);
-        tokens.seekg(16);  // magic, vocabulary, EOS
-        const auto read_number = [&] {
-            std::array<unsigned char, 4> bytes{};
-            tokens.read(reinterpret_cast<char*>(bytes.data()), bytes.size());
-            assert(tokens.good());
-            return std::uint32_t(bytes[0]) | (std::uint32_t(bytes[1]) << 8)
-                   | (std::uint32_t(bytes[2]) << 16) | (std::uint32_t(bytes[3]) << 24);
-        };
-        auto count = read_number();
-        tokens.seekg(count * 4, std::ios::cur);  // prompt
-        count = read_number();
-        for (std::uint32_t i = 0; i < count; ++i)
-            assert(read_number() != metadata.at("eos").get<std::uint32_t>());
-        count = read_number();
-        bool first_step_suppresses_eos = false;
-        for (std::uint32_t i = 0; i < count; ++i)
-            first_step_suppresses_eos |=
-                read_number() == metadata.at("eos").get<std::uint32_t>();
-        assert(first_step_suppresses_eos);
-
-        assert(fs::file_size(destination / "mel-80.f32") == 80 * 201 * 4);
-        assert(fs::file_size(destination / "mel-128.f32") == 128 * 201 * 4);
-        assert(
-            read_bytes(destination / "english.tokens", 8 * 1024 * 1024).substr(0, 8)
-            == "KDWVOC01"
-        );
-    }
     const auto checkpoint = tmp.path / "speech";
     fs::create_directory(checkpoint);
     write_document(checkpoint / "vocab.json", {{"a", 0}, {"b", 1}, {"ab", 2}});
@@ -2190,9 +1954,7 @@ int main() {
     completed_checkpoint_size_units();
     pinned_catalog_units();
     shared_settings_units();
-    whisper_formatting_setting_units();
-    whisper_formatting_request_units();
-    whisper_formatting_response_units();
+    transcription_response_units();
     checkpoint_catalog_units();
     typed_request_units();
     codec_units();
@@ -2216,7 +1978,6 @@ int main() {
     gguf_validation_cancelled_unit();
     gguf_validation_concurrent_unit();
     job_units();
-    whisper_conversion_units();
     tokenizer_asset_units();
     std::cout << "C++ preparation units passed; no network or model execution.\n";
 }

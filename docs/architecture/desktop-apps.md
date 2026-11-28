@@ -11,7 +11,7 @@ Kadan ships as one Tauri v2 desktop app (`apps/kadan/`), built as versioned GitH
 
 Settings saved before the merge have no `mode`. A client pointed at a loopback address hosts; one pointed elsewhere keeps connecting. A computer that only ran Kadan Server had no client settings, so it gets the default, `host`. Its server settings (`server-config.json` under the old Kadan Server config directory) and data folder are reused unchanged, so existing installs keep their data.
 
-Both modes share the embedded loopback reverse proxy (`proxy.rs`, `axum` + `reqwest` + `tokio-tungstenite`, bound to `127.0.0.1:<ephemeral>`). It serves the built `services/frontend/dist`, injects `window.__KADAN_DESKTOP__ = true`, and relays `/kadan/*`, `/tsuchi/*` and `/hikari/*` (REST, SSE, uploads, downloads and WebSockets) to `ProxyState::upstream()`, which resolves the mode on every request. Serving from `http://127.0.0.1` keeps the webview in a secure context even when the other computer is plain `http://192.168.x.x`, so microphone capture and `AudioWorklet` work for voice input and calls.
+Both modes share the embedded loopback reverse proxy (`proxy.rs`, `axum` + `reqwest` + `tokio-tungstenite`, bound to `127.0.0.1:<ephemeral>`). It serves the built `services/frontend/dist`, injects `window.__KADAN_DESKTOP__ = true`, and relays `/kadan/*`, `/tsuchi/*` and `/hikari/*` (REST, SSE, uploads, downloads and WebSockets) to `ProxyState::upstream()`, which resolves the mode on every request. Serving from `http://127.0.0.1` keeps the webview in a secure context even when the other computer is plain `http://192.168.x.x`, so microphone capture works for voice input.
 
 Changing the mode through `PUT /__kadan_desktop__/config` starts or stops the local services immediately and repoints the local Work sidecar, so no restart is needed.
 
@@ -21,7 +21,7 @@ Changing the mode through `PUT /__kadan_desktop__/config` starts or stops the lo
 
 1. **`api`** (`uvicorn combined.main:app` in `services/api/`): serves `/tsuchi`, `/hikari` (SQLite via `HIKARI_DATABASE_URL=sqlite:///<data_dir>/hikari.db`, WAL mode, automatic Alembic migrations) and `/kadan` on one port (default `8000`).
 2. **`runner`** (`python -m kadan.runner`): runs conversation turns and image and pet queues against the local API.
-3. **`worker`** (native C++20/CUDA `kadan-worker`): lists its compiled workloads and launches one process per supported capability, skipping GPU-only workloads on computers without a GPU. Workers connect to `ws://127.0.0.1:<port>/hikari/v1/workers` and share `<data_dir>/models` and Hikari's memory ledger.
+3. **`worker`** (native C++20/CUDA `kadan-worker`): lists its compiled workloads and launches one process per supported capability (`llm` Inkling 2 Mini for language, vision and decisions, `speech` Qwen3-ASR 1.7B, `tts` Qwen3-TTS, `image` FLUX.2 Klein 4B), skipping GPU-only workloads on computers without a GPU. Workers connect to `ws://127.0.0.1:<port>/hikari/v1/workers` and share `<data_dir>/models` and Hikari's memory ledger.
 
 The web pages control hosting through native endpoints on the same proxy, which keeps every flow in the web UI: `GET /__kadan_desktop__/host` (mode, service status, settings, hardware), `PUT /__kadan_desktop__/host/settings` (network access, port, data folder, start with the app, launch at login through `tauri-plugin-autostart`), `POST …/host/start`, `…/host/stop`, `…/host/restart` and `GET …/host/logs`. Kadan Server's [Settings](../user-expectations/kadan-server/settings.md) page shows them only inside the app.
 

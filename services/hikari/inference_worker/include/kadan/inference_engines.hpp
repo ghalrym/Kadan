@@ -55,18 +55,9 @@ std::unique_ptr<InferenceEngine> image_engine(
     std::shared_ptr<Resources>, Progress, RequestProgress, InferenceOwner::Probe
 );
 std::unique_ptr<InferenceEngine>
-    transcription_formatting_engine(std::shared_ptr<Resources>, Progress);
-std::unique_ptr<InferenceEngine> whisper_engine(std::shared_ptr<Resources>, Progress);
+    qwen3_asr_engine(std::shared_ptr<Resources>, Progress);
 std::unique_ptr<InferenceEngine> speech_engine(std::shared_ptr<Resources>, Progress);
 std::unique_ptr<InferenceEngine> chat_engine(
     std::shared_ptr<Resources>, Progress, std::function<void(const std::string&)>
-);
-std::unique_ptr<InferenceEngine> lfm3_text_engine(
-    std::shared_ptr<Resources>, Progress, std::function<void(const std::string&)>
-);
-std::unique_ptr<InferenceEngine>
-    lfm3_vision_engine(std::shared_ptr<Resources>, Progress);
-std::unique_ptr<InferenceEngine> lfm3_audio_engine(
-    std::shared_ptr<Resources>, Progress, std::function<void(const Json&)>
 );
 }  // namespace kadan::serving

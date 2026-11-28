@@ -689,9 +689,7 @@
               "llm",
               "speech",
               "transcription",
-              "formatting",
-              "image",
-              "audio"
+              "image"
             ],
             "title": "Kind",
             "type": "string"
@@ -1887,12 +1885,6 @@
       "ModelAssignments": {
         "description": "Fixed capability assignments, independent of machine resources.",
         "properties": {
-          "audio_call": {
-            "const": "lfm3-audio-2b-bf16",
-            "default": "lfm3-audio-2b-bf16",
-            "title": "Audio Call",
-            "type": "string"
-          },
           "decisions": {
             "default": "inkling-2-mini-iq4-nl",
             "enum": [
@@ -1902,12 +1894,6 @@
               "inkling-2-mini-abliterated-q8-0"
             ],
             "title": "Decisions",
-            "type": "string"
-          },
-          "formatting": {
-            "const": "superwhisper-s1-mini",
-            "default": "superwhisper-s1-mini",
-            "title": "Formatting",
             "type": "string"
           },
           "image": {
@@ -1934,8 +1920,8 @@
             "type": "string"
           },
           "transcription": {
-            "const": "whisper-medium",
-            "default": "whisper-medium",
+            "const": "qwen3-asr-1.7b",
+            "default": "qwen3-asr-1.7b",
             "title": "Transcription",
             "type": "string"
           }
@@ -2678,17 +2664,6 @@
               }
             ],
             "title": "Llm Model"
-          },
-          "whisper_formatting": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Whisper Formatting"
           }
         },
         "title": "SettingsRequest",
@@ -2705,16 +2680,11 @@
             },
             "title": "Models",
             "type": "array"
-          },
-          "whisper_formatting": {
-            "title": "Whisper Formatting",
-            "type": "boolean"
           }
         },
         "required": [
           "models",
-          "defaults",
-          "whisper_formatting"
+          "defaults"
         ],
         "title": "SettingsResponse",
         "type": "object"
@@ -2993,18 +2963,6 @@
             "title": "Audio",
             "type": "string"
           },
-          "formatting": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Null or omitted uses the saved formatting setting. Enabled uses S1-mini by Superwhisper to normalize the transcript; raw_text is always retained.",
-            "title": "Formatting"
-          },
           "language": {
             "anyOf": [
               {
@@ -3019,7 +2977,7 @@
           "model": {
             "anyOf": [
               {
-                "const": "medium",
+                "const": "qwen3-asr-1.7b",
                 "type": "string"
               },
               {
@@ -3037,38 +2995,6 @@
       },
       "TranscriptionResponse": {
         "properties": {
-          "formatting_error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Formatting Error"
-          },
-          "formatting_model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Formatting Model"
-          },
-          "formatting_status": {
-            "enum": [
-              "disabled",
-              "formatted",
-              "failed",
-              "empty"
-            ],
-            "title": "Formatting Status",
-            "type": "string"
-          },
           "language": {
             "anyOf": [
               {
@@ -3084,10 +3010,6 @@
             "title": "Model",
             "type": "string"
           },
-          "raw_text": {
-            "title": "Raw Text",
-            "type": "string"
-          },
           "text": {
             "title": "Text",
             "type": "string"
@@ -3095,10 +3017,8 @@
         },
         "required": [
           "text",
-          "raw_text",
           "language",
-          "model",
-          "formatting_status"
+          "model"
         ],
         "title": "TranscriptionResponse",
         "type": "object"
@@ -3602,7 +3522,7 @@
     },
     "/v1/audio/transcriptions": {
       "post": {
-        "description": "Queue native Whisper and preserve its raw transcript and formatting status.",
+        "description": "Queue native Qwen3-ASR transcription.",
         "operationId": "transcribeAudio",
         "requestBody": {
           "content": {

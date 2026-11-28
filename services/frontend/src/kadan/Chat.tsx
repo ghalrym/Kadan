@@ -5,7 +5,6 @@ import Composer, { readiness } from "./Composer";
 import Pet, { useMood } from "./Pet";
 import AgentCard from "./AgentCard";
 import ChatExport from "./ChatExport";
-import { useVoiceCall } from "./VoiceCallControl";
 import { activeLabel } from "./presence";
 import { useAgentPet } from "./PetContext";
 import { agentPath, api } from "./api";
@@ -151,10 +150,6 @@ export default function Chat({
   callbacks.current = { onChange, refreshStatus, onAgentName };
   const ready = readiness(status);
   const [dictating, setDictating] = useState(false);
-  const voiceCall = useVoiceCall(
-    agentKey,
-    sending || blocked || dictating || !ready.storage,
-  );
   // Hikari loads the model on demand; the first reply waits for it without a deadline.
   const modelLoading = generating && status?.hikari.state === "ready" && status.hikari.model_state === "loading";
   const progress = responseProgress(runs, status?.hikari);
@@ -437,12 +432,6 @@ export default function Chat({
       mood={mood}
       presence={working ? perchStatus : activeLabel(saved)}
       onClose={closeCard}
-      callDisabled={!ready.storage || sending || blocked || dictating || voiceCall.active || !!voiceCall.unavailable}
-      callTitle={voiceCall.active ? "Already in a call" : voiceCall.unavailable ?? (!ready.storage ? "Calls are unavailable until Kadan reconnects to the server" : "Start a voice call")}
-      onCall={() => {
-        setCard(false);
-        voiceCall.start();
-      }}
       personaDisabled={!ready.storage || blocked}
       onEditPersona={() => {
         setCard(false);
@@ -678,7 +667,7 @@ export default function Chat({
             <p>{unassigned.content}</p>
             <p>Its original conversation wasn't saved. Check your history before copying it to the draft. It will send as a new message.</p>
           </div>
-          <button disabled={blocked || sending || dictating || voiceCall.active} onClick={() => {
+          <button disabled={blocked || sending || dictating} onClick={() => {
             try { setDraft(copyPendingToDraft(draft, unassigned)); }
             catch (error) { setError((error as Error).message); }
           }}>Copy to draft</button>
@@ -701,7 +690,6 @@ export default function Chat({
         status={status}
         pet={null}
         autoFocus
-        voiceCall={voiceCall}
         onDictating={setDictating}
       />
     </section>

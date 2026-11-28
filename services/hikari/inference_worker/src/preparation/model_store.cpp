@@ -938,18 +938,8 @@ std::size_t ModelStore::default_llm_context() const {
     return parsed;
 }
 
-std::string ModelStore::whisper_model(const std::string& name) const {
-    preparation_check(name == "medium", "Hikari uses Whisper medium.", 422);
-    return "medium";
-}
-
-std::string ModelStore::whisper_selected() const {
-    return "medium";
-}
-
 Json ModelStore::context(const std::string& model) const {
-    const auto fallback =
-        (model == "lfm3-1.7b-bf16") ? Json(262144) : Json(default_llm_context());
+    const auto fallback = Json(default_llm_context());
     if (!fs::exists(root_ / "context.json"))
         return fallback;
     return read_document(root_ / "context.json").value(model, fallback);
@@ -981,25 +971,8 @@ void ModelStore::set_context(const std::string& model, const Json& value) {
     atomic_document(root_ / "context.json", values);
 }
 
-bool ModelStore::whisper_formatting() const {
-    const auto path = root_ / "whisper-formatting.json";
-    return !fs::exists(path) || read_document(path).at("enabled").get<bool>();
-}
-
-void ModelStore::set_whisper_formatting(bool enabled) {
-    fs::create_directories(root_);
-    StoreLock lock(root_ / ".settings.lock");
-    atomic_document(root_ / "whisper-formatting.json", {{"enabled", enabled}});
-}
-
 Json ModelStore::architecture_context(const std::string& model) const {
     const auto& item = entry(model);
-    if (item.id == "lfm3-1.7b-bf16")
-        return 262144;
-    if (item.id == "lfm3-vl-2b-bf16")
-        return 128000;
-    if (item.id == "lfm3-audio-2b-bf16")
-        return 32768;
     if (item.kind != "llm" || !complete(item))
         return nullptr;
     const auto config =
@@ -1047,10 +1020,6 @@ Json ModelStore::status() const {
         try {
             if (item.kind == "llm")
                 model["context_limit"] = context(id);
-            else if (item.id == "lfm3-vl-2b-bf16")
-                model["context_limit"] = 128000;
-            else if (item.id == "lfm3-audio-2b-bf16")
-                model["context_limit"] = 32768;
             else
                 model["context_limit"] = Json(nullptr);
             model["architecture_context_limit"] = architecture_context(id);
@@ -1062,8 +1031,7 @@ Json ModelStore::status() const {
     }
     return {
         {"models", models},
-        {"selected_model_id", active_llm},
-        {"whisper_formatting", whisper_formatting()}
+        {"selected_model_id", active_llm}
     };
 }
 }  // namespace kadan::serving

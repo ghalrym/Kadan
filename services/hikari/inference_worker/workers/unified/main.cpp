@@ -30,11 +30,7 @@ std::vector<CompiledWorkload> compiled_workloads() {
     std::vector<CompiledWorkload> out;
 #ifdef KADAN_WORKER_CUDA
     out.push_back({"llm", "Language, Vision & Decisions (Inkling 2 Mini)", true});
-#endif
-    out.push_back({"lfm3_audio", "Voice Calls (LFM3 Audio 2B)", true});
-    out.push_back({"formatting", "Speech Formatting (S1-mini CPU)", false});
-#ifdef KADAN_WORKER_CUDA
-    out.push_back({"speech", "Speech to Text (Whisper)", true});
+    out.push_back({"speech", "Speech to Text (Qwen3-ASR 1.7B)", true});
 #ifdef KADAN_HAS_TTS_ENGINE
     out.push_back({"tts", "Text to Speech (Qwen3-TTS)", true});
 #endif
@@ -65,80 +61,6 @@ void print_help() {
 }
 
 std::optional<WorkerProgram> build_program(std::string_view workload) {
-    if (workload == "lfm3_llm") {
-        return WorkerProgram{
-            kadan::Workload::lfm3_llm,
-#ifdef KADAN_WORKER_CUDA
-            true,
-#else
-            false,
-#endif
-            [](WorkerEnvironment& env) {
-                auto& ch = env.channel;
-                return lfm3_text_engine(
-                    env.resources,
-                    [&ch](const char* phase, std::size_t value) {
-                        ch.progress(phase, value);
-                    },
-                    [&ch](const std::string& text) { ch.content(text); }
-                );
-            }
-        };
-    }
-    if (workload == "lfm3_vision") {
-        return WorkerProgram{
-            kadan::Workload::lfm3_vision,
-#ifdef KADAN_WORKER_CUDA
-            true,
-#else
-            false,
-#endif
-            [](WorkerEnvironment& env) {
-                auto& ch = env.channel;
-                return lfm3_vision_engine(
-                    env.resources,
-                    [&ch](const char* phase, std::size_t value) {
-                        ch.progress(phase, value);
-                    }
-                );
-            }
-        };
-    }
-    if (workload == "lfm3_audio") {
-        return WorkerProgram{
-            kadan::Workload::lfm3_audio,
-#ifdef KADAN_WORKER_CUDA
-            true,
-#else
-            false,
-#endif
-            [](WorkerEnvironment& env) {
-                auto& ch = env.channel;
-                return lfm3_audio_engine(
-                    env.resources,
-                    [&ch](const char* phase, std::size_t value) {
-                        ch.progress(phase, value);
-                    },
-                    [&ch](const Json& event) { ch.send(event); }
-                );
-            }
-        };
-    }
-    if (workload == "formatting") {
-        return WorkerProgram{
-            kadan::Workload::formatting,
-            false,
-            [](WorkerEnvironment& env) {
-                auto& ch = env.channel;
-                return transcription_formatting_engine(
-                    env.resources,
-                    [&ch](const char* phase, std::size_t value) {
-                        ch.progress(phase, value);
-                    }
-                );
-            }
-        };
-    }
 #ifdef KADAN_WORKER_CUDA
     if (workload == "llm") {
         return WorkerProgram{
@@ -162,7 +84,7 @@ std::optional<WorkerProgram> build_program(std::string_view workload) {
             true,
             [](WorkerEnvironment& env) {
                 auto& ch = env.channel;
-                return whisper_engine(
+                return qwen3_asr_engine(
                     env.resources,
                     [&ch](const char* phase, std::size_t value) {
                         ch.progress(phase, value);
@@ -224,6 +146,8 @@ std::optional<WorkerProgram> build_program(std::string_view workload) {
         };
     }
 #endif
+#else
+    (void)workload;
 #endif
     return std::nullopt;
 }

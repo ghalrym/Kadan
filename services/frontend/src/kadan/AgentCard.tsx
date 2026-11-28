@@ -12,9 +12,6 @@ interface Props {
   mood: PetState;
   presence: string;
   onClose: () => void;
-  callDisabled: boolean;
-  callTitle: string;
-  onCall: () => void;
   personaDisabled: boolean;
   onEditPersona: () => void;
   onEditPet: () => void;
@@ -30,9 +27,6 @@ export default function AgentCard({
   mood,
   presence,
   onClose,
-  callDisabled,
-  callTitle,
-  onCall,
   personaDisabled,
   onEditPersona,
   onEditPet,
@@ -82,10 +76,12 @@ export default function AgentCard({
         </div>
       </header>
       <div className="agent-card-actions">
-        <button disabled={callDisabled} title={callTitle} onClick={() => onCall()}>
-          <Phone size={18} />
-          Call
-        </button>
+        <span className="agent-card-coming-soon" title="Coming soon" data-tooltip="Coming soon">
+          <button type="button" disabled aria-label="Call (Coming soon)">
+            <Phone size={18} />
+            Call
+          </button>
+        </span>
         <button disabled={agentDisabled} title={`Rename ${agentName}`} onClick={() => onRename()}>
           <Pencil size={18} />
           Rename

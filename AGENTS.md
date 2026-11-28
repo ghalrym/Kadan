@@ -85,16 +85,14 @@ Hikari has no hardware tiers. It runs one fixed model per capability, and users 
 
 | Capability | Checkpoint |
 | --- | --- |
-| Language, Vision & Decisions | Inkling 2 Mini (`inkling-2-mini-iq4-nl` / `inkling-2-mini-q8-0` / `inkling-2-mini-abliterated-iq4-nl` / `inkling-2-mini-abliterated-q8-0` via `HIKARI_LLM_QUANT` and `HIKARI_LLM_ABLITERATED`) |
-| Voice calls | LFM3 Audio 2B BF16 (`lfm3-audio-2b-bf16`) |
-| Image | FLUX.2 Klein 4B (`flux.2-klein-4b`) |
-| Text to speech | Qwen3-TTS 1.7B CustomVoice (`qwen-tts-1.7b-custom`) |
-| Speech to text | Whisper medium (`whisper-medium`) |
-| Speech formatter | S1-mini by Superwhisper (`superwhisper-s1-mini`) |
+| Language, Vision & Decisions | Inkling 2 Mini (`inkling-2-mini-iq4-nl` / `inkling-2-mini-q8-0` / `inkling-2-mini-abliterated-iq4-nl` / `inkling-2-mini-abliterated-q8-0` via `HIKARI_LLM_QUANT` and `HIKARI_LLM_ABLITERATED`, Apache 2.0) |
+| Image | FLUX.2 Klein 4B (`flux.2-klein-4b`, Apache 2.0) |
+| Text to speech | Qwen3-TTS 1.7B CustomVoice (`qwen-tts-1.7b-custom`, Apache 2.0) |
+| Speech to text | Qwen3-ASR 1.7B (`qwen3-asr-1.7b`, Apache 2.0) |
 
-- Do not reintroduce hardware tiers, per-machine model choices, `d1-2b-cpu-f32`, `qwen-image-2.1-turbo`, MiniMax H3 video generation (`h3-fl2va-int8-turbo`), or Qwen LLM checkpoints.
+- Every local model in Hikari is Apache 2.0 licensed. Do not reintroduce hardware tiers, per-machine model choices, `d1-2b-cpu-f32`, `qwen-image-2.1-turbo`, MiniMax H3 video generation (`h3-fl2va-int8-turbo`), LFM3 Audio (`lfm3-audio-2b-bf16`), Whisper (`whisper-medium`), S1-mini (`superwhisper-s1-mini`), or Qwen LLM checkpoints.
 - Inkling 2 Mini (text + built-in `mmproj` vision encoder + single-forward-pass logit-softmax Decisions) runs natively in Hikari's C++ Strata MoE engine (`hikari-worker-llm`) and is the sole local language/vision/decisions model. Downloads require explicit license acknowledgement; enabling a worker does not acquire a model.
-- Preserve FLUX.2 Klein 4B (`flux.2-klein-4b`), Qwen3-TTS (`qwen-tts-1.7b-custom`), their required encoders/tokenizers and the native image runtime.
+- Preserve FLUX.2 Klein 4B (`flux.2-klein-4b`), Qwen3-TTS (`qwen-tts-1.7b-custom`), Qwen3-ASR 1.7B (`qwen3-asr-1.7b`), their required encoders/tokenizers and the native runtimes.
 - Preserve physical RAM/VRAM admission, cancellation, ownership and confirmed cleanup. Requests that cannot fit fail without silent truncation, quantization or another model.
 
 The native Strata MoE language path places routed experts across VRAM, RAM and disk. Its execution rules remain:

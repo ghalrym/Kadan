@@ -37,7 +37,7 @@ class BuildTests(unittest.TestCase):
             run.worker("gpu")
 
     def test_retired_native_workers_are_rejected(self):
-        for retired in ("decision", "video"):
+        for retired in ("decision", "formatting", "video"):
             with self.subTest(worker=retired), self.assertRaises(typer.BadParameter):
                 run.worker(retired)
 

@@ -29,7 +29,7 @@ Saved work can continue after the browser closes. A queued message does not prom
 | [Images in conversations](image-generation.md) | Continue chatting while images generate and receive saved results later. |
 | [Pets](pets.md) | Create, import, preview, repair and explicitly select animated pets. |
 | [Voice input](voice-input.md) | Transcribe an utterance into an editable message draft. |
-| [Voice calls](voice-calls.md) | Have a separate spoken conversation with interruption and playback controls. |
+| [Voice calls](voice-calls.md) | Calls are coming soon; the Call button is a placeholder for now. |
 | [File delivery](file-delivery.md) | Let agents find stored files and share their download links. |
 | [Service status](service-status.md) | Distinguish storage access, inference readiness and model setup needs. |
 | [Runner availability](runner-availability.md) | How runner assignments, capacity and recovery affect when conversation work starts. |

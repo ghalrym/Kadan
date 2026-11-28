@@ -15,7 +15,6 @@ COPY requirements.txt ./
 COPY --from=hikari bin/requirements.txt bin/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt -r bin/requirements.txt && pip check && mkdir /data
 COPY --from=hikari api/ api/
-COPY --from=hikari experimental_worker/ experimental_worker/
 COPY --from=hikari bin/*.py bin/
 COPY --from=tsuchi tsuchi/ tsuchi/
 COPY --from=kadan kadan/ kadan/

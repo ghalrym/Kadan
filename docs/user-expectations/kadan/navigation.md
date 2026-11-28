@@ -22,6 +22,6 @@ Lists in the sidebar reflect what Kadan last loaded. Changes made in Kadan Serve
 
 ## Agent card
 
-Clicking the agent's pet in chat opens its card, which shows the agent's status and, in order: **Call** to start a [voice call](voice-calls.md), **Rename** to [rename the agent](renaming-agents.md), **Persona** to [edit its persona](personas.md), **Edit pet** to [change its pet](pets.md), and, set apart below a divider, **Delete agent**, which asks you to type `<agent name> Delete` before permanently removing the agent, all its memories, chat history, persona, Space items, and pets so you can start fresh with a new default agent. Each action closes the card. A note at the bottom of the card explains that the agent's memories can be seen in Kadan Server.
+Clicking the agent's pet in chat opens its card, which shows the agent's status and, in order: **Call**, which is disabled and shows **Coming soon** ([voice calls](voice-calls.md)), **Rename** to [rename the agent](renaming-agents.md), **Persona** to [edit its persona](personas.md), **Edit pet** to [change its pet](pets.md), and, set apart below a divider, **Delete agent**, which asks you to type `<agent name> Delete` before permanently removing the agent, all its memories, chat history, persona, Space items, and pets so you can start fresh with a new default agent. Each available action closes the card. A note at the bottom of the card explains that the agent's memories can be seen in Kadan Server.
 
 See [Agent conversations](agent-conversations.md) for how chats behave.

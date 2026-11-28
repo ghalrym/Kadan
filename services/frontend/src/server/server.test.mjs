@@ -34,9 +34,9 @@ test("abilities use plain names and states for each model's download", () => {
   assert.equal(downloading.state, "downloading");
   assert.equal(downloading.progress, 25);
 
-  assert.equal(abilities.toAbility(row("whisper-medium", model("not_downloaded"))).state, "needs_download");
-  assert.equal(abilities.toAbility(row("whisper-medium", model("failed"))).state, "failed");
-  assert.equal(abilities.toAbility(row("whisper-medium", model("downloading"))).state, "waiting");
+  assert.equal(abilities.toAbility(row("qwen3-asr-1.7b", model("not_downloaded"))).state, "needs_download");
+  assert.equal(abilities.toAbility(row("qwen3-asr-1.7b", model("failed"))).state, "failed");
+  assert.equal(abilities.toAbility(row("qwen3-asr-1.7b", model("downloading"))).state, "waiting");
   assert.equal(abilities.toAbility(row("flux.2-klein-4b", null)).state, "not_running");
 });
 

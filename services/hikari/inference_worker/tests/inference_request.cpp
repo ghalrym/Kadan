@@ -184,7 +184,8 @@ int main() {
         sampled["input"]["repetition_penalty"] = 1.08;
         sampled["input"]["presence_penalty"] = 0.4;
         sampled["input"]["seed"] = 12345;
-        const auto& req = std::get<ChatRequest>(parse_request(sampled).input);
+        const auto parsed = parse_request(sampled);
+        const auto& req = std::get<ChatRequest>(parsed.input);
         assert(req.temperature && *req.temperature > 0.69f && *req.temperature < 0.71f);
         assert(req.top_p && *req.top_p > 0.94f && *req.top_p < 0.96f);
         assert(req.top_k == 40u);
@@ -250,15 +251,6 @@ int main() {
     assert(parsed_decision.workload == kadan::Workload::llm);
     assert(!std::get<DecisionRequest>(parsed_decision.input).model.has_value());
     assert(std::get<DecisionRequest>(parsed_decision.input).questions.size() == 1);
-
-    auto audio_call = envelope;
-    audio_call["input"] = {
-        {"feature", "audio_call"},
-        {"mode", "tts"},
-        {"script", "Hello world"}
-    };
-    const auto parsed_a = parse_request(audio_call);
-    assert(parsed_a.workload == kadan::Workload::lfm3_audio);
 
     auto llm_sel = envelope;
     llm_sel["operation"] = "configure";

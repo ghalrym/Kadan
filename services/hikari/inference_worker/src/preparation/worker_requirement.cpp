@@ -19,16 +19,8 @@ std::string default_model(Workload workload, const ModelStore& store) {
     switch (workload) {
     case Workload::llm:
         return store.selected_llm_id();
-    case Workload::lfm3_llm:
-        return "lfm3-1.7b-bf16";
-    case Workload::lfm3_vision:
-        return "lfm3-vl-2b-bf16";
-    case Workload::lfm3_audio:
-        return "lfm3-audio-2b-bf16";
-    case Workload::formatting:
-        return "superwhisper-s1-mini";
     case Workload::speech:
-        return "whisper-" + store.whisper_selected();
+        return "qwen3-asr-1.7b";
     case Workload::image:
         return "flux.2-klein-4b";
     case Workload::tts:
@@ -63,22 +55,20 @@ Json worker_requirement(
     const ModelStore& store,
     const std::optional<Json>& requested_context
 ) {
-    // Transcription requests name a Whisper size; its catalog entry is prefixed.
-    const auto model = workload == Workload::speech && requested
-                           ? "whisper-" + store.whisper_model(*requested)
-                       : requested ? *requested
-                                   : default_model(workload, store);
+    const auto model = requested ? *requested : default_model(workload, store);
+    if (workload == Workload::speech) {
+        preparation_check(
+            model == "qwen3-asr-1.7b", "Hikari uses Qwen3-ASR 1.7B.", 422
+        );
+    }
     const auto& entry = store.entry(model);
     const Bytes weights = entry.estimated_bytes;
     // Minimums mirror each engine's own admission floor, so a granted budget
     // never leaves an engine waiting on memory it was promised. Preferred
     // amounts let an engine keep its whole checkpoint resident.
     switch (workload) {
-    case Workload::formatting:
-        // S1-mini runs on the host with its weights resident as floats.
-        return footprint(model, 2 * weights + gib, 2 * weights + gib, 0, 0, 0);
     case Workload::speech: {
-        // DeviceWeights retains F32 projections, not the download's representation.
+        // DeviceWeights retains BF16 projections; runtime_weight_bytes may override.
         const auto runtime = entry.runtime_weight_bytes.value_or(weights);
         preparation_check(
             runtime <= std::numeric_limits<Bytes>::max() - device_headroom
@@ -112,12 +102,6 @@ Json worker_requirement(
             weights + device_headroom,
             device_headroom
         );
-    case Workload::lfm3_llm:
-        return footprint(model, 16 * gib, 16 * gib, 20 * gib, 20 * gib, 20 * gib);
-    case Workload::lfm3_vision:
-        return footprint(model, 8 * gib, 8 * gib, 16 * gib, 16 * gib, 16 * gib);
-    case Workload::lfm3_audio:
-        return footprint(model, 8 * gib, 8 * gib, 16 * gib, 16 * gib, 16 * gib);
     case Workload::llm:
         break;
     }

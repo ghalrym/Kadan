@@ -4,10 +4,8 @@ import { downloadState } from "../hikari/api/settings";
 /** What each AI model lets Kadan do, in the words a person would use. */
 export const ABILITY_TEXT: Record<string, { name: string; description: string }> = {
   "inkling-2-mini": { name: "Chat & thinking", description: "Writes replies, works on coding threads and makes decisions." },
-  "lfm3-audio-2b-bf16": { name: "Voice calls", description: "Lets you talk with your agent out loud." },
   "flux.2-klein-4b": { name: "Images", description: "Creates and edits pictures, including pets." },
-  "whisper-medium": { name: "Dictation", description: "Turns what you say into text." },
-  "superwhisper-s1-mini": { name: "Dictation cleanup", description: "Fixes punctuation and casing in dictated text." },
+  "qwen3-asr-1.7b": { name: "Dictation", description: "Turns what you say into text." },
   "qwen-tts-1.7b-custom": { name: "Reading aloud", description: "Speaks text in a natural voice." },
 };
 

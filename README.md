@@ -257,8 +257,8 @@ when collectors or workers disconnect or processes terminate abruptly.
 | Web app (Tsuchi pages) | API ingress traces under `/tsuchi` routes | Browser/proxy timing is not measured |
 | Hikari API | HTTP ingress, inference lifetime, result presentation/delivery after the native result, worker FIFO wait | Result presentation is distinct from HTTP response serialization/stream delivery; transport delay is visible between worker and API intervals, not presented as a measured network metric |
 | Web app (Hikari pages) | API ingress traces under `/hikari` routes | Browser/proxy timing is not measured |
-| All five native workload workers: llm, tts, speech, formatting, image | `hikari-worker-<kind>` resources; actual native request preparation, model load, request admission and batch execution intervals | Shared batch intervals overlap across participating requests; they are wall time, not exclusive GPU time |
-| Language and formatting workers | Separate native prefill and decode intervals | Decode includes token selection/text streaming work; no per-token, kernel or inner-loop tracing |
+| All four native workload workers: llm, tts, speech, image | `hikari-worker-<kind>` resources; actual native request preparation, model load, request admission and batch execution intervals | Shared batch intervals overlap across participating requests; they are wall time, not exclusive GPU time |
+| Language worker | Separate native prefill and decode intervals | Decode includes token selection/text streaming work; no per-token, kernel or inner-loop tracing |
 | Speech recognition worker | Separate audio frontend, acoustic encode and decode intervals | No per-layer tracing |
 | Image and TTS engine internals | Native execution interval plus separate preparation/load/admission | Finer conditioning, denoise, VAE, codec and TTS subphases are not split in this change |
 | Postgres, migration job, Jaeger and frontend containers | Application requests around those boundaries only | No database-query, migration, collector-self, or proxy spans |

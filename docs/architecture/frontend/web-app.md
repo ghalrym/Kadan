@@ -36,7 +36,7 @@ Vite server forwards them unchanged to `API_URL` (Compose: `http://api:8000`):
 
 | Browser path | Service | Notes |
 | --- | --- | --- |
-| `/kadan/api` | Kadan | WebSocket upgrades relay voice calls. |
+| `/kadan/api` | Kadan | WebSocket upgrades are relayed. |
 | `/tsuchi/api` | Tsuchi | |
 | `/hikari/v1`, `/hikari/model-lifecycle`, `/hikari/health` | Hikari | The generated client's base URL is `/hikari`. |
 | `/hikari/openapi.json`, `/hikari/docs` | Hikari | Hikari's API Access page links here. |

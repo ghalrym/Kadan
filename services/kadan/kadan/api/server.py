@@ -10,7 +10,6 @@ from .config import ServiceError, Settings
 from .group_chat_mcp import GroupChatRateLimiter
 from .routes import (
     agents,
-    calls,
     group_chat,
     group_chat_mcp,
     group_chat_oauth,
@@ -76,7 +75,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         group_chat_oauth.router,
         work.router,
         transcriptions.router,
-        calls.router,
         agents.router,
         resources.router,
         workspace.router,

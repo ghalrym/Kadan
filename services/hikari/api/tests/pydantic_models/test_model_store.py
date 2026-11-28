@@ -13,7 +13,6 @@ class ModelAssignmentsTests(unittest.TestCase):
 
     def test_new_store_has_fixed_assignments_without_a_saved_selection(self):
         status = ModelStoreStatus(models=[])
-        self.assertEqual(status.defaults.transcription, "whisper-medium")
-        self.assertEqual(status.defaults.formatting, "superwhisper-s1-mini")
+        self.assertEqual(status.defaults.transcription, "qwen3-asr-1.7b")
         self.assertEqual(status.defaults.speech, "qwen-tts-1.7b-custom")
         self.assertEqual(status.selected_model_id, status.defaults.llm)

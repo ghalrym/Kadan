@@ -60,15 +60,15 @@ find_package(LibArchive REQUIRED)
 find_package(PNG REQUIRED)
 add_library(kadan_preparation src/preparation/preparation_io.cpp src/preparation/model_store.cpp
   src/preparation/gguf_assets.cpp
-  src/preparation/preparation.cpp src/preparation/whisper_export.cpp src/preparation/tokenizer_assets.cpp
+  src/preparation/preparation.cpp src/preparation/tokenizer_assets.cpp
   src/requests/inference_request.cpp src/preparation/audio_input.cpp src/preparation/image_upload.cpp
-  src/requests/inference_chat_request.cpp src/requests/inference_lfm3_request.cpp
+  src/requests/inference_chat_request.cpp
   src/requests/inference_image_request.cpp
   src/requests/inference_speech_request.cpp
-  src/requests/inference_whisper_request.cpp
+  src/requests/inference_transcription_request.cpp
   src/preparation/worker_requirement.cpp)
 target_link_libraries(kadan_preparation PUBLIC kadan_resources kadan_platform nlohmann_json::nlohmann_json
-  PRIVATE kadan_metadata kadan_gguf_text CURL::libcurl OpenSSL::Crypto LibArchive::LibArchive PNG::PNG)
+  PRIVATE kadan_metadata kadan_gguf_text kadan_qwen3_asr CURL::libcurl OpenSSL::Crypto LibArchive::LibArchive PNG::PNG)
 target_compile_definitions(kadan_preparation PRIVATE KADAN_WORKER_SOURCE_DATA="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(kadan_preparation PRIVATE ${KADAN_STRICT_CXX_FLAGS})
 
@@ -170,19 +170,19 @@ if(KADAN_ENABLE_CUDA)
   target_compile_options(kadan_h3_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--default-stream=legacy;--ftz=false;--fmad=false>)
 endif()
 
-# Full CPU Whisper network; no model download or implicit GPU test.
-add_library(kadan_whisper src/models/speech/whisper.cpp src/models/speech/whisper_tokens.cpp)
-
-target_link_libraries(kadan_whisper PUBLIC kadan_checkpoint kadan_resources)
+# Native Qwen3-ASR 1.7B speech recognition engine (AuT audio encoder + Qwen3 decoder).
+add_library(kadan_qwen3_asr src/models/speech/qwen3_asr.cpp)
+target_link_libraries(kadan_qwen3_asr PUBLIC kadan_checkpoint kadan_metadata kadan_layer_math
+  kadan_resources kadan_stt kadan_text_tokenizer)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(kadan_whisper PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
+  target_compile_options(kadan_qwen3_asr PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 endif()
 
-option(KADAN_ENABLE_WHISPER_BLAS "Accelerate CPU Whisper projections with single-thread OpenBLAS" OFF)
+option(KADAN_ENABLE_WHISPER_BLAS "Accelerate CPU speech projections with single-thread OpenBLAS" OFF)
 if(KADAN_ENABLE_WHISPER_BLAS)
   find_library(KADAN_WHISPER_OPENBLAS openblas REQUIRED)
-  target_compile_definitions(kadan_whisper PRIVATE KADAN_WHISPER_BLAS=1)
-  target_link_libraries(kadan_whisper PRIVATE ${KADAN_WHISPER_OPENBLAS})
+  target_compile_definitions(kadan_qwen3_asr PRIVATE KADAN_WHISPER_BLAS=1)
+  target_link_libraries(kadan_qwen3_asr PRIVATE ${KADAN_WHISPER_OPENBLAS})
 endif()
 
 add_library(kadan_tts_audio src/models/speech/tts_audio.cpp)
@@ -204,15 +204,7 @@ add_library(kadan_image_vae src/models/image/image_vae.cpp)
 target_link_libraries(kadan_image_vae PUBLIC kadan_checkpoint kadan_resources kadan_media_session)
 target_compile_options(kadan_image_vae PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 
-add_library(kadan_s1_mini src/models/text/s1_mini.cpp)
-target_link_libraries(kadan_s1_mini PUBLIC kadan_resources kadan_checkpoint kadan_metadata kadan_layer_math)
-target_compile_options(kadan_s1_mini PRIVATE -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
-if(KADAN_ENABLE_WHISPER_BLAS)
-  target_compile_definitions(kadan_s1_mini PRIVATE KADAN_WHISPER_BLAS=1)
-  target_link_libraries(kadan_s1_mini PRIVATE ${KADAN_WHISPER_OPENBLAS})
-endif()
-
-# The text tokenizer and transcript formatter serve several worker programs.
+# The text tokenizer serves several worker programs.
 find_package(nlohmann_json 3.10 REQUIRED)
 target_link_libraries(kadan_resources INTERFACE nlohmann_json::nlohmann_json)
 find_package(ICU REQUIRED COMPONENTS uc i18n)
@@ -220,39 +212,6 @@ find_library(KADAN_TEXT_PCRE2 pcre2-8 REQUIRED)
 add_library(kadan_text_tokenizer src/tokenization/text_tokenizer.cpp)
 target_link_libraries(kadan_text_tokenizer PUBLIC kadan_resources PRIVATE nlohmann_json::nlohmann_json ICU::uc ICU::i18n ${KADAN_TEXT_PCRE2})
 target_compile_options(kadan_text_tokenizer PRIVATE -Wall -Wextra -Wpedantic -Werror)
-add_library(kadan_transcription_formatting src/inference/inference_transcription_formatting.cpp)
-target_link_libraries(kadan_transcription_formatting PUBLIC kadan_s1_mini kadan_text_tokenizer kadan_preparation)
-target_compile_options(kadan_transcription_formatting PRIVATE ${KADAN_STRICT_CXX_FLAGS})
-
-# Pure C++20/CUDA LFM3 inference engines (text, vision, audio).
-add_library(kadan_lfm3
-  src/models/lfm3/lfm3_model.cpp
-  src/models/lfm3/lfm3_prompt.cpp
-  src/models/lfm3/lfm3_vision.cpp
-  src/models/lfm3/lfm3_audio.cpp)
-target_link_libraries(kadan_lfm3 PUBLIC kadan_checkpoint kadan_resources kadan_text_tokenizer
-  PRIVATE PNG::PNG)
-find_library(KADAN_LFM3_BLAS_LIBRARY openblas)
-if(KADAN_LFM3_BLAS_LIBRARY)
-  target_compile_definitions(kadan_lfm3 PRIVATE KADAN_LFM3_BLAS=1)
-  target_link_libraries(kadan_lfm3 PRIVATE ${KADAN_LFM3_BLAS_LIBRARY})
-endif()
-if(KADAN_ENABLE_CUDA)
-  target_compile_definitions(kadan_lfm3 PRIVATE KADAN_WORKER_CUDA=1)
-  target_link_libraries(kadan_lfm3 PRIVATE kadan_h3_cuda)
-endif()
-target_compile_options(kadan_lfm3 PRIVATE ${KADAN_STRICT_CXX_FLAGS})
-
-add_library(kadan_lfm3_engines
-  src/inference/inference_lfm3_text.cpp
-  src/inference/inference_lfm3_vision.cpp
-  src/inference/inference_lfm3_audio.cpp)
-target_link_libraries(kadan_lfm3_engines PUBLIC kadan_lfm3 kadan_preparation kadan_text_tokenizer)
-if(KADAN_ENABLE_CUDA)
-  target_compile_definitions(kadan_lfm3_engines PRIVATE KADAN_WORKER_CUDA=1)
-  target_link_libraries(kadan_lfm3_engines PRIVATE kadan_h3_cuda)
-endif()
-target_compile_options(kadan_lfm3_engines PRIVATE ${KADAN_STRICT_CXX_FLAGS})
 
 if(KADAN_ENABLE_IMAGE_GENERATION)
   # Avoid Torch's native GPU probing and keep toolkit/library versions coherent.
@@ -316,10 +275,11 @@ if(BUILD_TESTING)
   target_link_libraries(image-batch-performance-tests PRIVATE kadan_resources)
   target_compile_options(image-batch-performance-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
   add_test(NAME image-batch-performance COMMAND image-batch-performance-tests)
-  add_executable(whisper-cross-attention-tests tests/whisper_cross_attention.cpp)
-  target_link_libraries(whisper-cross-attention-tests PRIVATE kadan_resources)
-  target_compile_options(whisper-cross-attention-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  add_test(NAME whisper-cross-attention COMMAND whisper-cross-attention-tests)
+  add_executable(qwen3-asr-tests tests/qwen3_asr.cpp)
+  target_link_libraries(qwen3-asr-tests PRIVATE kadan_qwen3_asr kadan_stt nlohmann_json::nlohmann_json)
+  target_compile_definitions(qwen3-asr-tests PRIVATE KADAN_WORKER_SOURCE_DATA="${CMAKE_CURRENT_SOURCE_DIR}")
+  target_compile_options(qwen3-asr-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  add_test(NAME qwen3-asr COMMAND qwen3-asr-tests)
   add_executable(image-weight-cache-tests tests/image_weight_cache.cpp)
   target_link_libraries(image-weight-cache-tests PRIVATE kadan_checkpoint)
   target_compile_options(image-weight-cache-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -400,10 +360,6 @@ if(BUILD_TESTING)
 endif()
 
 if(BUILD_TESTING)
-  add_executable(s1-mini-metadata-tests tests/s1_mini_metadata.cpp)
-  target_link_libraries(s1-mini-metadata-tests PRIVATE kadan_transcription_formatting)
-  target_compile_options(s1-mini-metadata-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  add_test(NAME s1-mini-metadata COMMAND s1-mini-metadata-tests)
   add_executable(preparation-tests tests/preparation.cpp)
   target_link_libraries(preparation-tests PRIVATE kadan_preparation LibArchive::LibArchive)
   target_compile_options(preparation-tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -479,7 +435,6 @@ function(kadan_install_worker target)
   install(FILES catalog.json DESTINATION share/kadan COMPONENT ${target})
   install(FILES third_party/ggml/LICENSE
     DESTINATION share/kadan/licenses RENAME ggml-LICENSE.txt COMPONENT ${target})
-  install(DIRECTORY assets/ DESTINATION share/kadan/assets COMPONENT ${target})
   install(PROGRAMS packaging/run_worker.sh DESTINATION bin RENAME ${target} COMPONENT ${target})
 endfunction()
 
@@ -501,30 +456,24 @@ endif()
 
 if(KADAN_ENABLE_CUDA)
   add_executable(kadan-worker-speech workers/speech/main.cpp
-    src/inference/inference_whisper.cpp)
+    src/inference/inference_qwen3_asr.cpp)
   target_compile_definitions(kadan-worker-speech PRIVATE KADAN_WORKER_CUDA=1)
-  target_link_libraries(kadan-worker-speech PRIVATE kadan_worker_runtime kadan_whisper
-    kadan_stt kadan_h3_cuda)
+  target_link_libraries(kadan-worker-speech PRIVATE kadan_worker_runtime kadan_qwen3_asr
+    kadan_stt kadan_text_tokenizer kadan_h3_cuda)
   kadan_install_worker(kadan-worker-speech)
 endif()
-
-add_executable(kadan-worker-formatting workers/formatting/main.cpp)
-target_link_libraries(kadan-worker-formatting PRIVATE kadan_worker_runtime
-  kadan_transcription_formatting)
-kadan_install_worker(kadan-worker-formatting)
 
 # Unified multi-workload worker binary: runs any compiled workload via
 # `--workload=<kind>` for desktop tray supervision and single-binary releases.
 add_executable(kadan-worker workers/unified/main.cpp)
-target_link_libraries(kadan-worker PRIVATE kadan_worker_runtime
-  kadan_lfm3_engines kadan_transcription_formatting)
+target_link_libraries(kadan-worker PRIVATE kadan_worker_runtime)
 target_compile_options(kadan-worker PRIVATE ${KADAN_STRICT_CXX_FLAGS})
 if(KADAN_ENABLE_CUDA)
   target_sources(kadan-worker PRIVATE
     src/inference/inference_chat.cpp
-    src/inference/inference_whisper.cpp)
+    src/inference/inference_qwen3_asr.cpp)
   target_compile_definitions(kadan-worker PRIVATE KADAN_WORKER_CUDA=1)
-  target_link_libraries(kadan-worker PRIVATE kadan_gguf_text kadan_whisper
+  target_link_libraries(kadan-worker PRIVATE kadan_gguf_text kadan_qwen3_asr
     kadan_stt kadan_text_tokenizer kadan_h3_cuda)
   if(KADAN_ENABLE_TTS_WORKER)
     target_sources(kadan-worker PRIVATE src/inference/inference_speech.cpp)
@@ -567,13 +516,6 @@ if(BUILD_TESTING AND TARGET kadan_text_tokenizer)
   target_link_libraries(text-decision-tests PRIVATE kadan_gguf_text kadan_text_tokenizer)
   target_compile_options(text-decision-tests PRIVATE ${KADAN_STRICT_CXX_FLAGS})
   add_test(NAME text-decision COMMAND text-decision-tests)
-endif()
-
-if(BUILD_TESTING AND TARGET kadan_lfm3)
-  add_executable(lfm3-components-tests tests/lfm3_components.cpp)
-  target_link_libraries(lfm3-components-tests PRIVATE kadan_lfm3)
-  target_compile_options(lfm3-components-tests PRIVATE ${KADAN_STRICT_CXX_FLAGS})
-  add_test(NAME lfm3-components COMMAND lfm3-components-tests)
 endif()
 
 option(KADAN_BUILD_TOOLS "Build developer tools exposed by bin/kadan.py" OFF)

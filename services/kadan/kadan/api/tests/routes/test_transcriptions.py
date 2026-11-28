@@ -23,7 +23,7 @@ def request_for(services, receive=connected):
 
 def test_transcription_uses_existing_hikari_endpoint_without_enqueuing_a_chat():
     services = SimpleNamespace(
-        json_request=AsyncMock(return_value={"text": "Hello agent", "model": "whisper"})
+        json_request=AsyncMock(return_value={"text": "Hello agent", "model": "qwen3-asr-1.7b"})
     )
     request = request_for(services)
     result = asyncio.run(
@@ -34,7 +34,6 @@ def test_transcription_uses_existing_hikari_endpoint_without_enqueuing_a_chat():
     assert args == ("Hikari", "POST", "/v1/audio/transcriptions")
     assert kwargs["json"] == {
         "audio": "data:audio/wav;base64,AAAA",
-        "formatting": False,
     }
     assert kwargs["timeout"] == 120
 

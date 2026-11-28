@@ -400,14 +400,12 @@ impl ServerSupervisor {
             if has_gpu {
                 vec![
                     "llm".into(),
-                    "lfm3_audio".into(),
-                    "formatting".into(),
                     "speech".into(),
                     "tts".into(),
                     "image".into(),
                 ]
             } else {
-                vec!["formatting".into()]
+                Vec::new()
             }
         } else {
             workloads

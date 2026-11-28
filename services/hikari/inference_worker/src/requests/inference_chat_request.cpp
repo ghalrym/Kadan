@@ -74,13 +74,7 @@ void prepare_llm_configuration(
     const auto text = config.value("text_config", config);
     const auto supported = text.at("max_position_embeddings").get<std::size_t>();
     auto configured = requested_context;
-    if (request.model == "lfm3-1.7b-bf16") {
-        if (!context_supplied || !configured) {
-            const auto saved = store.context(request.model);
-            configured =
-                saved.is_null() ? std::nullopt : std::optional(saved.get<std::size_t>());
-        }
-    } else if (request.operation != Operation::load || !context_supplied) {
+    if (request.operation != Operation::load || !context_supplied) {
         const auto saved = store.context(request.model);
         configured =
             saved.is_null() ? std::nullopt : std::optional(saved.get<std::size_t>());

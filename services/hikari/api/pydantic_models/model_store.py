@@ -32,9 +32,7 @@ class CheckpointStatus(BaseModel):
         "llm",
         "speech",
         "transcription",
-        "formatting",
         "image",
-        "audio",
     ]
     display_name: str | None
     short_name: str | None = None
@@ -49,11 +47,9 @@ class ModelAssignments(BaseModel):
     """Fixed capability assignments, independent of machine resources."""
 
     llm: LlmModel = "inkling-2-mini-iq4-nl"
-    audio_call: Literal["lfm3-audio-2b-bf16"] = "lfm3-audio-2b-bf16"
     image: Literal["flux.2-klein-4b"] = "flux.2-klein-4b"
     speech: Literal["qwen-tts-1.7b-custom"] = "qwen-tts-1.7b-custom"
-    transcription: Literal["whisper-medium"] = "whisper-medium"
-    formatting: Literal["superwhisper-s1-mini"] = "superwhisper-s1-mini"
+    transcription: Literal["qwen3-asr-1.7b"] = "qwen3-asr-1.7b"
     decisions: LlmModel = "inkling-2-mini-iq4-nl"
 
 
@@ -61,4 +57,3 @@ class ModelStoreStatus(BaseModel):
     models: list[CheckpointStatus]
     defaults: ModelAssignments = Field(default_factory=ModelAssignments)
     selected_model_id: LlmModel = "inkling-2-mini-iq4-nl"
-    whisper_formatting: bool = True

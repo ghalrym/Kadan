@@ -38,7 +38,7 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "image-aten-plan-tests",
     "image-aten-performance-tests",
     "image-batch-performance-tests",
-    "whisper-cross-attention-tests",
+    "qwen3-asr-tests",
     "image-weight-cache-tests",
     "image-timing-tests",
     "image-decoder-input-tests",
@@ -56,10 +56,8 @@ INFERENCE_WORKER_UNIT_TARGETS = [
     "inference-trace-tests",
     "websocket-tests",
     "worker-host-tests",
-    "kadan-worker-formatting",
     "preparation-tests",
     "chat-load-tests",
-    "s1-mini-metadata-tests",
     "text-tokenizer-tests",
     "inference-worker-text-tests",
 ]
@@ -177,17 +175,6 @@ def lint_cpp(
 def api() -> None:
     """Run isolated API unit tests."""
     run([sys.executable, "-m", "unittest", "discover", "-s", "api/tests", "-v"])
-    run(
-        [
-            sys.executable,
-            "-m",
-            "unittest",
-            "discover",
-            "-s",
-            "experimental_worker/tests",
-            "-v",
-        ]
-    )
 
 
 @app.command()
@@ -210,7 +197,6 @@ def inference_worker(
             "-DKADAN_BUILD_TOOLS=OFF",
             "-DKADAN_ENABLE_TTS_WORKER=OFF",
             "-DKADAN_ENABLE_IMAGE_GENERATION=OFF",
-            "-DKADAN_ENABLE_WHISPER_BLAS=OFF",
             "-DBUILD_TESTING=ON",
             f"-DCMAKE_CXX_FLAGS={flags}",
         ]

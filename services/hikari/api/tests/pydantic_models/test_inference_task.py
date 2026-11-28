@@ -4,7 +4,6 @@ from pydantic import ValidationError
 
 from api.pydantic_models.inference_task import (
     InferenceTask,
-    TranscriptionFormattingTask,
     resolve_inkling_variant_model,
     same_inkling_precision_family,
 )
@@ -130,10 +129,3 @@ class InferenceTaskTests(unittest.TestCase):
                 "inkling-2-mini-iq4-nl", "inkling-2-mini-q8-0"
             )
         )
-
-
-class NativeTranscriptionFormattingLimitTests(unittest.TestCase):
-    def test_native_transcript_formatting_keeps_its_32000_character_limit(self):
-        self.assertEqual(len(TranscriptionFormattingTask(text="x" * 32000).text), 32000)
-        with self.assertRaises(ValidationError):
-            TranscriptionFormattingTask(text="x" * 32001)

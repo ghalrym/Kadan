@@ -4,7 +4,7 @@ Kadan Server's **AI models** section manages the one fixed model behind each abi
 
 ## Downloading
 
-- Each ability is listed by what it does (Chat & thinking, Voice calls, Images, Dictation, Dictation cleanup, Reading aloud) with a one-line description, the model's own name and its download size underneath.
+- Each ability is listed by what it does (Chat & thinking, Images, Dictation, Reading aloud) with a one-line description, the model's own name and its download size underneath.
 - **Download everything** downloads every missing model; an ability that is missing or stopped has its own **Download** or **Try again** button. Before anything starts, a confirmation shows the total size and any license notices, which must be accepted.
 - Downloads continue in the background while the page is closed or Kadan is in use. Progress is an estimate until complete. Completion means the model is on disk, not that it is loaded or that a request will fit the computer's memory.
 - An ability whose part of the server is not running shows **Not running** and suggests restarting Kadan Server and checking its logs.

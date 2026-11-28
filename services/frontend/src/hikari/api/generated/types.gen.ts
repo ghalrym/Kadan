@@ -359,7 +359,7 @@ export type CheckpointStatus = {
   /**
    * Kind
    */
-  kind: 'llm' | 'speech' | 'transcription' | 'formatting' | 'image' | 'audio'
+  kind: 'llm' | 'speech' | 'transcription' | 'image'
   /**
    * License
    */
@@ -990,10 +990,6 @@ export type MetricsResponse = {
  */
 export type ModelAssignments = {
   /**
-   * Audio Call
-   */
-  audio_call?: 'lfm3-audio-2b-bf16'
-  /**
    * Decisions
    */
   decisions?:
@@ -1001,10 +997,6 @@ export type ModelAssignments = {
     | 'inkling-2-mini-q8-0'
     | 'inkling-2-mini-abliterated-iq4-nl'
     | 'inkling-2-mini-abliterated-q8-0'
-  /**
-   * Formatting
-   */
-  formatting?: 'superwhisper-s1-mini'
   /**
    * Image
    */
@@ -1024,7 +1016,7 @@ export type ModelAssignments = {
   /**
    * Transcription
    */
-  transcription?: 'whisper-medium'
+  transcription?: 'qwen3-asr-1.7b'
 }
 
 /**
@@ -1430,10 +1422,6 @@ export type SettingsRequest = {
     | 'inkling-2-mini-abliterated-iq4-nl'
     | 'inkling-2-mini-abliterated-q8-0'
     | null
-  /**
-   * Whisper Formatting
-   */
-  whisper_formatting?: boolean | null
 }
 
 /**
@@ -1445,10 +1433,6 @@ export type SettingsResponse = {
    * Models
    */
   models: Array<CheckpointStatus>
-  /**
-   * Whisper Formatting
-   */
-  whisper_formatting: boolean
 }
 
 /**
@@ -1621,37 +1605,19 @@ export type TranscriptionRequest = {
    */
   audio: string
   /**
-   * Formatting
-   *
-   * Null or omitted uses the saved formatting setting. Enabled uses S1-mini by Superwhisper to normalize the transcript; raw_text is always retained.
-   */
-  formatting?: boolean | null
-  /**
    * Language
    */
   language?: string | null
   /**
    * Model
    */
-  model?: 'medium' | null
+  model?: 'qwen3-asr-1.7b' | null
 }
 
 /**
  * TranscriptionResponse
  */
 export type TranscriptionResponse = {
-  /**
-   * Formatting Error
-   */
-  formatting_error?: string | null
-  /**
-   * Formatting Model
-   */
-  formatting_model?: string | null
-  /**
-   * Formatting Status
-   */
-  formatting_status: 'disabled' | 'formatted' | 'failed' | 'empty'
   /**
    * Language
    */
@@ -1660,10 +1626,6 @@ export type TranscriptionResponse = {
    * Model
    */
   model: string
-  /**
-   * Raw Text
-   */
-  raw_text: string
   /**
    * Text
    */

@@ -141,13 +141,14 @@ void downloads_and_settings_run_on_the_store_worker() {
         {{"id", id('c')},
          {"command", "submit"},
          {"operation", "download"},
-         {"input", {{"feature", "models"}, {"model_id", "whisper-medium"}}}}
+         {"input", {{"feature", "models"}, {"model_id", "qwen3-asr-1.7b"}}}}
     );
     harness.command(
         {{"id", id('d')},
          {"command", "submit"},
          {"operation", "configure"},
-         {"input", {{"feature", "whisper_formatting"}, {"enabled", false}}}}
+         {"input",
+          {{"feature", "llm_selection"}, {"model_id", "inkling-2-mini-iq4-nl"}}}}
     );
     while (harness.host->advance_all()) {
     }
@@ -244,11 +245,6 @@ void each_program_runs_only_its_own_type() {
     );
     assert(image.last(id('b'))["worker"] == "image");
     image.host->stop();
-
-    Harness lfm3(Workload::lfm3_llm);
-    lfm3.command(chat(id('c')));
-    assert(lfm3.last(id('c'))["worker"] == "lfm3_llm");
-    lfm3.host->stop();
 
     Harness llm(Workload::llm);
     llm.command(

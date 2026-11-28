@@ -105,10 +105,10 @@ def hello(
     }
 
 
-def models(formatting=True, checkpoints=()):
+def models(selected_model_id="inkling-2-mini-iq4-nl", checkpoints=()):
     return {
         "models": list(checkpoints),
-        "whisper_formatting": formatting,
+        "selected_model_id": selected_model_id,
     }
 
 
@@ -525,7 +525,7 @@ class LifecycleResidencyTests(HubTestCase):
         job = InferenceJob(
             InferenceTask(
                 operation="configure",
-                input={"feature": "whisper_formatting", "enabled": False},
+                input={"feature": "llm_selection", "model_id": "inkling-2-mini-q8-0"},
             ),
             False,
         )
@@ -700,7 +700,7 @@ class RegistrationTests(HubTestCase):
             store=models(
                 checkpoints=[
                     checkpoint("flux.2-klein-4b", kind="image"),
-                    checkpoint("whisper-tiny.en", kind="transcription"),
+                    checkpoint("qwen3-asr-1.7b", kind="transcription"),
                     checkpoint("inkling-2-mini-iq4-nl"),
                 ]
             ),
@@ -713,23 +713,31 @@ class RegistrationTests(HubTestCase):
 
     async def test_late_worker_receives_the_primary_settings(self):
         primary = models(
-            formatting=False,
-            checkpoints=[checkpoint("qwen", context_limit=32768)],
+            selected_model_id="inkling-2-mini-q8-0",
+            checkpoints=[checkpoint("inkling-2-mini-q8-0", context_limit=32768)],
         )
         await self.connect("llm", store=primary)
-        late = models(checkpoints=[checkpoint("qwen", context_limit=65536)])
+        late = models(checkpoints=[checkpoint("inkling-2-mini-q8-0", context_limit=65536)])
         socket, _ = await self.connect(
             "image", computer="boot-2", store=late, replies={"submit": configured}
         )
         sent = [message["input"] for message in socket.commands("submit")]
-        self.assertIn({"feature": "whisper_formatting", "enabled": False}, sent)
         self.assertIn(
-            {"feature": "model_context", "model_id": "qwen", "context_limit": 32768},
+            {"feature": "llm_selection", "model_id": "inkling-2-mini-q8-0"}, sent
+        )
+        self.assertIn(
+            {
+                "feature": "model_context",
+                "model_id": "inkling-2-mini-q8-0",
+                "context_limit": 32768,
+            },
             sent,
         )
 
     async def test_late_worker_is_not_routable_until_settings_apply(self):
-        await self.connect("llm", store=models(formatting=False))
+        await self.connect(
+            "llm", store=models(selected_model_id="inkling-2-mini-q8-0")
+        )
         socket = FakeSocket(
             replies={
                 "submit": lambda m: [
@@ -830,7 +838,7 @@ class JobTests(HubTestCase):
         job = await self.hub.submit(
             InferenceTask(
                 operation="configure",
-                input={"feature": "whisper_formatting", "enabled": False},
+                input={"feature": "llm_selection", "model_id": "inkling-2-mini-q8-0"},
             )
         )
         first.push({"id": job.request.id, "state": "succeeded", "result": {}})
@@ -957,7 +965,7 @@ class CancellationTestCase(unittest.IsolatedAsyncioTestCase):
     def store_request(self):
         return InferenceTask(
             operation="configure",
-            input={"feature": "whisper_formatting", "enabled": False},
+            input={"feature": "llm_selection", "model_id": "inkling-2-mini-q8-0"},
         )
 
 
@@ -1862,7 +1870,6 @@ class ModelIdleTests(HubTestCase):
             "llm",
             "tts",
             "speech",
-            "formatting",
             "image",
         ):
             with self.subTest(kind=kind):
@@ -2065,7 +2072,7 @@ class SchedulingTests(HubTestCase):
 
         await self.connect("llm", replies={"requirement": needs((1, 6), (2, 30))})
         await self.connect(
-            "formatting", replies={"requirement": needs((1, 0), (1, 0))}
+            "speech", replies={"requirement": needs((1, 0), (1, 0))}
         )
         _, picture = await self.connect(
             "image", replies={"requirement": needs((1, 2), (1, 40)), "load": load}
@@ -2176,7 +2183,9 @@ class ResidentRequirementTests(HubTestCase):
         socket.push({"state": "models", "models": models()})
         await self.settle()
         self.assertIsNotNone(worker.slot.requirement)
-        socket.push({"state": "models", "models": models(formatting=False)})
+        socket.push(
+            {"state": "models", "models": models(selected_model_id="inkling-2-mini-q8-0")}
+        )
         await self.settle()
         self.assertIsNone(worker.slot.requirement)
 

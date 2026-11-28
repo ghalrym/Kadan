@@ -14,7 +14,7 @@ The file stack ends at open #399: #409 merged into #408's branch, #408 into #406
 
 The direction in [#392](https://github.com/ghalrym/Kadan/pull/392) and [#416](https://github.com/ghalrym/Kadan/pull/416) is to let each agent manage its own memory and persona, with users viewing retained memory rather than maintaining notes for the agent. Workspace documents are work products, with hierarchy separate from memories, personas and conversations. Users should not need to write and select an agent's persona for each response. Hiding a persona editor alone would not supply curation.
 
-Current master now supplies model-directed [memory management](kadan/memories.md), [owned personas](kadan/personas.md), automatic persona use in later text work and new voice calls, and a Documents browser that has since been removed from Kadan in favour of the [Space](kadan/space.md) library. Neither curation on a schedule nor automatic recall on every response is promised. The unpublished reconciliation was also reviewed as historical context; its manual-only persona and pre-Documents descriptions are superseded by these current pages. It is not a separately approved specification.
+Current master now supplies model-directed [memory management](kadan/memories.md), [owned personas](kadan/personas.md), automatic persona use in later text work, and a Documents browser that has since been removed from Kadan in favour of the [Space](kadan/space.md) library. Neither curation on a schedule nor automatic recall on every response is promised. The unpublished reconciliation was also reviewed as historical context; its manual-only persona and pre-Documents descriptions are superseded by these current pages. It is not a separately approved specification.
 
 ## Original proposal coverage
 
@@ -48,4 +48,4 @@ These newer drafts are also absent from checked master. Their selections and con
 | [#462](https://github.com/ghalrym/Kadan/pull/462) | Portable instruction workflows with explicit Run now | Depends on #461; no schedule or extra authorization. |
 | [#465](https://github.com/ghalrym/Kadan/pull/465) | Inspect durable receipts for selected context | Depends on #462; recorded model response does not prove understanding or success. |
 
-Existing live voice calls, interruption, playback acknowledgement and session cleanup remain current behavior. A separate deferred voice prototype does not remove those capabilities. No LFM3 implementation or model change is part of this documentation sweep.
+Live voice calls have since been removed; the Call button is a Coming soon placeholder.

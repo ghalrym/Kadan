@@ -38,18 +38,10 @@ const char* worker_name(Workload workload) {
     switch (workload) {
     case Workload::llm:
         return "llm";
-    case Workload::lfm3_llm:
-        return "lfm3_llm";
-    case Workload::lfm3_vision:
-        return "lfm3_vision";
-    case Workload::lfm3_audio:
-        return "lfm3_audio";
     case Workload::tts:
         return "tts";
     case Workload::speech:
         return "speech";
-    case Workload::formatting:
-        return "formatting";
     case Workload::image:
         return "image";
     }
@@ -212,12 +204,6 @@ void WorkerHost::handle(const std::string& line) {
         };
         if (command == "submit") {
             auto request = parse_request(command_message);
-            if (request.workload == Workload::llm && !workers_.empty()
-                && workers_.back()->spec.workload == Workload::lfm3_llm) {
-                if (const auto* chat = std::get_if<ChatRequest>(&request.input);
-                    chat && !chat->model)
-                    request.workload = Workload::lfm3_llm;
-            }
             const auto parent = command_message.value("traceparent", std::string{});
             const bool sampled =
                 parent.size() == 55 && parent.substr(0, 3) == "00-"

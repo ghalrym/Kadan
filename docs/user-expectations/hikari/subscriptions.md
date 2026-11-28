@@ -13,7 +13,7 @@ Claude and ChatGPT stay unavailable until the user signs in to them. Signing in 
 
 A sign-in that is cancelled, rejected or left unfinished for 15 minutes connects nothing, and the user can try again. Hikari keeps the sign-in until the user signs out. Signing out of a subscription that is serving a capability switches that capability back to this computer.
 
-The Language choice applies to every chat and screenshot request: Kadan agent conversations and direct chat API clients. Kadan treats language as ready while a subscription serves it, even if Inkling 2 Mini was never downloaded. Voice calls, speech, transcription, formatting and decisions stay local.
+The Language choice applies to every chat and screenshot request: Kadan agent conversations and direct chat API clients. Kadan treats language as ready while a subscription serves it, even if Inkling 2 Mini was never downloaded. Speech, transcription and decisions stay local.
 
 Hikari sends earlier chat messages with their speakers and preserves the order of text and images. It provides tool results separately from what the user wrote. Replies can quote text resembling a tool without starting an action. Claude can combine consecutive messages from the same speaker. When a request cannot be represented by the selected provider, Hikari reports the limitation.
 
