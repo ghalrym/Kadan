@@ -29,6 +29,8 @@ inline std::size_t storage_width(Dtype dtype) {
     case Dtype::fp32:
     case Dtype::u32:
         return 4;
+    case Dtype::i64:
+        return 8;
     }
     throw std::invalid_argument("weight_inventory_dtype");
 }
@@ -39,6 +41,8 @@ inline std::string_view storage_name(Dtype dtype) {
         return "U8";
     case Dtype::u32:
         return "U32";
+    case Dtype::i64:
+        return "I64";
     case Dtype::i8:
         return "I8";
     case Dtype::fp8:
@@ -82,7 +86,7 @@ struct WeightInventory {
         std::uint64_t tensors = 0, stored_bytes = 0;
     };
 
-    std::array<Group, 6> precision{};
+    std::array<Group, 8> precision{};
     std::uint64_t stored_bytes = 0, floating_f32_bytes = 0, raw_nonfloating_bytes = 0;
 
     std::uint64_t floating_execution_bytes(bool native_bf16) const {

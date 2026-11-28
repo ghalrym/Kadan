@@ -552,6 +552,27 @@ void half_metadata_limits() {
         shard.read_tensor("signed", 0, raw);
         check(raw == std::array<std::uint8_t, 3>{128, 0, 127});
     }
+    {
+        Fixture i64_fixture;
+        auto admitted = budget();
+        i64_fixture.write(
+            "{" + tensor("bn.num_batches_tracked", "I64", "[]", 0, 8) + "}",
+            {1, 0, 0, 0, 0, 0, 0, 0}
+        );
+        Shard shard(i64_fixture.root.c_str(), "model.safetensors", admitted);
+        const auto info = shard.tensor("bn.num_batches_tracked");
+        check(info.dtype == Dtype::i64 && info.rank == 0 && info.bytes == 8);
+        WeightInventory inv;
+        inv.add(shard);
+        check(inv.stored_bytes == 8 && inv.raw_nonfloating_bytes == 8);
+        i64_fixture.write(
+            "{" + tensor("bad_i64", "I64", "[]", 0, 4) + "}", {1, 0, 0, 0}
+        );
+        fails(
+            [&] { Shard s(i64_fixture.root.c_str(), "model.safetensors", admitted); },
+            "tensor_byte_size"
+        );
+    }
 
     Fixture f;
     auto q = budget();
